@@ -241,9 +241,17 @@ function inspectRegistration(node, context) {
 
 if (inventory) {
   const report = []
+  const unverified = []
   for (const entry of packages) {
-    const context = readModule(path.join(packagesRoot, entry.name))
-    if (!context) continue
+    const directory = path.join(packagesRoot, entry.name)
+    if (!fs.existsSync(path.join(directory, 'lib/es/index.js'))) continue
+    const manifestPath = path.join(directory, 'package.json')
+    if (!fs.existsSync(manifestPath)) {
+      unverified.push({ directory: entry.name, missing: 'package.json' })
+      continue
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    const context = readModule(directory)
     const registrations = []
     function visit(node) {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
@@ -251,10 +259,9 @@ if (inventory) {
       ts.forEachChild(node, visit)
     }
     visit(context.source)
-    const manifest = JSON.parse(fs.readFileSync(path.join(context.directory, 'package.json'), 'utf8'))
     report.push({ package: manifest.name, version: manifest.version, registrations })
   }
-  console.log(JSON.stringify({ staticOnly: true, packages: report }, null, 2))
+  console.log(JSON.stringify({ staticOnly: true, packages: report, unverified }, null, 2))
   process.exit(0)
 }
 

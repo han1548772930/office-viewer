@@ -10,6 +10,9 @@ import { conditionalFormatFormulaAt, reanchorConditionalFormatRule } from '../sr
 import { moveConditionalFormatRuleDraft, prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../src/features/conditional-formatting/conditional-format-rule-editor.ts'
 import { conditionalFormatStyleAt, evaluateConditionalFormatRule } from '../src/features/conditional-formatting/conditional-formatting.ts'
 import { evaluateFormula } from '../src/features/formula/formula-engine.ts'
+import {
+  QUICK_CONDITIONAL_FORMAT_COMMANDS as quick, QUICK_CONDITIONAL_ICON_SETS, quickConditionalFormatRules, quickConditionalFormatSelection,
+} from '../src/features/conditional-formatting/quick-conditional-formatting.ts'
 
 const range = (startRow, startCol, endRow = startRow, endCol = startCol) => ({ startRow, startCol, endRow, endCol })
 const rule = (id = 'cf-first', ranges = [range(0, 0, 3, 0)], priority = 1) => ({ id, type: 'cellIs', ranges, priority,
@@ -174,6 +177,77 @@ function withStudio(run, workbook = sample()) {
 }
 const undoCount = (studio, id = studio.activeWorkbookId) => studio.editor.history.units[id]?.undo.length ?? 0
 const input = (studio, rules, extra = {}) => ({ unitId: studio.activeWorkbookId, sheetId: studio.editor.workbook.model.sheets[0].id, rules, ...extra })
+
+test('quick visual rules render fixed bar colors and the three ranked icon sets across one sparse scope', () => {
+  const scope = [range(0, 0, 3, 0), range(3, 3)]
+  const [bar] = quickConditionalFormatRules([], scope, quick.dataBar, {})
+  assert.deepEqual(bar.config, {
+    min: { type: 'min' }, max: { type: 'max' }, positiveColor: '#ffbe38', nativeColor: '#abd91a', isGradient: false, isShowValue: true,
+  })
+  const values = [-100, 0, 100]
+  const negative = conditionalFormatStyleAt([bar], 0, 0, -100, values).dataBar
+  assert.deepEqual(negative, { color: '#abd91a', fraction: .5, start: .5, negative: true, gradient: false, showValue: true })
+  assert.equal(conditionalFormatStyleAt([bar], 3, 3, 100, values).dataBar.color, '#ffbe38')
+  for (const iconSet of QUICK_CONDITIONAL_ICON_SETS) {
+    const rules = quickConditionalFormatRules([bar], scope, quick.iconSet, { iconSet })
+    assert.equal(rules[0].config.iconSet, iconSet)
+    assert.deepEqual(rules[0].config.icons.slice(0, 2).map(icon => [icon.operator, icon.value]),
+      [['greaterThanOrEqual', { type: 'percent', value: 67 }], ['greaterThanOrEqual', { type: 'percent', value: 33 }]])
+    assert.deepEqual([100, 67, 33, 32].map(value => conditionalFormatStyleAt(rules, 0, 0, value, [0, 100]).icon?.iconId), ['0', '0', '1', '2'])
+    assert.deepEqual(quickConditionalFormatSelection(rules, scope, { row: 0, col: 0 }),
+      { hasDataBar: true, hasIconSet: true, activeIconSet: iconSet, canClearDataBar: true, canClearIconSet: true })
+    assert.deepEqual(conditionalFormatStyleAt(rules, 2, 2, 100, [0, 100]), {})
+  }
+})
+
+test('type-specific clear preserves remaining coverage and rebases threshold formulas', () => {
+  const scope = [range(1, 0, 4, 0), range(6, 2)]
+  const bars = quickConditionalFormatRules([rule('other', scope, 3)], scope, quick.dataBar, { min: { type: 'formula', value: '=A2' } })
+  const rules = quickConditionalFormatRules(bars, scope, quick.iconSet, {})
+  const after = quickConditionalFormatRules(rules, [range(1, 0), range(6, 2)], quick.clear, { types: ['dataBar'] })
+  assert.deepEqual(after.find(entry => entry.type === 'dataBar').ranges, [range(2, 0, 4, 0)])
+  assert.equal(after.find(entry => entry.type === 'dataBar').config.min.value, '=A3')
+  assert.deepEqual(after.filter(entry => entry.type !== 'dataBar'), rules.filter(entry => entry.type !== 'dataBar'))
+  const all = quickConditionalFormatRules(after, scope, quick.clear, {})
+  assert.deepEqual(all, [])
+})
+
+test('registered quick commands share permission checks, exact rule history and snapshot reopen', () => withStudio((studio, api) => {
+  const workbook = api.getActiveWorkbook(), worksheet = workbook.getActiveSheet()
+  const before = cloneModel(studio.getWorkbookModel(workbook.getId()).sheets[0].cells)
+  const target = { unitId: workbook.getId(), subUnitId: worksheet.getSheetId(), ranges: [{ startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 }] }
+  assert.equal(api.executeCommandSync(quick.dataBar, target), true)
+  assert.equal(api.executeCommandSync(quick.iconSet, { ...target, iconSet: '3TrafficLights1' }), true)
+  assert.equal(undoCount(studio), 2)
+  const rules = worksheet.getConditionalFormats()
+  assert.deepEqual(rules.map(rule => rule.type), ['iconSet', 'dataBar'])
+  assert.equal(api.executeCommandSync(quick.clear, { ...target, ranges: [range(0, 1)], types: ['iconSet'] }), false)
+  assert.equal(api.executeCommandSync(quick.clear, { ...target, ranges: [range(1, 0)], types: ['iconSet'] }), true)
+  const cleared = worksheet.getConditionalFormats()
+  assert.deepEqual(cleared[0].ranges, [range(0, 0), range(2, 0, 3, 0)])
+  assert.equal(undoCount(studio), 3)
+  workbook.undo(); assert.deepEqual(worksheet.getConditionalFormats(), rules)
+  workbook.redo(); assert.deepEqual(worksheet.getConditionalFormats(), cleared)
+  assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].cells, before)
+  const reopened = api.createWorkbook({ ...workbook.save(), id: 'cf-quick-reopened' })
+  assert.deepEqual(reopened.getActiveSheet().getConditionalFormats(), cleared)
+}))
+
+test('quick command rejects stale and protected rule footprints without publishing a partial change', () => {
+  const workbook = sample(), sheet = workbook.sheets[0], scope = [range(0, 0, 3, 0)]
+  sheet.conditionalFormats = quickConditionalFormatRules([], scope, quick.dataBar, {})
+  sheet.rangeProtectionRules = protection([range(2, 0)])
+  withStudio((studio, api) => {
+    const worksheet = api.getActiveWorkbook().getActiveSheet()
+    const before = worksheet.getConditionalFormats()
+    const target = { unitId: studio.activeWorkbookId, subUnitId: worksheet.getSheetId() }
+    assert.throws(() => api.executeCommandSync(quick.clear, { ...target, ranges: [range(0, 0)], types: ['dataBar'] }), /保护/)
+    assert.throws(() => api.executeCommandSync(quick.iconSet, { ...target, ranges: scope, iconSet: '3Stars' }), /保护/)
+    assert.throws(() => api.executeCommandSync(quick.dataBar, { ...target, ranges: [range(0, 0)], expectedRevision: 100 }), /已更改/)
+    assert.deepEqual(worksheet.getConditionalFormats(), before)
+    assert.equal(undoCount(studio), 0)
+  }, workbook)
+})
 
 test('registered edits share command events, one history transaction, cached values and internal snapshot reopen', () => withStudio((studio, api) => {
   const beforeCells = cloneModel(studio.editor.workbook.model.sheets[0].cells), valueEvents = [], commands = []

@@ -13,6 +13,7 @@ import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/documen
 import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings'
 import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
+import { featureSearchRibbonItem } from '../../platform/ribbon/feature-search'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts'
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
@@ -43,6 +44,7 @@ export interface DocumentRibbonContext {
   painterActive?: boolean
   painterUnavailable?: boolean
   clearFormatting?: { available: boolean; reason?: string }
+  clipboard?: { copy: boolean; cut: boolean; paste: boolean }
   lastTextColor?: string
   lastHighlightColor?: string
   defaultTextColor?: string
@@ -147,7 +149,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         action('doc-redo', '重做', Redo2, 'core.command.redo', undefined, { disabled: !context.canRedo, disabledReason: '没有可重做的文档更改', shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
         action('doc-format-painter', tocLabel('items.sheet.operation.format-painter', '格式刷'), Brush, 'ui.operation.activate-format-painter', undefined, { subId: 'ui.operation.continuous-format-painter', activated: !!context.painterActive, disabled: !context.painterActive && context.painterUnavailable, gridLayout: { row: 1, column: 2, showLabel: false } }),
         action('doc-clear-format', '清除格式', RemoveFormatting, 'ui.command.clear-formatting', undefined, { disabled: context.clearFormatting ? !context.clearFormatting.available : context.painterUnavailable, disabledReason: context.clearFormatting?.reason, gridLayout: { row: 2, column: 2, showLabel: false } }),
-        { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste-special', undefined, { disabled: context.editingDisabled, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'menu', children:
+        { ...action('doc-paste', '粘贴', ClipboardPaste, 'doc.command.paste-special', undefined, { order: 4, disabled: context.clipboard ? !context.clipboard.paste : context.editingDisabled, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: 'menu', children:
           DOCUMENT_PASTE_OPTIONS.map(({ value, label }) => action(`doc-paste-mode-${value}`, tocLabel(`doc.context.paste-special.${value}`, label), undefined, 'doc.command.paste-special', { value })) },
       ] },
       { id: 'doc-format', title: '字体与样式', order: 1, items: [
@@ -176,7 +178,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       ] },
       { id: 'doc-others', title: '其他', order: 3, items: [
         action('doc-permissions', '文档权限', ShieldCheck, 'doc.operation.open-permissions', undefined, { order: 0, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-        action('doc-find', '查找', Search, 'doc.operation.toggle-find', undefined, { order: 3, gridLayout: { row: 1, column: 2 } }),
+        featureSearchRibbonItem(tocLabel('feature-search.title', '搜索功能')),
+        action('doc-find', '查找', Search, 'doc.operation.toggle-find', undefined, { order: 3, gridLayout: { row: 1, column: 3 } }),
       ] },
       { id: 'doc-layout-extensions', title: '段落工具', order: 4, items: [
         { id: 'doc-extra-styles', type: 'menu', title: '更多段落样式', icon: FileText, order: 10, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 }, children: [
@@ -193,8 +196,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         { id: 'doc-paragraph-spacing', type: 'menu', title: '段落间距', disabled: context.editingDisabled, icon: IndentIncrease, gridLayout: { row: 2, column: 2 }, children: (['spaceBefore', 'spaceAfter'] as const).map((key) => ({ id: `doc-${key}`, type: 'menu', title: key === 'spaceBefore' ? '段前间距' : '段后间距', children: [0, 6, 8, 12, 18, 24, 36].map((value) => action(`doc-${key}-${value}`, `${value} 像素`, IndentIncrease, 'doc.command.format-paragraph', { patch: { [key]: value } }, { activated: state.paragraph[key] === value })) })) },
       ] },
       { id: 'doc-home-extensions', title: '其他工具', order: 5, items: [
-        action('doc-copy', '复制', Copy, 'doc.command.copy', undefined, { disabled: !state.hasSelection, disabledReason: '请先选择要复制的文字', gridLayout: { row: 1, column: 1 } }),
-        action('doc-cut', '剪切', Scissors, 'doc.command.cut', undefined, { disabled: !state.hasSelection, disabledReason: '请先选择要剪切的文字', shortcut: 'Ctrl+X', gridLayout: { row: 2, column: 1 } }),
+        action('doc-copy', '复制', Copy, 'doc.command.copy', undefined, { disabled: context.clipboard ? !context.clipboard.copy : !state.hasSelection, shortcut: 'Ctrl+C', gridLayout: { row: 1, column: 1 } }),
+        action('doc-cut', '剪切', Scissors, 'doc.command.cut', undefined, { disabled: context.clipboard ? !context.clipboard.cut : !state.hasSelection || context.editingDisabled, shortcut: 'Ctrl+X', gridLayout: { row: 2, column: 1 } }),
         action('doc-outline', '文档大纲', ListTree, 'doc.operation.toggle-outline', undefined, { activated: context.outline, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
         action('doc-focus', '专注模式', Expand, 'doc.operation.toggle-focus', undefined, { activated: context.focus, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
         action('doc-print', '打印文档', Printer, 'doc.command.print', undefined, { showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),

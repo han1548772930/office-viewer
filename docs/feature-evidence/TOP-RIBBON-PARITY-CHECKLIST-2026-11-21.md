@@ -31,14 +31,14 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 ### Docs
 
-v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-univer-oss-ribbon.mjs` 读取共享、Docs 和插件 schema；未执行 factory 的动态条件。2026-11-25 人工静态回读当前 document-ribbon，本地常规根声明为 **52 项（33/16/3）**，含 hidden、排除 children/context；原 50（33/14/3）为 11-22 快照。Pro v1.6.0 缓存注册及未解析入口见[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)，不再用 1.5.2 的 9 项作为当前总数。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-univer-oss-ribbon.mjs`。2026-11-26 本地三个主标签为 **53 项（34/16/3）**，包含条件声明与原位插件，子项和上下文分别记录。传统模式另有「引用」9 根，其中 8 根来自固定 Pro 契约，1 根为本地管理。Pro v1.6.0 缓存注册及未解析入口见 [Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版分组和入口数 | 本地当前根项 | 对齐状态 |
 | --- | --- | ---: | --- |
-| Home / 开始 | HISTORY 5、FORMAT 11、LAYOUT 5、OTHERS 4，共 25 | 33 | 本地 history 5、format 11、layout 5、others 2，另有段落工具 5、其他工具 5。列表、颜色、格式刷与粘贴已有实现切片；快捷键/功能搜索和全部分组状态仍须核对。 |
+| Home / 开始 | HISTORY 5、FORMAT 11、LAYOUT 5、OTHERS 4，共 25 | 34 | 本地 history 5、format 11、layout 5、others 3，另有段落工具 5、其他工具 5。已接功能搜索；共享快捷键面板及搜索的独立右键入口待补。 |
 | Insert / 插入 | MEDIA 7、CELL 1、OTHERS 2，共 10 | 16 | 本地 media 9、cell 2、structured 3、extensions 2；代码块、引用/Callout/多栏、目录及内容控件已有接线，全部 Pro 仍按对应包追踪；结构块差异见[证据](DOC-13-14-16-17-structured-blocks.md)。 |
 | View / 视图 | DISPLAY 3，共 3 | 3 | 页面设置、缩放、全屏三个根项；大纲、专注和打印现在位于 Home 扩展组。数量相同不代表行为已验收。 |
-| 合计 | **38** | **52** | 这是静态常规声明数量，条件隐藏、Pro 替换与浮动入口仍需追踪，不表示功能完成。 |
+| 主标签合计 | **38** | **53** | 条件显隐、Pro 替换、独立浮动和上下文入口继续按路径核对。 |
 
 固定版 Insert 的 MEDIA 网格由多个插件共同注册。Breaks 在 `r1c1` 跨两行，Table 在 `r1c2`，Emoji 在 `r1c3`，Symbol 在 `r2c3`，Image 在 `r1c4`，Hyperlink 在 `r1c5`，Horizontal Line 在 `r2c5`。本地之前没有显式 `gridLayout`，列优先 fallback 导致 Image 掉到第二行；并且 Breaks、Horizontal Line、Symbol、Emoji 被放入 OTHERS。现已按上述位置修正，定向 Ribbon 契约测试 20/20 通过。页面布局统一浏览器验收尚未执行。
 
@@ -48,14 +48,14 @@ v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-u
 
 ### Sheets
 
-v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-26 人工回读本地常规 schema 为 **71 项（30/7/11/17/6）**，含范围主题、图片与背景根；69/68 为此前清单快照。根声明与子项分开，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)、[图片入口](SHEET-19-images.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-26 当前本地五个主标签为 **71 项（31/9/11/14/6）**，含范围主题、图片与背景、数据条、图标集及 Pro 扩展。子项与上下文分别计数，More 复用原入口。完整逐组、上下文、处理器和 Pro 边界见 [Sheets 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)、[图片入口](SHEET-19-images.md)及 [Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |
-| START / 开始 | 30 | 30 | 本地 clipboard 5、font 11、layout 6、number 5、tools 3；工具第 3 项为本地范围主题，grid r1c3 跨两行。数量相同不表示入口语义一致；查找在 Data，快捷键/功能搜索和全部动态状态仍须核对。 |
-| INSERT / 插入 | 9 | 7 | 本地 media 4、cells 3；图片根在媒体首项 r1c1 跨两行，浮动/单元格图片两子项；超链接、图表、迷你图及快速验证已有接线。线程评论和快捷数据条/图标集仍缺完整入口闭环；图片保真/Office 未验收。 |
+| START / 开始 | 30 | 31 | 本地 clipboard 5、font 11、layout 6、number 5、tools 4。搜索功能位于工具组 r2c2，范围主题移至 r1c4 跨两行。查找单元格保留在 Data，快捷键面板仍待接入。 |
+| INSERT / 插入 | 9 | 9 | 本地 media 4、cells 5。图片、超链接、图表、迷你图走媒体组，三项快速验证和数据条/图标集走单元格组。线程评论和全部动态行为仍待核对。 |
 | FORMULAS / 公式 | 12 | 11 | 固定版是常用加十类函数菜单与计算选项；本地 8 个 catalog 根分类、计算模式/编辑公式/重算 3 项，完整函数目录与语义未齐。 |
-| DATA / 数据 | 6 | 17 | 本地 organization 2、rules 2、pivot 4、outline 8、data-tools 1。筛选切换/清除/重应用已接入；表格选择器及完整 Pro 分组/分析仍须核对。 |
+| DATA / 数据 | 6 | 14 | 本地 organization 5（排序、筛选和 3 个大纲根）、rules 2、pivot 4、data-tools 1。根数按当前 schema 核对；旧大纲单列快照已调整。 |
 | VIEW / 视图 | 6 | 6 | 本地 display 4、visibility 2；背景根在冻结后、order 0.5、r1c2 跨两行，设置/删除两子项接实际模型；十字高亮属于固定 OSS 入口。背景历史/资源重开、两后端和所有动态状态仍未验收。 |
 | 合计 | **63** | **71** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
 

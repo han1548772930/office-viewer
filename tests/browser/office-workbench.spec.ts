@@ -143,6 +143,67 @@ test('workspace defaults to the source example grid and remembers layout across 
   await assertGrid()
 })
 
+test('the language menu applies the default direction and leaves the selected region and content intact', async ({ page }) => {
+  const runtimeURL = await page.evaluate(() => performance.getEntriesByType('resource')
+    .filter((entry) => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts')
+  await page.evaluate(async url => {
+    const { officeAPI } = await import(url) as RuntimeModule
+    officeAPI.setRegion('deDE')
+  }, runtimeURL)
+  const before = await models(page)
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^界面语言/ }).click()
+  await page.getByRole('menuitem', { name: 'فارسی', exact: true }).click()
+  const root = page.locator('html')
+  await expect(root).toHaveAttribute('lang', 'fa-IR')
+  await expect(root).toHaveAttribute('dir', 'rtl')
+  await expect(page.locator('.excel-workbench .canvas-scroll')).toHaveCSS('direction', 'ltr')
+  await page.evaluate(async url => {
+    const { officeAPI } = await import(url) as RuntimeModule
+    officeAPI.setDirection('ltr')
+  }, runtimeURL)
+  await expect(root).toHaveAttribute('dir', 'ltr')
+  expect(await page.evaluate(async url => {
+    const { officeAPI } = await import(url) as RuntimeModule
+    return officeAPI.getCurrentRegion()
+  }, runtimeURL)).toBe('deDE')
+  expect(await models(page)).toEqual(before)
+  await page.reload()
+  await expect(root).toHaveAttribute('lang', 'fa-IR')
+  await expect(root).toHaveAttribute('dir', 'ltr')
+})
+
+test('feature search executes the live Sheets Ribbon command and searches only the active product', async ({ page }) => {
+  await page.setViewportSize({ width: 1820, height: 900 })
+  await gotoCell(page, 'C3')
+  const showGridlines = async () => {
+    const { workbook } = await models(page)
+    return workbook.sheets.find(sheet => sheet.id === workbook.activeSheetId)?.showGridlines !== false
+  }
+  const before = await showGridlines()
+  const canvas = page.getByRole('grid', { name: '工作表画布', exact: true })
+  await canvas.focus()
+  await page.keyboard.press('Control+Shift+p')
+  const dialog = page.getByRole('dialog', { name: '搜索功能', exact: true })
+  const search = dialog.getByRole('combobox', { name: '搜索功能', exact: true })
+  await expect(search).toBeFocused()
+  await search.fill('网格线')
+  await search.press('Enter')
+  await expect(dialog).toBeHidden()
+  await expect.poll(showGridlines).toBe(!before)
+  await expect(canvas).toBeFocused()
+  await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('C3')
+  await visibleRibbonButton(page, '撤销').click()
+  await expect.poll(showGridlines).toBe(before)
+
+  await switchWorkspace(page, '文档')
+  await visibleRibbonButton(page, '搜索功能').click()
+  await search.fill('网格线')
+  await expect(dialog.getByText('未找到当前可用的功能', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(dialog).toBeHidden()
+})
+
 test('Sheets uses classic Ribbon, a formula header, Canvas and one product footer', async ({ page }) => {
   await chooseLayout(page)
   const errors: string[] = []

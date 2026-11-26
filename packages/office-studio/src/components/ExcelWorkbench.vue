@@ -112,6 +112,10 @@ import { SHEET_FORMAT_PAINTER_COMMAND_IDS } from '../features/sheet-workbench/sh
 import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts'
 import { applySheetConditionalFormatsCommand, SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from '../features/conditional-formatting/conditional-format-command.ts'
+import {
+  QUICK_CONDITIONAL_FORMAT_COMMANDS, quickConditionalFormatRules, quickConditionalFormatSelection,
+  type QuickConditionalFormatCommandId, type QuickConditionalFormatInput, type QuickConditionalFormatType,
+} from '../features/conditional-formatting/quick-conditional-formatting.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineHiddenSpans, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
 import { SHEET_OUTLINE_COMMAND_IDS, sheetOutlineCommandInput } from '../features/sheet-outline/sheet-outline-command.ts'
 import SheetOutlineActionDialog from '../features/sheet-outline/SheetOutlineActionDialog.vue'
@@ -164,7 +168,7 @@ const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: Exc
   ribbonVariant: 'classic',
   hidePasteOptions: false,
 })
-const { locale: officeLocale, region: officeRegion, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.studio?.regionalSettings)
+const { locale: officeLocale, region: officeRegion, direction: officeDirection, componentLocale } = provideWorkbenchRegionalSettings(() => props.studio?.regionalSettings)
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: ExcelWorkbook): void
@@ -342,7 +346,8 @@ const sheetSidebarWidth = ref(384)
 const workbenchActive = ref(true)
 const conditionalFormattingOpen = ref(false)
 const conditionalFormattingRange = ref('A1')
-const conditionalFormattingContext = shallowRef<{ unitId: string | undefined; sheetId: string; expectedRevision?: number; standaloneSnapshot?: string }>()
+const conditionalFormattingContext = shallowRef<{ studio?: OfficeStudio; unitId: string | undefined; sheetId: string; expectedRevision?: number;
+  standaloneSnapshot?: string; initialType?: QuickConditionalFormatType }>()
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
 const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
   .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
@@ -761,6 +766,13 @@ watch(() => props.studio, (studio, _previous, onCleanup) => {
 const officeFonts = inject(OfficeFontListKey, undefined)
 const canFormatSelection = computed(() => !!activeSheet.value && !!selectedRanges.value.length
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value))
+const canQuickFormatSelection = computed(() => workbenchActive.value && canFormatSelection.value
+  && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
+const quickConditionalSelection = computed(() => {
+  const sheet = activeSheet.value
+  return sheet && quickConditionalFormatSelection(sheet.conditionalFormats ?? [], selectedModelRanges(), parseCellKey(selectedKey.value),
+    ranges => canEditProtectedRanges(sheet, ranges, userId.value))
+})
 const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, painterError,
   runFormatPainterCommand, cancelFormatPainter, clearPainterSession, finishFormatPainterSelection,
   confirmPainter, cancelPainterConfirmation, afterPainterClose } = useSheetFormatPainter({
@@ -824,6 +836,8 @@ const ribbonTabs = computed(() => createSheetRibbon({
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   validationPanelOpen: validationPanelOpen.value,
   quickValidationEditable: canEditValidationSelection.value,
+  quickConditional: quickConditionalSelection.value,
+  quickConditionalEditable: canQuickFormatSelection.value,
   hyperlinkAvailable: canOpenHyperlinkDialog(),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   filterEnabled: Boolean(activeSheet.value?.autoFilter),
@@ -2456,46 +2470,71 @@ function applyQuickDataValidation(action: unknown): void {
     emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('sheet.validation.save-failed', 'Could not apply data validation') })
   }
 }
-function openConditionalFormattingPanel(): void {
-  const sheet = activeSheet.value
-  if (!sheet) return
+function conditionalFormattingHostCurrent(studio: OfficeStudio | undefined, unitId: string | undefined, sheetId: string): boolean {
+  return workbenchActive.value && props.studio === studio && workbook.value.id === unitId && activeSheetId.value === sheetId
+    && (!studio || unitId !== undefined && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
+      && studio.getWorkbookModel(unitId)?.activeSheetId === sheetId)
+}
+function openConditionalFormattingPanel(initialType?: QuickConditionalFormatType): void {
+  const sheet = activeSheet.value, studio = props.studio, unitId = workbook.value.id
+  if (!sheet || conditionalFormattingOpen.value || !conditionalFormattingHostCurrent(studio, unitId, sheet.id)
+    || initialType && !canQuickFormatSelection.value) return
   try {
-    if (props.studio) {
-      if (!workbook.value.id) throw new Error('找不到目标工作簿。')
-      props.studio.assertCanViewWorksheet(workbook.value.id, sheet.id)
-    } else if (!canViewWorksheetProtection(sheet, userId.value)) throw new Error('该工作表受保护，当前用户没有查看权限。')
-    conditionalFormattingContext.value = { unitId: workbook.value.id, sheetId: sheet.id,
-      expectedRevision: props.studio && workbook.value.id ? props.studio.getWorkbookRevision(workbook.value.id) : undefined,
-      standaloneSnapshot: props.studio ? undefined : JSON.stringify(workbook.value) }
+    if (studio && unitId) studio.assertCanViewWorksheet(unitId, sheet.id)
+    if (!studio && !canViewWorksheetProtection(sheet, userId.value)) throw new Error('该工作表受保护，当前用户没有查看权限。')
+    conditionalFormattingContext.value = { studio, unitId, sheetId: sheet.id,
+      expectedRevision: studio && unitId ? studio.getWorkbookRevision(unitId) : undefined,
+      standaloneSnapshot: studio ? undefined : JSON.stringify(workbook.value), initialType }
   } catch (reason) {
     emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '无法打开条件格式面板。' })
     return
   }
-  const bounds = selectionBounds(selectedRanges.value)
-  conditionalFormattingRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
+  conditionalFormattingRange.value = selectedModelRanges().map(range => formatValidationRange(range)).join(';') || selectedKey.value
   conditionalFormattingOpen.value = true
+}
+function runQuickConditionalFormatting(id: QuickConditionalFormatCommandId, params?: unknown): void {
+  const sheet = activeSheet.value
+  if (!sheet || !canQuickFormatSelection.value) return
+  const studio = props.studio, unitId = workbook.value.id, sheetId = sheet.id, ranges = selectedModelRanges()
+  const current = () => conditionalFormattingHostCurrent(studio, unitId, sheetId)
+  if (!current()) return
+  const options = params as Pick<QuickConditionalFormatInput, 'types' | 'iconSet'> | undefined
+  if (studio) {
+    if (!unitId || !studio.executeCommandSync<QuickConditionalFormatInput, boolean>(id, {
+      ...options, unitId, sheetId, ranges, host: 'workbench', expectedRevision: studio.getWorkbookRevision(unitId),
+    })) return
+    if (!current()) return
+    workbook.value = toExcelWorkbookView(studio.getWorkbookModel(unitId)!)
+    commitHistory({ prepared: true, syncSelection: false, current })
+    return
+  }
+  const rules = quickConditionalFormatRules(sheet.conditionalFormats ?? [], ranges, id, options ?? {})
+  if (!applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed) return
+  commitHistory()
 }
 function applyConditionalFormatting(rules: SetSheetConditionalFormatsInput['rules']): SheetConditionalFormatSubmitResult {
   const context = conditionalFormattingContext.value
   try {
-    if (!context || context.unitId !== workbook.value.id || context.sheetId !== activeSheetId.value) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
-    let changed: boolean
-    if (props.studio) {
-      if (!context.unitId) throw new Error('找不到目标工作簿。')
-      changed = props.studio.executeCommandSync<SetSheetConditionalFormatsInput, boolean>(SET_SHEET_CONDITIONAL_FORMATS_COMMAND,
-        { unitId: context.unitId, sheetId: context.sheetId, rules, expectedRevision: context.expectedRevision })
-      if (changed) {
-        const model = props.studio.getWorkbookModel(context.unitId)
-        if (model) workbook.value = toExcelWorkbookView(model)
+    if (!context) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
+    const { studio, unitId, sheetId } = context
+    const current = () => conditionalFormattingContext.value === context && conditionalFormattingHostCurrent(studio, unitId, sheetId)
+    if (!current()) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
+    if (studio && unitId) {
+      const changed = studio.executeCommandSync<SetSheetConditionalFormatsInput, boolean>(SET_SHEET_CONDITIONAL_FORMATS_COMMAND,
+        { unitId, sheetId, rules, host: 'workbench', expectedRevision: context.expectedRevision })
+      if (changed && current()) {
+        workbook.value = toExcelWorkbookView(studio.getWorkbookModel(unitId)!)
+        commitHistory({ prepared: true, syncSelection: false, current })
       }
-    } else {
-      if (context.standaloneSnapshot !== JSON.stringify(workbook.value)) throw new Error('工作簿已更改，请重新打开条件格式面板后编辑。')
-      const candidate = cloneWorkbook(workbook.value), sheet = candidate.sheets.find(item => item.id === context.sheetId)
-      if (!sheet) throw new Error('找不到目标工作表。')
-      changed = applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed
-      if (changed) workbook.value = candidate
+      return { accepted: true, changed }
     }
-    if (changed) commitHistory()
+    if (context.standaloneSnapshot !== JSON.stringify(workbook.value)) throw new Error('工作簿已更改，请重新打开条件格式面板后编辑。')
+    const candidate = cloneWorkbook(workbook.value), sheet = candidate.sheets.find(item => item.id === sheetId)!
+    const changed = applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed
+    if (changed) {
+      workbook.value = candidate
+      commitHistory({ current })
+    }
     return { accepted: true, changed }
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '无法应用条件格式，草稿已保留。'
@@ -2504,9 +2543,11 @@ function applyConditionalFormatting(rules: SetSheetConditionalFormatsInput['rule
 }
 function onConditionalFormattingClosed(): void {
   if (conditionalFormattingOpen.value) return
+  const context = conditionalFormattingContext.value
   conditionalFormattingContext.value = undefined
   void nextTick(() => {
-    if (workbenchActive.value && !conditionalFormattingOpen.value && !editingKey.value && !customNumberFormatOpen.value
+    if (context && conditionalFormattingHostCurrent(context.studio, context.unitId, context.sheetId)
+      && !conditionalFormattingOpen.value && !editingKey.value && !customNumberFormatOpen.value
       && !validationPanelOpen.value && !hyperlinkDialogOpen.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
   })
 }
@@ -2701,7 +2742,10 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-data-validation': openDataValidationPanel,
     'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
     'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
-    'sheet.operation.open-conditional-formatting': openConditionalFormattingPanel,
+    'sheet.operation.open-conditional-formatting': () => openConditionalFormattingPanel(params === 'dataBar' || params === 'iconSet' ? params : undefined),
+    [QUICK_CONDITIONAL_FORMAT_COMMANDS.dataBar]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.dataBar, params),
+    [QUICK_CONDITIONAL_FORMAT_COMMANDS.iconSet]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.iconSet, params),
+    [QUICK_CONDITIONAL_FORMAT_COMMANDS.clear]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.clear, params),
     'sheet.operation.open-sparkline': () => openSparklinePanel(params),
     'sheet.operation.open-sparkline-selector': () => openSparklinePanel(params),
     'sheet.operation.open-sparkline-panel': () => openSparklinePanel(params),
@@ -2856,7 +2900,10 @@ watch(selectedRanges, (next, previous) => {
 watch([() => workbook.value.id, activeSheetId, () => activeSheet.value?.rowCount, () => activeSheet.value?.columnCount], resetHeaderSelection, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], cancelEdit, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
-watch([() => workbook.value.id, activeSheetId], () => { conditionalFormattingOpen.value = false; conditionalFormattingContext.value = undefined }, { flush: 'sync' })
+watch([() => props.studio, () => workbook.value.id, activeSheetId, workbenchActive], () => {
+  conditionalFormattingOpen.value = false
+  conditionalFormattingContext.value = undefined
+}, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], closeNumberFormatPanel, { flush: 'sync' })
 watch(numberFormatSelectionKey, () => { numberFormatPreview.value = undefined }, { flush: 'sync' })
 watch(editingKey, key => { if (key) closeNumberFormatPanel() }, { flush: 'sync' })
@@ -2904,7 +2951,7 @@ onActivated(() => { workbenchActive.value = true })
 </script>
 
 <template>
-  <ConfigProvider :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
+  <ConfigProvider :locale="componentLocale" :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
   <section v-bind="$attrs" ref="workbenchRef" class="excel-workbench" :dir="officeDirection" @keydown="handleGridKeydown">
     <header v-if="showHeader && chrome.header" class="excel-header">
       <div class="document-brand">
@@ -2921,7 +2968,8 @@ onActivated(() => { workbenchActive.value = true })
       </div>
     </header>
 
-    <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :data-ribbon-editor-owner="ribbonEditorOwner" :tabs="ribbonTabs" :variant="props.ribbonVariant" @execute="executeRibbon" />
+    <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :data-ribbon-editor-owner="ribbonEditorOwner" :tabs="ribbonTabs" :variant="props.ribbonVariant"
+      :feature-search-scope="workbenchRef" @execute="executeRibbon" />
     <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @format-command="executeRibbon" @format-keydown="handleInlineFormatHistoryKey" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
@@ -3032,7 +3080,8 @@ onActivated(() => { workbenchActive.value = true })
       @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @owner-change="pivotChartContext.ownerChanged" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
-    <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
+    <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen"
+      :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :initial-type="conditionalFormattingContext.initialType" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SheetOutlineActionDialog v-if="outlineActionRequest" :key="outlineActionRequest.key" :open="outlineActionOpen" :studio="outlineActionRequest.studio" :workbook-id="outlineActionRequest.workbookId" :sheet-id="outlineActionRequest.sheetId" :ranges="outlineActionRequest.ranges" :operation="outlineActionRequest.operation"

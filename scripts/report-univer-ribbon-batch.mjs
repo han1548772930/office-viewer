@@ -37,6 +37,8 @@ for (const p of [oss.sheets, oss.docs]) {
   }
 }
 out.push('## Pro 发布包', '', `读取 ${pro.packages.length} 个有 ES 入口的 1.6.0 包。下表按包列出 mergeMenu/appendRootMenu 注册调用中识别出的根声明次数，保留不同挂载分支及重复声明；不是唯一功能数，也不是桌面可见数。未解析列仅统计 schema 表达式，factory 的响应式条件需另追踪。`, '',
+  ...pro.unverified.map(packageEntry => `缓存 ${code(packageEntry.directory)} 缺少 ${code(packageEntry.missing)}，发行版本未核实，单列待核实。`),
+  ...(pro.unverified.length ? [''] : []),
   '| 包 | 注册调用 | 常规根声明 | 上下文根声明 | 未解析表达式 |', '|---|---:|---:|---:|---:|')
 for (const p of pro.packages.filter(p => p.registrations.length)) {
   const entries = p.registrations.flatMap(r => r.entries).filter(e => e.root)

@@ -15,6 +15,7 @@ export interface SetSheetConditionalFormatsInput {
   subUnitId?: string
   rules: readonly SheetConditionalFormatRule[]
   expectedRevision?: number
+  host?: 'workbench'
 }
 
 export type SheetConditionalFormatSubmitResult = { accepted: true; changed: boolean } | { accepted: false; error: string }
@@ -29,13 +30,17 @@ type ConditionalFormatSheet = Pick<SpreadsheetSheet, 'conditionalFormats' | 'wor
 const numberOperators = ['equal', 'notEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual', 'between', 'notBetween']
 const subTypes = ['number', 'text', 'timePeriod', 'formula', 'rank', 'average', 'duplicateValues', 'uniqueValues']
 
+export function assertConditionalFormatExpectedRevision(revision: number | undefined): void {
+  if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw new TypeError('工作簿版本无效。')
+}
+
 export function sheetConditionalFormatsCommandInput(input: SetSheetConditionalFormatsInput | undefined): SetSheetConditionalFormatsInput {
   if (!input || typeof input !== 'object' || Array.isArray(input) || !Array.isArray(input.rules)) throw new TypeError('条件格式命令需要规则列表。')
   for (const id of [input.unitId, input.sheetId, input.subUnitId]) {
     if (id !== undefined && (typeof id !== 'string' || !id.trim())) throw new TypeError('工作簿或工作表标识无效。')
   }
   if (input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('条件格式目标工作表不一致。')
-  if (input.expectedRevision !== undefined && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)) throw new TypeError('工作簿版本无效。')
+  assertConditionalFormatExpectedRevision(input.expectedRevision)
   return input
 }
 

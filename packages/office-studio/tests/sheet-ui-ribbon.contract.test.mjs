@@ -3,6 +3,7 @@ import { test } from 'vitest'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
 import { placeRibbonGridItems, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../src/features/sheet-workbench/sheet-function-catalog.ts'
+import { QUICK_CONDITIONAL_FORMAT_COMMANDS as conditional } from '../src/features/conditional-formatting/quick-conditional-formatting.ts'
 import { frozenPaneCountsForSelection } from '../src/features/sheet-workbench/sheet-workbench.ts'
 
 const state = {
@@ -122,12 +123,32 @@ test('Insert cell tools fill two rows in source order and keep their quick-rule 
   const cells = insert.groups.find(group => group.id === 'cells')
   assert.deepEqual(placeRibbonGridItems(cells.items).map(({ item, row, column, rowSpan }) =>
     [item.type, row, column, rowSpan]), [
-    ['split', 1, 1, 1], ['split', 1, 2, 1], ['menu', 2, 1, 1],
+    ['split', 1, 1, 1], ['split', 1, 2, 1], ['split', 1, 3, 1], ['menu', 2, 1, 1], ['split', 2, 2, 1],
   ])
-  const [checkbox, dropdown, date] = cells.items
+  const [checkbox, dropdown, date, dataBar, iconSet] = cells.items
   assert.deepEqual([checkbox, date].map(item => ribbonInvocation(item).params), ['checkbox', 'date'])
   assert.deepEqual(dropdown.children.map(item => ribbonInvocation(item).params), ['dropdown-yes-no', 'dropdown-status', 'dropdown-abc', 'edit-dropdown', 'clear-dropdown'])
   assert.equal(dropdown.popupCommandId, 'sheet.operation.quick-data-validation')
+  assert.deepEqual([dataBar.order, iconSet.order], [3, 4])
+  assert.deepEqual(ribbonInvocation(dataBar), { commandId: conditional.dataBar, params: {} })
+  assert.deepEqual(ribbonInvocation(iconSet), { commandId: conditional.iconSet, params: { iconSet: '3Stars' } })
+  assert.deepEqual(dataBar.children.map(item => item.commandId), [conditional.dataBar, 'sheet.operation.open-conditional-formatting', conditional.clear])
+  assert.deepEqual(iconSet.children.map(item => item.commandId),
+    [conditional.iconSet, conditional.iconSet, conditional.iconSet, 'sheet.operation.open-conditional-formatting', conditional.clear])
+  assert.equal(dataBar.children.at(-1).disabled, true)
+  assert.equal(iconSet.children.at(-1).disabled, true)
+})
+
+test('quick conditional menus reflect active rule and type-specific clear state', () => {
+  const quickConditional = { hasDataBar: true, hasIconSet: true, canClearDataBar: true, canClearIconSet: true, activeIconSet: '3TrafficLights1' }
+  const roots = value => createSheetRibbon({ ...state, ...value, quickConditional }).find(tab => tab.id === 'insert')
+    .groups.find(group => group.id === 'cells').items.slice(-2)
+  const [dataBar, iconSet] = roots({})
+  assert.equal(dataBar.activated, true)
+  assert.equal(iconSet.activated, true)
+  assert.deepEqual(iconSet.children.slice(0, 3).map(item => item.activated), [false, true, false])
+  assert.deepEqual(ribbonInvocation(iconSet.children.at(-1)), { commandId: conditional.clear, params: { types: ['iconSet'] } })
+  assert.ok(roots({ fontEditable: false }).every(item => item.disabled && item.children.every(child => child.disabled)))
 })
 
 test('data validation ribbon entry opens the worksheet rule panel operation', () => {

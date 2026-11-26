@@ -7,6 +7,9 @@ import { applySheetNumberFormatCommand, applySheetViewNumberFormatCommand, numbe
 import { presentSheetCellNumber } from '../src/features/sheet-workbench/sheet-number-presentation.ts'
 import { positionSheetNumberFormatRuns, renderSheetNumberFormat } from '../src/features/sheet-workbench/number-format-render.ts'
 import { validateCustomNumberFormat } from '../src/features/sheet-workbench/custom-number-format.ts'
+import { numberFormatCurrency, sheetCurrencyPattern } from '../src/features/sheet-workbench/sheet-currency.ts'
+import { createSheetNumberFormatDraft, readSheetNumberFormatPreferences, rememberSheetNumberFormat,
+  SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, sheetNumberFormatDraftPattern } from '../src/features/sheet-workbench/number-format-panel.ts'
 
 const range = (startCol, endCol = startCol) => ({ startRow: 0, endRow: 0, startCol, endCol })
 
@@ -26,6 +29,49 @@ test('format menu retains the complete ordered catalogue, separate percent butto
   assert.equal(entries.find(entry => entry.id === 'datetime').pattern, 'yyyy-m-d am/pm h:mm')
   assert.deepEqual(numberFormatActionForCommand('sheet.command.set-percent-format'), { kind: 'percent' })
   assert.deepEqual(numberFormatActionForCommand('sheet.command.set-number-format', { pattern: '0.00%' }), { kind: 'set', pattern: '0.00%' })
+})
+
+test('regional currency templates resolve all formats and retain full currency tokens', () => {
+  for (const [region, symbol] of [
+    ['ar-SA', '﷼'], ['ca-ES', '€'], ['de-DE', '€'], ['en-US', '$'], ['es-ES', '€'],
+    ['fa-IR', '﷼'], ['fr-FR', '€'], ['id-ID', 'Rp'], ['it-IT', '€'], ['ja-JP', '¥'],
+    ['ko-KR', '₩'], ['pl-PL', 'zł'], ['pt-BR', 'R$'], ['ru-RU', '₽'], ['sk-SK', '€'],
+    ['vi-VN', '₫'], ['zh-CN', '¥'], ['zh-HK', 'HK$'], ['zh-TW', 'NT$'],
+  ]) {
+    const menu = sheetNumberFormatMenu(region)
+    const currency = `"${symbol}"#,##0.00_);[Red]("${symbol}"#,##0.00)`
+    assert.equal(sheetCurrencyPattern(region), currency)
+    assert.equal(menu.find(entry => entry.id === 'currency').pattern, currency)
+    assert.equal(menu.find(entry => entry.id === 'accounting').pattern, `"${symbol}" #,##0.00_);[Red]("${symbol}"#,##0.00)`)
+    assert.equal(menu.find(entry => entry.id === 'roundingCurrency').pattern, `"${symbol}"#,##0;[Red]"${symbol}"#,##0`)
+    assert.equal(numberFormatCurrency(currency), symbol)
+    assert.ok(SHEET_NUMBER_FORMAT_PANEL_CURRENCIES.includes(symbol))
+  }
+  assert.equal(numberFormatCurrency('[$CAD-en-CA]#,##0.00'), 'CAD')
+  assert.equal(numberFormatCurrency('#,##0.00Rp'), 'Rp')
+  assert.equal(numberFormatCurrency('0*€'), undefined)
+  assert.equal(numberFormatCurrency('yyyy-mm-dd;@ "€"'), undefined)
+})
+
+test('currency and accounting drafts keep new region, explicit symbol and original sections independent', () => {
+  const newCurrency = createSheetNumberFormatDraft('General', 'zh-CN', 'de-DE', [], 'currency')
+  assert.equal(newCurrency.currency, '€')
+  assert.equal(newCurrency.decimals, 2)
+  assert.equal(createSheetNumberFormatDraft('General', 'zh-CN', 'de-DE', ['Rp'], 'currency').currency, 'Rp')
+  const accounting = '"HK$" #,##0.00_);[Red]("HK$"#,##0.00);"-";@'
+  const draft = createSheetNumberFormatDraft(accounting, 'zh-CN', 'de-DE', ['Rp'])
+  assert.equal(draft.category, 'accounting')
+  assert.equal(draft.currency, 'HK$')
+  assert.equal(createSheetNumberFormatDraft('_("HK$"#,##0.00)', 'zh-CN', 'de-DE', []).category, 'accounting')
+  assert.equal(sheetNumberFormatDraftPattern(draft), accounting)
+  assert.equal(sheetNumberFormatDraftPattern({ ...draft, decimals: 3 }), '"HK$" #,##0.000_);[Red]("HK$"#,##0.000);"-";@')
+  const imported = '#,##0.00[$Rp-421];[Red](#,##0.00[$Rp-421])'
+  const importedDraft = createSheetNumberFormatDraft(imported, 'zh-CN', 'de-DE', [])
+  assert.equal(importedDraft.negative, -1)
+  assert.equal(sheetNumberFormatDraftPattern({ ...importedDraft, decimals: 1 }), '#,##0.0[$Rp-421];[Red](#,##0.0[$Rp-421])')
+  assert.equal(sheetNumberFormatDraftPattern({ ...importedDraft, pattern: '', negative: 2 }), '"Rp"#,##0.00_);("Rp"#,##0.00)')
+  const preferences = rememberSheetNumberFormat({ history: [], currencies: [] }, accounting, false)
+  assert.deepEqual(readSheetNumberFormatPreferences({ getItem: () => JSON.stringify(preferences) }), { history: [], currencies: ['HK$'] })
 })
 
 test('overlapping range formatting changes only presentation, respects unknown caches and detects no-ops', () => {

@@ -1,5 +1,6 @@
 import { computed, inject, provide, ref, type InjectionKey, type Ref } from 'vue'
-import { supportedOfficeLocales, type OfficeLocale, type OfficeRegionalSettings } from './regional-settings.ts'
+import { officeLocaleDirection, supportedOfficeLocales, type OfficeDirection, type OfficeLocale, type OfficeRegionalSettings } from './regional-settings.ts'
+import { getAntdvLocale } from './antdv-locales.ts'
 export { supportedOfficeLocales, type OfficeLocale } from './regional-settings.ts'
 import { createI18n } from 'vue-i18n'
 import type { RibbonTab } from '../platform/ribbon/ribbon-schema.ts'
@@ -7,6 +8,7 @@ import { coreEnUS } from './core/locales/en-US.ts'
 import { coreZhCN } from './core/locales/zh-CN.ts'
 import { coreTranslations } from './core/locales/generated.ts'
 import { reviewedCoreTranslations } from './core/locales/reviewed.ts'
+import { featureSearchMessages } from './core/locales/feature-search.ts'
 import { docsEnUS } from './docs/locales/en-US.ts'
 import { documentTocLocales } from '../features/document/toc/locales.ts'
 import { docsZhCN } from './docs/locales/zh-CN.ts'
@@ -47,18 +49,19 @@ export function provideWorkbenchRegionalSettings(settings: () => OfficeRegionalS
   const hostDirection = inject(OfficeDirectionKey, undefined)
   const locale = computed(() => hostLocale?.value ?? settings()?.locale.value ?? 'zh-CN')
   const region = computed(() => hostRegion?.value ?? (settings()?.regionPreference.value === 'auto' ? locale.value : settings()?.region.value ?? locale.value))
-  const direction = computed(() => hostDirection?.value ?? (locale.value === 'ar-SA' || locale.value === 'fa-IR' ? 'rtl' : 'ltr'))
+  const direction = computed(() => hostDirection?.value ?? settings()?.directionPreference.value ?? officeLocaleDirection(locale.value))
+  const componentLocale = computed(() => getAntdvLocale(locale.value))
   const translator = computed(() => createOfficeTranslator(locale.value))
   provide(OfficeLocaleKey, locale)
   provide(OfficeRegionKey, region)
   provide(OfficeDirectionKey, direction)
   provide(OfficeTranslatorKey, (key, fallback) => translator.value(key, fallback))
-  return { locale, region, direction }
+  return { locale, region, direction, componentLocale }
 }
 export function provideWorkbenchLocales(settings: () => OfficeRegionalSettings | undefined) {
   return provideWorkbenchRegionalSettings(settings).locale
 }
-export const OfficeDirectionKey: InjectionKey<Readonly<Ref<'ltr' | 'rtl'>>> = Symbol('OfficeDirection')
+export const OfficeDirectionKey: InjectionKey<Readonly<Ref<OfficeDirection>>> = Symbol('OfficeDirection')
 export const OfficeTranslatorKey: InjectionKey<OfficeTranslator> = Symbol('OfficeTranslator')
 
 const appLabels: Record<OfficeLocale, Record<string, string>> = {
@@ -192,6 +195,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...noteLabels[locale],
       ...coreTranslations[locale],
       ...reviewedCoreTranslations[locale],
+      ...featureSearchMessages(locale),
       ...sheetsTranslations[locale],
       ...reviewedSheetsTranslations[locale],
       ...sheetFindReplaceLocales[locale],

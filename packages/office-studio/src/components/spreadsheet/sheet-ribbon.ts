@@ -9,7 +9,7 @@ import {
   Pin, PinOff, Redo2, RemoveFormatting, RotateCcw,
   RotateCw, Search, SearchCode, Settings2, ShieldCheck, Shrink, Sigma, SquareCheck, Strikethrough,
   TableCellsMerge, TableCellsSplit, TableProperties, TextCursor, Underline, Undo2, Ungroup, Workflow,
-  WrapText, Percent,
+  WrapText, Percent, ArrowUpRight, CircleDot, Star,
 } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts.ts'
@@ -31,6 +31,8 @@ import SlicerQuickStylePicker from './SlicerQuickStylePicker.vue'
 import { createSheetOutlineRibbonItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
 import type { SheetOutlineCommandContext } from '../../features/sheet-outline/sheet-outline-command.ts'
 import { OPEN_SHEET_OUTLINE_SETTINGS_OPERATION } from './use-sheet-outline-workbench.ts'
+import { QUICK_CONDITIONAL_FORMAT_COMMANDS, QUICK_CONDITIONAL_ICON_SETS, type QuickConditionalFormatSelection } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
+import { featureSearchRibbonItem } from '../../platform/ribbon/feature-search'
 
 export interface SlicerRibbonControlState {
   id: string
@@ -63,6 +65,8 @@ export interface SheetRibbonState {
   pivotChartAvailable?: boolean
   dataValidationAvailable: boolean
   quickValidationEditable?: boolean
+  quickConditional?: QuickConditionalFormatSelection
+  quickConditionalEditable?: boolean
   validationPanelOpen?: boolean
   hyperlinkAvailable?: boolean
   canSort: boolean
@@ -168,6 +172,18 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const presets = (['dropdown-yes-no', 'dropdown-status', 'dropdown-abc'] as const).map(id => ({ id, values: presetValues[id] }))
   const editDropdown = tr('sheet.validation.quick.edit-dropdown', '编辑下拉列表')
   const clearDropdown = tr('sheet.validation.quick.clear-dropdown', '清除下拉列表')
+  const { dataBar, iconSet, clear: clearConditional } = QUICK_CONDITIONAL_FORMAT_COMMANDS
+  const quickConditionalDisabled = !state.hasSheet || (state.quickConditionalEditable ?? state.fontEditable) === false
+  const dataBarLabel = tr('conditional.quick.data-bar', '数据条')
+  const iconSetLabel = tr('conditional.quick.icon-set', '图标集')
+  const newConditionalLabel = tr('conditional.quick.create', '新建条件格式')
+  const clearConditionalLabel = tr('conditional.quick.clear', '清除所选区域的规则')
+  const quickIconSetStyles = {
+    '3Stars': { label: tr('conditional.quick.rank', '等级'), icon: Star },
+    '3TrafficLights1': { label: tr('conditional.quick.shape', '形状'), icon: CircleDot },
+    '3Arrows': { label: tr('conditional.quick.direction', '方向'), icon: ArrowUpRight },
+  }
+  const newConditional = 'sheet.operation.open-conditional-formatting'
   const outlineItems: RibbonItem[] = [
     createSheetOutlineRibbonItem(state.outlineContext),
     { id: 'sheet.menu.outline-details', type: 'menu', title: '分组显示', icon: Grid2X2, order: 4, disabled: !state.hasSheet,
@@ -283,9 +299,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button(OPEN_SHEET_RANGE_THEME_OPERATION, '范围主题', { icon: Palette, showLabel: true, disabled: state.rangeThemeEditable === false || !state.hasSheet,
-            gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          featureSearchRibbonItem(tr('feature-search.title', '搜索功能')),
+          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, order: 3, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          button(OPEN_SHEET_RANGE_THEME_OPERATION, '范围主题', { icon: Palette, order: 4, showLabel: true, disabled: state.rangeThemeEditable === false || !state.hasSheet,
+            gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
       ],
     },
@@ -318,6 +335,21 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             quick('sheet.operation.quick-data-validation.date-time', '日期和时间', 'date-time', CalendarDays),
             quick('sheet.menu.quick-validation.edit-date', tr('sheet.validation.quick.edit-date', '编辑日期规则'), 'edit-date'),
             quick('sheet.menu.quick-validation.clear-date', tr('sheet.validation.quick.clear-date', '移除日期规则'), 'clear-date'),
+          ] },
+          { ...button(dataBar, dataBarLabel, { icon: ChartNoAxesColumnIncreasing, order: 3, disabled: quickConditionalDisabled,
+            params: {}, activated: state.quickConditional?.hasDataBar }), type: 'split', children: [
+            button(`${dataBar}.default`, dataBarLabel, { commandId: dataBar, params: {}, disabled: quickConditionalDisabled, activated: state.quickConditional?.hasDataBar }),
+            button(`${dataBar}.new`, newConditionalLabel, { commandId: newConditional, params: 'dataBar', disabled: quickConditionalDisabled }),
+            button(`${dataBar}.clear`, clearConditionalLabel, { commandId: clearConditional, params: { types: ['dataBar'] }, disabled: quickConditionalDisabled || !state.quickConditional?.canClearDataBar }),
+          ] },
+          { ...button(iconSet, iconSetLabel, { icon: Star, order: 4, disabled: quickConditionalDisabled,
+            params: { iconSet: QUICK_CONDITIONAL_ICON_SETS[0] }, activated: state.quickConditional?.hasIconSet }), type: 'split', children: [
+            ...QUICK_CONDITIONAL_ICON_SETS.map(preset => button(`${iconSet}.${preset}`, quickIconSetStyles[preset].label, {
+              commandId: iconSet, icon: quickIconSetStyles[preset].icon, disabled: quickConditionalDisabled,
+              params: { iconSet: preset }, activated: state.quickConditional?.activeIconSet === preset,
+            })),
+            button(`${iconSet}.new`, newConditionalLabel, { commandId: newConditional, params: 'iconSet', disabled: quickConditionalDisabled }),
+            button(`${iconSet}.clear`, clearConditionalLabel, { commandId: clearConditional, params: { types: ['iconSet'] }, disabled: quickConditionalDisabled || !state.quickConditional?.canClearIconSet }),
           ] },
         ] },
       ],

@@ -115,8 +115,15 @@ window.painterFixture = {
     const geometry = new SpreadsheetGeometry(rendered), viewport = { width: 1600, height: 800, scrollLeft: 0, scrollTop: 0, zoom: 1 }
     const rect = geometry.cellRect(position.row, position.col, viewport)
     const scene = createSpreadsheetScene(geometry, viewport, { activeCell: '', selectedCells: [], selectedRanges: [], suppressFillHandle: true })
-    return { rect, fills: scene.commands.filter(item => item.kind === 'rect' && item.x === rect.x && item.y === rect.y
-      && item.width === rect.width && item.height === rect.height).map(item => item.fill) }
+    const cellCommands = scene.commands.filter(item => 'x' in item && 'y' in item
+      && item.x >= rect.x && item.x < rect.x + rect.width && item.y >= rect.y && item.y < rect.y + rect.height)
+    return {
+      rect,
+      fills: cellCommands.filter(item => item.kind === 'rect' && item.x === rect.x && item.y === rect.y
+        && item.width === rect.width && item.height === rect.height).map(item => item.fill),
+      rectColors: cellCommands.filter(item => item.kind === 'rect').map(item => item.fill),
+      text: cellCommands.filter(item => item.kind === 'text').map(item => item.text),
+    }
   },
   rect: (address, header) => {
     const position = parseCellKey(address), element = document.querySelector('.spreadsheet-canvas'), scroll = element.querySelector('.canvas-scroll'), bounds = element.getBoundingClientRect()
@@ -424,6 +431,8 @@ test('standalone stale confirmation retains its immutable sample and shows an er
 const conditionalRules = async (sheetId = 'painter-main') => (await snapshot()).sheets.find(sheet => sheet.id === sheetId)?.conditionalFormats
 const covers = (entry, row, col) => entry.ranges.some(area => row >= area.startRow && row <= area.endRow && col >= area.startCol && col <= area.endCol)
 const conditionalCommand = 'sheet.command.set-conditional-formats'
+const dataBarCommand = 'sheet.command.add-data-bar-conditional-rule'
+const iconSetCommand = 'sheet.command.add-icon-set-conditional-rule'
 const conditionalPanel = () => page.getByRole('dialog', { name: '条件格式', exact: true })
 const conditionalMatches = (sheetId = 'painter-main') => page.evaluate(id => ['A1', 'A2', 'A3', 'A4'].map(address =>
   window.painterFixture.sceneAt(address, id).fills.includes('#35a65f')), sheetId)
@@ -445,6 +454,58 @@ async function expectConditionalClosed() {
   await expect(conditionalPanel()).toBeHidden()
   await expect(grid()).toBeFocused()
 }
+
+test('Insert quick visual rules render on Canvas, reflect model selection, and clear only one type in the selected part', async () => {
+  await select('A1:A2')
+  const before = contents(await snapshot())
+  await page.getByRole('tab', { name: '插入', exact: true }).click()
+  const dataBar = await homeItem(dataBarCommand)
+  await dataBar.getByRole('button', { name: '数据条', exact: true }).click()
+  await expect(dataBar.getByRole('button', { name: '数据条', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => page.evaluate(() => window.painterFixture.sceneAt('A1').rectColors)).toContain('#ffbe38')
+  const icons = await homeItem(iconSetCommand)
+  await icons.getByRole('button', { name: '图标集选项', exact: true }).click()
+  await page.getByRole('menu', { name: '图标集', exact: true }).getByRole('menuitem', { name: '方向', exact: true }).click()
+  await expect(icons.getByRole('button', { name: '图标集', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => page.evaluate(() => window.painterFixture.sceneAt('A1').text)).toContain('↑')
+  const original = await conditionalRules()
+  assert.deepEqual(original.map(rule => rule.type), ['iconSet', 'dataBar'])
+  assert.equal((await history()).undo, 2)
+  await select('A2')
+  await icons.getByRole('button', { name: '图标集选项', exact: true }).click()
+  const menu = page.getByRole('menu', { name: '图标集', exact: true })
+  await expect(menu.getByRole('menuitem', { name: '方向', exact: true })).toHaveClass(/ant-menu-item-selected/)
+  await menu.getByRole('menuitem', { name: '清除所选区域的规则', exact: true }).click()
+  await expect(grid()).toBeFocused()
+  const cleared = await conditionalRules()
+  assert.equal(covers(cleared[0], 0, 0), true)
+  assert.equal(covers(cleared[0], 1, 0), false)
+  assert.deepEqual(cleared[1], original[1])
+  assert.deepEqual(contents(await snapshot()), before)
+  assert.equal((await history()).undo, 3)
+})
+
+test('quick custom rule opens the selected type and applies the current range in one transaction', async () => {
+  await select('A1:A2')
+  await page.getByRole('tab', { name: '插入', exact: true }).click()
+  const icons = await homeItem(iconSetCommand)
+  for (const apply of [false, true]) {
+    await icons.getByRole('button', { name: '图标集选项', exact: true }).click()
+    await page.getByRole('menu', { name: '图标集', exact: true }).getByRole('menuitem', { name: '新建条件格式', exact: true }).click()
+    await expect(conditionalPanel()).toBeVisible()
+    await expect(conditionalPanel().getByRole('textbox', { name: '应用范围', exact: true })).toHaveValue('A1:A2')
+    await expect(conditionalPanel().getByText('图标集规则', { exact: true })).toBeVisible()
+    if (apply) await applyConditionalPanel()
+    else await conditionalPanel().getByRole('button', { name: '取消', exact: true }).click()
+    await expectConditionalClosed()
+    assert.equal((await history()).undo, apply ? 1 : 0)
+  }
+  const [rule] = await conditionalRules()
+  assert.equal(rule.type, 'iconSet')
+  assert.deepEqual(rule.ranges, [{ startRow: 0, startCol: 0, endRow: 1, endCol: 0 }])
+  await openConditionalPanel()
+  await expect(conditionalPanel().locator('.conditional-rule-select')).toContainText('图标集')
+})
 
 test('conditional-only pointer painting replaces rule scope and shares undo, redo and snapshot reopen', async () => {
   await page.evaluate(() => window.painterFixture.seed('conditional')); await select('A1')

@@ -4,10 +4,14 @@ import { Alert, Button, Card, Form, FormItem, Input, InputNumber, Menu, Select, 
 import type { MenuInfo } from 'antdv-next'
 import { X } from 'lucide-vue-next'
 import { previewCustomNumberFormat, validateCustomNumberFormat } from '../../features/sheet-workbench/custom-number-format.ts'
-import { createSheetNumberFormatDraft, isSheetNumberFormatCategory, orderNumberFormatPreferences, readSheetNumberFormatPreferences,
+import { renderSheetNumberFormat } from '../../features/sheet-workbench/number-format-render.ts'
+import { setNumberFormatDecimalPlaces } from '../../features/sheet-workbench/number-format-pattern.ts'
+import {
+  createSheetNumberFormatDraft, isSheetNumberFormatCategory, orderNumberFormatPreferences, readSheetNumberFormatPreferences,
   rememberSheetNumberFormat, SHEET_DATE_FORMAT_PREVIEW_VALUE, SHEET_GROUPED_NUMBER_PATTERNS, SHEET_NUMBER_FORMAT_CATEGORIES,
   SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, sheetCurrencyNumberPatterns, sheetCustomNumberPatterns, sheetDateNumberPatterns,
-  sheetNumberFormatDraftPattern, writeSheetNumberFormatPreferences } from '../../features/sheet-workbench/number-format-panel.ts'
+  sheetNumberFormatDraftPattern, writeSheetNumberFormatPreferences,
+} from '../../features/sheet-workbench/number-format-panel.ts'
 import type { SheetNumberFormatPreferences } from '../../features/sheet-workbench/number-format-panel.ts'
 import type { CellScalar } from '../../domain/model.ts'
 import type { OfficeLocale } from '../../i18n/regional-settings.ts'
@@ -26,7 +30,7 @@ const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallba
 const { token } = theme.useToken()
 const themeStyle = computed(() => ({ '--numfmt-border': token.value.colorBorderSecondary, '--numfmt-secondary': token.value.colorTextSecondary }))
 const preferences = ref<SheetNumberFormatPreferences>({ history: [], currencies: [] })
-const draft = ref(createSheetNumberFormatDraft('', locale.value, SHEET_NUMBER_FORMAT_PANEL_CURRENCIES))
+const draft = ref(createSheetNumberFormatDraft('', locale.value, region.value, []))
 const pristine = ref(true), composing = ref(false)
 const closeButton = ref<{ focus: (options?: FocusOptions) => void }>()
 const storageFailed = ref(false)
@@ -47,10 +51,8 @@ const currencyCategory = computed(() => draft.value.category === 'accounting' ||
 const negativeOptions = computed(() => {
   const patterns = draft.value.category === 'currency' ? sheetCurrencyNumberPatterns(draft.value.currency) : SHEET_GROUPED_NUMBER_PATTERNS
   return patterns.map((value, index) => {
-    const labels = draft.value.category === 'currency'
-      ? [draft.value.currency + '1,235', draft.value.currency + '1,235', '(' + draft.value.currency + '1,235)', '(' + draft.value.currency + '1,235)', '-' + draft.value.currency + '1,235', '-' + draft.value.currency + '1,235']
-      : ['(1,235)', '(1,235) ', '1,234.56', '1,234.56', '-1,234.56', '-1,234.56']
-    return { key: String(index), label: labels[index] ?? value, color: index % 2 ? '#ff0000' : undefined, disabled: props.disabled }
+    const sample = renderSheetNumberFormat(-1234.56, setNumberFormatDecimalPlaces(value, draft.value.decimals), props.date1904, region.value)
+    return { key: String(index), label: sample?.text.trim() ?? value, color: sample?.color, disabled: props.disabled }
   })
 })
 const dateOptions = computed(() => sheetDateNumberPatterns(locale.value, draft.value.category === 'date' ? draft.value.pattern : undefined).map(value => ({
@@ -75,13 +77,14 @@ function onCustomPatternEnter(event: KeyboardEvent): void {
 }
 function changeCategory(value: unknown): void {
   if (props.disabled || !isSheetNumberFormatCategory(value)) return
-  draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, currencies.value.map(option => option.value), value)
+  draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, region.value, preferences.value.currencies, value)
   pristine.value = false
   publishPreview()
 }
 function changeDecimals(value: number | string | null): void {
-  if (props.disabled || typeof value !== 'number' || !Number.isFinite(value)) return
-  draft.value.decimals = Math.max(0, Math.min(20, Math.floor(value)))
+  const decimals = value ?? 0
+  if (props.disabled || typeof decimals !== 'number' || !Number.isFinite(decimals)) return
+  draft.value.decimals = Math.max(0, Math.min(20, Math.floor(decimals)))
   pristine.value = false
   publishPreview()
 }
@@ -89,6 +92,7 @@ function changeCurrency(value: unknown): void {
   if (props.disabled || typeof value !== 'string' || !currencies.value.some(option => option.value === value)) return
   draft.value.currency = value
   draft.value.negative = 0
+  draft.value.pattern = ''
   pristine.value = false
   publishPreview()
 }
@@ -97,6 +101,7 @@ function chooseNegative({ key }: MenuInfo): void {
   const index = Number(key)
   if (props.disabled || !Number.isSafeInteger(index) || index < 0 || index >= negativeOptions.value.length) return
   draft.value.negative = index
+  draft.value.pattern = ''
   pristine.value = false
   publishPreview()
 }
@@ -144,8 +149,7 @@ watch(() => [props.open, props.currentPattern, props.selectionKey] as const, asy
   applicationFailed.value = false
   try { preferences.value = readSheetNumberFormatPreferences(typeof window === 'undefined' ? undefined : window.localStorage) }
   catch { preferences.value = { history: [], currencies: [] }; storageFailed.value = true }
-  const ordered = orderNumberFormatPreferences(SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, preferences.value.currencies)
-  draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, ordered)
+  draft.value = createSheetNumberFormatDraft(props.currentPattern, locale.value, region.value, preferences.value.currencies)
   pristine.value = true
   if (previous?.[0]) return
   await nextTick()

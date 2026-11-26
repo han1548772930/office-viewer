@@ -28,7 +28,7 @@ import { captureDocumentStructuredCanvasTarget, documentStructuredCanvasTargetCu
 import DocumentLatexPanel from './document/DocumentLatexPanel.vue'
 import DocumentImagePanel from './document/DocumentImagePanel.vue'
 import { useDocumentImageEditor } from './document/use-document-image-editor'
-import { isDocumentImageCommand } from '../features/document/commands/document-image-commands'
+import { assertDocumentImageEditable, isDocumentImageCommand } from '../features/document/commands/document-image-commands'
 import { documentImageFromResource, prepareDocumentImageSource } from '../api/document-images'
 import { trackDocumentImageTask } from '../api/document-image-editors'
 import type { DocumentImage } from '../features/document/model/document-model'
@@ -65,7 +65,7 @@ import type { DocumentScrollOffset, DocumentViewportLocation } from '../features
 import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { DOCUMENT_DEFAULT_TEXT_COLOR, rememberDocumentColors, type DocumentColorMemory } from '../features/document/services/document-colors'
 import { printDocumentModel } from '../features/document/services/document-print'
-import { DOCUMENT_PASTE_OPTIONS, documentTableClipboardData, documentTablePasteCommand, documentPasteSpecialCommand, readDocumentClipboard, writeDocumentClipboard, type DocumentClipboardData, type DocumentPasteMode } from '../features/document/services/document-clipboard'
+import { DOCUMENT_PASTE_OPTIONS, documentClipboardPermissions, documentPasteCommand, documentPasteSpecialCommand, documentSelectionClipboardData, documentTablePasteCommand, readDocumentClipboard, writeDocumentClipboard, type DocumentClipboardData, type DocumentPasteMode } from '../features/document/services/document-clipboard'
 import { documentSectionIds, resolveSectionHeaderFooter, sectionIdForBlock, sectionStoryLinkedToPrevious, type SectionHeaderFooterPatch } from '../features/document/services/section-header-footer'
 import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type StoryLocation } from '../features/document/services/story-editor'
 import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, documentBodySelectionHasField, documentStoryRangeHasField } from '../features/document/services/document-story-fields'
@@ -128,7 +128,7 @@ const documentSplitterStyles: { root: CSSProperties; panel: CSSProperties } = {
 }
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; fieldCacheAdapter?: DocumentFieldCacheAdapter; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
-const { locale: officeLocale, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
+const { locale: officeLocale, direction: officeDirection, componentLocale } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
 const documentTranslator = computed(() => createRibbonTranslator(officeLocale.value, 'doc'))
 function t(key: string, fallback = key): string { return documentTranslator.value(key, fallback) }
 const emit = defineEmits<{
@@ -432,8 +432,6 @@ const previousTabBeforeToc = ref<string>()
 const canEditContextSelection = computed(() => resolveDocumentPermission(
   model.value.permissionRules ?? [], permissionContext.value, 'edit', permissionTargetsForSelection(editingModel.value, selection.value),
 ).allowed && !(editingHost.value?.kind === 'story' && storyLinkedToPrevious.value))
-const canCopyContextSelection = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value,
-  'copy', permissionTargetsForSelection(editingModel.value, selection.value)).allowed)
 const currentStoryRange = computed<DocumentStoryRange | undefined>(() => legacyStoryActive.value && storyKey.value
   ? { sectionId: headerFooterSectionId.value, story: storyKey.value, ...clampDocumentTextRange(storyValue.value ?? '', storySelection.value) } : undefined)
 watch([model, () => props.documentApi, currentStoryRange, editingHost, selection, pendingMarks], () => { storyActionVersion.value++ }, { flush: 'sync' })
@@ -497,14 +495,13 @@ const contextMenuActions = computed(() => {
     title: translate(`doc.context.paste-special.${mode}`, label),
     commandId: 'doc.command.paste-special',
     params: { value: mode },
-    disabled: !canEditContextSelection.value || typeof navigator === 'undefined' || !navigator.clipboard
-      || (mode === 'destination' && !blockAtPoint(editingModel.value, selection.value.focus)),
+    disabled: !clipboardRibbonState.value.paste,
     group: 'paste-special' as const,
   }))
   const quickActions = [
-    { id: 'doc-context-copy', title: translate('doc.context.copy', '复制'), commandId: 'doc.command.copy', params: undefined, disabled: !toolbarState.value.hasSelection || !canCopyContextSelection.value, group: 'quick' as const },
-    { id: 'doc-context-cut', title: translate('doc.context.cut', '剪切'), commandId: 'doc.command.cut', params: undefined, disabled: !toolbarState.value.hasSelection || !canCopyContextSelection.value || !canEditContextSelection.value, group: 'quick' as const },
-    { id: 'doc-context-paste', title: translate('doc.context.paste', '粘贴'), commandId: 'doc.command.paste', params: undefined, disabled: !canEditContextSelection.value || typeof navigator === 'undefined' || !navigator.clipboard, group: 'quick' as const },
+    { id: 'doc-context-copy', title: translate('doc.context.copy', '复制'), commandId: 'doc.command.copy', params: undefined, disabled: !clipboardRibbonState.value.copy, group: 'quick' as const },
+    { id: 'doc-context-cut', title: translate('doc.context.cut', '剪切'), commandId: 'doc.command.cut', params: undefined, disabled: !clipboardRibbonState.value.cut, group: 'quick' as const },
+    { id: 'doc-context-paste', title: translate('doc.context.paste', '粘贴'), commandId: 'doc.command.paste', params: undefined, disabled: !clipboardRibbonState.value.paste, group: 'quick' as const },
     { id: 'doc-context-delete', title: translate('doc.context.delete', '删除'), commandId: 'doc.command.delete', params: { direction: -1 }, disabled: !toolbarState.value.hasSelection || !canEditContextSelection.value, group: 'format' as const },
   ]
   const paragraphSettings = {
@@ -633,6 +630,7 @@ const ribbonTabs = computed(() => {
     indentation: { canDecrease: canChangeDocumentParagraphIndent(editingModel.value, selection.value, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(editingModel.value, selection.value, 1, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || legacyStoryActive.value,
     clearFormatting: clearFormattingState.value,
+    clipboard: clipboardRibbonState.value,
     mode: pageMode.value,
     editingDisabled: legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value,
     textFormattingDisabled: !textFormattingState.value.available,
@@ -1876,8 +1874,10 @@ function runContextMenuAction(action: { id: string; commandId?: string; params?:
     refreshSelectedFields(request.source, request.story, request.bodySelection)
     return
   }
-  onRibbonExecute(action.commandId ?? action.id, action.params)
+  const commandId = action.commandId ?? action.id
+  onRibbonExecute(commandId, action.params)
   documentContextMenu.value = undefined
+  if (['doc.command.copy', 'doc.command.cut', 'doc.command.paste', 'doc.command.paste-special'].includes(commandId)) return
   if (!tableProperties.value?.open) void nextTick(() => canvasRef.value?.focus())
 }
 function selectDocumentContextMenuItem(info: { key: string | number }) {
@@ -2215,69 +2215,108 @@ function replaceAll() {
     notify(error instanceof Error ? error.message : String(error))
   }
 }
-async function copySelection(cut = false) {
-  if (legacyStoryActive.value) return
-  const targets = permissionTargetsForSelection(editingModel.value, selection.value)
-  if (!canDocumentPermission('copy', targets) || (cut && !canDocumentPermission('edit', targets))) return
-  const text = selectedPlainText(editingModel.value, selection.value)
-  if (!text && !selection.value.tableSelection) return
-  const base = model.value
-  const host = editingHost.value && { ...editingHost.value }
-  const range = JSON.stringify(selection.value)
-  const request = ++clipboardRequest
-  try {
-    const data: DocumentClipboardData = selection.value.tableSelection ? documentTableClipboardData(editingModel.value, selection.value.tableSelection) : { text }
-    const rich = await writeDocumentClipboard(navigator.clipboard, data)
-    if (cut) {
-      if (request !== clipboardRequest || model.value !== base || !sameDocumentBlockHost(host, editingHost.value) || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，内容已复制，请重新剪切'); return }
-      if (data.html && !rich) { notify('已复制文本；请使用 Ctrl+X 保留表格格式并剪切'); canvasRef.value?.focus(); return }
-      execute({ id: 'doc.command.insert-text', text: '' })
-    } else if (data.html && !rich) notify('系统剪贴板仅支持文本；可使用 Ctrl+C 复制表格格式')
-  } catch { notify(cut ? '无法访问剪贴板，内容未删除，请使用 Ctrl+X 剪切' : '无法访问剪贴板，请使用 Ctrl+C 复制') }
-  canvasRef.value?.focus()
+const clipboardPermissions = computed(() => documentInputComposing.value || legacyStoryActive.value || imageOverlayActive.value
+  ? { copy: false, cut: false }
+  : documentClipboardPermissions(editingModel.value, selection.value, permissionContext.value, selectedImageIds.value,
+    !(editingHost.value?.kind === 'story' && storyLinkedToPrevious.value)))
+const canPasteSelection = computed(() => !documentInputComposing.value && !imageOverlayActive.value && canEditContextSelection.value
+  && resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value,
+    'view', permissionTargetsForSelection(editingModel.value, selection.value)).allowed)
+const canStartPaste = computed(() => legacyStoryActive.value
+  ? !documentInputComposing.value && !imageOverlayActive.value && canEditStory.value && !storyLinkedToPrevious.value : canPasteSelection.value)
+const clipboardRibbonState = computed(() => {
+  const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+  const writable = !!clipboard?.write || !!clipboard?.writeText, readable = !!clipboard?.read || !!clipboard?.readText
+  return { copy: writable && clipboardPermissions.value.copy, cut: writable && clipboardPermissions.value.cut, paste: readable && canStartPaste.value }
+})
+
+function captureClipboardTarget() {
+  const request = ++clipboardRequest, scope = storyActionVersion.value, epoch = inputStateEpoch
+  const api = props.documentApi, source = api?.getModel(), historyGeneration = api?.getHistoryGeneration()
+  const permission = permissionContext.value, images = selectedImageIds.value
+  return (clearedImages = false) => inputStateActive && !documentInputComposing.value && !imageOverlayActive.value
+    && clipboardRequest === request && storyActionVersion.value === scope && inputStateEpoch === epoch
+    && api === props.documentApi && permissionContext.value === permission && (clearedImages ? !selectedImageIds.value.length : selectedImageIds.value === images)
+    && (!api || api.getModel() === source && api.getHistoryGeneration() === historyGeneration)
 }
-async function pasteSelection(plainText = false) {
-  if (legacyStoryActive.value) activateStoryBlockEditing()
-  if (!canEditContextSelection.value) return
-  const base = model.value
-  const host = editingHost.value && { ...editingHost.value }
-  const range = JSON.stringify(selection.value)
-  const request = ++clipboardRequest
+
+async function copySelection(cut = false, transfer?: DataTransfer) {
+  if (!inputStateActive || legacyStoryActive.value || documentInputComposing.value || imageOverlayActive.value) return
+  if (!clipboardPermissions.value[cut ? 'cut' : 'copy']) {
+    notify(cut ? '此选区不允许剪切。' : '此选区不允许复制。')
+    return
+  }
   try {
-    if (!navigator.clipboard) throw new Error('Clipboard is unavailable')
-    const data = await readDocumentClipboard(navigator.clipboard, plainText)
-    if (request !== clipboardRequest || model.value !== base || !sameDocumentBlockHost(host, editingHost.value) || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，请重新粘贴'); return }
-    const command = documentTablePasteCommand(editingModel.value, selection.value, data, plainText)
-    if (command) execute(command)
-  } catch (error) { notify(error instanceof Error ? error.message : '无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴') }
-  canvasRef.value?.focus()
-}
-async function pasteSpecialSelection(mode: DocumentPasteMode) {
-  if (legacyStoryActive.value) activateStoryBlockEditing()
-  if (!canEditContextSelection.value) return
-  const base = model.value
-  const host = editingHost.value && { ...editingHost.value }
-  const range = JSON.stringify(selection.value)
-  const request = ++clipboardRequest
-  try {
-    if (!navigator.clipboard) throw new Error('Clipboard is unavailable')
-    const data = await readDocumentClipboard(navigator.clipboard, mode === 'text')
-    if (request !== clipboardRequest || model.value !== base || !sameDocumentBlockHost(host, editingHost.value) || JSON.stringify(selection.value) !== range) { notify('文档或选区已变化，请重新粘贴'); return }
-    if (selection.value.tableSelection) {
-      const tableCommand = documentTablePasteCommand(editingModel.value, selection.value, data, mode === 'text', mode === 'destination' ? 'destination' : 'source')
-      if (tableCommand) execute(tableCommand)
-      canvasRef.value?.focus()
+    const images = selectedImageIds.value
+    if (cut) for (const imageId of images) assertDocumentImageEditable(editingModel.value, imageId, true)
+    const current = captureClipboardTarget()
+    const data = documentSelectionClipboardData(editingModel.value, selection.value, images)
+    if (transfer) {
+      transfer.setData('text/plain', data.text)
+      if (data.html) transfer.setData('text/html', data.html)
+    }
+    const rich = !!transfer || await writeDocumentClipboard(navigator.clipboard, data).catch(() => {
+      if (current()) scheduleInputFocus(() => canvasRef.value?.focus())
+      throw new Error(cut ? '无法访问剪贴板，请使用 Ctrl+X 剪切。' : '无法访问剪贴板，请使用 Ctrl+C 复制。')
+    })
+    if (!current()) { if (cut && inputStateActive) notify('文档或选区已变化，请重新剪切。'); return }
+    if (cut && rich) {
+      const imageId = images[0]
+      execute(images.length > 1
+        ? { id: 'doc.command.batch-images', commands: images.map(id => ({ id: 'doc.command.remove-image', imageId: id })) }
+        : imageId ? { id: 'doc.command.remove-image', imageId } : { id: 'doc.command.insert-text', text: '' }, !transfer)
       return
     }
-    const paragraph = blockAtPoint(editingModel.value, selection.value.focus)
-    if (!paragraph) { notify('无法确定目标段落格式，请重新选择插入位置。'); return }
-    const command = documentPasteSpecialCommand(data, mode, {
-      paragraphStyle: { ...paragraph.style },
-      textStyle: { ...marksAtPoint(editingModel.value, selection.value.focus), ...pendingMarks.value },
+    if (!rich) notify(cut ? '请使用 Ctrl+X 保留格式并剪切。' : '请使用 Ctrl+C 复制格式。')
+    if (!transfer) scheduleInputFocus(() => canvasRef.value?.focus())
+  } catch (error) {
+    if (inputStateActive) notify(error instanceof Error ? error.message : String(error))
+  }
+}
+
+function applyClipboardPaste(data: DocumentClipboardData, mode: DocumentPasteMode) {
+  if (!inputStateActive || !canStartPaste.value) return
+  try {
+    if (legacyStoryActive.value) {
+      const source = model.value, api = props.documentApi
+      activateStoryBlockEditing()
+      if (!inputStateActive || source !== model.value || api !== props.documentApi || legacyStoryActive.value || !canPasteSelection.value) return
+    }
+    const target = selection.value, destination = editingModel.value
+    const paragraph = mode === 'source' || target.tableSelection || activeCodeBlockData.value ? undefined : blockAtPoint(destination, target.focus)
+    const destinationStyle = paragraph && { paragraphStyle: { ...paragraph.style },
+      textStyle: { ...marksAtPoint(destination, target.focus), ...pendingMarks.value } }
+    const command = target.tableSelection ? documentTablePasteCommand(destination, target, data, mode === 'text', mode === 'destination' ? 'destination' : 'source')
+      : activeCodeBlockData.value ? documentPasteCommand(data, true)
+      : mode === 'source' || destinationStyle ? documentPasteSpecialCommand(data, mode, destinationStyle) : undefined
+    if (!command) { scheduleInputFocus(() => canvasRef.value?.focus()); return }
+    if (selectedImageIds.value.length) {
+      const current = captureClipboardTarget()
+      canvasRef.value?.clearImageSelection()
+      if (!current(true)) return
+    }
+    execute(command)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error))
+    scheduleInputFocus(() => canvasRef.value?.focus())
+  }
+}
+
+async function pasteSelection(mode: DocumentPasteMode = 'source') {
+  if (!inputStateActive || !canStartPaste.value) return
+  try {
+    const current = captureClipboardTarget()
+    const data = await readDocumentClipboard(navigator.clipboard).catch(() => {
+      if (current()) scheduleInputFocus(() => canvasRef.value?.focus())
+      throw new Error('无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴。')
     })
-    if (command) execute(command)
-  } catch (error) { notify(error instanceof Error ? error.message : '无法读取剪贴板，请在文档中使用 Ctrl+V 或 Ctrl+Shift+V 粘贴') }
-  canvasRef.value?.focus()
+    if (!current()) { if (inputStateActive) notify('文档或选区已变化，请重新粘贴。'); return }
+    applyClipboardPaste(data, mode)
+  } catch (error) { if (inputStateActive) notify(error instanceof Error ? error.message : String(error)) }
+}
+function pasteFromCanvas(data: DocumentClipboardData, mode: DocumentPasteMode) {
+  clipboardRequest++
+  applyClipboardPaste(data, mode)
 }
 function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function savePermissionRules(rules: DocumentPermissionRule[]) {
@@ -2727,10 +2766,10 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.copy': void copySelection(); break
     case 'doc.command.cut': void copySelection(true); break
     case 'doc.command.paste': void pasteSelection(); break
-    case 'doc.command.paste-text': void pasteSelection(true); break
+    case 'doc.command.paste-text': void pasteSelection('text'); break
     case 'doc.command.paste-special': {
       const value = params && typeof params === 'object' ? ('value' in params ? params.value : 'mode' in params ? params.mode : undefined) : undefined
-      if (value === 'source' || value === 'destination' || value === 'text') void pasteSpecialSelection(value)
+      if (value === 'source' || value === 'destination' || value === 'text') void pasteSelection(value)
       break
     }
     case 'doc.command.print': printDocument(); break
@@ -2867,8 +2906,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
 </script>
 
 <template>
-  <ConfigProvider :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
-  <section v-bind="$attrs" ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" :style="workbenchStyle" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
+  <ConfigProvider :locale="componentLocale" :direction="officeDirection" :theme="WORKBENCH_CONTROL_THEME">
+  <section v-bind="$attrs" ref="workbenchRef" class="document-workbench" :class="{ 'focus-mode': isFocusMode }" :style="workbenchStyle" :dir="officeDirection" aria-label="文档工作台" @pointerdown="dismissTableContextMenu" @keydown="onWorkbenchKeydown">
     <header v-if="showHeader && chrome.header && !isFocusMode" class="document-header">
       <FileText class="document-mark" :size="20" />
       <Input v-model:value="documentTitle" class="document-name" aria-label="文档名称" variant="borderless" @change="updateTitle" @press-enter="($event.target as HTMLInputElement).blur()" />
@@ -2878,7 +2917,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         <Button type="primary"><FileUp :size="15" />打开文档</Button>
       </Upload>
     </header>
-    <WorkbenchRibbon v-if="chrome.toolbar && !isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant" label="文档功能区" @execute="onRibbonExecute">
+    <WorkbenchRibbon v-if="chrome.toolbar && !isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant"
+      :feature-search-scope="workbenchRef" label="文档功能区" @execute="onRibbonExecute">
       <template #tab-extra>
         <div v-if="showFind" class="find-replace-toolbar">
           <div class="find-row">
@@ -2918,6 +2958,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
             @note-navigation="onNoteCanvasNavigation"
             @structured-command="onStructuredCanvasCommand" @structured-operation="onStructuredCanvasOperation" @latex-edit="onLatexCanvasEdit"
             :permission-context="permissionContext" :table-floating-toolbar="tableFloatingToolbarOpen" @operation="onRibbonExecute"
+            @clipboard-copy="(transfer, cut) => copySelection(cut, transfer)" @clipboard-paste="pasteFromCanvas"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
             @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="onDocumentLayout" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />

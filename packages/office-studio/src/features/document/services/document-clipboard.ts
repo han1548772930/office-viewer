@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentModel, DocumentParagraphStyle } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import type { DocumentCommand } from '../commands/document-commands'
-import { blocksFromHtml, createParagraph, createRun, documentHtml, findDocumentBlock, imageForBlock, orderedSelection, sameTarget, sliceRuns, tableForBlock, textTargets, type DocumentRun, type DocumentSelection, type DocumentTableViewSelection, type RunPatch } from '../model/document-model'
+import { blocksFromHtml, createParagraph, createRun, documentHtml, findDocumentBlock, imageForBlock, orderedSelection, runText, sameTarget, selectionCollapsed, sliceRuns, tableForBlock, textTargets, type DocumentRun, type DocumentSelection, type DocumentTableViewSelection, type RunPatch } from '../model/document-model'
 import { documentTableCellsInRange, documentTableGrid } from '../model/document-table-grid'
 import { resolveDocumentTableViewSelection } from '../model/document-table-selection'
 import { documentTableCellBorders, documentTableCellFill, documentTableCellMargin } from '../model/document-table-style'
@@ -10,6 +10,7 @@ import { documentTableCellContentContainers } from '../model/document-table-cont
 import { documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
 import { documentImageEntries } from '../images/document-image-model'
 import { documentBlockChildContainers } from '../model/document-structural-blocks'
+import { permissionTargetsForImage, permissionTargetsForSelection, resolveDocumentPermission, type DocumentPermissionContext } from '../permissions/document-permissions'
 
 export interface DocumentClipboardData { text: string; html?: string }
 export const DOCUMENT_PASTE_OPTIONS = [
@@ -33,18 +34,31 @@ function clipboardRunText(runs: readonly DocumentRun[]): string {
   return runs.map(run => documentImageAtom(run)?.image.alt ?? run.text).join('')
 }
 
+export function documentClipboardPermissions(model: DocumentModel, selection: DocumentSelection, context: DocumentPermissionContext, imageIds: readonly string[] = [], hostEditable = true): { copy: boolean; cut: boolean } {
+  if (!imageIds.length && selectionCollapsed(selection)) return { copy: false, cut: false }
+  const targets = imageIds.length ? imageIds.flatMap(id => permissionTargetsForImage(model, id)) : permissionTargetsForSelection(model, selection)
+  const rules = model.permissionRules ?? []
+  const copy = resolveDocumentPermission(rules, context, 'copy', targets).allowed && resolveDocumentPermission(rules, context, 'view', targets).allowed
+  return { copy, cut: copy && hostEditable && resolveDocumentPermission(rules, context, 'edit', targets).allowed }
+}
+
 /** Selected atom runs travel with their real IMG payload and paragraph formatting. */
-export function documentSelectionClipboardData(model: DocumentModel, selection: DocumentSelection): DocumentClipboardData {
+export function documentSelectionClipboardData(model: DocumentModel, selection: DocumentSelection, imageIds: readonly string[] = []): DocumentClipboardData {
+  if (imageIds.length) return documentImagesClipboardData(model, imageIds)
   if (selection.tableSelection) return documentTableClipboardData(model, selection.tableSelection)
   const { start, end } = orderedSelection(model, selection), targets = textTargets(model)
   const first = targets.findIndex(target => sameTarget(target, start)), last = targets.findIndex(target => sameTarget(target, end))
   if (first < 0 || last < first) throw new RangeError('复制选区的文字宿主已不存在。')
   const selected = targets.slice(first, last + 1).map(target => {
+    // The trailing paragraph boundary belongs to the selection. Its contents and styles do not.
+    if (first !== last && sameTarget(target, end) && end.offset === 0) return createParagraph()
     const block = findDocumentBlock(model, target.cellBlockId ?? target.blockId)
     if (!block) throw new RangeError('复制选区的段落已不存在。')
-    const copied = cloneModel(block)
-    copied.runs = sliceRuns(copied.runs, sameTarget(target, start) ? start.offset : 0, sameTarget(target, end) ? end.offset : Number.POSITIVE_INFINITY)
+    const copied = { ...block, metadata: { ...block.metadata },
+      runs: sliceRuns(block.runs, sameTarget(target, start) ? start.offset : 0, sameTarget(target, end) ? end.offset : Number.POSITIVE_INFINITY) }
     delete copied.metadata.html
+    const code = copied.metadata.codeBlock
+    if (code && typeof code === 'object' && 'source' in code) copied.metadata.codeBlock = { ...code, source: runText(copied.runs) }
     return copied
   })
   return { text: selected.map(block => clipboardRunText(block.runs)).join('\n'), html: documentHtml({ ...model, blocks: selected }) }
@@ -116,6 +130,7 @@ export async function writeDocumentClipboard(clipboard: DocumentClipboardWriter,
 
 /** Preserve HTML at the clipboard boundary; commands receive real runs and blocks. */
 export function documentPasteCommand(data: DocumentClipboardData, plainText = false): DocumentCommand | undefined {
+  if (plainText && data.text) return { id: 'doc.command.insert-text', text: data.text }
   const blocks = data.html ? blocksFromHtml(data.html) : []
   if (!plainText && blocks.length) return { id: 'doc.command.paste-blocks', blocks }
   const text = data.text || (blocks.length ? blocks.map(blockPlainText).join('\n') : '')

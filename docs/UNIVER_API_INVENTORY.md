@@ -68,7 +68,7 @@ The public contract is covered by
 | `Event` and `addEvent(event, callback)` | `f-univer.ts`; `FEventName` and `IEventParamConfig` in `packages/core/src/facade/f-event.ts`; returns `IDisposable` | `FUniver.Event`, `FUniver.addEvent`, `EventHub`, and `Disposable` are exported from the package barrel | implemented |
 | `DocCreated`, `DocDisposed`, `LifeCycleChanged` | `f-event.ts`, `IEventParamConfig` | `OfficeStudio` emits the typed lifecycle and document events through the public event hub | implemented |
 | `BeforeCommandExecute`, `CommandExecuted`, `BeforeUndo`, `Undo`, `BeforeRedo`, `Redo` | `f-event.ts`, `ICommandEvent` and cancelable before events | `OfficeStudio` emits these events and honors `cancel` before command, undo, and redo mutations | implemented |
-| theme, locale, region, direction getters/setters | `f-univer.ts`, `setTheme`, `getCurrentTheme`, `setLocale`, `setRegion`, `setDirection`, and related getters | No equivalent application facade contract found | not available |
+| theme, locale, region, direction getters/setters | `f-univer.ts`, `setTheme`, `getCurrentTheme`, `setLocale`, `setRegion`, `setDirection`, and related getters | `FOffice` exposes `setLocale`, `getCurrentLocale`, `setRegion`, `getCurrentRegion` and `setDirection` through instance settings. Workbench examples also bind theme preferences to ConfigProvider. | partial |
 | `FBlob` byte/string/content-type methods | `packages/core/src/facade/f-blob.ts` | `FBlob` is exported from the public barrel and implements byte/string/content-type operations | implemented |
 
 ## Sheets facade mapping

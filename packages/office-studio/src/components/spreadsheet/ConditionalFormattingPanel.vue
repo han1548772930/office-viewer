@@ -8,14 +8,16 @@ import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from '.
 import { conditionalFormatAverageEditorOperator, conditionalFormatAverageRuleOperator, conditionalFormatEditorFormula, conditionalFormatEditorText, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
   prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../../features/conditional-formatting/conditional-format-rule-editor.ts'
 import { assertSheetConditionalFormatRuleSnapshot, type SheetConditionalFormatSubmitResult } from '../../features/conditional-formatting/conditional-format-command.ts'
+import { QUICK_CONDITIONAL_DATA_BAR, type QuickConditionalFormatType } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
 import { conditionalIconPresets } from '../../features/conditional-formatting/conditional-icon-presets.ts'
-import { conditionalIconSequence, createConditionalIconConfig, validateConditionalIconConfig, validateConditionalThreshold } from '../../features/conditional-formatting/icon-set-config.ts'
+import { conditionalIconSequence, createConditionalIconConfig, EMPTY_CONDITIONAL_ICON_TYPE, validateConditionalIconConfig, validateConditionalThreshold } from '../../features/conditional-formatting/icon-set-config.ts'
 import ConditionalIcon from './ConditionalIcon.vue'
 import ConditionalThresholdInput from './ConditionalThresholdInput.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme.ts'
 
-const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
+const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; initialType?: QuickConditionalFormatType;
+  submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const themeStyle = useRibbonTheme()
@@ -98,6 +100,15 @@ watch(() => props.open, open => {
   if (!open) return
   localRules.value = props.rules.map(cloneRule).sort((left, right) => left.priority - right.priority)
   error.value = ''
+  if (props.initialType) {
+    newRule()
+    ruleType.value = props.initialType
+    if (props.initialType === 'dataBar') {
+      fill.value = QUICK_CONDITIONAL_DATA_BAR.positiveColor
+      negativeColor.value = QUICK_CONDITIONAL_DATA_BAR.nativeColor
+    }
+    return
+  }
   if (localRules.value.length) {
     selectRule(localRules.value[0]!)
     editing.value = false
@@ -193,7 +204,7 @@ function saveDraft() {
     const existingIndex = localRules.value.findIndex(rule => rule.id === draftId.value)
     const previous = existingIndex >= 0 ? localRules.value[existingIndex] : undefined
     const previousStyle = previous?.style ?? {}
-    const style = {
+    const style = visualRule.value ? previousStyle : {
       fill: useFill.value ? fill.value : undefined,
       fontColor: useFontColor.value ? fontColor.value : undefined,
       bold: bold.value || previousStyle.bold !== undefined ? bold.value : undefined,
@@ -350,7 +361,10 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
         <p v-if="!localRules.length" class="conditional-empty">{{ t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
         <div v-for="(rule, index) in localRules" :key="rule.id" class="conditional-rule-row">
           <Button class="conditional-rule-select" type="text" :aria-pressed="draftId === rule.id" @click="selectRule(rule)">
-            {{ index + 1 }}. {{ t(`conditional.operator.${rule.operator}`, rule.operator) }} {{ rule.formula1 }}<template v-if="rule.formula2"> – {{ rule.formula2 }}</template>
+            {{ index + 1 }}.
+            <template v-if="rule.type === 'dataBar'">{{ t('conditional.quick.data-bar', '数据条') }}</template>
+            <template v-else-if="rule.type === 'iconSet'">{{ t('conditional.quick.icon-set', '图标集') }} · {{ iconSetLabel(rule.config?.iconSet ?? rule.config?.icons?.[0]?.iconType ?? '3Arrows') }}</template>
+            <template v-else>{{ t(`conditional.operator.${rule.operator}`, rule.operator) }} {{ rule.formula1 }}<template v-if="rule.formula2"> – {{ rule.formula2 }}</template></template>
           </Button>
           <Tooltip :title="t('conditional.move-up', '上移规则')"><Button type="text" size="small" :disabled="index === 0" :aria-label="t('conditional.move-up', '上移规则')" @click="moveRule(rule.id, -1)"><ArrowUp :size="14" /></Button></Tooltip>
           <Tooltip :title="t('conditional.move-down', '下移规则')"><Button type="text" size="small" :disabled="index === localRules.length - 1" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)"><ArrowDown :size="14" /></Button></Tooltip>
@@ -360,7 +374,7 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
       <Form v-else layout="vertical" class="conditional-rule-editor" @submit.prevent>
         <Button type="text" class="conditional-back" @click="returnToRules"><ArrowLeft :size="14" />{{ t('conditional.rules', '规则') }}</Button>
         <FormItem :label="t('conditional.range', '应用范围')" :extra="formulaBasis"><Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></FormItem>
-        <FormItem v-if="ruleType !== 'office'" label="规则类型"><Select v-model:value="ruleType" :options="typeOptions" /></FormItem>
+        <FormItem v-if="ruleType !== 'office'" label="规则类型"><Select v-model:value="ruleType" aria-label="规则类型" :options="typeOptions" /></FormItem>
         <Alert v-else type="info" title="原有条件规则" description="保留原有条件，可调整应用范围、格式和顺序。该条件的计算尚未验收。" show-icon />
         <FormItem v-if="ruleType === 'highlightCell'" label="条件类型"><Select v-model:value="highlightSubtype" :options="[{value:'text',label:'文本'},{value:'number',label:'数值'},{value:'timePeriod',label:'日期期间'},{value:'duplicateValues',label:'重复值'},{value:'uniqueValues',label:'唯一值'}]" /></FormItem>
         <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number'" :label="t('conditional.operator', '条件')"><Select v-model:value="operator" :options="operatorOptions" /></FormItem>

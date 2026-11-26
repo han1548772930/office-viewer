@@ -1,8 +1,8 @@
 import type { OfficeLocale } from '../../i18n/regional-settings.ts'
-import { currencySymbols } from './number-format-engine/constants.ts'
 import { describeSheetNumberFormat } from './number-format-render.ts'
 import { numberFormatDecimalPlaces, numberFormatWithoutDecimals, setNumberFormatDecimalPlaces } from './number-format-pattern.ts'
-import { numberFormatCurrency, sheetCurrencySymbol } from './sheet-currency.ts'
+import { numberFormatCurrency, SHEET_CURRENCY_CHOICES, sheetCurrencySymbol } from './sheet-currency.ts'
+import { classifySheetNumberFormat } from './sheet-number-format.ts'
 
 /** SheetNumfmtPanel TYPE_OPTIONS, in fixed v1.6.0 order. */
 export const SHEET_NUMBER_FORMAT_CATEGORIES = ['general', 'accounting', 'currency', 'date', 'grouped', 'custom'] as const
@@ -17,7 +17,7 @@ export interface SheetNumberFormatDraft {
   negative: number
   pattern: string
 }
-export const SHEET_NUMBER_FORMAT_PANEL_CURRENCIES: readonly string[] = currencySymbols
+export const SHEET_NUMBER_FORMAT_PANEL_CURRENCIES: readonly string[] = SHEET_CURRENCY_CHOICES
 export const SHEET_GROUPED_NUMBER_PATTERNS: readonly string[] = [
   '#,##0_);(#,##0)', '#,##0_);[Red](#,##0)', '#,##0.00_);#,##0.00',
   '#,##0.00_);[Red]#,##0.00', '#,##0.00_);-#,##0.00', '#,##0.00_);[Red]-#,##0.00',
@@ -60,29 +60,45 @@ export const SHEET_DATE_FORMAT_PREVIEW_VALUE = (Date.UTC(1930, 7, 5, 13, 30, 30)
 
 export function sheetNumberFormatCategory(pattern: string): SheetNumberFormatCategory {
   if (!pattern || /^general$/i.test(pattern)) return 'general'
-  if (numberFormatCurrency(pattern)) return pattern.startsWith('_(') ? 'accounting' : 'currency'
+  const kind = classifySheetNumberFormat(pattern)
+  if (kind === 'accounting' || kind === 'currency') return kind
   const type = describeSheetNumberFormat(pattern)?.type
   if (type === 'date' || type === 'datetime' || type === 'time') return 'date'
   return type === 'grouped' ? 'grouped' : 'custom'
 }
 
-export function createSheetNumberFormatDraft(pattern: string, locale: string, currencies: readonly string[], category = sheetNumberFormatCategory(pattern)): SheetNumberFormatDraft {
+export function createSheetNumberFormatDraft(pattern: string, locale: string, region: string, recentCurrencies: readonly string[],
+  category?: SheetNumberFormatCategory): SheetNumberFormatDraft {
   const source = !pattern || /^general$/i.test(pattern) ? '' : pattern
-  const currency = numberFormatCurrency(source) ?? currencies[0] ?? sheetCurrencySymbol(locale)
-  const choices = category === 'currency' ? sheetCurrencyNumberPatterns(currency) : SHEET_GROUPED_NUMBER_PATTERNS
-  const negative = Math.max(0, choices.findIndex(candidate => numberFormatWithoutDecimals(candidate) === numberFormatWithoutDecimals(source)))
-  const draft: SheetNumberFormatDraft = { category, currency, negative, decimals: Math.min(30, source ? numberFormatDecimalPlaces(source) : 2),
-    pattern: category === 'date' ? sheetNumberFormatCategory(source) === 'date' ? source : sheetDateNumberPatterns(locale)[0]! : source }
-  return draft
+  const sourceCategory = sheetNumberFormatCategory(source)
+  const selectedCategory = category ?? sourceCategory
+  const currency = numberFormatCurrency(source) ?? recentCurrencies[0] ?? sheetCurrencySymbol(region)
+  const choices = selectedCategory === 'currency' ? sheetCurrencyNumberPatterns(currency)
+    : selectedCategory === 'grouped' ? SHEET_GROUPED_NUMBER_PATTERNS : []
+  const sourceMatchesCategory = selectedCategory === sourceCategory
+  const sourceWithoutDecimals = sourceMatchesCategory && choices.length ? numberFormatWithoutDecimals(source) : undefined
+  const negative = sourceWithoutDecimals === undefined ? 0
+    : choices.findIndex(candidate => numberFormatWithoutDecimals(candidate) === sourceWithoutDecimals)
+  const sourcePattern = sourceMatchesCategory || selectedCategory === 'custom' ? source : ''
+  return {
+    category: selectedCategory,
+    currency,
+    negative,
+    decimals: source ? numberFormatDecimalPlaces(source) : 2,
+    pattern: selectedCategory === 'date' && !sourceMatchesCategory ? sheetDateNumberPatterns(locale)[0]! : sourcePattern,
+  }
 }
 
 export function sheetNumberFormatDraftPattern(draft: SheetNumberFormatDraft): string {
-  const decimals = Math.max(0, Math.min(30, Math.floor(draft.decimals)))
   if (draft.category === 'general') return 'General'
   if (draft.category === 'custom' || draft.category === 'date') return draft.pattern
-  if (draft.category === 'accounting') return setNumberFormatDecimalPlaces(`_("${draft.currency}"* #,##0_)`, decimals)
+  if (draft.pattern) {
+    return draft.decimals === numberFormatDecimalPlaces(draft.pattern)
+      ? draft.pattern : setNumberFormatDecimalPlaces(draft.pattern, draft.decimals)
+  }
+  if (draft.category === 'accounting') return setNumberFormatDecimalPlaces(`_("${draft.currency}"* #,##0_)`, draft.decimals)
   const options = draft.category === 'currency' ? sheetCurrencyNumberPatterns(draft.currency) : SHEET_GROUPED_NUMBER_PATTERNS
-  return setNumberFormatDecimalPlaces(options[draft.negative] ?? options[0]!, decimals)
+  return setNumberFormatDecimalPlaces(options[draft.negative] ?? options[0]!, draft.decimals)
 }
 
 export function orderNumberFormatPreferences(candidates: readonly string[], recent: readonly string[]): string[] {
@@ -113,14 +129,14 @@ export function readSheetNumberFormatPreferences(storage?: NumberFormatPreferenc
   const value: unknown = JSON.parse(serialized)
   if (!value || typeof value !== 'object') return { history: [], currencies: [] }
   return { history: strings('history' in value ? value.history : undefined).slice(0, 10),
-    currencies: strings('currencies' in value ? value.currencies : undefined).filter(symbol => currencySymbols.includes(symbol)) }
+    currencies: strings('currencies' in value ? value.currencies : undefined).filter(symbol => SHEET_NUMBER_FORMAT_PANEL_CURRENCIES.includes(symbol)) }
 }
 
 /** Preference history changes on confirmation; previews and cancellations never record a use. */
 export function rememberSheetNumberFormat(preferences: SheetNumberFormatPreferences, pattern: string, custom: boolean): SheetNumberFormatPreferences {
   const currency = numberFormatCurrency(pattern)
   return { history: custom && pattern ? [pattern, ...preferences.history.filter(value => value !== pattern)].slice(0, 10) : [...preferences.history],
-    currencies: currency && currencySymbols.includes(currency) ? [currency, ...preferences.currencies.filter(value => value !== currency)] : [...preferences.currencies] }
+    currencies: currency && SHEET_NUMBER_FORMAT_PANEL_CURRENCIES.includes(currency) ? [currency, ...preferences.currencies.filter(value => value !== currency)] : [...preferences.currencies] }
 }
 
 export function writeSheetNumberFormatPreferences(storage: NumberFormatPreferenceWriter, preferences: SheetNumberFormatPreferences): void {

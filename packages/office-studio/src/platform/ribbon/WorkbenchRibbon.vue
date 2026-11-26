@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, h, inject, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { Button, Menu, Popover, Tooltip } from 'antdv-next'
 import type { MenuItemType, MenuRef } from 'antdv-next'
 import { ChevronDown, Database, EllipsisVertical, Eye, House, LayoutPanelLeft, ListPlus, MoreVertical, Sigma } from 'lucide-vue-next'
@@ -10,9 +10,17 @@ import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n'
 import { provideRibbonPopupScope } from './ribbon-popup-scope'
 import { useRibbonTheme } from './ribbon-theme'
 import RibbonOverflowPanel from './RibbonOverflowPanel.vue'
+import FeatureSearchDialog from './FeatureSearchDialog.vue'
+import type { FeatureSearchResult } from './feature-search'
+import ShortcutPanel from './ShortcutPanel.vue'
+import { isWorkbenchUiOperation, OPEN_FEATURE_SEARCH, workbenchUiShortcut, type WorkbenchUiHost, type WorkbenchUiOperation } from './workbench-operations'
 
-const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: RibbonVariant }>(), { modelValue: undefined, label: '功能区', variant: 'classic' })
-const emit = defineEmits<{ 'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown] }>()
+const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string; direction?: 'ltr' | 'rtl'; label?: string; variant?: RibbonVariant;
+  featureSearchScope?: HTMLElement | null; featureSearchContext?: () => readonly RibbonGroup[]; uiHost?: WorkbenchUiHost;
+  shortcuts?: readonly { title: string; shortcut: string }[]; hidden?: boolean }>(), { modelValue: undefined, label: '功能区', variant: 'classic' })
+const emit = defineEmits<{
+  'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown]; contextCommand: [key: string]; shortcutPanel: [open: boolean]
+}>()
 const id = useId()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const workspaceDirection = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
@@ -50,6 +58,11 @@ const moreMenuRef = ref<{ focus: () => void } | null>(null)
 const availableWidth = ref(Number.POSITIVE_INFINITY)
 const measuredWidths = ref<Record<string, number>>({})
 const moreOpen = ref(false)
+const featureSearchOpen = ref(false)
+const shortcutPanelOpen = ref(false)
+watch(shortcutPanelOpen, open => emit('shortcutPanel', open))
+const contextGroups = computed(() => featureSearchOpen.value ? props.featureSearchContext?.() : undefined)
+let hostActive = true
 let observer: ResizeObserver | undefined
 let disposed = false
 let measurePending = false
@@ -102,8 +115,44 @@ function onTabKeydown(event: KeyboardEvent) {
   Array.from(tablist.value?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []).find((button) => button.dataset.tabId === targetId)?.focus()
 }
 
+function openWorkbenchUi(id: WorkbenchUiOperation): boolean {
+  if (!hostActive || props.hidden) return false
+  moreOpen.value = selectorOpen.value = false
+  popupScope.close()
+  if (id === OPEN_FEATURE_SEARCH) {
+    shortcutPanelOpen.value = false
+    featureSearchOpen.value = true
+    return true
+  }
+  shortcutPanelOpen.value = !shortcutPanelOpen.value
+  return true
+}
+
 function execute(commandId: string, params?: unknown) {
+  if (isWorkbenchUiOperation(commandId)) {
+    if (props.uiHost) props.uiHost.execute(commandId)
+    else openWorkbenchUi(commandId)
+    return
+  }
   emit('execute', commandId, params)
+}
+
+function executeSearchResult(result: FeatureSearchResult) {
+  if (result.contextId) {
+    emit('contextCommand', result.contextId)
+    return
+  }
+  execute(result.commandId, result.params)
+}
+
+function onWorkbenchUiShortcut(event: KeyboardEvent) {
+  if (!hostActive || !(event.target instanceof Element)) return
+  if (event.target.closest('[role="dialog"]:not([data-office-shortcut-panel])')) return
+  const id = workbenchUiShortcut(event)
+  if (!id) return
+  event.preventDefault()
+  event.stopPropagation()
+  execute(id)
 }
 
 function executeSlot(item: RibbonItem, commandId: string, params?: unknown) {
@@ -157,6 +206,16 @@ watch(toolbar, (element, previous) => {
   void measure()
 }, { flush: 'post' })
 watch(() => overflowGroups.value.length, (count) => { if (!count) moreOpen.value = false })
+watch(() => props.featureSearchScope, (scope, _previous, onCleanup) => {
+  if (!scope) return
+  scope.addEventListener('keydown', onWorkbenchUiShortcut, true)
+  onCleanup(() => scope.removeEventListener('keydown', onWorkbenchUiShortcut, true))
+}, { immediate: true })
+watch(() => props.uiHost, (host, _previous, onCleanup) => {
+  if (!host) return
+  const binding = host.bind(openWorkbenchUi)
+  onCleanup(() => binding.dispose())
+}, { immediate: true })
 onMounted(() => {
   observer = new ResizeObserver(() => { void measure() })
   if (toolbar.value) observer.observe(toolbar.value)
@@ -164,6 +223,8 @@ onMounted(() => {
   void measure()
 })
 onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
+onActivated(() => { hostActive = true })
+onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.value = false })
 </script>
 
 <template>
@@ -188,7 +249,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
           <div v-for="group in visibleGroups" :key="group.id" class="workbench-ribbon-group" role="group" :aria-label="group.title">
             <template v-for="item in group.items" :key="item.id">
               <div v-if="$slots[`item-${item.id}`]" class="ribbon-custom-item" :data-ribbon-item="item.id"><slot :name="`item-${item.id}`" :item="item" :execute="(commandId: string, params?: unknown) => executeSlot(item, commandId, params)" /></div>
-              <RibbonItemControl v-else :item="item" @execute="execute" />
+                <RibbonItemControl v-else :item="item" @execute="execute" />
             </template>
           </div>
         </div>
@@ -212,6 +273,8 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect() })
         </span>
       </template>
     </div>
+    <FeatureSearchDialog v-model:open="featureSearchOpen" :tabs="props.tabs" :context-groups="contextGroups" @execute="executeSearchResult" />
+    <ShortcutPanel v-model:open="shortcutPanelOpen" :tabs="props.tabs" :shortcuts="shortcuts" @keydown="onWorkbenchUiShortcut" />
   </section>
 </template>
 

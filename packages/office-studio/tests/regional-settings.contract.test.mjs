@@ -19,6 +19,18 @@ test('format region follows language until explicitly set and is isolated per in
   assert.equal(first.region.value, 'fr-FR')
 })
 
+test('UI direction can be set independently of the format region and the document locale', () => {
+  const settings = new OfficeRegionalSettings('faIR', 'deDE')
+  const other = new OfficeRegionalSettings('zhCN')
+  assert.equal(settings.direction.value, 'rtl')
+  settings.setDirection('ltr')
+  settings.setLocale('arSA')
+  assert.equal(settings.direction.value, 'ltr')
+  assert.equal(settings.region.value, 'de-DE')
+  settings.setDirection('rtl')
+  assert.equal(other.direction.value, 'ltr')
+})
+
 test('regional display and preview agree without changing imported values or the date system', () => {
   const cell = Object.freeze({ rawNumberFormat: '#,##0.00', rawValue: 1234.5, value: '1234.5' })
   for (const [region, expected] of [['en-US', '1,234.50'], ['de-DE', '1.234,50']]) {

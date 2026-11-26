@@ -32,9 +32,10 @@ export function classifySheetNumberFormat(pattern: string): SheetNumberFormat | 
   }
   if (first.mask.includes('%')) return 'percent'
   if (/[eE][+-]?[0#?]+/.test(first.mask)) return 'scientific'
-  if (numberFormatCurrency(pattern)) {
+  if (numberFormatCurrency(first)) {
     const firstPlaceholder = /[0#?]/.exec(first.mask)?.index ?? -1
-    return first.tokens.some(token => token.kind === 'fill') || firstPlaceholder > 0 && first.mask[firstPlaceholder - 1] === ' ' ? 'accounting' : 'currency'
+    return first.text.startsWith('_(') || first.tokens.some(token => token.kind === 'fill')
+      || firstPlaceholder > 0 && first.mask[firstPlaceholder - 1] === ' ' ? 'accounting' : 'currency'
   }
   if (numberFormatWithoutDecimals(pattern) === numberFormatWithoutDecimals(SHEET_NUMBER_FORMATS.financial)) return 'financial'
   const mask = first.mask.replaceAll('\u0000', '').trim()

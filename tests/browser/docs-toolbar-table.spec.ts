@@ -152,11 +152,20 @@ test('the content-control split menu starts the chosen real control type', async
 test('toolbar cut writes the real browser clipboard and removes content only as an undoable model command', async ({ page }) => {
   await bridge(page).focus(); await bridge(page).pressSequentially('Clipboard')
   await bridge(page).press('Control+A')
+  await bridge(page).press('Control+B')
   await ribbon(page).getByRole('button', { name: '剪切', exact: true }).click()
   await expect.poll(async () => (await state(page)).text).toBe('')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('Clipboard')
+  const html = await page.evaluate(async () => {
+    const item = (await navigator.clipboard.read()).find(candidate => candidate.types.includes('text/html'))
+    return item ? (await item.getType('text/html')).text() : ''
+  })
+  expect(html).toMatch(/<strong>Clipboard<\/strong>/)
   await history(page, '撤销')
   await expect.poll(async () => (await state(page)).text).toBe('Clipboard')
+  expect((await state(page)).model.blocks.flatMap(block => block.runs).some(run => run.text === 'Clipboard' && run.bold)).toBe(true)
+  await history(page, '重做')
+  await expect.poll(async () => (await state(page)).text).toBe('')
 })
 
 test('toolbar paste retains HTML runs and uses the same command as the native paste input event', async ({ page }) => {
@@ -165,7 +174,7 @@ test('toolbar paste retains HTML runs and uses the same command as the native pa
   await page.evaluate(async () => {
     await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob(['Source'], { type: 'text/plain' }), 'text/html': new Blob(['<p><strong>Source</strong></p>'], { type: 'text/html' }) })])
   })
-  await ribbon(page).getByRole('button', { name: '粘贴', exact: true }).click()
+  await pasteMode(page, '保留源格式')
   await expect.poll(async () => (await state(page)).text).toBe('Source')
   expect((await state(page)).model.blocks.flatMap((block) => block.runs).some((run) => run.text === 'Source' && run.bold)).toBe(true)
   await history(page, '撤销')
@@ -186,10 +195,47 @@ test('plain-text paste ignores source HTML marks and preserves destination forma
   await page.evaluate(async () => {
     await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob(['Plain'], { type: 'text/plain' }), 'text/html': new Blob(['<p><strong>Plain</strong></p>'], { type: 'text/html' }) })])
   })
-  await ribbon(page).getByRole('button', { name: '粘贴选项', exact: true }).click()
-  await page.getByRole('button', { name: '仅粘贴文本', exact: true }).click()
+  await pasteMode(page, '仅保留文本')
   await expect.poll(async () => (await state(page)).text).toBe('Plain')
   expect((await state(page)).model.blocks.flatMap((block) => block.runs).every((run) => !run.bold)).toBe(true)
+})
+
+async function pasteMode(page: Page, label: '保留源格式' | '匹配目标格式' | '仅保留文本') {
+  await ribbon(page).getByRole('button', { name: '粘贴', exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+}
+
+test('native Ctrl+Shift+V shares plain paste semantics and the following ordinary paste retains its source', async ({ page }) => {
+  await bridge(page).focus()
+  for (const [text, plain] of [['Plain', true], ['Rich', false]] as const) {
+    await bridge(page).evaluate((element, { text, plain }) => {
+      if (plain) element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, shiftKey: true, key: 'V' }))
+      const data = new DataTransfer()
+      data.setData('text/plain', text)
+      data.setData('text/html', `<p><strong>${text}</strong></p>`)
+      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
+    }, { text, plain })
+    await expect.poll(async () => (await state(page)).text).toBe(plain ? 'Plain' : 'PlainRich')
+  }
+  const runs = (await state(page)).model.blocks.flatMap(block => block.runs)
+  expect(runs.find(run => run.text === 'Plain')?.bold).toBe(false)
+  expect(runs.find(run => run.text === 'Rich')?.bold).toBe(true)
+})
+
+test('match destination keeps the source emphasis in the destination character formatting', async ({ page }) => {
+  await bridge(page).focus()
+  await bridge(page).pressSequentially('Base')
+  const before = (await state(page)).model.blocks.flatMap(block => block.runs).find(run => run.text.includes('Base'))
+  await page.evaluate(async () => navigator.clipboard.write([new ClipboardItem({
+    'text/plain': new Blob(['Mixed'], { type: 'text/plain' }),
+    'text/html': new Blob(['<p><strong style="font-family:Georgia;font-size:32pt">Mixed</strong></p>'], { type: 'text/html' }),
+  })]))
+  await pasteMode(page, '匹配目标格式')
+  await expect.poll(async () => (await state(page)).text).toBe('BaseMixed')
+  const pasted = (await state(page)).model.blocks.flatMap(block => block.runs).find(run => run.text === 'Mixed')
+  expect(pasted).toMatchObject({ bold: true, fontFamily: before?.fontFamily, fontSize: before?.fontSize })
+  await history(page, '撤销')
+  await expect.poll(async () => (await state(page)).text).toBe('Base')
 })
 
 test('a pending clipboard read cannot overwrite newer Canvas input', async ({ page }) => {
@@ -198,8 +244,7 @@ test('a pending clipboard read cannot overwrite newer Canvas input', async ({ pa
       readText: () => new Promise<string>((resolve) => { (window as Window & { resolveTestClipboard?: (value: string) => void }).resolveTestClipboard = resolve }),
     } })
   })
-  await ribbon(page).getByRole('button', { name: '粘贴选项', exact: true }).click()
-  await page.getByRole('button', { name: '仅粘贴文本', exact: true }).click()
+  await pasteMode(page, '仅保留文本')
   await expect.poll(() => page.evaluate(() => typeof (window as Window & { resolveTestClipboard?: unknown }).resolveTestClipboard)).toBe('function')
   await bridge(page).focus(); await bridge(page).pressSequentially('N')
   await page.evaluate(() => (window as Window & { resolveTestClipboard?: (value: string) => void }).resolveTestClipboard?.('stale'))

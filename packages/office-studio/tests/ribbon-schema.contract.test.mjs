@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { CLASSIC_RIBBON, GRID_RIBBON, fitRibbonGridGroups, fitRibbonItems, groupRibbonGridOverflowItems, nextRibbonTab, placeRibbonGridItems, resolveRibbonTab, ribbonInvocation, ribbonPlacementKey, simpleRibbonTab, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
+import { collectFeatureSearchResults, featureSearchRibbonItem } from '../src/platform/ribbon/feature-search.ts'
 
 const button = (id, extra = {}) => ({ id, title: id, type: 'button', commandId: `doc.command.${id}`, ...extra })
 const group = (id, items, extra = {}) => ({ id, items, ...extra })
 const tab = (id, groups, extra = {}) => ({ id, title: id, groups, ...extra })
+
+test('feature search indexes available command variants once and retains live Ribbon parameters', () => {
+  const format = { id: 'font', title: 'Font', type: 'select', commandId: 'doc.command.set-font',
+    valueParams: value => ({ value }), options: [{ label: 'Arial', value: 'Arial' }, { label: 'Missing', value: 'Missing', disabled: true }] }
+  const input = [
+    tab('start', [group('format', [format, button('alternate-font', { commandId: format.commandId, params: { value: 'Arial' } }),
+      button('only-second-font', { commandId: format.commandId, params: { value: 'Inter' } }),
+      { ...button('disabled-menu', { disabled: true }), type: 'menu', children: [button('disabled-child')] },
+      featureSearchRibbonItem('Search features')], { title: 'Text' })]),
+    tab('view', [group('hidden-group', [button('hidden-command')], { hidden: true })]),
+  ]
+  const matches = collectFeatureSearchResults(input, 'Ribbon')
+  assert.deepEqual(matches.map(({ title, params }) => [title, params]), [['Arial', { value: 'Arial' }], ['only-second-font', { value: 'Inter' }]])
+  assert.equal(matches[0].path, 'Ribbon / start / Text / Font')
+  assert.match(matches[0].keywords, /doc\.command\.set-font/)
+  format.disabled = true
+  assert.equal(collectFeatureSearchResults(input, 'Ribbon')[0].title, 'alternate-font')
+})
 
 test('simple measures each placement independently while retaining command and slot IDs', () => {
   const tabs = visibleRibbonTabs(['home', 'insert'].map(id => tab(id, [group('tools', [button('shared', { params: id })])])))

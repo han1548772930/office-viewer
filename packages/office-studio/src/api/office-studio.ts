@@ -14,6 +14,7 @@ import { applySheetLayoutFormatCommand, assertSheetLayoutFormatRanges, layoutFor
 import { applySheetBorderFormatCommand, borderFormatActionForCommand, createSheetBorderFormatState, SHEET_BORDER_FORMAT_COMMAND_IDS, sheetBorderFormatCommandInput, sheetBorderFormatInputRanges, type SheetBorderFormatCommandInput, type SheetBorderFormatState } from '../features/sheet-workbench/sheet-border-format-command.ts'
 import { SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND, setSheetCellHyperlink, removeSheetCellHyperlink, type SheetHyperlinkDraft } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { equivalentModelData } from '../platform/commands/model-equivalence'
+import { OPEN_FEATURE_SEARCH, TOGGLE_SHORTCUT_PANEL, type WorkbenchUiHost, type WorkbenchUiOperationHandler } from '../platform/ribbon/workbench-operations'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshPlan, type DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../features/document/services/document-history-cache.ts'
@@ -212,6 +213,7 @@ export class OfficeStudio {
   private readonly documents = new Map<string, DocumentModel>()
   private readonly commands = new Map<string, OfficeCommandHandler<never, unknown>>()
   private readonly asynchronousCommands = new Set<string>()
+  private readonly workbenchUiOwners = new Map<string, WorkbenchUiOperationHandler>()
   private readonly workbookCreationTasks = new Set<AbortController>()
   private _activeWorkbookId: string
   private _activeDocumentId: string
@@ -1137,6 +1139,16 @@ export class OfficeStudio {
     return { dispose: () => { if (active) { active = false; this.commands.delete(id); this.asynchronousCommands.delete(id) } } }
   }
 
+  workbenchUiHost(unitId: string): WorkbenchUiHost {
+    return {
+      bind: run => {
+        this.workbenchUiOwners.set(unitId, run)
+        return { dispose: () => { if (this.workbenchUiOwners.get(unitId) === run) this.workbenchUiOwners.delete(unitId) } }
+      },
+      execute: id => this.executeCommandSync<{ unitId: string }, boolean>(id, { unitId }),
+    }
+  }
+
   undo(kind: OfficeKind, id: string): boolean {
     return this.executeCommandSync(CONTENT_HISTORY_COMMANDS.undo, { kind, unitId: id })
   }
@@ -1252,6 +1264,7 @@ export class OfficeStudio {
     this.events.clear()
     this.commands.clear()
     this.asynchronousCommands.clear()
+    this.workbenchUiOwners.clear()
     this.workbooks.clear()
     this.borderFormatStates.clear()
     this.sheetSelections.clear()
@@ -1550,6 +1563,14 @@ export class OfficeStudio {
   }
 
   private registerBuiltinCommands(): void {
+    for (const id of [OPEN_FEATURE_SEARCH, TOGGLE_SHORTCUT_PANEL] as const) {
+      this.registerCommand<unknown, boolean>(id, params => {
+        const activeId = this.editor.state.activeKind === 'workbook' ? this._activeWorkbookId : this._activeDocumentId
+        const requestedId = commandUnitId(params)
+        if (requestedId !== undefined && requestedId !== activeId) return false
+        return this.workbenchUiOwners.get(activeId)?.(id) ?? false
+      })
+    }
     for (const id of CONTENT_HISTORY_COMMAND_IDS) {
       const action = contentHistoryCommandAction(id)
       if (!action) throw new Error(`Unknown history command: ${id}`)

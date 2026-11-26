@@ -2,7 +2,7 @@
 import { Button, ConfigProvider, Form, FormItem, Input, Modal, theme, Upload } from 'antdv-next'
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { DocumentWorkbench, ExcelWorkbench, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, WORKBENCH_ACCENTS, WORKBENCH_CONTROL_THEME, WorkbenchDisplayKey, type OfficeLocale } from '@office-studio/office-studio'
+import { DocumentWorkbench, ExcelWorkbench, getAntdvLocale, OfficeDirectionKey, OfficeLocaleKey, OfficeRegionKey, OfficeTranslatorKey, WORKBENCH_ACCENTS, WORKBENCH_CONTROL_THEME, WorkbenchDisplayKey, type OfficeLocale } from '@office-studio/office-studio'
 import { useDisplayPreferences } from './display-preferences'
 import WorkspaceHeader, { type WorkspaceHeaderAction } from './WorkspaceHeader.vue'
 import WorkspaceFeedback from './WorkspaceFeedback.vue'
@@ -25,6 +25,11 @@ const { locale, t, te } = useI18n()
 const { p: preferences, display, reset } = useDisplayPreferences(localStorage)
 const regional = studio.regionalSettings
 regional.setLocale(locale.value)
+regional.setDirection(preferences.value.direction)
+function setLanguage(value: OfficeLocale) {
+  regional.setLocale(value)
+  regional.setDirection(undefined)
+}
 function setRegion(value: OfficeLocale | 'auto') {
   if (value === 'auto') regional.followLanguage()
   else regional.setRegion(value)
@@ -32,10 +37,12 @@ function setRegion(value: OfficeLocale | 'auto') {
 setRegion(preferences.value.region)
 watch(regional.regionPreference, value => { preferences.value.region = value }, { flush: 'sync' })
 watch(regional.locale, value => { locale.value = value }, { flush: 'sync' })
+watch(regional.directionPreference, value => { preferences.value.direction = value }, { flush: 'sync' })
 const ribbonVariant = computed(() => preferences.value.ribbon)
-const direction = computed(() => preferences.value.direction)
+const direction = regional.direction
+const componentLocale = computed(() => getAntdvLocale(regional.locale.value))
 watch(direction, value => { document.documentElement.dir = value }, { immediate: true })
-function resetPreferences() { regional.setLocale('zh-CN'); regional.followLanguage(); reset() }
+function resetPreferences() { setLanguage('zh-CN'); regional.followLanguage(); reset() }
 const importTrigger = ref<{ $el: HTMLElement } | null>(null)
 function requestImport(): void { importTrigger.value?.$el.click() }
 function importSelectedFile(file: File): false { void files.importFile(file); return false }
@@ -91,15 +98,15 @@ onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
 </script>
 
 <template>
-  <ConfigProvider :direction="direction" :theme="{ ...WORKBENCH_CONTROL_THEME, token: { colorPrimary: WORKBENCH_ACCENTS[preferences.accent] }, algorithm: preferences.dark ? theme.darkAlgorithm : theme.defaultAlgorithm }">
+  <ConfigProvider :locale="componentLocale" :direction="direction" :theme="{ ...WORKBENCH_CONTROL_THEME, token: { colorPrimary: WORKBENCH_ACCENTS[preferences.accent] }, algorithm: preferences.dark ? theme.darkAlgorithm : theme.defaultAlgorithm }">
   <div class="app-shell" @dragover="onDragOver" @drop="onDrop">
     <WorkspaceHeader
       :active-kind="editor.state.activeKind" :file-name="activeFileName" :modified="modified"
       :parser-status="editor.state.parserStatus" :parser-message="editor.state.parserMessage"
       :export-task="exportTask" :diagnostic-count="editor.state.diagnostics.length" :locale="locale as OfficeLocale"
       :ribbon-variant="ribbonVariant" :direction="direction" :dark="preferences.dark" :accent="preferences.accent" :region="preferences.region" :chrome="preferences.chrome" :zoom="preferences.zoom"
-      @ribbon="preferences.ribbon = $event" @direction="preferences.direction = $event" @dark="preferences.dark = $event" @accent="preferences.accent = $event" @region="setRegion" @chrome="preferences.chrome = $event" @zoom="preferences.zoom = $event" @reset="resetPreferences"
-      @action="onHeaderAction" @switch="switchWorkspace" @locale="regional.setLocale($event)"
+      @ribbon="preferences.ribbon = $event" @direction="regional.setDirection($event)" @dark="preferences.dark = $event" @accent="preferences.accent = $event" @region="setRegion" @chrome="preferences.chrome = $event" @zoom="preferences.zoom = $event" @reset="resetPreferences"
+      @action="onHeaderAction" @switch="switchWorkspace" @locale="setLanguage"
     />
     <Upload class="file-picker-host" :styles="{ root: { display: 'none' } }" aria-hidden="true" accept=".doc,.docx,.odt,.xls,.xlsx,.xlsb,.ods" :show-upload-list="false" :before-upload="importSelectedFile"><Button ref="importTrigger" class="file-picker-trigger" aria-hidden="true" tabindex="-1" /></Upload>
 

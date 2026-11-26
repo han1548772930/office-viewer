@@ -9,7 +9,7 @@ import { applyDocumentEditorCommand } from '../../api/document-editor-commands'
 import { caretRect, createTextMeasurer, documentPhysicalLineNavigation, documentStoryCaretRect, documentStoryLayoutLines, emptyLayout, hitTestDocument, hitTestDocumentStory, layoutDocument, lineForPoint, type DocumentLayout } from '../../features/document/layout/document-layout'
 import { cloneDocument, marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch, type TextTarget } from '../../features/document/model/document-model'
 import { documentSelectionForContextMenu } from '../../features/document/model/document-selection'
-import { documentImagesClipboardData, documentSelectionClipboardData, documentTablePasteCommand, type DocumentClipboardData } from '../../features/document/services/document-clipboard'
+import type { DocumentClipboardData, DocumentPasteMode } from '../../features/document/services/document-clipboard'
 import { sceneFromDocument, sceneOffset, type DocumentViewport } from '../../features/document/rendering/document-scene'
 import { documentRectScrollOffset, documentViewportLocation, zoomedDocumentScrollOffset, type DocumentScrollOffset, type DocumentViewportLocation } from '../../features/document/layout/document-viewport'
 import { codeBlockData } from '../../features/document/code-blocks/code-blocks.ts'
@@ -60,6 +60,8 @@ import DocumentImageOverlay from './DocumentImageOverlay.vue'
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; selectedImageId?: string; selectedImageIds?: readonly string[]; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; activeContentControlPopupMode?: DocumentContentControlPopupMode; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
   command: [command: DocumentCommand]
+  'clipboard-copy': [transfer: DataTransfer, cut: boolean]
+  'clipboard-paste': [data: DocumentClipboardData, mode: DocumentPasteMode]
   'structured-command': [request: DocumentStructuredCanvasCommandRequest]
   'structured-operation': [request: DocumentStructuredCanvasOperationRequest]
   'latex-edit': [request: DocumentLatexCanvasEditRequest]
@@ -197,6 +199,7 @@ let compositionControlId: string | undefined
 let blockedBodyInput: HTMLTextAreaElement | null | undefined
 let disposed = false
 let active = true
+let nextPasteMode: DocumentPasteMode = 'source'
 let viewportRestoreVersion = 0
 let pendingContentControlFocus: DocumentContentControlFocusToken | undefined
 const measurer = createTextMeasurer()
@@ -210,6 +213,7 @@ const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: s
 function bodyFocusChanged(event: FocusEvent) {
   if (!bodyEventIsCurrent(event)) return
   focused.value = event.type === 'focus'
+  if (!focused.value) nextPasteMode = 'source'
   requestDraw()
 }
 function storyFocusChanged(event: FocusEvent) {
@@ -343,10 +347,12 @@ watch(() => [JSON.stringify(props.selection), props.captureInputSession?.()?.gen
   if (imageGesture.value && !imageTargetCurrent(imageGesture.value.target)) cancelImageGesture()
 })
 const legacyStoryActive = computed(() => !!props.story && !props.host)
+function clearImageSelection() {
+  if (!selectedImageIds.value.length) return
+  imageSelectionRequest++; cancelImageGesture(); imageContextPoint.value = undefined; emit('image-selection', undefined)
+}
 function dispatchCommand(command: DocumentCommand) {
-  if (selectedImageIds.value.length && documentContentControlCommandIsTextInput(command)) {
-    imageSelectionRequest++; cancelImageGesture(); imageContextPoint.value = undefined; emit('image-selection', undefined)
-  }
+  if (documentContentControlCommandIsTextInput(command)) clearImageSelection()
   const input = documentContentControlCommandIsTextInput(command) && !documentContentControlCommandUsesWholeCellInput(command, props.selection)
     ? { ...command, activeContentControlId: command.activeContentControlId ?? explicitInputControlId() } : command
   emit('command', props.host ? { ...input, host: { ...props.host } } : input)
@@ -521,6 +527,7 @@ watch(() => props.zoom, (zoom) => {
 onActivated(() => { active = true; contentControlActive.value = true; void nextTick(resize) })
 onDeactivated(() => {
   active = false
+  nextPasteMode = 'source'
   cancelImageGesture(); imageContextPoint.value = undefined
   clearNoteHover()
   pendingContentControlFocus = undefined
@@ -761,6 +768,7 @@ function storyAt(pos: { x: number; y: number } | undefined): StoryLocation | und
 
 function pointerDown(event: PointerEvent) {
   if (!active || disposed || event.button !== 0 || composing.value || storyComposing.value) return
+  nextPasteMode = 'source'
   tableKeyboardCursor = undefined
   const coordinates = coordinatesFromEvent(event)
   const noteGlyph = coordinates && hitTestDocumentNoteGlyph(layout.value, coordinates.x, coordinates.y)
@@ -1322,6 +1330,7 @@ function keydown(event: KeyboardEvent) {
   if (event.isComposing || composing.value || event.keyCode === 229) return
   const command = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
+  if (!['Control', 'Meta', 'Shift', 'Alt'].includes(event.key)) nextPasteMode = command && event.shiftKey && key === 'v' ? 'text' : 'source'
   if (selectedImageIds.value.length && selectedImage.value) {
     if (event.key === 'Escape') {
       event.preventDefault(); imageSelectionRequest++
@@ -1408,42 +1417,20 @@ function keydown(event: KeyboardEvent) {
   }
 }
 
-function copy(event: ClipboardEvent): boolean {
-  if (!bodyEventIsCurrent(event) || !selectedImage.value && selectionCollapsed(props.selection)) return false
+function copy(event: ClipboardEvent, cut = false) {
+  if (!bodyEventIsCurrent(event) || composing.value || !selectedImage.value && selectionCollapsed(props.selection)) return
   event.preventDefault()
-  const targets = selectedImageIds.value.length ? selectedImageIds.value.flatMap(id => permissionTargetsForImage(editingModel.value, id))
-    : permissionTargetsForSelection(editingModel.value, props.selection)
-  const context = props.permissionContext ?? { documentId: props.model.id ?? '', userId: 'local-user' }
-  const rules = props.model.permissionRules ?? [], permission = resolveDocumentPermission(rules, context, 'copy', targets)
-  const visible = resolveDocumentPermission(rules, context, 'view', targets)
-  if (!permission.allowed || !visible.allowed || !event.clipboardData) { if (!permission.allowed || !visible.allowed) emit('notify', '此选区不允许复制'); return false }
-  try {
-    const data: DocumentClipboardData = selectedImageIds.value.length ? documentImagesClipboardData(editingModel.value, selectedImageIds.value)
-      : documentSelectionClipboardData(editingModel.value, props.selection)
-    event.clipboardData.setData('text/plain', data.text)
-    if (data.html) event.clipboardData.setData('text/html', data.html)
-  } catch (error) { emit('notify', error instanceof Error ? error.message : String(error)); return false }
-  return true
-}
-
-function cut(event: ClipboardEvent) {
-  if (!copy(event)) return
-  if (selectedImageIds.value.length) removeCanvasImages()
-  else dispatchCommand({ id: 'doc.command.insert-text', text: '' })
+  if (event.clipboardData) emit('clipboard-copy', event.clipboardData, cut)
 }
 function paste(event: ClipboardEvent) {
   if (!bodyEventIsCurrent(event)) return
   event.preventDefault()
-  const activeBlock = blockAtPoint(editingModel.value, props.selection.focus)
-  const codeBlock = documentStructuredBlockAtSelection(editingModel.value, props.selection, 'code') ?? activeBlock
-  if (!props.selection.tableSelection && codeBlock && codeBlockData(codeBlock)) {
-    dispatchCommand({ id: 'doc.command.insert-text', text: event.clipboardData?.getData('text/plain') ?? '' })
-    return
-  }
-  try {
-    const command = documentTablePasteCommand(editingModel.value, props.selection, { html: event.clipboardData?.getData('text/html'), text: event.clipboardData?.getData('text/plain') ?? '' })
-    if (command) dispatchCommand(command)
-  } catch (error) { emit('notify', error instanceof Error ? error.message : String(error)) }
+  const mode = nextPasteMode
+  nextPasteMode = 'source'
+  if (!composing.value && event.clipboardData) emit('clipboard-paste', {
+    html: event.clipboardData.getData('text/html'),
+    text: event.clipboardData.getData('text/plain'),
+  }, mode)
 }
 
 function scrollToPage(index: number) {
@@ -1476,8 +1463,8 @@ function revealStory(target: StoryLocation) {
 }
 /** SDT navigation closes value UI without canceling the document's text/IME session. */
 function cancelContentControlPopup() { pendingContentControlFocus = undefined; contentControlOverlay.value?.cancelInteraction() }
-function cancelInput(refocus = true) { imageSelectionRequest++; clearNoteHover(); cancelImageGesture(); imageContextPoint.value = undefined; structuredOverlay.value?.cancelInteraction(); cancelContentControlPopup(); tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
-defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelContentControlPopup, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
+function cancelInput(refocus = true) { imageSelectionRequest++; nextPasteMode = 'source'; clearNoteHover(); cancelImageGesture(); imageContextPoint.value = undefined; structuredOverlay.value?.cancelInteraction(); cancelContentControlPopup(); tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tableKeyboardCursor = undefined; cancelBodyComposition(refocus); cancelStoryInput(refocus) }
+defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelContentControlPopup, clearImageSelection, executeContentControlCommand, scrollToPage, scrollToBlock, captureScrollOffset, restoreScrollOffset, backend, getLayout: () => layout.value, isBodyComposing: () => composing.value })
 </script>
 
 <template>
@@ -1511,7 +1498,7 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelCo
       </template>
       <span class="document-note-preview-anchor" :style="noteHoverStyle" aria-hidden="true" />
     </Popover>
-    <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="bodyFocusChanged" @blur="bodyFocusChanged" @copy="copy" @cut="cut" @paste="paste" />
+    <Input.TextArea :key="bodyBridgeVersion" ref="inputRef" class="document-input-bridge" :style="inputStyle" aria-label="文档文字输入" autocapitalize="off" autocomplete="off" spellcheck="false" variant="borderless" @beforeinput="beforeInput" @input="inputFallback" @keydown="keydown" @compositionstart="compositionStart" @compositionupdate="compositionUpdate" @compositionend="compositionEnd" @focus="bodyFocusChanged" @blur="bodyFocusChanged" @copy="copy($event)" @cut="copy($event, true)" @paste="paste" />
     <Input.TextArea v-if="legacyStoryActive && story" :key="`${model.id}:${story.page}:${story.area}:${storyBridgeVersion}`" ref="storyRef" class="document-story-bridge" :style="storyStyle" :aria-label="story.area === 'header' ? '编辑页眉' : '编辑页脚'" :value="storyInputValue" :readonly="storyReadonly" :rows="1" :change-on-composing="true" variant="borderless" @keydown="storyKeys" @keyup="syncStorySelection" @select="syncStorySelection" @beforeinput="storyBeforeInput" @compositionstart="storyCompositionStart" @compositionend="storyCompositionEnd" @change="storyInputChanged" @focus="storyFocusChanged" @blur="storyFocusChanged" />
     <Alert v-if="error" class="canvas-error" type="error" show-icon :message="error" role="alert" />
     <span class="backend-announcement" aria-live="polite">{{ backend }}</span>
@@ -1521,7 +1508,7 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelCo
 <style scoped>
 .document-canvas-viewport { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; background: var(--document-background, #eef1f5); }
 .document-surface { position: absolute; inset: 0; pointer-events: none; }
-.document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; cursor: text; outline: none; }
+.document-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; touch-action: none; direction: ltr; cursor: text; outline: none; }
 .document-scroll-spacer { pointer-events: none; }
 .document-note-preview-anchor { position: absolute; pointer-events: none; }
 .document-note-preview { max-width: 320px; }

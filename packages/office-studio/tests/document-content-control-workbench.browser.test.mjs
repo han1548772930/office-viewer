@@ -177,6 +177,7 @@ window.contentControlFixture = {
   openHost: area => area === 'header' ? select('header-check', { kind: 'story', sectionId: 'first', story: 'header' }) : select('note-list', { kind: 'note', noteKind: 'footnote', noteId: 'note' }),
   update: (id, patch) => api.value.getContentControl(id).update(patch), setChecked: checked => api.value.getContentControl('check').setChecked(checked),
   setRules: rules => api.value.setPermissionRules(rules), undo: () => api.value.undo(), redo: () => api.value.redo(), appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
+  setLocale: locale => studio.regionalSettings.setLocale(locale),
   cancel: id => { cancellation?.dispose(); cancellation = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === id) event.cancel = true }) },
   saveReopen: () => { const saved = copy(api.value.saveModel()); unsubscribe?.dispose(); cancellation?.dispose(); reentry?.dispose(); studio.dispose(); studio = new OfficeStudio({ document: saved, currentUserId: 'editor' }); studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); model.value = api.value.getModel(); observe(); return saved },
   replaceSource: () => { const source = copy(initial); source.id = 'replacement-sdt'; unsubscribe?.dispose(); cancellation?.dispose(); reentry?.dispose(); studio.dispose(); studio = new OfficeStudio({ document: source, currentUserId: 'editor' }); studio.activateDocument(source.id); api.value = new FDocument(studio, source.id); model.value = api.value.getModel(); observe() },
@@ -319,6 +320,17 @@ test('DatePicker uses Dayjs display, stores ISO and updates the persisted format
   await expect.poll(async () => control(await snapshot(), 'date').dateValue).toBe('2026-11-30')
   assert.equal(control(await snapshot(), 'date').value, '2026-11-30'); assert.equal(blockText(await snapshot(), 'date-p'), '30 Nov 2026')
   assert.equal((await history()).undo, 1); await expect(inputBridge()).toBeFocused()
+})
+
+test('the date picker follows the document UI language without changing its stored date or history', async () => {
+  await page.evaluate(() => window.contentControlFixture.setLocale('frFR'))
+  const editor = await openEditor('截止日期')
+  const picker = editor.getByRole('textbox', { name: '截止日期', exact: true })
+  await expect(picker).toHaveAttribute('placeholder', 'Sélectionner une date')
+  await picker.click()
+  await expect(page.locator('.ant-picker-dropdown:visible .ant-picker-header-view')).toContainText(/sept/i)
+  assert.equal(control(await snapshot(), 'date').dateValue, '2026-09-03')
+  assert.equal((await history()).undo, 0)
 })
 
 test('duplicate dropdown display labels select their stored value and combo boxes accept a free value', async () => {

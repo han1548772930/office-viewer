@@ -16,7 +16,15 @@
 
 固定版分层：`examples/src/workbench-settings-control.tsx`、`workbench-settings.ts` 和 `main.ts` 管设置入口、当前值展示与存储；`examples/src/mount-example.ts` 调产品 API，不实现 Ribbon 或数字格式。这里也只在示例中保留宿主设置、品牌、路由、文件操作。当前有语言、地区、方向、七种主题色、外观、四种 Ribbon、界面显隐、八档缩放与重置，设备切换仍缺。设置样式按 `examples/src/global.css` 的 240px 菜单、184px 双栏标签与 112px 当前值宽度适配 antdv-next。
 
-产品包对应：`packages/core/src/services/region/region.service.ts` 与 `packages/core/src/facade/f-univer.ts` 对应本地 `i18n/regional-settings.ts`、`api/office-studio.ts`、`api/facade.ts`。地区默认跟随语言，显式设置后独立；Facade 接受 `deDE` 等上游标识，Vue / Intl 使用 `de-DE`。Sheets 画布和无障碍文本、统计、格式预览、时间线刻度读同一地区；不改保存的单元格标量，不把 Docs 日期字段的语言改为地区。上游货币按钮还按 `packages/sheets-numfmt/src/commands/commands/set-currency.command.ts` 选择地区格式，本地对此尚未完整对齐。四种 Ribbon 的呈现属于 `platform/ribbon`，Docs/Sheets 显隐和缩放属于各自工作台，不是示例 CSS。产品切换、跨表缩放、RTL 焦点、设备和真实文件往返未统一验收；旧记录中的独立“双行工具栏”按钮为历史实现。
+产品包对应：`packages/core/src/services/region/region.service.ts` 与 `packages/core/src/facade/f-univer.ts` 对应本地 `i18n/regional-settings.ts`、`api/office-studio.ts`、`api/facade.ts`。地区默认跟随语言，显式设置后独立；Facade 接受 `deDE` 等上游标识，Vue / Intl 使用 `de-DE`。Sheets 画布和无障碍文本、统计、格式预览、时间线刻度读同一地区，快捷货币及高级面板的差异见 [SHEET-06 地区货币](feature-evidence/SHEET-06-regional-currency.md)。四种 Ribbon 的呈现属于 `platform/ribbon`，Docs/Sheets 显隐和缩放属于各自工作台。产品切换、跨表缩放、RTL 焦点、设备和真实文件往返未统一验收。
+
+<a id="top-settings-and-feature-search"></a>
+
+### 2026-11-26 顶栏语言与开始区搜索
+
+- 固定版 `examples/src/{workbench-settings.ts,main.ts,mount-example.ts}` 的语言菜单采用该语言默认方向，地区可独立保持；`core/src/facade/f-univer.ts::setDirection` 只更新界面方向。当地语言菜单、方向菜单和 `FOffice.setDirection` 已连到同一个实例状态及现有偏好，偏好在重载后恢复。顶栏及两个产品的 ConfigProvider 使用 19 个 Ant 语言包，日期组件同时注册 Day.js 语言数据，依据项目 [ConfigProvider](llm.md#configprovider) 与日期组件说明。窗口方向与 Canvas 的坐标增量独立，画布滚动容器继续使用左起的物理坐标。设备切换会涉及固定版 MobileWorkbench、产品移动工具和触摸输入，仍待实现。此批未增加顶栏设置项。
+- 固定版共享 `packages/ui/src/menu/schema.ts` 在 START/OTHERS 注册 `ui.operation.open-feature-search`，classic order 2，两产品静态 grid 均为第二行第二列，同组快捷键面板在第一行第二列。`feature-search.controller.ts` 注册 Ctrl/Cmd+Shift+P，`FeatureSearch.tsx` 读取当前 Ribbon 及上下文菜单、过滤禁用/隐藏、对命令与参数去重。当前 Sheets、Docs 各接入 1 个常驻搜索根，按钮和编辑区快捷键打开相同的 Ant Modal/Select，实时读取当前 Ribbon 及其上下文标签，按名称、分组路径和命令 ID 搜索，执行时回到当前产品原命令。更多菜单沿用同一根。专属弹窗中的仅组件操作、独立右键菜单、快捷键面板和从 Facade 打开搜索仍待接入。
+- [生产工作台草稿](../tests/browser/office-workbench.spec.ts) 覆盖 RTL、地区与内容保持、偏好重载，以及搜索执行、焦点和撤销。[组件语言草稿](../packages/office-studio/tests/document-content-control-workbench.browser.test.mjs) 覆盖法语日期控件及日期保真。代码、文档和静态清点已核对，运行验证后置。
 
 ### 2026-11-22 入口位置修正（待统一测试）
 
@@ -46,9 +54,11 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 
 2026-11-22 通过 `scripts/audit-univer-oss-ribbon.mjs` 静态复算固定 v1.6.0 OSS schema：Sheets 常规根声明 63 项，按 START/INSERT/FORMULAS/DATA/VIEW 为 30/9/12/6/6；Docs 为 38 项，按 START/INSERT/VIEW 为 25/10/3，合计 101 项。Sheets VIEW 的第六项来自 `packages/sheets-crosshair-highlight/src/menu/schema.ts:ToggleCrosshairHighlightOperation.id`，不能继续列为本地独有扩展。Docs 另有页眉页脚 5 项、目录 2 项上下文根声明，Sheets 本次 OSS schema 未发现 contextual tab 根声明。此前 62/38 是历史计数。两产品常规路径未发现重复，但 factory 状态与动态菜单没有执行，静态声明不等于当前可见入口。
 
-脚本另外记录 Sheets 130、Docs 143 个右键/浮动菜单层级节点；该数包含父菜单和子项，不是根入口数或功能数量。Docs 还有 3 个颜色菜单展开表达式，须继续追踪 factory。More 仅改变同一入口的展示位置，不增加计数。2026-11-22 本地 schema 快照为 Sheets 68 项（29/6/11/17/5）、Docs 50 项（33/14/3）。2026-11-25 人工静态回读 document-ribbon，Docs 为 **52 项（33/16/3）**：Home 分组 5/11/5/2/5/5，Insert 分组 9/2/3/2，View 3。2026-11-26 回读当前 sheet-ribbon，Sheets 为 **71 项（30/7/11/17/6）**：Home 分组 5/11/6/5/3，Insert 为 media 4/cells 3，View 为 display 4/visibility 2；图片与背景各为一个常规根、各有两个子项。此前新增范围主题后的 69 项为旧清单快照。均包含条件项，排除 children 和 contextual tab。P16 图表对象四根、formula 上下文 tab 1/selector 11 根/71 模板、范围主题九区段、图表线型与共享绘图工作台接线均不新增常规根，分别见[对象](feature-evidence/SHEET-22-chart-object-context-actions.md)、[公式模板](feature-evidence/DOC-15-latex-templates-ribbon.md)及[绘图入口与差异](feature-evidence/SHEET-21-drawing-workbench-affine.md#entry-inventory)。实际可见数量与全量功能仍未验收；完整差异见[顶部入口表](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。
+脚本另外记录 Sheets 130、Docs 143 个右键和浮动菜单层级节点，包含父菜单和子项。Docs 还有 3 个颜色菜单展开表达式。More 只改变已有根的展示位置。当前本地主标签、Pro 扩展和上下文根分开记录，包含条件声明，详见[顶部入口表](feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)。P16 图表对象四根、LaTeX 上下文标签与 71 个模板、范围主题九区段、图表线型与共享绘图工作台接线沿用各自口径。相关来源见[对象菜单](feature-evidence/SHEET-22-chart-object-context-actions.md)、[公式模板](feature-evidence/DOC-15-latex-templates-ribbon.md)和[绘图入口](feature-evidence/SHEET-21-drawing-workbench-affine.md#entry-inventory)。
 
 历史 Pro 统计来自 Univer 1.5.2 官方发布包：20 个菜单 schema 包、24 个根节点（Sheets 15、Docs 9）只属于 1.5.2。2026-11-22 使用 `scripts/count-univer-pro-ribbon-schemas.mjs .research.local/univer-1.6.0/packages --bundle-only --inventory`，已静态读取缓存中的 60 个 v1.6.0 ES 包，未导入执行商业 SDK。当前已识别根声明的包包括 Docs callout/chart/code/history/latex/print/quote/reference/sdt/shape/table，以及 Sheets chart/history/outline/pivot-chart/pivot/print/shape/slicer/sparkline；共享 shape-editor 还声明形状文本的粘贴入口。
+
+2026-11-26 以同一脚本复算，当前缓存中 64 个 ES 包可从 `package.json` 核实为 1.6.0。`engine-pivot` 缓存缺少清单，报告单列待核实，其他包继续扫描。OSS 结果仍为 Sheets 63、Docs 38 和 Docs 上下文 7。64 统计的是版本可核实的包，静态注册、根入口去重、运行时显隐和功能验收各自保留证据。
 
 同一功能在组级 schema、完整 Ribbon schema 或替代挂载分支中重复注册，不能将声明次数相加为可见根入口总数。`docs-list-ui`、`docs-formula-ui` 等未识别 `mergeMenu` 根项，仍须追踪组件、标记菜单、浮动编辑器和替换注册；不是无入口结论。embed、pivot、latex、code、shape-editor 仍有未解析表达式。既有 [research manifest](../.research.local/univer/resources.json) 的历史记录与早期三个 1.6.0 包复核不代表本次全部缓存清点；目前不推导完整 Pro 运行态总数。
 
@@ -113,8 +123,8 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | SHEET-23（Pro） | 公开透视表规格；固定 v1.6.0 发布 UI 的 15 项 Show Values As 及字段参数 | 插入/数据页共用 `sheet.operation.open-pivot` 和真实配置面板；[共享显示变换](feature-evidence/SHEET-23-24-pivot-show-data-as.md)与 [命令/Facade/linked 图格式](feature-evidence/SHEET-23-24-pivot-show-data-as-facade.md)已落盘，source/output 权限和 content/history/user/host 复用内容事务 | 15 项为字段枚举，不增加 Ribbon 根；全部草稿未运行，完整面板/展开折叠/日期条件/Pro API、Office Cache/Parts 与大规模性能仍待闭环 |
 | SHEET-24（Pro） | v1.6.0 `sheets-pivot-chart` 来源/编辑类型、Facade 和发布 UI factories/schema/ES，具体标签/位置/条件见 [独立 UI 清点](feature-evidence/SHEET-24-pivot-chart-ui.md) | 既有根支持 [owned/linked 创建、字段+外观一次配置、Facade/事件](feature-evidence/SHEET-24-owned-pivot-charts.md)；[四字段区/11 汇总/标签与报告选项 UI](feature-evidence/SHEET-24-pivot-chart-ui.md)和 [15 项显示变换](feature-evidence/SHEET-23-24-pivot-show-data-as-facade.md)已落；open-pivot-chart-panel 为同一 UI operation 别名 | 上游两条互斥 Ribbon 根/两个创建子项、四个轴子项与动态层级单列；本地常规根增量 0。核心29/45、引擎30/51、UI43/70等草稿均未运行；同时创建表图/完整轴浮层与 Pro API/Office/真实 UI/大样本继续闭环 |
 | SHEET-25（Pro） | 固定发布 `f-slicer.d.ts`、连接/来源模型类型、四根格式 schema 和 open-dialog operations，见[多目标连接证据](feature-evidence/SHEET-25-slicer-connections.md) | Table/Pivot affine/五类叶与 Ant 画布控件保留；共享缓存、替换/去重 linked/owned 连接、多报告筛选、Facade/权限/一次历史、复制/删除/结构生命周期已落盘；四条件格式根和连接 Ant 弹窗接入，常规根增量 0 | 原 98/182 及本批核心 25/31、UI/lifecycle 草稿均未运行；detach filter 语义待运行核实，完整交叉筛选成员状态、日期/Pro API、缺依赖跨 workbook、Office、两后端/IME/性能仍缺 |
-| SHEET-26（Pro） | 公开迷你图规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 完整图型、空值/负值/比例、分组、引用更新和 Office 往返待实现/验收 |
-| SHEET-27（Pro） | 公开分组规格；商业菜单 ID 未核实 | 当前无对应本地顶部 item | 行列嵌套层级、折叠展开、汇总方向与隐藏原因合并未验收 |
+| SHEET-26（Pro） | 固定 `sheets-sparkline-ui` Insert/Media，`sheet.operation.open-sparkline-selector` | 迷你图插入、跨表数据范围、四图型和分组设置可从实际工作台触发；上下文编辑、删除与公开模型使用同一数据 | [入口和设置](feature-evidence/SHEET-26-sparkline-settings-and-groups.md)、[XLSX 投影](feature-evidence/SHEET-26-sparkline-office-roundtrip.md)，文件独立重开、移动与真实性能未验收 |
+| SHEET-27（Pro） | 固定 `sheets-outline-ui` Data/Organization，`sheet.toolbar.dimension-outline.group` | 数据整理、行列头、画布层级按钮和公开 Worksheet API 已接入；手动、筛选和大纲折叠分别保留 | [入口与模型](feature-evidence/SHEET-27-outline.md)、[XLSX 投影](feature-evidence/SHEET-27-outline-office-io.md)，真实文件与界面未验收 |
 | SHEET-28（Pro） | 公开打印/PDF 规格；商业菜单 ID 未核实 | 当前没有完整 Sheets 页面设置/分页预览/输出工作流 | 打印区域、适页、重复标题、页眉页脚、图形和隐藏处理、实际输出待实现/验收 |
 | SHEET-29 | 本项目 Office parser/writer 与公开导入导出规格 | 应用壳负责打开/保存/导出真实 XLSX；条件格式来源、dxf/theme、base/linked x14 与整本模型/输出资源预算接入本地读写链路 | [条件格式 Office 专项](feature-evidence/SHEET-14-conditional-format-office-roundtrip.md)的本轮草稿未执行；XLS/XLSX/CSV/TSV 公开契约、保留 XLSB/ODS 读取、全部资源/样式/公式独立重开仍未验收 |
 | SHEET-30 | [Sheets schema][sheet-schema]：`AddRangeProtectionFromToolbarCommand` 等保护菜单 | 当前无完整顶部权限流程 | 服务端工作簿/表/范围权限、可执行操作、失败原子性/协作及恢复待验收 |
@@ -139,7 +149,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | DOC-09 | docs-find-replace 与共享 find-replace schema | `doc.operation.toggle-find`，正文匹配/定位当前实现 | 完整替换、选项、表格/页眉页脚等作用域、可撤销全部替换未验收 |
 | DOC-10 | docs-thread-comment-ui 浮动工具/绘图上下文 | 当前无完整本地顶部/浮动持久评论流程 | 锚点变换、回复/解决、用户/权限/服务同步未验收 |
 | DOC-11（Pro） | 内容控件公开规格；完整商业菜单 ID 未核实 | 内容控件 split 与六种实际类型直达，真实面板/命令/历史；已验证锁、段落拆分锚点、撤销/重做与内部重开 | 图片/分组/重复节/文档部件完整 UI、跨段 SDT、全部编辑变换及 DOCX 往返仍未验收 |
-| DOC-12（Pro） | 脚注尾注公开规格；商业菜单 ID 未核实 | 当前无脚注/尾注顶部编辑流程；writer 现有 notes 写出不等于编辑器能力 | 规范模型/引用编号/注释区排版/导航/命令历史/导入重开待实现/验收 |
+| DOC-12（Pro） | 固定 `docs-reference-ui` 引用标签，脚注和尾注各有插入、上一条、下一条、设置 | 传统分页下 8 个固定根和 1 个本地管理根已接实际命令与编辑宿主，返回引用另有上下文入口 | [脚注和尾注](feature-evidence/DOC-12-footnotes-endnotes.md)记录真实模型、权限与分页边界，DOCX 独立重开、主题、焦点和性能未验收 |
 | DOC-13（Pro） | 固定 docs-code / -ui 发布包，`docs-code.command.insert/update` 与语言目录 | INSERT/MEDIA 1/7；21 项真实 Prism 词法、整块字体、语言/More 四字段、源编辑/滚动/caret、桌面 Popover/移动 Drawer 与结构转换进入共享内容命令/Facade | [结构](feature-evidence/DOC-13-14-16-17-structured-blocks.md)、[Canvas/host](feature-evidence/DOC-13-14-16-17-canvas-interactions.md)、[词法/字体/段落入口与 56 个新草稿](feature-evidence/DOC-13-14-16-17-code-popmenus.md)均未运行；子选择不另计根，复杂语言/字体、复制、Office 与性能未验收 |
 | DOC-14（Pro） | 固定 docs-column / -ui 发布包，paragraph context schema 与公开组/栏 Facade | 2–5 栏、比例/间距、增删移动/逐栏文本；Canvas 调宽 preview→释放一次命令，px/公开单位来源、段落及表后入口进入真实结构历史 | [结构](feature-evidence/DOC-13-14-16-17-structured-blocks.md)、[Canvas/单位](feature-evidence/DOC-13-14-16-17-canvas-interactions.md)、[段落/表后](feature-evidence/DOC-13-14-16-17-code-popmenus.md)保留未验收；本地常规根/分组差异、全部模式/故事/嵌套和 Office 仍缺 |
 | DOC-15（Pro） | 固定 docs-latex/-ui 发布类型和 ES；四个 `docs-latex.command.*-formula`、Insert/Media、右键与上下文 schema | 常驻插入、三右键动作和 Canvas 双击接同一稳定 atom/命令；71 模板/11 类与 formula 上下文 11 根接同一 source planner、operation 和 unit editor owner；Ant source、公开范围/segment aliases、named DOC_LATEX_PLUGIN、历史与内部重开已有接线；公开仅 inline，本地 block 是扩展 | [LaTeX 编辑与 43 个未运行草稿](feature-evidence/DOC-15-latex-editing.md)、[模板/上下文与 47 条新声明（计划 117 用例）](feature-evidence/DOC-15-latex-templates-ribbon.md)；其他段落/浮动/移动入口、完整 TeX/OMML、source 内部多样式、Worker/Rust/WASM、真实 IME/主题/两后端和性能仍有缺口 |
@@ -152,7 +162,7 @@ Sheets 开始/格式的边框面板已接入，15 个位置项和 12 个线型�
 | DOC-22 | 本项目 duke-pages parser / DOCX writer | 应用壳打开/保存/导出真实 DOCX；DOC/ODT 从真实全局定义取默认格式，原样式资源经专用 legacy-sources part 保存；DOCX 当前 Word 资源与历史来源分开；清除后缓存的局部混合格式接入 writer | [默认样式/历史来源/字段缓存证据](feature-evidence/DOC-02-clear-formatting.md)记录未运行内部/原生两次重开草稿；应用专用 part 在独立 Office 另存中的保留、原格式全部语义/关系及完整 DOC/DOCX/ODT 保真仍未验收 |
 | DOC-23 | DocFooter/DocStatistics/DocLayoutProgress | 组合底栏：当前/总页、字符/选区字素统计、缩放、内容修改状态；不把 UI 状态伪称云保存成功 | 全部上游统计口径、真实布局任务进度、大文档与模式差异未完整验收 |
 
-公开基础插入项的符号/emoji 选择器现已接入，支持保留选区插入、分类/最近使用与自定义 Unicode。剪贴板新增剪切、源格式/纯文本粘贴，顶部与原生 paste 共用归一化，并拒绝过期异步结果；copy/cut 当前写出纯文本。完整富文本/媒体剪贴板、目标格式及最近粘贴模式切换仍未完成，目标继续保留。
+公开基础插入项的符号/emoji 选择器现已接入，支持保留选区插入、分类/最近使用与自定义 Unicode。Docs 复制/剪切可写文本与 HTML，功能区、右键及原生粘贴共用保留源格式、匹配目标格式和纯文本逻辑。最近一次模式切换、系统文件型图片及跨结构资源保真仍待补齐。见 [Docs 剪贴板静态证据](feature-evidence/COMMON-03-docs-clipboard.md)。
 
 ## 5. 既有共享 Ribbon 检查（历史结果）
 

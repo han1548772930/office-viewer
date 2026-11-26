@@ -1,3 +1,4 @@
+import type { OfficeDirection } from '../i18n/regional-settings.ts'
 import type {
   CellScalar,
   ChartAxisOptions,
@@ -416,6 +417,7 @@ export class FOffice {
 
   setLocale(locale: string): void { this.studio.regionalSettings.setLocale(locale) }
   setRegion(region: string): void { this.studio.regionalSettings.setRegion(region) }
+  setDirection(direction: OfficeDirection): void { this.studio.regionalSettings.setDirection(direction) }
   getCurrentLocale(): string { return this.studio.regionalSettings.locale.value.replace('-', '') }
   getCurrentRegion(): string { return this.studio.regionalSettings.region.value.replace('-', '') }
 
@@ -3191,6 +3193,7 @@ export class FSheetTimeline {
 
 export class FDocument {
   get regionalSettings() { return this.api.regionalSettings }
+  workbenchUiHost() { return this.api.workbenchUiHost(this.id) }
   private readonly api: OfficeStudio
   readonly id: string
 

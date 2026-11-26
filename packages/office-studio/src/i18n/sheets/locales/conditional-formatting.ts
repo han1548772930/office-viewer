@@ -28,6 +28,32 @@ const localeValues: Record<string, readonly string[]> = {
   'zh-TW': ['條件格式','條件格式','規則','新增規則','套用到','條件','數值','第二個數值','填滿','文字顏色','粗體','符合時停止','儲存規則','更新規則','刪除規則','上移規則','下移規則','條件格式規則無效。','請輸入一個或多個有效儲存格範圍。','等於','不等於','大於','大於或等於','小於','小於或等於','介於','不介於'],
 }
 
+const quickKeys = ['data-bar', 'icon-set', 'rank', 'shape', 'direction', 'create', 'clear'] as const
+const quickValues: Record<string, readonly string[]> = {
+  'ar-SA': ['شريط البيانات', 'مجموعة أيقونات', 'الترتيب', 'الشكل', 'الاتجاه', 'إنشاء تنسيق شرطي', 'مسح القواعد للنطاق المحدد'],
+  'ca-ES': ['Barra de dades', "Conjunt d'icones", 'Rang', 'Forma', 'Direcció', 'Crea format condicional', 'Esborra les regles del rang seleccionat'],
+  'de-DE': ['Datenbalken', 'Symbolsatz', 'Rang', 'Form', 'Richtung', 'Bedingte Formatierung erstellen', 'Regeln für ausgewählten Bereich löschen'],
+  'en-US': ['Data Bar', 'Icon Set', 'Rank', 'Shape', 'Direction', 'Create Conditional Formatting', 'Clear Rules for Selected Range'],
+  'es-ES': ['Barra de datos', 'Conjunto de iconos', 'Rango', 'Forma', 'Dirección', 'Crear formato condicional', 'Borrar reglas del rango seleccionado'],
+  'fa-IR': ['نوار داده', 'مجموعه آیکون', 'رتبه', 'شکل', 'جهت', 'ایجاد قالب‌بندی شرطی', 'پاک کردن قوانین برای محدوده انتخاب شده'],
+  'fr-FR': ['Barre de données', "Jeu d'icônes", 'Rang', 'Forme', 'Direction', 'Créer une mise en forme conditionnelle', 'Effacer les règles pour la plage sélectionnée'],
+  'id-ID': ['Bilah Data', 'Set Ikon', 'Peringkat', 'Bentuk', 'Arah', 'Buat Format Bersyarat', 'Hapus Aturan untuk Rentang yang Dipilih'],
+  'it-IT': ['Barra Dati', 'Set di Icone', 'Grado', 'Forma', 'Direzione', 'Crea Formattazione Condizionale', 'Cancella Regole per Intervallo Selezionato'],
+  'ja-JP': ['データバー', 'アイコンセット', '評価', '図形', '方向', '新しいルール', '選択したセルからルールをクリア'],
+  'ko-KR': ['데이터 막대', '아이콘 집합', '순위', '모양', '방향', '조건부 서식 만들기', '선택 영역 규칙 지우기'],
+  'pl-PL': ['Pasek danych', 'Zestaw ikon', 'Ranga', 'Kształt', 'Kierunek', 'Utwórz formatowanie warunkowe', 'Wyczyść reguły dla zaznaczonego zakresu'],
+  'pt-BR': ['Barra de Dados', 'Conjunto de Ícones', 'Classificação', 'Forma', 'Direção', 'Criar Formatação Condicional', 'Limpar Regras do Intervalo Selecionado'],
+  'ru-RU': ['Гистограмма данных', 'Набор иконок', 'Ранг', 'Форма', 'Направление', 'Создание условного форматирования', 'Очистить правила для выбранного диапазона'],
+  'sk-SK': ['Dátový pruh', 'Súprava ikon', 'Poradie', 'Tvar', 'Smer', 'Vytvoriť podmienené formátovanie', 'Vymazať pravidlá pre vybraný rozsah'],
+  'vi-VN': ['Thanh dữ liệu', 'Tập hợp biểu tượng', 'Hạng', 'Hình dạng', 'Hướng', 'Tạo định dạng có điều kiện mới', 'Xóa quy tắc cho vùng chọn'],
+  'zh-CN': ['数据条', '图标集', '等级', '形状', '方向', '新建条件格式', '清除所选区域的规则'],
+  'zh-HK': ['資料條', '圖示集', '等級', '形狀', '方向', '新建條件格式', '清除所選區域的規則'],
+  'zh-TW': ['資料條', '圖示集', '等級', '形狀', '方向', '新建條件格式', '清除所選區域的規則'],
+}
+
 export const conditionalFormattingLocaleMessages: Partial<Record<string, Record<string, string>>> = Object.fromEntries(
-  Object.entries(localeValues).map(([locale, values]) => [locale, Object.fromEntries(keys.map((key, index) => [key, values[index]!]))]),
+  Object.entries(quickValues).map(([locale, values]) => [locale, Object.fromEntries([
+    ...(localeValues[locale] ?? []).map((value, index) => [keys[index]!, value]),
+    ...values.map((value, index) => [`conditional.quick.${quickKeys[index]!}`, value]),
+  ])]),
 )

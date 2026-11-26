@@ -122,3 +122,49 @@ test('source paste remains available for text-only clipboard data', () => {
   })
   assert.equal(clipboard.documentPasteSpecialCommand({ text: '' }, 'source'), undefined)
 })
+
+test('selection clipboard writes Unicode text and HTML from the same partial range without exposing the trailing paragraph', () => {
+  const text = paragraph('selected', 'A中文🙂Z', { bold: true, italic: true, href: 'https://example.test/link' })
+  const trailing = paragraph('trailing', 'outside', { color: '#ff0044' })
+  trailing.metadata.codeBlock = { source: 'outside', language: 'plain' }
+  const document = { blocks: [text, trailing] }
+  const before = structuredClone(document)
+  const range = { anchor: { blockId: trailing.id, offset: 0 }, focus: { blockId: text.id, offset: 1 } }
+  const data = clipboard.documentSelectionClipboardData(document, range)
+  assert.equal(data.text, '中文🙂Z\n')
+  assert.match(data.html, /href="https:\/\/example\.test\/link"/)
+  assert.match(data.html, /<em><strong>中文🙂Z<\/strong><\/em>/)
+  assert.doesNotMatch(data.html, /outside|#ff0044/)
+  assert.deepEqual(document, before)
+})
+
+test('partial legacy code selection serializes only selected source', () => {
+  const block = paragraph('code', 'before SELECTED after')
+  block.metadata.codeBlock = { source: 'before SELECTED after', language: 'plain', lineNumbers: false }
+  const data = clipboard.documentSelectionClipboardData({ blocks: [block] }, {
+    anchor: { blockId: block.id, offset: 7 }, focus: { blockId: block.id, offset: 15 },
+  })
+  assert.equal(data.text, 'SELECTED')
+  assert.match(data.html, /<code>SELECTED<\/code>/)
+  assert.doesNotMatch(data.html, /before SELECTED|SELECTED after/)
+  assert.equal(block.metadata.codeBlock.source, 'before SELECTED after')
+})
+
+test('copy permits visible read-only text and cut additionally requires the selection and host to be editable', () => {
+  const block = paragraph('protected', 'author text')
+  const range = { anchor: { blockId: block.id, offset: 0 }, focus: { blockId: block.id, offset: 6 } }
+  const context = { documentId: 'doc', userId: 'viewer' }
+  const denial = { id: 'denial', scope: 'paragraph', targetId: block.id, userIds: ['viewer'], effect: 'deny' }
+  assert.deepEqual(clipboard.documentClipboardPermissions({ blocks: [block] }, range, context), { copy: true, cut: true })
+  assert.deepEqual(clipboard.documentClipboardPermissions({ blocks: [block] }, range, context, [], false), { copy: true, cut: false })
+  assert.deepEqual(clipboard.documentClipboardPermissions({ blocks: [block], permissionRules: [{ ...denial, action: 'edit' }] },
+    range, context), { copy: true, cut: false })
+  assert.deepEqual(clipboard.documentClipboardPermissions({ blocks: [block], permissionRules: [{ ...denial, action: 'view' }] },
+    range, context), { copy: false, cut: false })
+  assert.deepEqual(clipboard.documentClipboardPermissions({ blocks: [block] }, models.collapsedSelection(range.anchor), context), { copy: false, cut: false })
+})
+
+test('code paste can use plain clipboard data without needing browser HTML parsing', () => {
+  assert.deepEqual(clipboard.documentPasteCommand({ text: '  code\n', html: '<p><b>other</b></p>' }, true),
+    { id: 'doc.command.insert-text', text: '  code\n' })
+})

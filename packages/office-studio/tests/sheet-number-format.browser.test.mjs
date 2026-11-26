@@ -43,6 +43,7 @@ window.sheetFormatFixture = {
     const unit = studio.editor.history.units[studio.activeWorkbookId]
     return { undo: unit.undo.length, redo: unit.redo.length }
   },
+  formatFromApi: (address, pattern) => api.getActiveWorkbook().getActiveSheet().getRange(address).setNumberFormat(pattern),
   commands: () => copy(commands),
   notifications: () => copy(notifications),
   cancelFormats: value => { canceled.value = value },
@@ -677,6 +678,80 @@ test('currency controls preview negative styles and decimals, then share toolbar
   await expect(panel).toBeHidden()
   assert.deepEqual(await history(), depth)
   assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 12.25)
+})
+
+test('regional currency changes the shortcut and previews while saved currencies remain explicit', async () => {
+  await page.evaluate(() => {
+    window.sheetFormatFixture.seedCells([{ value: -1234.56 }])
+    window.sheetFormatFixture.region('de-DE')
+  })
+  await selectRange('A1')
+  const shortcut = (await homeItem('sheet.number-format.currency')).getByRole('button')
+  await expect(shortcut).toContainText('€')
+  const menu = await openFormats()
+  const euro = menu.getByRole('menuitem', { name: /^货币\s*€/ })
+  await expect(euro).toContainText('€1.220,00')
+  await euro.press('Escape')
+  await clickCommand('sheet.number-format.currency')
+  const pattern = '"€"#,##0.00_);[Red]("€"#,##0.00)'
+  await expect(cellText()).toHaveText('A1 (€1.234,56)')
+  await expect(shortcut).toHaveAttribute('aria-pressed', 'true')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, pattern)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+
+  await page.evaluate(() => window.sheetFormatFixture.region('en-US'))
+  await expect(shortcut).toContainText('$')
+  await expect(shortcut).toHaveAttribute('aria-pressed', 'false')
+  await expect(cellText()).toHaveText('A1 (€1,234.56)')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, pattern)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+
+  await clickCommand('sheet.command.undo')
+  await expect(cellText()).toHaveText('A1 -1234.56')
+  await page.evaluate(pattern => window.sheetFormatFixture.formatFromApi('A1', pattern), pattern)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, pattern)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+})
+
+test('more formats previews regional negative values and preserves accounting sections through reopen', async () => {
+  await page.evaluate(() => {
+    window.sheetFormatFixture.seedCells([{ value: -1234.56 }])
+    window.sheetFormatFixture.region('de-DE')
+  })
+  await selectRange('A1')
+  let panel = await openMore()
+  await chooseCategory(panel, '货币')
+  const currency = panel.locator('.ant-form-item').filter({ has: panel.getByRole('combobox', { name: '货币类型', exact: true }) })
+  await expect(currency.getByText('€', { exact: true })).toBeVisible()
+  const negativeStyles = panel.getByRole('menu', { name: '负数类型', exact: true }).getByRole('menuitem')
+  await expect(negativeStyles.nth(3)).toHaveText('(€1.234,56)')
+  await expect(negativeStyles.nth(3).locator('.number-format-choice')).toHaveCSS('color', 'rgb(255, 0, 0)')
+  await panel.getByRole('button', { name: /取.*消/ }).click()
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+
+  const original = '"HK$" #,##0.00_);[Red]("HK$"#,##0.00);"-";@'
+  const edited = '"HK$" #,##0.000_);[Red]("HK$"#,##0.000);"-";@'
+  await page.evaluate(pattern => window.sheetFormatFixture.formatFromApi('A1', pattern), original)
+  panel = await openMore()
+  const category = panel.locator('.ant-form-item').filter({ has: panel.getByRole('combobox', { name: '格式类型', exact: true }) })
+  await expect(category.getByText('会计', { exact: true })).toBeVisible()
+  const decimals = panel.getByRole('spinbutton', { name: '小数位数', exact: true })
+  await decimals.fill('3'); await decimals.press('Tab')
+  await expect(cellText()).toHaveText('A1 (HK$1.234,560)')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, original)
+  await panel.getByRole('button', { name: /确.*认/ }).click()
+  await expect(panel).toBeHidden()
+  const saved = await snapshot()
+  assert.equal(saved.sheets[0].cells['0:0'].value, -1234.56)
+  assert.equal(saved.sheets[0].cells['0:0'].style.numberFormat, edited)
+  assert.deepEqual(await history(), { undo: 2, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, original)
+  await clickCommand('sheet.command.redo')
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].style.numberFormat, edited)
+  await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved)
+  await selectRange('A1')
+  await expect(cellText()).toHaveText('A1 (HK$1.234,560)')
 })
 
 test('name and formula input composition does not navigate or commit, and address errors use the shared Alert theme', async () => {
