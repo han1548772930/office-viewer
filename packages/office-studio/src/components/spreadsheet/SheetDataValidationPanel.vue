@@ -6,7 +6,7 @@ import { FOffice, type DataValidationRule } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import type { CellRange, SheetDataValidationErrorStyle, SheetDataValidationOperator, SheetDataValidationRenderMode, SheetDataValidationType } from '../../domain/model'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
-import { createSheetDataValidationRule } from '../../features/sheet-validation/validation-engine.ts'
+import { createSheetDataValidationRule, parseValidationListItems, serializeValidationListItems } from '../../features/sheet-validation/validation-engine.ts'
 import { parseValidationRanges, validationPickedAddress, validationUsesOperator, validationUsesTwoFormulas, type ValidationRangeTarget } from '../../features/sheet-validation/validation-panel-state.ts'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialType?: SheetDataValidationType; initialRuleId?: string; canvasRanges?: CellRange[]; canAdd?: boolean; selectedRange?: { target: ValidationRangeTarget; value: string } }>()
@@ -127,7 +127,7 @@ function loadRule(current: DataValidationRule | null, initialType?: SheetDataVal
   operator.value = current ? current.operator ?? '' : validationUsesOperator(type.value) ? 'between' : ''
   formula1.value = current?.formula1 ?? (type.value === 'checkbox' ? 'TRUE' : '1')
   formula2.value = current?.formula2 ?? (type.value === 'checkbox' ? 'FALSE' : '10')
-  listValues.value = current?.formula1?.replace(/^"|"$/g, '').replace(/""/g, '"') ?? ''
+  listValues.value = current?.formula1?.replace(/^"|"$/g, '') ?? ''
   listMode.value = current?.formula1?.trim().startsWith('=') ? 'reference' : 'inline'
   checkboxCustomValues.value = current?.type === 'checkbox' && (current.formula1 !== undefined || current.formula2 !== undefined)
   allowBlank.value = current?.allowBlank ?? true
@@ -157,10 +157,9 @@ function listFormula(): string {
     if (!source) throw new Error(t('sheet.validation.list-reference-empty', '请选择或输入一个有效的单元格区域。'))
     return source.startsWith('=') ? source : `=${source}`
   }
-  const values = listValues.value.split(',').map(value => value.trim()).filter(Boolean)
+  const values = parseValidationListItems(`"${source}"`)
   if (!values.length) throw new Error(t('sheet.validation.list-empty', '请输入至少一个下拉选项。'))
-  if (values.some(value => value.includes(','))) throw new Error(t('sheet.validation.list-comma', '下拉选项暂不接受包含逗号的单项。'))
-  return `"${values.join(',').replaceAll('"', '""')}"`
+  return serializeValidationListItems(values)
 }
 
 function apply(): void {

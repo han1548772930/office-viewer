@@ -5,7 +5,7 @@ import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import type { DocumentTableInsertOptions } from '../../features/document/commands/table-command-types'
 import { documentTableValuesFromTsv } from '../../features/document/services/document-table-data'
 
-const props = defineProps<{ open: boolean }>()
+const props = defineProps<{ open: boolean; disabled?: boolean }>()
 const emit = defineEmits<{
   'update:open': [open: boolean]
   insert: [size: { rows: number; columns: number; options: DocumentTableInsertOptions }]
@@ -26,7 +26,7 @@ watch(() => props.open, open => {
 })
 
 function insert() {
-  if (!canInsert.value) return
+  if (props.disabled || !canInsert.value) return
   emit('insert', { rows: form.rows, columns: form.columns, options: {
     ...(form.specifyWidth ? { width: form.width } : {}), ...(form.rowHeight !== 30 ? { rowHeights: Array.from({ length: form.rows }, () => form.rowHeight) } : {}),
     titleRow: form.titleRow, headerRowCount: Math.max(form.headerRowCount, form.titleRow ? 1 : 0), ...(values.value ? { values: values.value } : {}),
@@ -41,13 +41,13 @@ function insert() {
     :title="t('doc.table-insert.title', '插入表格')"
     :ok-text="t('common.insert', '插入')"
     :cancel-text="t('common.cancel', '取消')"
-    :ok-button-props="{ disabled: !canInsert }"
+    :ok-button-props="{ disabled: disabled || !canInsert }"
     :width="440"
     destroy-on-hidden
     @ok="insert"
     @cancel="emit('update:open', false)"
   >
-    <Form :model="form" class="table-insert-form" layout="vertical" @finish="insert">
+    <Form :model="form" :disabled="disabled" class="table-insert-form" layout="vertical" @finish="insert">
       <FormItem name="rows" :label="t('doc.table-insert.rows', '行数')">
         <InputNumber v-model:value="form.rows" :min="1" :max="10000" :precision="0" />
       </FormItem>
@@ -55,7 +55,7 @@ function insert() {
         <InputNumber v-model:value="form.columns" :min="1" :max="512" :precision="0" />
       </FormItem>
       <FormItem name="specifyWidth" label="指定表格宽度"><Switch v-model:checked="form.specifyWidth" /></FormItem>
-      <FormItem name="width" label="表格宽度（px）"><InputNumber v-model:value="form.width" :min="1" :disabled="!form.specifyWidth" /></FormItem>
+      <FormItem name="width" label="表格宽度（px）"><InputNumber v-model:value="form.width" :min="1" :disabled="disabled || !form.specifyWidth" /></FormItem>
       <FormItem name="rowHeight" label="最小行高（px）"><InputNumber v-model:value="form.rowHeight" :min="1" /></FormItem>
       <FormItem name="headerRowCount" label="重复表头行数"><InputNumber v-model:value="form.headerRowCount" :min="0" :max="form.rows" :precision="0" /></FormItem>
       <FormItem name="titleRow" label="合并首行为标题"><Switch v-model:checked="form.titleRow" /></FormItem>

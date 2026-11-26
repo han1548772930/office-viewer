@@ -22,6 +22,39 @@ test('hyperlink edits preserve existing cell content unless a display label is s
   assert.equal(sheet.cells['0:0']?.value, 'Report')
 })
 
+test('hyperlink labels replace numeric and boolean types and remain text through view roundtrip and removal', () => {
+  const model = createBlankWorkbook()
+  const sheet = model.sheets[0]
+  assert.ok(sheet)
+  const samples = [
+    { value: 42.5, dataType: 'number', display: '', expected: '42.5' },
+    { value: false, dataType: 'boolean', display: '', expected: 'false' },
+    { value: 7, dataType: 'number', display: '=SUM(1,2)', expected: '=SUM(1,2)' },
+  ]
+  for (const [row, sample] of samples.entries()) {
+    sheet.cells[`${row}:0`] = { ...createCell(row, 0, sample.value), dataType: sample.dataType, cachedDataType: sample.dataType }
+    setSheetCellHyperlink(model, sheet, row, 0, { target: 'https://example.com/report', display: sample.display })
+    assert.equal(sheet.cells[`${row}:0`].value, sample.expected)
+    assert.equal(sheet.cells[`${row}:0`].display, sample.expected)
+    assert.equal(sheet.cells[`${row}:0`].formula, null)
+    assert.equal(sheet.cells[`${row}:0`].dataType, 'text')
+    assert.equal(sheet.cells[`${row}:0`].cachedDataType, null)
+  }
+
+  const view = toExcelWorkbookView(model)
+  const restored = applyExcelWorkbookView(model, view)
+  for (const [row, sample] of samples.entries()) {
+    assert.equal(view.sheets[0].cells[`A${row + 1}`].dataType, 'text')
+    const restoredSheet = restored.sheets[0]
+    removeSheetCellHyperlink(restoredSheet, row, 0)
+    assert.equal(restoredSheet.cells[`${row}:0`].hyperlink, null)
+    assert.equal(restoredSheet.cells[`${row}:0`].value, sample.expected)
+    assert.equal(restoredSheet.cells[`${row}:0`].formula, null)
+    assert.equal(restoredSheet.cells[`${row}:0`].dataType, 'text')
+    assert.equal(restoredSheet.cells[`${row}:0`].cachedDataType, null)
+  }
+})
+
 test('hyperlink target obeys upstream formula and validation restrictions', () => {
   const model = createBlankWorkbook()
   const sheet = model.sheets[0]

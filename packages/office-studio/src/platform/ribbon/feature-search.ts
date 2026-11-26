@@ -44,7 +44,7 @@ export function collectFeatureSearchResults(tabs: readonly RibbonTab[], ribbonLa
       if (invocation && !item.inlineComponent) add(JSON.stringify(key), item.title, parents, invocation, item.tooltip, isContext ? item.id : undefined)
       for (const option of item.options ?? []) {
         const action = ribbonInvocation(item, option.value)
-        if (action) add(JSON.stringify([...key, option.value]), option.label, [...parents, item.title], action)
+        if (action) add(JSON.stringify([...key, option.value]), option.label, [...parents, item.title], action, undefined, isContext ? item.id : undefined)
       }
       if (item.children) visitItems(item.children, [...parents, item.title], key, isContext)
     }

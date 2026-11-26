@@ -21,6 +21,37 @@ function setup(legacy = false) {
 const source = (row = 0) => ({ startRow: row, endRow: row, startColumn: 1, endColumn: 4 })
 const target = (row = 0, col = 7) => ({ startRow: row, endRow: row, startColumn: col, endColumn: col })
 
+for (const [label, isSingle] of [['omitted', undefined], ['single', true], ['group', false]]) {
+  test(`public removal ${label} scope survives undo, redo and reopening`, () => {
+    const f = setup()
+    try {
+      const baseline = f.history()
+      assert.equal(f.studio.executeCommandSync(api.SPARKLINE_PUBLIC_COMMANDS.remove, {
+        targetInfo: { unitId: f.book.getId(), subUnitId: 'data' },
+        ranges: [target(0, 6)],
+        ...(isSingle === undefined ? {} : { isSingle }),
+      }), true)
+      assert.equal(f.sheet.getSparkline('G1'), null)
+      assert.equal(f.sheet.getSparkline('G2') !== null, isSingle !== false)
+      assert.equal(f.sheet.getSparkline('G4').groupId, 'south')
+      assert.equal(f.history(), baseline + 1)
+      f.book.undo()
+      assert.equal(f.sheet.getSparkline('G1').groupId, 'north')
+      assert.equal(f.sheet.getSparkline('G2').groupId, 'north')
+      f.book.redo()
+      assert.equal(f.sheet.getSparkline('G1'), null)
+      assert.equal(f.sheet.getSparkline('G2') !== null, isSingle !== false)
+      const reopened = new api.OfficeStudio({ workbook: f.book.save() })
+      try {
+        const sheet = api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet()
+        assert.equal(sheet.getSparkline('G1'), null)
+        assert.equal(sheet.getSparkline('G2') !== null, isSingle !== false)
+        assert.equal(sheet.getSparkline('G4').groupId, 'south')
+      } finally { reopened.dispose() }
+    } finally { f.dispose() }
+  })
+}
+
 test('public enum configuration keeps unspecified group fields and accepts value-only extrema patches', () => {
   const f = setup()
   try {

@@ -153,3 +153,63 @@ test('format-only input accepts existing invalid data while actual content chang
   const before = structuredClone(book), rejected = planSheetCellInput(book, { ...changed, inlineFormats: formats }, defaults)
   assert.equal(rejected.result.accepted, false); assert.equal(rejected.result.reason, 'validation'); assert.deepEqual(book, before)
 })
+
+test('font step buttons and fixed aliases use the selected run size and preserve unselected text', () => {
+  for (const [commandId, size] of [
+    ['sheet.command.increase-font-size', 11], ['sheet.command.set-range-font-increase', 11],
+    ['sheet.command.decrease-font-size', 9], ['sheet.command.set-range-font-decrease', 9],
+  ]) {
+    const book = sample('abcd'), cell = book.sheets[0].cells['0:0']
+    cell.style.font.size = 31
+    cell.richText = [{ id: 'left', text: 'ab', font: { size: 20 } }, { id: 'right', text: 'cd', font: { size: 10, italic: true } }]
+    const before = structuredClone(book), input = editInput(book)
+    const operation = planSheetCellInlineFontFormat(book, { ...input, commandId, selection: { start: 2, end: 3 } }, defaults)
+    assert.equal(operation.accepted, true); assert.equal(operation.edit.value, size)
+    assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 2, end: 3 }), [size])
+    assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 0, end: 2 }), [20])
+    assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 3, end: 4 }), [10])
+    const commit = planSheetCellInput(book, { ...input, inlineFormats: operation.formats }, defaults)
+    assert.equal(commit.result.changed, true); assert.equal(commit.cell.value, 'abcd')
+    assert.equal(commit.cell.style.font.size, 31); assert.deepEqual(commit.cell.metadata, cell.metadata)
+    assert.deepEqual(book, before)
+  }
+})
+
+test('repeated caret font steps use the current typing size and format only subsequently inserted text', () => {
+  const book = sample('abcd'), cell = book.sheets[0].cells['0:0']
+  cell.richText = [{ id: 'left', text: 'ab', font: { size: 20 } }, { id: 'right', text: 'cd', font: { size: 10 } }]
+  const before = structuredClone(book), input = editInput(book), selection = { start: 3, end: 3 }
+  const raised = planSheetCellInlineFontFormat(book, { ...input, commandId: 'sheet.command.increase-font-size', selection }, defaults)
+  const raisedAgain = planSheetCellInlineFontFormat(book, { ...input, inlineFormats: raised.formats,
+    commandId: 'sheet.command.set-range-font-increase', selection }, defaults)
+  const reduced = planSheetCellInlineFontFormat(book, { ...input, inlineFormats: raisedAgain.formats,
+    commandId: 'sheet.command.decrease-font-size', selection }, defaults)
+  assert.deepEqual([raised.edit.value, raisedAgain.edit.value, reduced.edit.value], [11, 12, 11])
+  assert.deepEqual(reduced.replay.cell.richText, cell.richText); assert.equal(reduced.replay.typing.font.size, 11)
+  const typed = { ...input, input: 'abcXd', inlineFormats: reduced.formats,
+    editTrace: { ...input.editTrace, operations: [{ start: 3, end: 3, text: 'X', deletedText: '' }] } }
+  const commit = planSheetCellInput(book, typed, defaults)
+  assert.equal(commit.result.changed, true); assert.equal(commit.cell.value, 'abcXd')
+  const view = toExcelCellView(commit.cell)
+  assert.deepEqual(sheetCellFontValues(view, 'size', { start: 3, end: 4 }), [11])
+  assert.deepEqual(sheetCellFontValues(view, 'size', { start: 4, end: 5 }), [10])
+  assert.deepEqual(book, before)
+})
+
+test('font steps across distinct or equally sized runs apply the fixed default 11 to the selected interval', () => {
+  for (const rightSize of [10, 20]) {
+    for (const commandId of ['sheet.command.increase-font-size', 'sheet.command.decrease-font-size',
+      'sheet.command.set-range-font-increase', 'sheet.command.set-range-font-decrease']) {
+      const book = sample('abcd'), cell = book.sheets[0].cells['0:0']
+      cell.style.font.size = 31
+      cell.richText = [{ id: 'left', text: 'ab', font: { size: 20 } }, { id: 'right', text: 'cd', font: { size: rightSize } }]
+      const before = structuredClone(book), input = editInput(book)
+      const operation = planSheetCellInlineFontFormat(book, { ...input, commandId, selection: { start: 1, end: 3 } }, defaults)
+      assert.equal(operation.accepted, true); assert.equal(operation.edit.value, 11)
+      assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 1, end: 3 }), [11, 11])
+      assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 0, end: 1 }), [20])
+      assert.deepEqual(sheetCellFontValues(operation.replay.cell, 'size', { start: 3, end: 4 }), [rightSize])
+      assert.deepEqual(book, before)
+    }
+  }
+})

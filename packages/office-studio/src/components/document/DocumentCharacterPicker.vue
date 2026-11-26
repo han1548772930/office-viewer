@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { Button, Form, FormItem, Input, Select } from 'antdv-next'
+import { Button, Form, FormItem, Input, Select, Tooltip } from 'antdv-next'
 import { computed, ref, watch } from 'vue'
 
-const props = defineProps<{ mode: 'symbol' | 'emoji' }>()
-const emit = defineEmits<{ insert: [text: string] }>()
+const props = defineProps<{ mode: 'symbol' | 'emoji'; disabled?: boolean }>()
+const emit = defineEmits<{ insert: [params: { value: string }] }>()
 const category = ref('常用')
 const custom = ref('')
 const recent = ref<string[]>([])
@@ -28,24 +28,26 @@ const options = computed(() => [...(recent.value.length ? [{ label: '最近使�
 const characters = computed(() => category.value === '最近使用' ? recent.value : (groups.value[category.value] ?? groups.value.常用 ?? '').split(' ').filter(Boolean))
 watch(() => props.mode, () => { category.value = '常用'; custom.value = '' })
 function insert(value: string): void {
-  if (!value.trim()) return
+  if (!value.length) return
   recent.value = [value, ...recent.value.filter((item) => item !== value)].slice(0, 32)
-  emit('insert', value)
+  emit('insert', { value })
 }
 </script>
 
 <template>
   <div class="document-character-picker" :aria-label="mode === 'emoji' ? '表情选择器' : '符号选择器'">
-      <Form layout="vertical" class="document-character-picker__form" @submit.prevent>
+      <Form layout="vertical" class="document-character-picker__form" :disabled="disabled" @submit.prevent>
         <FormItem label="分类"><Select v-model:value="category" :options="options" aria-label="字符分类" /></FormItem>
       </Form>
       <div class="character-grid" :aria-label="mode === 'emoji' ? '表情列表' : '符号列表'">
-        <Button v-for="character in characters" :key="character" :aria-label="`插入 ${character}`" :title="character" @click="insert(character)">{{ character }}</Button>
+        <Tooltip v-for="character in characters" :key="character" :title="character" :trigger="['hover', 'focus']">
+          <Button :disabled="disabled" :aria-label="`插入 ${character}`" @click="insert(character)">{{ character }}</Button>
+        </Tooltip>
       </div>
-      <Form layout="vertical" class="document-character-picker__form" @submit.prevent>
+      <Form layout="vertical" class="document-character-picker__form" :disabled="disabled" @submit.prevent>
         <FormItem label="自定义字符"><Input v-model:value="custom" aria-label="自定义字符" placeholder="输入或粘贴其他符号、表情及组合字符" @press-enter="insert(custom)" /></FormItem>
       </Form>
-      <Button type="primary" :disabled="!custom.trim()" @click="insert(custom)">插入字符</Button>
+      <Button type="primary" :disabled="disabled || !custom.length" @click="insert(custom)">插入字符</Button>
   </div>
 </template>
 

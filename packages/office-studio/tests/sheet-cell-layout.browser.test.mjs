@@ -31,6 +31,12 @@ window.sheetLayoutFixture = {
   snapshot: () => copy(studio.editor.workbook.model),
   history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit.undo.length, redo: unit.redo.length } },
   notifications: () => copy(notifications),
+  selected: () => copy(studio.getSelectionState()),
+  select: (ranges, primary) => {
+    const model = studio.editor.workbook.model
+    studio.setSelections(model.id, model.activeSheetId, ranges, { primary })
+  },
+  save: () => copy(api.getActiveWorkbook().save()),
   appearance: (isDark, layout = 'classic') => { dark.value = isDark; variant.value = layout },
   seed: (entries, options = {}) => {
     const next = copy(initial), sheet = next.sheets[0]
@@ -124,12 +130,22 @@ async function select(address = 'A1') {
   await name.fill(address); await name.press('Enter'); await expect(grid()).toBeFocused()
 }
 async function edit(address = 'A1') { await select(address); await grid().press('F2'); await expect(editor()).toBeFocused(); return editor() }
+async function homeItem(id) {
+  const selector = '[data-ribbon-item="' + id + '"]'
+  const item = page.locator('.ribbon-visible-groups ' + selector + ', .ribbon-grid-group:not(.is-hidden) ' + selector)
+  if (await item.count() && await item.isVisible()) return item
+  const overflow = page.locator('.ribbon-overflow-panel:visible')
+  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button:visible, .ribbon-grid-more-button:visible').click()
+  const result = overflow.locator(selector)
+  await expect(result).toBeVisible()
+  return result
+}
 async function chooseMenu(id, label) {
-  const item = page.locator('[data-ribbon-item="' + id + '"]:visible').first()
+  const item = await homeItem(id)
   await expect(item).toBeVisible(); await item.getByRole('button').click()
   await page.locator('.ribbon-command-menu:visible').getByRole('menuitem', { name: label, exact: true }).click()
 }
-async function command(id) { await page.locator('[data-ribbon-item="' + id + '"]:visible').first().getByRole('button').click() }
+async function command(id) { await (await homeItem(id)).getByRole('button').click() }
 async function caret(start, end = start) { await editor().evaluate((element, selection) => element.setSelectionRange(selection[0], selection[1]), [start, end]) }
 async function caretRange() { return editor().evaluate(element => [element.selectionStart, element.selectionEnd]) }
 async function key(info) { return editor().evaluate((element, data) => { const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...data }); element.dispatchEvent(event); return event.defaultPrevented }, info) }
@@ -242,6 +258,93 @@ for (const variant of ['classic', 'grid']) test(variant + ' wrap menu and API sh
   await page.evaluate(value => window.sheetLayoutFixture.reopen(JSON.stringify(value)), wrapped)
   await edit(); await expect(page.locator('.canvas-cell-input textarea')).toBeFocused()
   await editor().press('Escape'); await expect(canvas()).toHaveAttribute('data-layout-test-mount', 'original')
+})
+
+for (const variant of ['classic', 'grid']) test(variant + ' shrink toggles from a non-leading primary and preserves the selection through history and save/reopen', async () => {
+  await page.evaluate(variant => {
+    window.sheetLayoutFixture.seed([
+      { value: 'first', style: { shrinkToFit: false } },
+      { column: 1, value: 'primary', style: { shrinkToFit: true } },
+      { column: 2, value: 'outside', style: { shrinkToFit: true } },
+    ])
+    window.sheetLayoutFixture.appearance(false, variant)
+    window.sheetLayoutFixture.select([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }], { row: 0, column: 1 })
+  }, variant)
+  await command('sheet.command.set-shrink-to-fit')
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:1'].style.shrinkToFit).toBe(false)
+  const saved = await page.evaluate(() => window.sheetLayoutFixture.save())
+  assert.equal(saved.sheets[0].cells['0:0'].style.shrinkToFit, false)
+  assert.equal(saved.sheets[0].cells['0:2'].style.shrinkToFit, true)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  assert.deepEqual((await page.evaluate(() => window.sheetLayoutFixture.selected())).primary, { row: 0, column: 1 })
+  await command('sheet.command.set-shrink-to-fit')
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].style.shrinkToFit).toBe(true)
+  assert.deepEqual(await history(), { undo: 2, redo: 0 })
+  await command('sheet.command.undo')
+  assert.equal((await snapshot()).sheets[0].cells['0:1'].style.shrinkToFit, false)
+  await command('sheet.command.redo')
+  assert.equal((await snapshot()).sheets[0].cells['0:1'].style.shrinkToFit, true)
+  await page.evaluate(value => window.sheetLayoutFixture.reopen(JSON.stringify(value)), saved)
+  assert.equal((await snapshot()).sheets[0].cells['0:1'].style.shrinkToFit, false)
+  assert.equal((await snapshot()).sheets[0].cells['0:2'].value, 'outside')
+  await expect(canvas()).toHaveAttribute('data-layout-test-mount', 'original')
+})
+
+for (const variant of ['classic', 'grid']) test(variant + ' mixed layout controls follow the primary and resolve merged primaries for wrap and shrink state', async () => {
+  await page.evaluate(variant => {
+    window.sheetLayoutFixture.seed([
+      { value: 'wrapped', style: { horizontal: 'left', vertical: 'top', wrapStrategy: 'wrap' } },
+      { column: 1, value: 'primary', style: { horizontal: 'center', vertical: 'bottom', wrapStrategy: 'clip', shrinkToFit: true, rotation: 45 } },
+    ])
+    window.sheetLayoutFixture.appearance(false, variant)
+    window.sheetLayoutFixture.select([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }], { row: 0, column: 1 })
+  }, variant)
+  const before = await snapshot(), shrink = (await homeItem('sheet.command.set-shrink-to-fit')).getByRole('button')
+  await expect(shrink).toBeEnabled()
+  await expect(shrink).toHaveAttribute('aria-pressed', 'true')
+  await (await homeItem('sheet.menu.horizontal-align')).getByRole('button').click()
+  await expect(page.locator('.ribbon-command-menu:visible').getByRole('menuitem', { name: '居中', exact: true })).toHaveClass(/ant-menu-item-selected/)
+  await page.keyboard.press('Escape')
+  await page.evaluate(() => window.sheetLayoutFixture.select(
+    [{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }], { row: 0, column: 0 },
+  ))
+  await expect(shrink).toBeDisabled()
+  await expect(shrink).toHaveAttribute('aria-pressed', 'false')
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await page.evaluate(() => {
+    window.sheetLayoutFixture.seed([
+      { value: 'merged wrapped', style: { wrapStrategy: 'wrap' } },
+      { column: 1, value: null, style: { wrapStrategy: 'clip', shrinkToFit: true } },
+    ], { mergedRanges: [{ startRow: 0, endRow: 0, startCol: 0, endCol: 1 }] })
+    window.sheetLayoutFixture.select([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }], { row: 0, column: 1 })
+  })
+  await expect(shrink).toBeDisabled()
+  await expect(shrink).toHaveAttribute('aria-pressed', 'false')
+  assert.deepEqual((await page.evaluate(() => window.sheetLayoutFixture.selected())).primary, { row: 0, column: 1 })
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+})
+
+for (const variant of ['classic', 'grid']) test(variant + ' merge activation follows a merged primary rather than any merge intersecting the range', async () => {
+  await page.evaluate(variant => {
+    window.sheetLayoutFixture.seed([{ value: 'merged' }, { column: 2, value: 'outside' }], {
+      mergedRanges: [{ startRow: 0, endRow: 0, startCol: 0, endCol: 1 }],
+    })
+    window.sheetLayoutFixture.appearance(false, variant)
+    window.sheetLayoutFixture.select([{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }], { row: 0, column: 2 })
+  }, variant)
+  const merge = (await homeItem('sheet.menu.merge')).getByRole('button')
+  await expect(merge).toHaveAttribute('aria-pressed', 'false')
+  await expect(merge).toBeEnabled()
+  await page.evaluate(() => window.sheetLayoutFixture.select(
+    [{ startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }], { row: 0, column: 1 },
+  ))
+  await expect(merge).toHaveAttribute('aria-pressed', 'true')
+  await page.evaluate(() => window.sheetLayoutFixture.denyEdit())
+  await expect(merge).toBeDisabled()
+  await expect(merge).toHaveAttribute('aria-pressed', 'true')
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual((await snapshot()).sheets[0].mergedRanges, [{ startRow: 0, endRow: 0, startCol: 0, endCol: 1 }])
 })
 
 test('API rotation and shrink submit a uniformly smaller font to the real Canvas2D surface', async () => {

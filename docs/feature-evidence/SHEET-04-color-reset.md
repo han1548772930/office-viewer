@@ -41,3 +41,15 @@
 新增验证用例：`packages/office-studio/tests/sheet-font-color.contract.test.mjs` 共 24 组，覆盖 45 色、主题色、严格通道输入、颜色记忆、边框混合态、19 语言键、命令别名/参数、快捷键、范围转换、混合/重叠选区、筛除行、稀疏重置、model/view 保真、no-op、权限原子拒绝、Ribbon 布局、Facade/注册命令、撤销重做和快照重开。`sheet-font-color.browser.test.mjs` 共 19 组，覆盖 Canvas 保留、两阶段颜色、焦点、Enter/Escape、合成输入事件、滑块键盘/RGB/HSB、最近色/选区/重置、API 同步、历史和工作簿隔离、取消、保护、主题/RTL、grid overflow、嵌套边框及外部颜色命令期间的编辑草稿。全部仅已编写，尚未执行；合成 composition 事件不能代替真实输入法验收，快照重开不能代替 XLSX 导出和独立 Office 重开。
 
 检查状态：2026-11-23 历史批仅做源码静态审阅及当时所改 tracked 文件的 `git diff --check`（退出码 0）；2026-11-25 续作没有复跑该检查或运行测试、类型检查、前端构建、Rust/WASM、浏览器。统一验证之前维持“待统一验证”；没有真实文件/浏览器结果和同数据集前后性能记录，不标记完整支持或性能达标。非重置大范围操作仍需落实 Worker/批量模型路径并完成基准，现有 UI 的直接选区门槛不能充当大范围功能完成证明。无 ID 的 standalone 工作簿沿用现有按名称判定的会话边界；重名匿名工作簿的身份隔离仍须由统一模型身份解决。
+
+## 2026-11-27 第二行续核
+
+本轮已核对上游 HEAD 仍为 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，重新读取固定 `schema.ts`、`menu/menu.ts`、`border.menu.ts`、Sheets 与 Docs 的 `inline-format.command.ts`。按 grid 从左至右核对加粗、斜体、下划线、删除线、边框、填充、文字颜色；classic 沿上表顺序。分类仍为 7 个常驻根，overflow 复用原入口，没有增加扩展或上下文根。
+
+四个字符开关和文字颜色在编辑态进入 [sheet-cell-inline-format-command.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-cell-inline-format-command.ts)，复用会话、UTF-16 选区、输入 trace、运行拆分与 typing；最终输入提交合成内容事务。普通选区由 [sheet-font-format-command.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-font-format-command.ts) 更新整格及对应 run 覆盖，[OfficeStudio](../../packages/office-studio/src/api/office-studio.ts) 的同一注册项校验范围/权限并按工作簿提交内容历史。当前 mark 混合态按所有有效运行判断；固定菜单更多依赖包含选区的运行或主格，既有呈现差异继续保留。
+
+填充和边框在编辑态先完成当前输入，再进入整格命令。填充仅修改单元格 fill，不给文字运行写背景；文字颜色及其重置保留局部范围。边框的颜色/线型配置、接受后的 preset、邻格/合并边段权限和内容事务使用既有 pen state 与 plan，详见[边框记录](SHEET-04-borders.md)。本轮没有改这些模型、命令或历史接口。
+
+边框主区已按固定 `CellBorderSelectorMenuItemFactory` 的状态契约接线：上游在 `SetBorderBasicCommand` 执行后按 `BorderStyleManagerService.type` 显示当前预设图标；本地 [sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 从既有 `borderPreset` 生成 [SheetBorderIcon.vue](../../packages/office-studio/src/components/spreadsheet/SheetBorderIcon.vue)，与弹层复用 15 个预设预览，保留原 preset 参数和拒绝后的 accepted state。[尺寸证据](SHEET-RIBBON-custom-popup-sizing.md)记录五种斜线 SVG、classic/grid、API 更新和保护邻格拒绝的浏览器草稿；均未运行。
+
+七个入口继续使用共享 Ribbon 或 `antdv-next` 颜色/边框控件及主题 token。本轮只执行静态来源、差异和链接检查；所有测试、类型检查、构建、Rust/WASM、浏览器、dev 和基准仍后置。完整权限/绘图上下文、明暗主题、hover/箭头几何、焦点与真实 IME、撤销重做/Office 重开和大样本继续保留未验收。增大/减小字号的实现与新增草稿见[2026-11-27 字号续核](SHEET-04-05-rich-text-font-editing.md#2026-11-27-增大减小字号续核)。

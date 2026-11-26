@@ -373,6 +373,76 @@ test('TRUE/FALSE literal and function forms plus SWITCH preserve upstream branch
   }
 })
 
+test('NA picker builds no-argument formulas and participates in error-handling expressions', () => {
+  assert.equal(functionCatalog.buildSheetFunctionFormula('NA', ''), '=NA()')
+  assert.equal(functionCatalog.SHEET_FUNCTION_CATALOG.find(entry => entry.name === 'NA').category, '信息')
+  assert.deepEqual(formula.evaluateFormula('=NA()', model, 'sheet-main'), { kind: 'error', code: '#N/A' })
+  assert.equal(formula.evaluateFormula('=IFNA(NA(),"missing")', model, 'sheet-main'), 'missing')
+  assert.equal(formula.evaluateFormula('=IFERROR(NA(),0)', model, 'sheet-main'), 0)
+  assert.deepEqual(formula.evaluateFormula('=NA()+1', model, 'sheet-main'), { kind: 'error', code: '#N/A' })
+})
+
+test('information predicates consume error values and preserve scalar types without coercion', () => {
+  for (const [expression, expected] of [
+    ['ISERROR(1/0)', true], ['ISERR(1/0)', true], ['ISNA(1/0)', false],
+    ['ISERROR(NA())', true], ['ISERR(NA())', false], ['ISNA(NA())', true],
+    ['ISBLANK(1/0)', false], ['ISLOGICAL(1/0)', false], ['ISNONTEXT(1/0)', true],
+    ['ISNUMBER(1/0)', false], ['ISTEXT(1/0)', false], ['ISERROR("#DIV/0!")', false],
+    ['ISNA("#N/A")', false], ['ISTEXT("#N/A")', true], ['ISNUMBER("12")', false],
+    ['ISNUMBER(12)', true], ['ISLOGICAL(TRUE)', true], ['ISLOGICAL(1)', false],
+    ['ISLOGICAL("TRUE")', false], ['ISTEXT("")', true], ['ISNONTEXT("")', false],
+    ['ISNONTEXT(TRUE)', true], ['ISBLANK("")', false], ['ISNUMBER(A1:A1)', true],
+    ['IF(ISERROR(1/0),"handled","missed")', 'handled'],
+  ]) {
+    assert.equal(formula.evaluateFormula(`=${expression}`, model, 'sheet-main'), expected, expression)
+  }
+  for (const name of ['ISBLANK', 'ISERR', 'ISERROR', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISTEXT']) {
+    assert.equal(functionCatalog.SHEET_FUNCTION_CATALOG.filter(entry => entry.name === name && entry.category === '信息').length, 1)
+    assert.equal(functionCatalog.buildSheetFunctionFormula(name, 'A1'), `=${name}(A1)`)
+    assert.deepEqual(formula.evaluateFormula(`=${name}()`, model, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+    assert.deepEqual(formula.evaluateFormula(`=${name}(1/0,1)`, model, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+    assert.deepEqual(formula.evaluateFormula(`=${name}(A1:B1)`, model, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+  }
+})
+
+test('ISBLANK retains cell-reference identity for empty cells, formulas, rich text and INDEX', () => {
+  const data = structuredClone(model)
+  const sheet = data.sheets[0]
+  for (const [column, value, patch] of [
+    [1, null, {}], [2, '', { dataType: 'string' }], [3, '', { formula: '=""' }],
+    [4, null, { formula: '=IF(TRUE,A3)' }], [5, ' ', {}], [6, null, { richText: [{ text: '' }] }],
+    [7, '#N/A', { dataType: 'error' }], [8, '#N/A', { dataType: 'string' }],
+  ]) {
+    sheet.cells[`2:${column}`] = { ...sheet.cells['0:0'], id: `2:${column}`, row: 2, col: column,
+      value, formula: null, display: value === null ? '' : String(value), ...patch }
+  }
+  sheet.cells['2:1'].style = { ...sheet.cells['2:1'].style, font: { ...sheet.cells['2:1'].style.font, bold: true } }
+  for (const [expression, expected] of [
+    ['ISBLANK(A3)', true], ['ISBLANK(B3)', true], ['ISBLANK(C3)', true],
+    ['ISBLANK(D3)', false], ['ISBLANK(E3)', false], ['ISBLANK(F3)', false],
+    ['ISBLANK(G3)', false], ['ISBLANK(INDEX(A3:C3,1,3))', true],
+    ['ISBLANK(INDEX(D3:E3,1,2))', false], ['ISBLANK(Data!C3)', true],
+    ['ISERROR(H3)', true], ['ISNA(H3:H3)', true], ['ISTEXT(H3)', false],
+    ['ISERROR(I3)', false], ['ISNA(I3)', false], ['ISTEXT(I3)', true],
+  ]) {
+    assert.equal(formula.evaluateFormula(`=${expression}`, data, 'sheet-main'), expected, expression)
+  }
+  const target = { ...sheet.cells['0:2'], id: '3:0', row: 3, col: 0, formula: '=ISBLANK(E3)' }
+  sheet.cells['3:0'] = target
+  const result = formula.recalculateWorkbookFormulas(data)
+  assert.equal(result.workbook.sheets[0].cells['3:0'].value, false)
+  assert.equal(result.workbook.sheets[0].cells['3:0'].cachedDataType, 'boolean')
+  assert.equal(result.workbook.sheets[0].cells['3:0'].formula, '=ISBLANK(E3)')
+})
+
+test('RIGHT returns empty text for zero length and preserves existing suffix and parameter behavior', () => {
+  assert.equal(formula.evaluateFormula('=RIGHT("abc",0)', model, 'sheet-main'), '')
+  assert.equal(formula.evaluateFormula('=RIGHT("abc")', model, 'sheet-main'), 'c')
+  assert.equal(formula.evaluateFormula('=RIGHT("abc",2)', model, 'sheet-main'), 'bc')
+  assert.equal(formula.evaluateFormula('=RIGHT("abc",8)', model, 'sheet-main'), 'abc')
+  assert.deepEqual(formula.evaluateFormula('=RIGHT("abc",-1)', model, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+})
+
 test('date conversion functions honor workbook epochs, accepted time text and scalar passthrough', () => {
   assert.equal(formula.evaluateFormula('=EPOCHTODATE(0)', model, 'sheet-main'), 25569)
   assert.ok(Math.abs(formula.evaluateFormula('=EPOCHTODATE(1655906710)', model, 'sheet-main') - 44734.58692129629) < 1e-10)

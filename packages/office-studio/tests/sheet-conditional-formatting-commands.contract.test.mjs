@@ -195,7 +195,7 @@ test('quick visual rules render fixed bar colors and the three ranked icon sets 
       [['greaterThanOrEqual', { type: 'percent', value: 67 }], ['greaterThanOrEqual', { type: 'percent', value: 33 }]])
     assert.deepEqual([100, 67, 33, 32].map(value => conditionalFormatStyleAt(rules, 0, 0, value, [0, 100]).icon?.iconId), ['0', '0', '1', '2'])
     assert.deepEqual(quickConditionalFormatSelection(rules, scope, { row: 0, col: 0 }),
-      { hasDataBar: true, hasIconSet: true, activeIconSet: iconSet, canClearDataBar: true, canClearIconSet: true })
+      { hasDataBar: true, hasIconSet: true, activeIconSet: iconSet, canClearDataBar: true, canClearIconSet: true, canClearRange: true, canClearWorksheet: true })
     assert.deepEqual(conditionalFormatStyleAt(rules, 2, 2, 100, [0, 100]), {})
   }
 })
@@ -210,6 +210,68 @@ test('type-specific clear preserves remaining coverage and rebases threshold for
   assert.deepEqual(after.filter(entry => entry.type !== 'dataBar'), rules.filter(entry => entry.type !== 'dataBar'))
   const all = quickConditionalFormatRules(after, scope, quick.clear, {})
   assert.deepEqual(all, [])
+})
+
+test('whole-sheet clear removes all rule types without requiring a selected range', () => {
+  const scope = [range(0, 0, 3, 0)]
+  const rules = quickConditionalFormatRules([rule('expression', [range(10, 13)])], scope, quick.dataBar, {})
+  const before = cloneModel(rules)
+  assert.deepEqual(quickConditionalFormatRules(rules, [], quick.clearWorksheet, {}), [])
+  assert.deepEqual(rules, before)
+  assert.equal(quickConditionalFormatRules([], [], quick.clearWorksheet, {}).length, 0)
+})
+
+test('management clear availability includes nonvisual rules and all old protected scopes', () => {
+  const current = rule('current', [range(0, 0, 3, 0)]), outside = rule('outside', [range(10, 13)], 2)
+  const canEdit = ranges => ranges.every(area => area.startCol !== 13)
+  const selected = quickConditionalFormatSelection([current, outside], [range(0, 0)], { row: 0, col: 0 }, canEdit)
+  assert.equal(selected.canClearRange, true)
+  assert.equal(selected.canClearWorksheet, false)
+  assert.equal(selected.canClearDataBar, false)
+  assert.equal(selected.canClearIconSet, false)
+  assert.equal(quickConditionalFormatSelection([current, outside], [range(10, 13)], { row: 10, col: 13 }, canEdit).canClearRange, false)
+  assert.equal(quickConditionalFormatSelection([current], [], undefined, canEdit).canClearWorksheet, true)
+})
+
+test('registered whole-sheet clear uses one reversible transaction and retains cells and snapshot reopen', () => {
+  const source = sample(), rules = [rule(), rule('other-type', [range(10, 13)], 2)]
+  source.sheets[0].conditionalFormats = rules
+  withStudio((studio, api) => {
+    const workbook = api.getActiveWorkbook(), worksheet = workbook.getActiveSheet(), before = cloneModel(studio.editor.workbook.model.sheets[0].cells)
+    assert.equal(api.executeCommandSync(quick.clearWorksheet), true)
+    assert.deepEqual(worksheet.getConditionalFormats(), [])
+    assert.equal(undoCount(studio), 1)
+    workbook.undo(); assert.deepEqual(worksheet.getConditionalFormats(), rules)
+    workbook.redo(); assert.deepEqual(worksheet.getConditionalFormats(), [])
+    const revision = studio.getWorkbookRevision(workbook.getId())
+    assert.equal(api.executeCommandSync(quick.clearWorksheet), false)
+    assert.equal(studio.getWorkbookRevision(workbook.getId()), revision)
+    assert.equal(undoCount(studio), 1)
+    assert.deepEqual(studio.editor.workbook.model.sheets[0].cells, before)
+    const reopened = api.createWorkbook({ ...workbook.save(), id: 'cf-sheet-cleared-reopened' })
+    assert.deepEqual(reopened.getActiveSheet().getConditionalFormats(), [])
+  }, source)
+})
+
+test('whole-sheet clear rejects any protected old scope and isolates explicit inactive targets', () => {
+  const source = sample(), locked = rule('locked', [range(10, 13)], 2)
+  source.sheets[0].conditionalFormats = [rule(), locked]
+  source.sheets[0].rangeProtectionRules = protection(locked.ranges)
+  withStudio((studio, api) => {
+    const original = cloneModel(studio.editor.workbook.model), revision = studio.getWorkbookRevision(source.id)
+    assert.throws(() => api.executeCommandSync(quick.clearWorksheet, { ranges: [range(0, 0)] }), /保护/)
+    assert.deepEqual(studio.editor.workbook.model, original)
+    assert.equal(studio.getWorkbookRevision(source.id), revision)
+    assert.equal(undoCount(studio), 0)
+    const other = sample(); other.id = 'cf-clear-other'; other.activeSheetId = other.sheets[0].id = 'cf-clear-other-sheet'
+    other.sheets[0].conditionalFormats = [rule()]
+    studio.createWorkbook(other, false)
+    assert.equal(api.executeCommandSync(quick.clearWorksheet, { unitId: other.id, subUnitId: other.sheets[0].id, ranges: [] }), true)
+    assert.deepEqual(studio.editor.workbook.model, original)
+    assert.equal(undoCount(studio), 0)
+    assert.equal(undoCount(studio, other.id), 1)
+    assert.deepEqual(studio.getWorkbookModel(other.id).sheets[0].conditionalFormats, [])
+  }, source)
 })
 
 test('registered quick commands share permission checks, exact rule history and snapshot reopen', () => withStudio((studio, api) => {

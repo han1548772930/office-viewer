@@ -13,6 +13,7 @@ import { FOffice } from '/packages/office-studio/src/api/facade'
 import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
 import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
 import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { setSheetCellStyleProperties } from '/packages/office-studio/src/features/sheet-workbench/sheet-style-inheritance'
 const copy = value => JSON.parse(JSON.stringify(value))
 const initial = createBlankWorkbook()
 initial.id = 'sheet-number-format-fixture'; initial.name = '数字格式'; initial.calculationMode = 'manual'
@@ -44,18 +45,25 @@ window.sheetFormatFixture = {
     return { undo: unit.undo.length, redo: unit.redo.length }
   },
   formatFromApi: (address, pattern) => api.getActiveWorkbook().getActiveSheet().getRange(address).setNumberFormat(pattern),
+  select: (ranges, primary, activeRangeIndex) => {
+    const model = studio.editor.workbook.model
+    studio.setSelections(model.id, model.activeSheetId, ranges, { primary, activeRangeIndex })
+  },
+  selected: () => copy(studio.getSelectionState()),
+  save: () => copy(api.getActiveWorkbook().save()),
   commands: () => copy(commands),
   notifications: () => copy(notifications),
   cancelFormats: value => { canceled.value = value },
   appearance: (isDark, language = 'zh-CN') => { dark.value = isDark; studio.regionalSettings.setLocale(language) },
   region: value => { studio.regionalSettings.setRegion(value) },
-  seedCells: (entries, date1904 = false) => {
+  seedCells: (entries, date1904 = false, options = {}) => {
     const next = copy(studio.editor.workbook.model)
     next.date1904 = date1904
     next.sheets[0].cells = {}
+    Object.assign(next.sheets[0], options)
     for (const { row = 0, column = 0, value, pattern = 'General' } of entries) {
       const cell = createCell(row, column, value)
-      cell.style.numberFormat = pattern
+      setSheetCellStyleProperties(cell, { numberFormat: pattern })
       next.sheets[0].cells[row + ':' + column] = cell
     }
     studio.editor.workbook.replace(next)
@@ -135,13 +143,13 @@ const canvas = () => page.locator('.canvas-surface canvas')
 const cellText = () => grid().getByRole('gridcell')
 const cellEditor = () => page.locator('.canvas-cell-input input, .canvas-cell-input textarea')
 const formula = () => page.getByRole('textbox', { name: '公式编辑', exact: true })
-const ribbonItem = id => page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"]')
+const ribbonItem = id => page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"], .ribbon-grid-group:not(.is-hidden) [data-ribbon-item="' + id + '"]')
 const content = model => Object.entries(model.sheets[0].cells).map(([key, { value, formula, dataType, cachedDataType }]) => [key, { value, formula, dataType, cachedDataType }])
 async function homeItem(id) {
   const visible = ribbonItem(id)
   if (await visible.count() && await visible.isVisible()) return visible
   const overflow = page.locator('.ribbon-overflow-panel:visible')
-  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button').click()
+  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button:visible, .ribbon-grid-more-button:visible').click()
   const item = overflow.locator('[data-ribbon-item="' + id + '"]')
   await expect(item).toBeVisible()
   return item
@@ -234,6 +242,26 @@ test('formula bar shares the full regional edit text, retains its caret and wait
     window.sheetFormatFixture.region('de-DE')
   })
   await selectRange('A1')
+  const bar = page.getByTestId('sheet-formula-bar')
+  await bar.getByRole('button', { name: '展开公式栏', exact: true }).click()
+  await expect(bar).toHaveCSS('height', '80px')
+  const collapse = bar.getByRole('button', { name: '折叠公式栏', exact: true })
+  await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+  const expandedGeometry = await collapse.evaluate(button => {
+    const toolbar = button.closest('[data-testid="sheet-formula-bar"]')
+    const toolbarStyle = getComputedStyle(toolbar)
+    const buttonRect = button.getBoundingClientRect(), iconRect = button.querySelector('svg').getBoundingClientRect()
+    return { height: buttonRect.height, width: buttonRect.width,
+      contentHeight: toolbar.getBoundingClientRect().height - parseFloat(toolbarStyle.borderTopWidth) - parseFloat(toolbarStyle.borderBottomWidth),
+      iconCenterOffset: iconRect.top + iconRect.height / 2 - buttonRect.top - buttonRect.height / 2 }
+  })
+  assert.ok(Math.abs(expandedGeometry.height - expandedGeometry.contentHeight) < .5)
+  assert.ok(Math.abs(expandedGeometry.iconCenterOffset) < .5)
+  await collapse.click({ position: { x: expandedGeometry.width / 2, y: expandedGeometry.height - 4 } })
+  await expect(bar).toHaveCSS('height', '28px')
+  await expect(bar.getByRole('button', { name: '展开公式栏', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await bar.getByRole('button', { name: '展开公式栏', exact: true }).click()
+  await expect(bar).toHaveCSS('height', '80px')
   const input = formula()
   const confirm = page.getByRole('button', { name: '确认编辑', exact: true })
   await expect(input).toHaveValue('12,5%')
@@ -462,6 +490,102 @@ test('the ordered format menu and percent button apply their distinct defaults t
   assert.deepEqual(commands.filter(event => event.id === 'sheet.command.set-number-format' || event.id === 'sheet.command.set-percent-format').map(event => [event.id, event.kind]), [
     ['sheet.command.set-number-format', 'workbook'], ['sheet.command.set-number-format', 'workbook'], ['sheet.command.set-percent-format', 'workbook'],
   ])
+})
+
+test.each(['classic', 'grid'])('%s number-format state follows the primary while presets affect only the active range', async variant => {
+  await page.evaluate(variant => {
+    window.sheetFormatFixture.variant(variant)
+    window.sheetFormatFixture.seedCells([
+      { value: 12.25, pattern: '0.00' },
+      { row: 1, value: .25, pattern: '0.00%' },
+      { column: 2, value: 1234, pattern: '0.00E+00' },
+    ])
+    window.sheetFormatFixture.select([
+      { startRow: 0, endRow: 1, startCol: 0, endCol: 0 },
+      { startRow: 0, endRow: 0, startCol: 2, endCol: 2 },
+    ], { row: 1, column: 0 }, 0)
+  }, variant)
+  const before = await snapshot()
+  const selected = await page.evaluate(() => window.sheetFormatFixture.selected())
+  const formatTrigger = (await homeItem('sheet.command.set-number-format')).locator('.sheet-number-format-trigger')
+  await expect(formatTrigger).toHaveText('百分比')
+  await expect(formatTrigger).toHaveCSS('font-size', variant === 'grid' ? '12px' : '14px')
+  await expect(formatTrigger).toHaveCSS('line-height', variant === 'grid' ? '16px' : '20px')
+  await expect((await homeItem('sheet.number-format.percent')).getByRole('button')).toHaveAttribute('aria-pressed', 'true')
+  const panel = await openMore()
+  const input = await customInput(panel)
+  await expect(input).toHaveValue('0.00')
+  await expect(panel.locator('.number-format-preview strong')).toHaveText('12.25')
+  await panel.getByRole('button', { name: /取.*消/ }).click()
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await chooseFormat('数值')
+  const after = await snapshot()
+  assert.equal(after.sheets[0].cells['0:0'].style.numberFormat, '0')
+  assert.equal(after.sheets[0].cells['1:0'].style.numberFormat, '0')
+  assert.equal(after.sheets[0].cells['0:2'].style.numberFormat, '0.00E+00')
+  assert.deepEqual(content(after), content(before))
+  assert.deepEqual(await page.evaluate(() => window.sheetFormatFixture.selected()), selected)
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].cells, before.sheets[0].cells)
+  await clickCommand('sheet.command.redo')
+  const saved = await page.evaluate(() => window.sheetFormatFixture.save())
+  await page.evaluate(saved => window.sheetFormatFixture.reopen(JSON.stringify(saved)), saved)
+  assert.deepEqual((await snapshot()).sheets[0].cells, after.sheets[0].cells)
+})
+
+test.each(['classic', 'grid'])('%s custom formats and percent shortcuts retain every selected range', async variant => {
+  await page.evaluate(variant => {
+    window.sheetFormatFixture.variant(variant)
+    window.sheetFormatFixture.seedCells([
+      { value: 12.25, pattern: '0.0' },
+      { row: 1, value: .25, pattern: '0.00%' },
+      { column: 2, value: 1234, pattern: '0.00E+00' },
+    ])
+    window.sheetFormatFixture.select([
+      { startRow: 0, endRow: 1, startCol: 0, endCol: 0 },
+      { startRow: 0, endRow: 0, startCol: 2, endCol: 2 },
+    ], { row: 0, column: 2 })
+  }, variant)
+  const before = await snapshot()
+  const panel = await openMore()
+  const input = await customInput(panel)
+  await expect(input).toHaveValue('0.0')
+  await input.fill('0.000')
+  await input.press('Tab')
+  assert.deepEqual(await snapshot(), before)
+  await panel.getByRole('button', { name: /确.*认/ }).click()
+  assert.deepEqual(Object.values((await snapshot()).sheets[0].cells).map(cell => cell.style.numberFormat), ['0.000', '0.000', '0.000'])
+  assert.deepEqual(content(await snapshot()), content(before))
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await clickCommand('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].cells, before.sheets[0].cells)
+  await clickCommand('sheet.number-format.percent')
+  assert.deepEqual(Object.values((await snapshot()).sheets[0].cells).map(cell => cell.style.numberFormat), ['0%', '0%', '0%'])
+  await clickCommand('sheet.command.increase-decimals')
+  assert.deepEqual(Object.values((await snapshot()).sheets[0].cells).map(cell => cell.style.numberFormat), ['0.0%', '0.0%', '0.0%'])
+  assert.deepEqual(content(await snapshot()), content(before))
+  assert.deepEqual(await history(), { undo: 2, redo: 0 })
+  await expect(grid()).toBeFocused()
+})
+
+test.each(['classic', 'grid'])('%s a merged primary uses its content owner for number-format state', async variant => {
+  await page.evaluate(variant => {
+    window.sheetFormatFixture.variant(variant)
+    window.sheetFormatFixture.seedCells([
+      { value: .25, pattern: '0.00%' },
+      { row: 1, column: 1, value: 12, pattern: '0.0' },
+    ], false, { mergedRanges: [{ startRow: 0, endRow: 1, startCol: 0, endCol: 1 }] })
+    window.sheetFormatFixture.select([{ startRow: 0, endRow: 1, startCol: 0, endCol: 1 }], { row: 1, column: 1 })
+  }, variant)
+  const before = await snapshot()
+  await expect((await homeItem('sheet.command.set-number-format')).locator('.sheet-number-format-trigger')).toHaveText('百分比')
+  await expect((await homeItem('sheet.number-format.percent')).getByRole('button')).toHaveAttribute('aria-pressed', 'true')
+  const menu = await openFormats()
+  await menu.press('Escape')
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
 })
 
 test('a range preview leaves text and formula caches intact until confirm, and cancel restores Canvas focus', async () => {
@@ -803,6 +927,58 @@ test('a rejected cell edit keeps its selected address when the name box requests
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
 })
 
+test.each(['classic', 'grid'])('%s sorting uses the current primary column and preserves complete rows through history and reopening', async variant => {
+  await page.evaluate(value => {
+    window.sheetFormatFixture.variant(value)
+    window.sheetFormatFixture.seedCells([
+      { row: 0, column: 0, value: 'A' }, { row: 0, column: 1, value: 30 },
+      { row: 1, column: 0, value: 'B' }, { row: 1, column: 1, value: 10 },
+      { row: 2, column: 0, value: 'C' }, { row: 2, column: 1, value: 20 },
+    ])
+    window.sheetFormatFixture.select([{ startRow: 0, endRow: 2, startCol: 0, endCol: 1 }], { row: 1, column: 1 }, 0)
+  }, variant)
+  const before = await snapshot()
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await ribbonItem('sheet.menu.sort').getByRole('button', { name: '排序', exact: true }).click()
+  await page.getByRole('menuitem', { name: '升序', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].value).toBe('B')
+  const sorted = await snapshot()
+  assert.deepEqual([0, 1, 2].map(row => [sorted.sheets[0].cells[row + ':0'].value, sorted.sheets[0].cells[row + ':1'].value]), [['B', 10], ['C', 20], ['A', 30]])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await clickCommand('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].cells, before.sheets[0].cells)
+  await clickCommand('sheet.command.redo')
+  const saved = await page.evaluate(() => JSON.stringify(window.sheetFormatFixture.save()))
+  await page.evaluate(value => window.sheetFormatFixture.reopen(value), saved)
+  assert.deepEqual((await snapshot()).sheets[0].cells, sorted.sheets[0].cells)
+})
+
+test.each(['classic', 'grid'])('%s clear and reapply filter actions require actual criteria and clear returns them to disabled', async variant => {
+  const range = { startRow: 0, endRow: 2, startCol: 0, endCol: 0 }
+  await page.evaluate(({ variant, range }) => {
+    window.sheetFormatFixture.variant(variant)
+    window.sheetFormatFixture.seedCells([{ value: 'Header' }, { row: 1, value: 'keep' }, { row: 2, value: 'hide' }], false,
+      { autoFilter: { range, columns: {}, filteredRows: [] } })
+  }, { variant, range })
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  const arrow = ribbonItem('sheet.data.filter').getByRole('button', { name: '筛选选项', exact: true })
+  await arrow.click()
+  await expect(page.getByRole('menuitem', { name: '清除筛选', exact: true })).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByRole('menuitem', { name: '重新应用', exact: true })).toHaveAttribute('aria-disabled', 'true')
+  await page.keyboard.press('Escape')
+  await page.evaluate(range => window.sheetFormatFixture.seedCells([{ value: 'Header' }, { row: 1, value: 'keep' }, { row: 2, value: 'hide' }], false,
+    { autoFilter: { range, columns: { 0: { kind: 'values', selectedItems: ['keep'] } }, filteredRows: [2] } }), range)
+  await arrow.click()
+  await expect(page.getByRole('menuitem', { name: '清除筛选', exact: true })).not.toHaveAttribute('aria-disabled', 'true')
+  await page.getByRole('menuitem', { name: '清除筛选', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).sheets[0].autoFilter.columns).toEqual({})
+  assert.deepEqual((await snapshot()).sheets[0].autoFilter.filteredRows, [])
+  await arrow.click()
+  await expect(page.getByRole('menuitem', { name: '清除筛选', exact: true })).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByRole('menuitem', { name: '重新应用', exact: true })).toHaveAttribute('aria-disabled', 'true')
+})
+
 test('grid overflow retains the format menu and applies a format to the original Canvas selection', async () => {
   await selectRange('A1')
   await page.evaluate(() => window.sheetFormatFixture.variant('grid'))
@@ -815,4 +991,34 @@ test('grid overflow retains the format menu and applies a format to the original
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
   await expect(grid()).toBeFocused()
   await expect(canvas()).toHaveAttribute('data-format-test-mount', 'original')
+})
+
+for (const variant of ['classic', 'grid']) test(`${variant} currency glyphs fit and center inside the real hover button across regions and themes`, async () => {
+  await page.evaluate(value => window.sheetFormatFixture.variant(value), variant)
+  const before = content(await snapshot()), expected = { 'en-US': '$', 'zh-TW': 'NT$', 'zh-HK': 'HK$', 'fa-IR': '﷼' }
+  for (const [region, symbol] of Object.entries(expected)) {
+    for (const isDark of [false, true]) {
+      await page.evaluate(value => { window.sheetFormatFixture.appearance(value.isDark, value.region); window.sheetFormatFixture.region(value.region) }, { isDark, region })
+      const button = (await homeItem('sheet.number-format.currency')).getByRole('button')
+      await expect(button.locator('svg text')).toHaveText(symbol)
+      const metrics = await button.evaluate(element => {
+        const button = element.getBoundingClientRect(), icon = element.querySelector('.ribbon-button-icon').getBoundingClientRect()
+        const svg = element.querySelector('svg'), viewport = svg.getBoundingClientRect(), glyph = svg.querySelector('text').getBoundingClientRect()
+        return { button: { left: button.left, right: button.right, top: button.top, bottom: button.bottom },
+          icon: { centerX: icon.x + icon.width / 2, centerY: icon.y + icon.height / 2 },
+          viewport: { left: viewport.left, right: viewport.right, top: viewport.top, bottom: viewport.bottom, width: viewport.width, height: viewport.height },
+          glyph: { left: glyph.left, right: glyph.right, top: glyph.top, bottom: glyph.bottom } }
+      })
+      assert.ok(Math.abs(metrics.icon.centerX - (metrics.button.left + metrics.button.right) / 2) <= 1, symbol)
+      assert.ok(Math.abs(metrics.icon.centerY - (metrics.button.top + metrics.button.bottom) / 2) <= 1, symbol)
+      assert.equal(metrics.viewport.width, 16); assert.equal(metrics.viewport.height, 16)
+      assert.ok(metrics.glyph.left >= metrics.viewport.left - 1 && metrics.glyph.right <= metrics.viewport.right + 1, symbol)
+      assert.ok(metrics.glyph.top >= metrics.viewport.top - 1 && metrics.glyph.bottom <= metrics.viewport.bottom + 1, symbol)
+      await button.hover()
+      assert.equal(await button.evaluate(element => element.matches(':hover')), true)
+      await page.mouse.move(metrics.button.right + 3, metrics.icon.centerY)
+      assert.equal(await button.evaluate(element => element.matches(':hover')), false)
+    }
+  }
+  assert.deepEqual(content(await snapshot()), before); assert.deepEqual(await history(), { undo: 0, redo: 0 })
 })

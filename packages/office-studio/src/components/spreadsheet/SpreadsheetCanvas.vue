@@ -46,7 +46,8 @@ import SlicerControlOverlay from './SlicerControlOverlay.vue'
 import { resolveSlicerRenderProfile, type SlicerRenderProfile } from '../../features/slicer/slicer-style-rendering.ts'
 import SheetContextMenu from './SheetContextMenu.vue'
 import SheetFillOptions from './SheetFillOptions.vue'
-import { sheetContextStructureTarget, type SheetContextMenuContext } from './sheet-context-menu.ts'
+import { sheetContextMenuFeatureSearchContext, sheetContextMenuSelectionHit, sheetContextStructureTarget, type SheetContextMenuContext } from './sheet-context-menu.ts'
+import type { RibbonGroup } from '../../platform/ribbon/ribbon-schema.ts'
 import type { SheetOutlineCommandInput } from '../../features/sheet-outline/sheet-outline-command.ts'
 import { sparklineContextCapability } from '../../features/sparkline/sparkline-context-menu.ts'
 import { sheetAxisVisibilityTargetHasHidden } from '../../features/sheet-workbench/sheet-axis-visibility.ts'
@@ -68,7 +69,7 @@ import type { SheetDrawingCommandInput } from '../../api/sheet-drawing-commands.
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ activeRangeIndex?: number; workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -541,90 +542,81 @@ const surfaceError = ref('')
 const contextMenuOpen = ref(false)
 const contextMenuHit = ref<GridHit | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
-const contextMenuOutline = ref<SheetContextMenuContext['outline']>()
-const contextMenuSelection = computed(() => props.selectedRanges?.at(-1))
-const contextImageRanges = computed<CellRange[]>(() => {
-  const hit = contextMenuHit.value, ranges = props.selectedRanges ?? []
-  if (!hit || !['cell', 'row', 'column', 'all'].includes(hit.kind)) return []
-  const inside = ranges.some(range => hit.kind === 'cell' ? hit.row >= range.startRow && hit.row <= range.endRow && hit.column >= range.startColumn && hit.column <= range.endColumn
+const contextMenuContext = computed(() => contextMenuOpen.value && contextMenuHit.value ? createSheetContextMenuContext(contextMenuHit.value) : undefined)
+const contextSelection = computed(() => {
+  const ranges = props.selectedRanges ?? []
+  return ranges[props.activeRangeIndex ?? ranges.length - 1]
+})
+function createSheetContextMenuContext(hit: GridHit): SheetContextMenuContext {
+  const userId = props.currentUserId ?? 'local-user'
+  const selectedRanges = props.selectedRanges ?? []
+  const selection = contextSelection.value
+  const inside = selectedRanges.some(range => hit.kind === 'cell' ? hit.row >= range.startRow && hit.row <= range.endRow && hit.column >= range.startColumn && hit.column <= range.endColumn
     : hit.kind === 'row' ? range.startColumn === 0 && range.endColumn === props.sheet.columnCount - 1 && hit.row >= range.startRow && hit.row <= range.endRow
       : hit.kind === 'column' && range.startRow === 0 && range.endRow === props.sheet.rowCount - 1 && hit.column >= range.startColumn && hit.column <= range.endColumn)
-  if (inside) return ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }))
-  return [hit.kind === 'cell' ? { startRow: hit.row, endRow: hit.row, startCol: hit.column, endCol: hit.column }
-    : hit.kind === 'row' ? { startRow: hit.row, endRow: hit.row, startCol: 0, endCol: props.sheet.columnCount - 1 }
-      : hit.kind === 'column' ? { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: hit.column, endCol: hit.column }
-        : { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: 0, endCol: props.sheet.columnCount - 1 }]
-})
-const contextCellImage = computed(() => {
-  const hit = contextMenuHit.value
-  if (hit?.kind !== 'cell') return undefined
-  const merge = geometry.value.mergeAt(hit.row, hit.column), row = merge?.startRow ?? hit.row, column = merge?.startColumn ?? hit.column
-  const image = props.sheet.cells[cellAddress(row, column)]?.image
-  return image && canViewProtectedRanges(props.sheet, [{ startRow: row, endRow: row, startCol: column, endCol: column }], props.currentUserId ?? 'local-user') ? { id: image.id, row, column } : undefined
-})
-const contextSparkline = computed(() => {
-  const hit = contextMenuHit.value
-  if (!contextMenuOpen.value || !hit || hit.kind !== 'cell' && hit.kind !== 'row' && hit.kind !== 'column') return undefined
+  const ranges: CellRange[] = inside ? selectedRanges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }))
+    : [hit.kind === 'cell' ? { startRow: hit.row, endRow: hit.row, startCol: hit.column, endCol: hit.column }
+      : hit.kind === 'row' ? { startRow: hit.row, endRow: hit.row, startCol: 0, endCol: props.sheet.columnCount - 1 }
+        : hit.kind === 'column' ? { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: hit.column, endCol: hit.column }
+          : { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: 0, endCol: props.sheet.columnCount - 1 }]
+  const merge = hit.kind === 'cell' ? geometry.value.mergeAt(hit.row, hit.column) : undefined
+  const imagePosition = hit.kind === 'cell' ? { row: merge?.startRow ?? hit.row, column: merge?.startColumn ?? hit.column } : undefined
+  const image = imagePosition ? props.sheet.cells[cellAddress(imagePosition.row, imagePosition.column)]?.image : undefined
+  const imageRanges = Object.entries(props.sheet.cells).flatMap(([key, cell]) => {
+    const point = cell.image && parseAddress(key)
+    return point && ranges.some(range => point.row >= range.startRow && point.row <= range.endRow && point.column >= range.startCol && point.column <= range.endCol)
+      ? [{ startRow: point.row, endRow: point.row, startCol: point.column, endCol: point.column }] : []
+  })
+  const structure = { sheetId: props.sheet.id, rowCount: props.sheet.rowCount, columnCount: props.sheet.columnCount, selectedRanges }
+  const rowRanges = sheetContextStructureTarget(hit, structure, 'row').params.ranges
+  const columnRanges = sheetContextStructureTarget(hit, structure, 'column').params.ranges
+  const canEditSheet = canEditWorksheetProtection(props.sheet, userId)
+  function canStructureAxis(axis: 'row' | 'column'): boolean {
+    const first = (axis === 'row' ? rowRanges : columnRanges)[0]
+    if (!first || !canEditSheet) return false
+    return canEditProtectedRanges(props.sheet, [axis === 'row' ? { ...first, endRow: MAX_SHEET_ROWS - 1 } : { ...first, endCol: MAX_SHEET_COLUMNS - 1 }], userId)
+  }
   const primary = hit.kind === 'cell' ? hit.key : props.selectedKey
-  const ranges = contextImageRanges.value
-  const capability = sparklineContextCapability(props.sheet, ranges, primary, props.currentUserId ?? 'local-user', props.sparklineSheets)
-  return capability.visible ? { ranges: ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol, sheetId: props.sheet.id })),
-    primary, canEdit: capability.canEdit, canDelete: capability.canDelete, expectedRevision: props.workbookRevision } : undefined
-})
-const contextCellImagePositions = computed(() => Object.entries(props.sheet.cells).flatMap(([key, cell]) => {
-  const point = cell.image && parseAddress(key)
-  return point && contextImageRanges.value.some(range => point.row >= range.startRow && point.row <= range.endRow && point.column >= range.startCol && point.column <= range.endCol)
-    ? [{ startRow: point.row, endRow: point.row, startCol: point.column, endCol: point.column }] : []
-}))
-const canSaveContextImages = computed(() => canViewProtectedRanges(props.sheet, contextCellImagePositions.value, props.currentUserId ?? 'local-user'))
-const canShiftHorizontally = computed(() => {
-  const range = contextMenuSelection.value
-  if (!range) return false
-  return canEditProtectedRanges(props.sheet as SpreadsheetRenderSheet, [{
-    startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: MAX_SHEET_COLUMNS - 1,
-  }], props.currentUserId ?? 'local-user')
-})
-const canShiftVertically = computed(() => {
-  const range = contextMenuSelection.value
-  if (!range) return false
-  return canEditProtectedRanges(props.sheet as SpreadsheetRenderSheet, [{
-    startRow: range.startRow, endRow: MAX_SHEET_ROWS - 1, startCol: range.startColumn, endCol: range.endColumn,
-  }], props.currentUserId ?? 'local-user')
-})
-function canChangeContextAxis(axis: 'row' | 'column'): boolean {
-  const hit = contextMenuHit.value
-  if (!hit || !canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')) return false
-  const target = sheetContextStructureTarget(hit, { sheetId: props.sheet.id, rowCount: props.sheet.rowCount,
-    columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis)
-  const first = target.params.ranges[0]
-  if (!first) return false
-  const range = axis === 'row' ? { ...first, endRow: MAX_SHEET_ROWS - 1 } : { ...first, endCol: MAX_SHEET_COLUMNS - 1 }
-  return canEditProtectedRanges(props.sheet, [range], props.currentUserId ?? 'local-user')
+  const sparkline = hit.kind === 'cell' || hit.kind === 'row' || hit.kind === 'column'
+    ? sparklineContextCapability(props.sheet, ranges, primary, userId, props.sparklineSheets) : undefined
+  const canConvertText = Object.entries(props.sheet.cells).some(([key, cell]) => {
+    const address = parseAddress(key)
+    if (!address) return false
+    const selected = selectedRanges.length ? selectedRanges.some(range => address.row >= range.startRow && address.row <= range.endRow
+      && address.column >= range.startColumn && address.column <= range.endColumn) : key === props.selectedKey
+    return selected && Boolean(convertTextToNumber(cell))
+  })
+  return { ...structure, clipboardCapabilities: props.clipboardCapabilities, canFormat: props.canFormat, canConvertText,
+    canDeleteRow: props.sheet.rowCount > 1, canDeleteColumn: props.sheet.columnCount > 1,
+    frozen: Boolean(props.sheet.freeze?.rows || props.sheet.freeze?.columns),
+    hasHiddenRows: sheetAxisVisibilityTargetHasHidden(props.sheet, 'row', rowRanges),
+    hasHiddenColumns: sheetAxisVisibilityTargetHasHidden(props.sheet, 'column', columnRanges),
+    hasHyperlink: hit.kind === 'cell' && Boolean(props.sheet.cells[hit.key]?.hyperlink),
+    hasCellImages: imageRanges.length > 0, canSaveCellImages: canViewProtectedRanges(props.sheet, imageRanges, userId),
+    contextImage: imagePosition && image && canViewProtectedRanges(props.sheet, [{ startRow: imagePosition.row, endRow: imagePosition.row,
+      startCol: imagePosition.column, endCol: imagePosition.column }], userId) ? { id: image.id, ...imagePosition } : undefined,
+    canShiftHorizontally: Boolean(selection && canEditProtectedRanges(props.sheet, [{ startRow: selection.startRow, endRow: selection.endRow,
+      startCol: selection.startColumn, endCol: MAX_SHEET_COLUMNS - 1 }], userId)),
+    canShiftVertically: Boolean(selection && canEditProtectedRanges(props.sheet, [{ startRow: selection.startRow, endRow: MAX_SHEET_ROWS - 1,
+      startCol: selection.startColumn, endCol: selection.endColumn }], userId)),
+    canStructureRows: canStructureAxis('row'), canStructureColumns: canStructureAxis('column'),
+    canVisibilityRows: rowRanges.length > 0 && canEditSheet && canEditProtectedRanges(props.sheet, rowRanges, userId),
+    canVisibilityColumns: columnRanges.length > 0 && canEditSheet && canEditProtectedRanges(props.sheet, columnRanges, userId),
+    sparkline: sparkline?.visible ? { ranges: ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,
+      startColumn: range.startCol, endColumn: range.endCol, sheetId: props.sheet.id })), primary, canEdit: sparkline.canEdit,
+      canDelete: sparkline.canDelete, expectedRevision: props.workbookRevision } : undefined,
+    outline: hit.kind === 'row' || hit.kind === 'column' ? { context: { unitId: props.workbookId ?? 'standalone-workbook',
+      sheetId: props.sheet.id, sheet: props.sheet, userId, selections: (hit.kind === 'row' ? rowRanges : columnRanges).map(range => ({
+        ...range, rangeType: hit.kind === 'row' ? 1 as const : 2 as const })) }, owner: outlineOwner() } : undefined,
+  }
 }
-const canStructureRows = computed(() => canChangeContextAxis('row'))
-const canStructureColumns = computed(() => canChangeContextAxis('column'))
-function contextAxisRanges(axis: 'row' | 'column') {
-  return contextMenuHit.value ? sheetContextStructureTarget(contextMenuHit.value, { sheetId: props.sheet.id,
-    rowCount: props.sheet.rowCount, columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis).params.ranges : []
+function featureSearchContext(): RibbonGroup[] {
+  if (!active || disposed) return []
+  const position = parseAddress(props.selectedKey)
+  if (!position) return []
+  const hit = sheetContextMenuSelectionHit({ kind: 'cell', key: props.selectedKey, ...position }, contextSelection.value, props.sheet)
+  return sheetContextMenuFeatureSearchContext(hit, createSheetContextMenuContext(hit), translate)
 }
-function canChangeContextVisibility(axis: 'row' | 'column'): boolean {
-  const ranges = contextAxisRanges(axis)
-  return ranges.length > 0 && canEditWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
-    && canEditProtectedRanges(props.sheet, ranges, props.currentUserId ?? 'local-user')
-}
-const canVisibilityRows = computed(() => canChangeContextVisibility('row'))
-const canVisibilityColumns = computed(() => canChangeContextVisibility('column'))
-const hasContextHiddenRows = computed(() => sheetAxisVisibilityTargetHasHidden(props.sheet, 'row', contextAxisRanges('row')))
-const hasContextHiddenColumns = computed(() => sheetAxisVisibilityTargetHasHidden(props.sheet, 'column', contextAxisRanges('column')))
-const hasContextHyperlink = computed(() => contextMenuHit.value?.kind === 'cell' && Boolean(props.sheet.cells[contextMenuHit.value.key]?.hyperlink))
-const canConvertSelectedText = computed(() => contextMenuOpen.value && Object.entries(props.sheet.cells).some(([key, cell]) => {
-  const address = parseAddress(key)
-  if (!address) return false
-  const selected = props.selectedRanges?.length
-    ? props.selectedRanges.some(range => address.row >= range.startRow && address.row <= range.endRow && address.column >= range.startColumn && address.column <= range.endColumn)
-    : key === props.selectedKey
-  return selected && Boolean(convertTextToNumber(cell))
-}))
 const sheetViews = new Map<string, { left: number; top: number }>()
 let surface: RenderSurface | undefined, observer: ResizeObserver | undefined, frame = 0, disposed = false, active = true, dragging = false
 let dprQuery: MediaQueryList | undefined
@@ -1445,14 +1437,6 @@ function onContextMenu(event: MouseEvent) {
     : actual?.kind === 'resize-column' ? { kind: 'column' as const, column: actual.column } : actual
   if (!hit) { contextMenuOpen.value = false; return }
   contextMenuHit.value = hit
-  contextMenuOutline.value = undefined
-  if (hit.kind === 'row' || hit.kind === 'column') {
-    const axis = hit.kind === 'row' ? 'row' : 'column', target = sheetContextStructureTarget(hit, { sheetId: props.sheet.id,
-      rowCount: props.sheet.rowCount, columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis)
-    contextMenuOutline.value = { context: { unitId: props.workbookId ?? 'standalone-workbook', sheetId: props.sheet.id, sheet: props.sheet,
-      userId: props.currentUserId ?? 'local-user', selections: target.params.ranges.map(range => ({ ...range, rangeType: axis === 'row' ? 1 : 2 })) },
-      owner: outlineOwner() }
-  }
   contextMenuPosition.value = { x: event.clientX, y: event.clientY }
   contextMenuOpen.value = true
 }
@@ -1718,9 +1702,9 @@ function ensureVisible(address: string) {
   onScroll()
 }
 function focus() { root.value?.focus({ preventScroll: true }) }
-defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, getBackend: () => surface?.backend, operateImageCrop: imageCanvas.operateImageCrop, routeDrawingEvent })
+defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, featureSearchContext, getBackend: () => surface?.backend, operateImageCrop: imageCanvas.operateImageCrop, routeDrawingEvent })
 watch(scene, queueRender)
-watch([() => props.workbookId, () => props.sheet.id, () => props.workbookRevision, () => props.workbookHistoryGeneration, () => props.currentUserId], () => { contextMenuOpen.value = false; contextMenuOutline.value = undefined })
+watch([() => props.workbookId, () => props.sheet.id, () => props.workbookRevision, () => props.workbookHistoryGeneration, () => props.currentUserId], () => { contextMenuOpen.value = false })
 watch(() => [geometry.value.headerWidth, geometry.value.headerHeight] as const, ([headerWidth, headerHeight]) => {
   viewport.value = { ...viewport.value, headerWidth, headerHeight }
   void nextTick(() => { resize(); ensureVisible(props.selectedKey) })
@@ -1928,32 +1912,12 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingCont
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ selectedCellText }}</span></div>
     <Alert v-if="surfaceError" class="canvas-surface-error" type="error" :title="`画布初始化失败：${surfaceError}`" show-icon />
     <SheetContextMenu
+      v-if="contextMenuContext"
+      v-bind="contextMenuContext"
       v-model:open="contextMenuOpen"
       :hit="contextMenuHit"
-      :sheet-id="sheet.id"
       :x="contextMenuPosition.x"
       :y="contextMenuPosition.y"
-      :can-delete-row="sheet.rowCount > 1"
-      :can-delete-column="sheet.columnCount > 1"
-      :frozen="Boolean(sheet.freeze?.rows || sheet.freeze?.columns)"
-      :has-hidden-rows="hasContextHiddenRows"
-      :has-hidden-columns="hasContextHiddenColumns"
-      :can-convert-text="canConvertSelectedText"
-      :has-hyperlink="hasContextHyperlink"
-      :has-cell-images="Boolean(contextCellImagePositions.length)" :can-save-cell-images="canSaveContextImages" :context-image="contextCellImage"
-      :can-format="canFormat"
-      :clipboard-capabilities="clipboardCapabilities"
-      :can-shift-horizontally="canShiftHorizontally"
-      :can-shift-vertically="canShiftVertically"
-      :selected-ranges="selectedRanges"
-      :row-count="sheet.rowCount"
-      :column-count="sheet.columnCount"
-      :can-structure-rows="canStructureRows"
-      :can-structure-columns="canStructureColumns"
-      :can-visibility-rows="canVisibilityRows"
-      :can-visibility-columns="canVisibilityColumns"
-      :sparkline="contextSparkline"
-      :outline="contextMenuOutline"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>

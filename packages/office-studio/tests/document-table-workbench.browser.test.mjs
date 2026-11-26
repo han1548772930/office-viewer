@@ -53,6 +53,7 @@ window.documentTableFixture = {
   snapshot: () => copy(model.value), commands: () => [...commands], notices: () => [...notices], point: geometry,
   history: () => ({ undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 }),
   select: range => tableApi().selectRange(range),
+  permission: rules => { api.value.setPermissionRules(rules) },
   selectText: (row, column, offset = 0) => { const source = tableForBlock(model.value.blocks.find(block => block.id === 'table')), owner = documentTableGrid(source).cellAt(row, column), paragraph = owner.cell.blocks[0]; api.value.setInputSelection({ anchor: { blockId: 'table', row: owner.row, col: owner.cellIndex, cellBlockId: paragraph.id, offset }, focus: { blockId: 'table', row: owner.row, col: owner.cellIndex, cellBlockId: paragraph.id, offset } }) },
   appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
   scrollTo: (row, column) => { const layout = layoutDocument(model.value, createTextMeasurer()), source = tableForBlock(model.value.blocks.find(block => block.id === 'table')), owner = documentTableGrid(source).cellAt(row, column), cell = layout.cells.find(cell => cell.cellId === owner.cell.id && !cell.repeatedHeader), scroll = document.querySelector('.document-scroll'); scroll.scrollTop = Math.max(0, cell.y - 100); scroll.dispatchEvent(new Event('scroll')) },
@@ -89,6 +90,42 @@ const selected = range => page.evaluate(range => window.documentTableFixture.sel
 async function hoverCell(row = 0, column = 0, pageIndex) { const point = await page.evaluate(({ row, column, pageIndex }) => window.documentTableFixture.point(row, column, pageIndex), { row, column, pageIndex }); await page.mouse.move(point.x, point.y); return point }
 async function contextProperty(title, row = 0, column = 0) { const point = await hoverCell(row, column); await page.mouse.click(point.x, point.y, { button: 'right' }); await page.getByRole('menuitem', { name: title, exact: true }).click(); return page.getByRole('dialog') }
 const rowSource = document => document.blocks.find(block => block.id === 'table').metadata.table
+
+test.each([[false, 'classic', 'permission'], [true, 'grid', 'permission'], [false, 'classic', 'composition'], [true, 'grid', 'composition']])('the table insert dialog follows live disabled state in dark %s, %s, %s', async (dark, variant, trigger) => {
+  await page.evaluate(({ dark, variant }) => window.documentTableFixture.appearance(dark, variant), { dark, variant })
+  await page.evaluate(() => window.documentTableFixture.selectText(0, 0, 2))
+  await page.getByRole('tab', { name: '插入', exact: true }).click()
+  await page.locator('.ribbon-visible-groups [data-ribbon-item="doc-table"] button').click()
+  await page.getByRole('menuitem', { name: '插入表格', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '插入表格', exact: true })
+  await dialog.getByRole('switch', { name: '指定表格宽度', exact: true }).click()
+  await dialog.getByLabel('表格宽度（px）', { exact: true }).fill('600')
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true, includeHidden: true })
+  if (trigger === 'permission') await page.evaluate(() => window.documentTableFixture.permission([{ id: 'insert-denied', scope: 'document', action: 'edit', effect: 'deny', userIds: [] }]))
+  if (trigger === 'composition') await input.dispatchEvent('compositionstart', { data: '' })
+  const before = await snapshot(), beforeHistory = await history(), beforeCommands = await page.evaluate(() => window.documentTableFixture.commands())
+  for (const field of ['行数', '列数', '表格宽度（px）', '最小行高（px）', '重复表头行数']) await expect(dialog.getByLabel(field, { exact: true })).toBeDisabled()
+  for (const field of ['指定表格宽度', '合并首行为标题']) await expect(dialog.getByRole('switch', { name: field, exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('textbox', { name: '初始数据（制表符分列，换行分行）', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: '插入', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeEnabled()
+  await expect(dialog.getByRole('status')).toHaveCount(0)
+  await dialog.locator('form').dispatchEvent('submit', { bubbles: true, cancelable: true })
+  await expect(dialog).toBeVisible()
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), beforeHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), beforeCommands)
+  if (trigger === 'permission') await page.evaluate(() => window.documentTableFixture.permission([]))
+  if (trigger === 'composition') await input.dispatchEvent('compositionend', { data: '' })
+  await expect(dialog.getByLabel('表格宽度（px）', { exact: true })).toBeEnabled()
+  await expect(dialog.getByLabel('表格宽度（px）', { exact: true })).toHaveValue('600')
+  await expect(dialog.getByRole('button', { name: '插入', exact: true })).toBeEnabled()
+  const recovered = await snapshot(), recoveredHistory = await history()
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  assert.deepEqual(await snapshot(), recovered)
+  assert.deepEqual(await history(), recoveredHistory)
+})
 
 test('row and column handles select real structural ranges and insert dots create one history item', async () => {
   await selected(rect(0, 0)); await hoverCell()
@@ -192,6 +229,32 @@ test('HTML rowspan zero, multiple paragraphs and wrapped nested content survive 
   assert.deepEqual(result.reopened.columnWidths, [80, 120])
   assert.equal(result.reopened.rows[0].cells[0].style.margin.left, 6)
   assert.deepEqual(result.reopened.rows[0].cells[0].style.borders.top, result.source.rows[0].cells[0].style.borders.top)
+})
+
+test('disabled table handles retain their idle colors while hovered during composition in both themes', async () => {
+  await page.addStyleTag({ content: '.table-overlay-handle, .table-overlay-resize { transition: none !important; }' })
+  await page.evaluate(() => window.documentTableFixture.selectText(0, 0, 2))
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await input.focus()
+  const before = await snapshot()
+  await input.dispatchEvent('compositionstart', { data: '' })
+  const handle = page.getByRole('button', { name: '在第 1 行上方插入', exact: true }).first()
+  const resize = page.getByRole('button', { name: '调整第 1 列宽度', exact: true }).first()
+  await expect(handle).toBeDisabled()
+  await expect(resize).toBeDisabled()
+  for (const dark of [false, true]) {
+    await page.evaluate(value => window.documentTableFixture.appearance(value, 'classic'), dark)
+    await page.mouse.move(1400, 800)
+    const idle = await handle.evaluate(element => [getComputedStyle(element).color, getComputedStyle(element).borderColor])
+    await handle.hover()
+    await expect.poll(() => handle.evaluate(element => [getComputedStyle(element).color, getComputedStyle(element).borderColor])).toEqual(idle)
+    await resize.hover()
+    await expect.poll(() => resize.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
+  }
+  await input.dispatchEvent('compositionend', { data: '' })
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), [])
 })
 
 test('synthetic composition in a cell produces one committed edit and restores the Canvas input focus', async () => {

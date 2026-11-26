@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentCodeConfig, DocumentSectionBreakType } from '../../../domain/model'
 import { paragraphListMarkers, type ParagraphListMarker } from '../model/document-lists'
 import { imageForBlock } from '../model/document-model'
+import { documentHorizontalLineBorder } from '../model/document-horizontal-line'
 import { balanceDocumentSection } from './document-column-balance'
 import { layoutDocumentParagraph, paragraphGeometry } from './document-paragraph-layout'
 import { layoutDocumentTable } from './document-table-layout'
@@ -74,11 +75,14 @@ export function appendDocumentBlocks(blocks: DocumentBlock[], flow: DocumentSect
         flow.column.width, flow.column.x, measurer, result.images, markers.get(inputAnchor.id), options.textDisplay))
       if (!floated) flow.consume(prepared.height)
     } else if (block.type === 'divider') {
-      flow.ensureRoom(18)
+      const border = documentHorizontalLineBorder(block), height = Math.max(18, border.padding * 2 + border.width)
+      flow.ensureRoom(height)
       const fraction = typeof block.metadata.noteSeparatorWidthFraction === 'number' ? Math.max(0, Math.min(1, block.metadata.noteSeparatorWidthFraction)) : 1
-      result.dividers.push({ x: flow.column.x, y: flow.cursor + 9, width: flow.column.width * fraction, height: 1, page: flow.page.index, ...flow.location,
-        ...(typeof block.metadata.noteSeparatorColor === 'string' ? { color: block.metadata.noteSeparatorColor } : {}) })
-      flow.consume(18)
+      const separator = block.metadata.noteSeparatorWidthFraction !== undefined
+      result.dividers.push({ x: flow.column.x, y: flow.cursor + (separator ? 9 : border.padding + border.width / 2), width: flow.column.width * fraction,
+        height: border.width, page: flow.page.index, ...flow.location, style: border.style,
+        color: typeof block.metadata.noteSeparatorColor === 'string' ? block.metadata.noteSeparatorColor : separator ? '#b3bdca' : border.color })
+      flow.consume(height)
     } else {
       const endInset = index === blocks.length - 1 && options.endInset ? options.endInset + style.spaceAfter : 0
       const successor = documentParagraphSuccessorHeight(blocks, index, flow, paginationContext)

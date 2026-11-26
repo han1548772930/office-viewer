@@ -3372,8 +3372,8 @@ export class FDocument {
   insertTableFromData(data: string[][], options: Omit<DocumentTableInsertOptions, 'values'> = {}): FDocumentTable | null {
     return insertDocumentTable(this, undefined, undefined, { ...options, values: data })
   }
-  executeCommand(command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
-    return this.api.executeDocumentEditorCommand(this.id, command, selection)
+  executeCommand(command: DocumentCommand, selection: DocumentSelection, sourceCommandId?: 'doc.command.insert-special-character'): DocumentEditorCommandResult {
+    return this.api.executeDocumentEditorCommand(this.id, command, selection, sourceCommandId)
   }
   executeNoteCommand(request: DocumentNoteMutationRequest): DocumentNoteCommandResult { return this.api.executeDocumentNoteCommand(this.id, request) }
   insertFootnote(offset: number, content?: DocumentNoteContentInput): string | null { return this.insertNote('footnote', offset, content) }

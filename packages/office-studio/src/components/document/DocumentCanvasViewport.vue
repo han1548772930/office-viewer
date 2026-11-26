@@ -20,6 +20,8 @@ import { documentLatexCanvasRequestCurrent, type DocumentLatexCanvasEditRequest 
 import { documentLatexDragAnchor, hitTestDocumentLatex, type DocumentLatexHit } from '../../features/document/layout/document-latex-hit'
 import DocumentStructuredOverlay from './DocumentStructuredOverlay.vue'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
+import { documentHyperlinkForSelection } from '../../features/document/services/document-hyperlinks'
+import { documentSegmentIdForHost } from '../../api/document-segments'
 import type { StoryLocation } from '../../features/document/services/story-editor'
 import { documentFormattingWordRange } from '../../features/document/services/document-format-painter'
 import type { DocumentInputSession, DocumentStoryInputCommit } from '../../features/document/model/document-input-session'
@@ -862,8 +864,12 @@ function pointerDown(event: PointerEvent) {
       emit('navigate-to-heading', headingId)
       return
     }
-    const href = marksAtPoint(editingModel.value, point).href
-    if (href) { window.open(href, '_blank', 'noopener,noreferrer'); return }
+    const link = documentHyperlinkForSelection(editingModel.value, { anchor: point, focus: point })
+    if (link) {
+      emit('operation', 'doc.operation.click-hyper-link', { unitId: props.model.id, linkId: link.id,
+        ...(props.host ? { segmentId: documentSegmentIdForHost(props.model, props.host) } : {}), source: props.model })
+      return
+    }
   }
   const latexHit = coordinates && hitTestDocumentLatex(editingModel.value, editingLayout.value, coordinates.x, coordinates.y)
   latexDragSelection = latexHit && !event.shiftKey ? latexHit.selection : undefined

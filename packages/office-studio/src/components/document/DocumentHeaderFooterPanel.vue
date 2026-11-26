@@ -47,7 +47,7 @@ function clearUnlinkedStories() {
 
 <template>
   <Modal :open="open" :title="t('doc.header-footer.title', '页眉和页脚')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.close', '关闭')" :width="560" @ok="emit('update:open', false)" @cancel="emit('update:open', false)" @after-close="emit('closed')">
-    <Form layout="vertical" class="header-footer-panel">
+    <Form layout="horizontal" label-align="start" :colon="false" class="header-footer-panel">
       <FormItem class="header-footer-panel__row" :label="t('doc.header-footer.current-section', '当前节')"><Input :value="`${sections.indexOf(sectionId) + 1}`" readonly /></FormItem>
       <FormItem class="header-footer-panel__toggle" :label="t('doc.header-footer.different-first', '首页不同')"><Switch :checked="section.differentFirstPage" :disabled="readOnly" @change="updateOption('differentFirstPage', $event)" /></FormItem>
       <FormItem class="header-footer-panel__toggle" :label="t('doc.header-footer.different-odd-even', '奇偶页不同')"><Switch :checked="section.differentOddEven" :disabled="readOnly" @change="updateOption('differentOddEven', $event)" /></FormItem>
@@ -72,12 +72,18 @@ function clearUnlinkedStories() {
 
 <style scoped>
 .header-footer-panel { display: grid; gap: 12px; }
-.header-footer-panel :deep(.ant-form-item) { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 0; font-size: 13px; }
+.header-footer-panel :deep(.ant-form-item) { margin-bottom: 0; font-size: 13px; }
+.header-footer-panel :deep(.ant-form-item-row) {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
 .header-footer-panel :deep(.ant-form-item-label), .header-footer-panel :deep(.ant-form-item-control) { min-width: 0; padding: 0; }
 .header-footer-panel :deep(.header-footer-panel__toggle .ant-form-item-control-input-content) { display: flex; justify-content: flex-start; }
 .header-footer-panel__story { display: grid; gap: 8px; min-width: 0; }
 .header-footer-panel__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .header-footer-panel__field-list { font-size: 12px; color: var(--document-secondary-text, inherit); }
 .header-footer-panel :deep(textarea.ant-input) { min-height: 32px; font: inherit; }
-@media (max-width: 560px) { .header-footer-panel :deep(.ant-form-item) { grid-template-columns: minmax(0, 1fr); gap: 5px; } }
+@media (max-width: 560px) { .header-footer-panel :deep(.ant-form-item-row) { grid-template-columns: minmax(0, 1fr); gap: 5px; } }
 </style>

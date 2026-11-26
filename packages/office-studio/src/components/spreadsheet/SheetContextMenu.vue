@@ -5,7 +5,7 @@ import type { MenuItemType, MenuRef } from 'antdv-next'
 import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ChartLine, ClipboardPaste, Columns3, Copy, Download, Eraser, Eye, EyeOff, Grid2X2, Group, Hash, Image, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
 import type { SheetContextMenuContext } from './sheet-context-menu.ts'
 import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
-import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
+import { createSheetContextMenuItems, translateSheetContextMenuItems } from './sheet-context-menu.ts'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import type { SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 
@@ -48,25 +48,7 @@ const panel = ref<HTMLElement>()
 const { token } = theme.useToken()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const direction = inject(OfficeDirectionKey, ref<'ltr' | 'rtl'>('ltr'))
-function translateItems(source: SheetContextMenuItem[]): SheetContextMenuItem[] {
-  return source.flatMap(item => {
-    if (item.hidden) return []
-    const entries: SheetContextMenuItem[] = []
-    if (item.separatorBefore) entries.push({ id: `${item.id}-separator`, label: '', commandId: '', type: 'divider' })
-    entries.push({ ...item, separatorBefore: false })
-    return entries.map(entry => ({
-      ...entry,
-      label: entry.type === 'divider' ? '' : translatedLabel(entry),
-      children: entry.children ? translateItems(entry.children) : undefined,
-    }))
-  })
-}
-function translatedLabel(item: SheetContextMenuItem): string {
-  const text = translate(item.translationKey ?? `sheet.context-menu.${item.id}`, item.label)
-  if (item.count === undefined) return text
-  return text.includes('{count}') ? text.replaceAll('{count}', String(item.count)) : item.count > 1 && text !== item.label ? `${text} (${item.count})` : text
-}
-const items = computed(() => props.hit ? translateItems(createSheetContextMenuItems(props.hit, props)) : [])
+const items = computed(() => props.hit ? translateSheetContextMenuItems(createSheetContextMenuItems(props.hit, props), translate) : [])
 const itemById = computed(() => {
   const entries = new Map<string, (typeof items.value)[number]>()
   const visit = (entry: (typeof items.value)[number]) => {

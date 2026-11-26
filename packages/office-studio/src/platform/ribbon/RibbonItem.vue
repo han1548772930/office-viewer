@@ -109,9 +109,9 @@ onBeforeUnmount(() => { open.value = false })
 </script>
 
 <template>
-  <span ref="root" class="workbench-ribbon-item" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
+  <span ref="root" class="workbench-ribbon-item" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'is-disabled': item.disabled || measurement, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
     <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :measurement="measurement" :grid="grid" :overflow="overflow" :icon-size="iconSize" :open="open" @update:open="(value: boolean) => { open = value }" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
-    <Tooltip v-else :title="measurement ? undefined : description" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
+    <Tooltip v-else :title="measurement ? undefined : description" :trigger="['hover', 'focus']" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
         <RibbonEditableSelect v-if="item.edit" v-model:open="open" :input-id="`${popupId}-select`" :item="item" :measurement="measurement" class="ribbon-select"
@@ -126,39 +126,44 @@ onBeforeUnmount(() => { open.value = false })
         </Select>
       </span>
       <span v-else-if="isDropdown" class="ribbon-dropdown" :class="{ 'ribbon-split': item.type === 'split' }">
-        <Button v-if="item.type === 'split'" type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
+        <Button v-if="item.type === 'split'" type="text" size="small" class="ribbon-button" :styles="{ root: { border: 0 } }" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="execute()">
           <span v-if="item.icon" class="ribbon-button-icon" aria-hidden="true"><component :is="item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.swatch" class="ribbon-icon-color-bar" :style="{ backgroundColor: item.swatch }" /></span>
-          <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel">{{ item.title }}</span>
+          <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel" class="ribbon-button-label">{{ item.title }}</span>
         </Button>
         <Popover v-model:open="open" trigger="click" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="!item.popupComponent">
-          <Button type="text" size="small" class="ribbon-button" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" :aria-pressed="item.type === 'menu' ? item.activated : undefined" :aria-haspopup="item.popupComponent ? 'dialog' : 'menu'" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent.stop="openMenu" @keydown.up.prevent.stop="openMenu($event, true)" @keydown.esc.prevent.stop="closeMenu">
-            <component :is="item.icon" v-if="item.type === 'menu' && item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.type === 'menu' && showLabel">{{ item.title }}</span><ChevronDown :size="12" />
+          <Button type="text" size="small" class="ribbon-button" :styles="{ root: { border: 0 } }" :class="{ 'ribbon-split-arrow': item.type === 'split', 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.type === 'split' ? `${item.title}选项` : item.title" :aria-pressed="item.type === 'menu' ? item.activated : undefined" :aria-haspopup="item.popupComponent ? 'dialog' : 'menu'" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown.down.prevent.stop="openMenu" @keydown.up.prevent.stop="openMenu($event, true)" @keydown.esc.prevent.stop="closeMenu">
+            <span v-if="item.type === 'menu' && item.icon" class="ribbon-button-icon" aria-hidden="true"><component :is="item.icon" :size="iconSize" :style="{ color: item.iconColor }" /></span>
+            <span class="ribbon-dropdown-caption"><span v-if="item.type === 'menu' && showLabel" class="ribbon-button-label">{{ item.title }}</span><ChevronDown class="ribbon-dropdown-chevron" :size="12" aria-hidden="true" /></span>
           </Button>
           <template #content>
-            <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
+            <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" role="dialog" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
               <component :is="item.popupComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
             </div>
             <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>
         </Popover>
       </span>
-      <Button v-else type="text" size="small" class="ribbon-button" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="event => { if (!item.subId || event.detail <= 1) execute() }" @dblclick="item.subId && forward(item.subId)">
+      <Button v-else type="text" size="small" class="ribbon-button" :styles="{ root: { border: 0 } }" :class="{ 'is-active': item.activated }" :disabled="item.disabled || measurement" :aria-label="item.title" :aria-pressed="item.activated === undefined ? undefined : item.activated" @mousedown.prevent @click="event => { if (!item.subId || event.detail <= 1) execute() }" @dblclick="item.subId && forward(item.subId)">
         <span v-if="item.icon" class="ribbon-button-icon" aria-hidden="true"><component :is="item.icon" :size="iconSize" :style="{ color: item.iconColor }" /><span v-if="item.swatch" class="ribbon-icon-color-bar" :style="{ backgroundColor: item.swatch }" /></span>
-        <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel">{{ item.title }}</span>
+        <span v-else-if="item.swatch" class="ribbon-color-swatch" :style="{ backgroundColor: item.swatch }" aria-hidden="true" /><span v-if="showLabel" class="ribbon-button-label">{{ item.title }}</span>
       </Button>
     </Tooltip>
   </span>
 </template>
 
 <style scoped>
-.workbench-ribbon-item { display: inline-flex; flex: 0 0 auto; min-width: var(--ribbon-button-height); height: var(--ribbon-selector-height); align-items: center; vertical-align: middle; }
+.workbench-ribbon-item { display: inline-flex; box-sizing: border-box; flex: 0 0 auto; min-width: var(--ribbon-button-height); height: var(--ribbon-selector-height); align-items: center; vertical-align: middle; }
 .workbench-ribbon-item.is-grid { box-sizing: border-box; width: 100%; min-width: var(--ribbon-grid-button-size); height: 100%; }
-.ribbon-button { display: inline-flex; min-width: var(--ribbon-button-height); height: var(--ribbon-button-height); padding: 0; gap: 4px; align-items: center; justify-content: center; font-size: 14px; white-space: nowrap; color: var(--ribbon-text, #334155); border-radius: 4px; }
+.ribbon-button { display: inline-flex; box-sizing: border-box; min-width: var(--ribbon-button-height); height: var(--ribbon-button-height); padding: 0; gap: 4px; align-items: center; justify-content: center; font-size: 14px; line-height: 20px; white-space: nowrap; color: var(--ribbon-text, #334155); border-radius: 4px; }
 .workbench-ribbon-item.is-grid :deep(.ant-tooltip-trigger) { display: flex; width: 100%; height: 100%; }
-.workbench-ribbon-item.is-grid .ribbon-button { box-sizing: border-box; width: 100%; min-width: var(--ribbon-grid-button-size); height: 100%; padding-inline: 4px; font-size: 12px; }
-.workbench-ribbon-item.is-grid .ribbon-button :deep(svg) { width: var(--ribbon-icon-size); height: var(--ribbon-icon-size); }
-.workbench-ribbon-item.is-grid.is-grid-large .ribbon-button { flex-direction: column; gap: 4px; padding: 4px 6px; white-space: normal; }
+.workbench-ribbon-item.is-grid .ribbon-button { width: 100%; min-width: var(--ribbon-grid-button-size); height: 100%; padding-inline: 4px; font-size: 12px; line-height: 16px; }
+.ribbon-button-icon > :deep(svg) { display: block; width: var(--ribbon-icon-size); height: var(--ribbon-icon-size); }
+.workbench-ribbon-item.is-grid.is-grid-large .ribbon-button { flex-direction: column; gap: 2px; padding: 2px 4px; white-space: normal; }
 .workbench-ribbon-item.is-grid.is-grid-large .ribbon-button :deep(svg) { flex: 0 0 auto; }
+.ribbon-button-label { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.workbench-ribbon-item.is-grid.is-grid-large .ribbon-button-label { white-space: nowrap; }
+.ribbon-dropdown-caption { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; justify-content: center; gap: 4px; }
+.ribbon-dropdown-caption .ribbon-dropdown-chevron { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
 .has-label .ribbon-button { padding-inline: 6px; }
 .workbench-ribbon-item:not(.has-icon) .ribbon-button { padding-inline: 8px; }
 .is-selector .ribbon-button { height: var(--ribbon-selector-height); }
@@ -167,27 +172,31 @@ onBeforeUnmount(() => { open.value = false })
 .ribbon-button-icon { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; }
 .ribbon-icon-color-bar { position: absolute; inset-inline: 0; bottom: -2px; height: 3px; border-radius: 1px; }
 .ribbon-button:disabled .ribbon-icon-color-bar { opacity: 0.35; }
-.ribbon-button.is-active { background: var(--ribbon-active-background, #e7edfa); color: var(--ribbon-primary, #315bc2); }
 .ribbon-button:focus-visible { outline: 2px solid var(--ribbon-primary, #5274d7); outline-offset: -2px; }
-.ribbon-select-wrap { display: flex; align-items: center; gap: 12px; }
+.ribbon-select-wrap { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: 12px; }
 .workbench-ribbon-item.is-grid .ribbon-select-wrap { box-sizing: border-box; width: 100%; height: 100%; flex-direction: column; align-items: stretch; justify-content: center; gap: 2px; }
 .ribbon-grid-select-title { display: block; overflow: hidden; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.workbench-ribbon-item .ribbon-select { min-width: 52px; height: var(--ribbon-selector-height); border-radius: 4px; font-size: 14px; }
-.workbench-ribbon-item .ribbon-select:not(.ant-select-disabled):hover { background: var(--ribbon-hover-background); }
-.workbench-ribbon-item.is-grid .ribbon-select, .workbench-ribbon-item.is-grid .ribbon-select :deep(input) { font-size: 12px; }
-.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select { box-sizing: border-box; height: var(--ribbon-grid-row-height); border: 1px solid var(--ribbon-border); background: var(--ribbon-background); }
+.workbench-ribbon-item .ribbon-select { box-sizing: border-box; min-width: 52px; height: var(--ribbon-selector-height); align-items: center; padding-block: 0; border-radius: 4px; font-size: 14px; line-height: 20px; }
+.ribbon-select :deep(.ant-select-suffix) { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+.ribbon-select :deep(.ant-select-suffix svg) { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
+.workbench-ribbon-item:not(.is-disabled) .ribbon-select:hover { background: var(--ribbon-hover-background); }
+.workbench-ribbon-item.is-grid .ribbon-select, .workbench-ribbon-item.is-grid .ribbon-select :deep(input) { font-size: 12px; line-height: 16px; }
+.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select-wrap { flex-direction: row; align-items: center; gap: 4px; }
+.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-grid-select-title { flex: 0 1 auto; max-width: 40%; text-align: start; }
+.workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select { box-sizing: border-box; min-width: 0; height: var(--ribbon-grid-row-height); flex: 1 1 auto; border: 1px solid var(--ribbon-border); background: var(--ribbon-background); }
 .workbench-ribbon-item.is-grid:not(.is-grid-large):not(.is-overflow) .ribbon-select:focus-within { border-color: var(--ribbon-primary); }
-.workbench-ribbon-item.is-grid-align-start .ribbon-button { justify-content: flex-start; }
+.workbench-ribbon-item.is-grid-align-start .ribbon-button:not(.ribbon-split-arrow) { justify-content: flex-start; }
 .ribbon-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .ribbon-dropdown { display: flex; align-items: center; }
 .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { min-width: var(--ribbon-selector-height); padding-inline: 4px; }
-.ribbon-dropdown .ribbon-split-arrow { min-width: 24px; width: 24px; padding: 0; border-inline-start: 1px solid var(--ribbon-border, #e2e8f0); border-start-start-radius: 0; border-end-start-radius: 0; }
+.ribbon-dropdown .ribbon-button.ribbon-split-arrow { min-width: 24px; width: 24px; padding: 0; border-start-start-radius: 0; border-end-start-radius: 0; }
+.ribbon-dropdown .ribbon-button.ribbon-split-arrow::before { position: absolute; inset-block: 0; inset-inline-start: 0; width: 1px; background: var(--ribbon-border, #e2e8f0); content: ''; pointer-events: none; }
 .workbench-ribbon-item.is-grid .ribbon-dropdown { width: 100%; height: 100%; }
-.workbench-ribbon-item.is-grid .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { min-width: 20px; flex: 1 1 auto; }
-.workbench-ribbon-item.is-grid .ribbon-split-arrow { width: 16px; min-width: 16px; flex: 0 0 16px; justify-content: flex-start; border: 0; }
-.workbench-ribbon-item.is-grid.is-grid-large .ribbon-split { position: relative; }
-.workbench-ribbon-item.is-grid.is-grid-large .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { padding-bottom: 16px; }
-.workbench-ribbon-item.is-grid.is-grid-large .ribbon-split-arrow { position: absolute; inset-inline: 0; bottom: 0; width: 100%; height: 16px; justify-content: center; padding: 0; }
+.workbench-ribbon-item.is-grid.has-icon .ribbon-dropdown { min-width: calc(var(--ribbon-icon-size) + 24px); }
+.workbench-ribbon-item.is-grid .ribbon-split .ribbon-button:not(.ribbon-split-arrow) { width: auto; min-width: calc(var(--ribbon-icon-size) + 8px); flex: 1 1 auto; }
+.workbench-ribbon-item.is-grid .ribbon-button.ribbon-split-arrow { width: 16px; min-width: 16px; flex: 0 0 16px; padding: 0; justify-content: center; }
+.workbench-ribbon-item.is-grid .ribbon-button.ribbon-split-arrow::before { display: none; }
+.workbench-ribbon-item.is-grid.is-grid-large .ribbon-split-arrow { flex-direction: row; gap: 0; padding: 0; }
 .ribbon-command-menu { box-sizing: border-box; min-width: min(180px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(460px, 65vh); overflow: auto; color: var(--ribbon-text, #334155); }
 .ribbon-command-menu :deep(.ant-menu-item), .ribbon-command-menu :deep(.ant-menu-submenu-title) { min-height: 30px; height: auto; line-height: 22px; padding-block: 4px; white-space: normal; }
 .ribbon-command-menu :deep(.ribbon-menu-item-label) { display: flex; min-width: 0; align-items: center; gap: 12px; }
@@ -195,13 +204,22 @@ onBeforeUnmount(() => { open.value = false })
 .ribbon-command-menu :deep(.ribbon-menu-item-shortcut) { flex: 0 0 auto; margin-inline-start: auto; color: var(--ribbon-text-secondary, #94a3b8); font-size: 11px; }
 .ribbon-component-popup { box-sizing: border-box; max-width: calc(100vw - 24px); max-height: min(520px, 70vh); overflow: auto; }
 .ribbon-button:not(:disabled):hover { background: var(--ribbon-hover-background, #f1f5f9); }
+.ribbon-button.is-active:not(:disabled),
+.ribbon-button[aria-expanded="true"]:not(:disabled),
+.ribbon-button.is-active:not(:disabled):hover,
+.ribbon-button[aria-expanded="true"]:not(:disabled):hover,
+.ribbon-button.is-active:not(:disabled):active,
+.ribbon-button[aria-expanded="true"]:not(:disabled):active { background: var(--ribbon-active-background, #e7edfa); color: var(--ribbon-primary, #315bc2); }
 .ribbon-button:disabled { color: var(--ribbon-disabled, #94a3b8); background: transparent; cursor: not-allowed; }
 .workbench-ribbon-item.is-grid.is-overflow { width: auto; min-width: 28px; height: auto; min-height: 28px; }
 .is-overflow > :deep(span), .is-overflow .ribbon-dropdown, .is-overflow .ribbon-select-wrap { width: 100%; }
 .is-overflow .ribbon-button { width: 100%; height: auto; min-height: 28px; justify-content: flex-start; white-space: normal; text-align: start; }
 .workbench-ribbon-item.is-grid.is-overflow .ribbon-button { height: auto; min-height: 28px; }
-.is-overflow .ribbon-select-wrap { justify-content: space-between; }
+.workbench-ribbon-item.is-overflow .ribbon-select-wrap { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.workbench-ribbon-item.is-overflow .ribbon-dropdown { align-items: stretch; }
 .is-overflow .ribbon-select { flex: 1; min-width: 0; max-width: 150px; }
-.is-overflow .ribbon-select-label { flex: 0 0 auto; font-size: 13px; white-space: nowrap; }
+.is-overflow .ribbon-select-label { min-width: 0; flex: 0 1 auto; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .is-overflow .ribbon-split-arrow { width: 24px; flex: 0 0 24px; }
+.workbench-ribbon-item.is-overflow .ribbon-button.ribbon-split-arrow { width: 24px; min-width: 24px; flex: 0 0 24px; padding: 0; justify-content: center; }
+.is-overflow .ribbon-button:not(.ribbon-split-arrow) .ribbon-dropdown-caption { flex: 1 1 auto; justify-content: space-between; }
 </style>

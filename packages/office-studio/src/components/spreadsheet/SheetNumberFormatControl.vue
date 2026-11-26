@@ -66,8 +66,8 @@ watch(() => props.disabled || props.measurement, unavailable => { if (unavailabl
   <span ref="root" class="sheet-number-format-control" :class="{ 'is-grid': grid, 'is-overflow': overflow }" :style="themeStyle">
     <span v-if="overflow" class="sheet-number-format-label">{{ title }}</span>
     <Popover v-model:open="open" trigger="click" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :destroy-on-hidden="true" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }">
-      <Tooltip :title="measurement || open ? undefined : title" :open="tooltipOpen && !open" @open-change="value => { tooltipOpen = !open && value }">
-        <Button type="text" size="small" class="sheet-number-format-trigger" :disabled="disabled || measurement" :aria-label="title" aria-haspopup="menu" :aria-expanded="open" :aria-controls="menuId"
+      <Tooltip :title="measurement || open ? undefined : title" :trigger="['hover', 'focus']" :mouse-enter-delay="0.6" :open="tooltipOpen && !open" @open-change="value => { tooltipOpen = !open && value }">
+        <Button type="text" size="small" class="sheet-number-format-trigger" :styles="{ root: { border: 0 } }" :disabled="disabled || measurement" :aria-label="title" aria-haspopup="menu" :aria-expanded="open" :aria-controls="menuId"
           @mousedown.prevent @keydown.down="openFromKeyboard" @keydown.up="openFromKeyboard($event, true)" @keydown.esc="escape">
           <span>{{ caption }}</span><ChevronDown :size="12" aria-hidden="true" />
         </Button>
@@ -85,13 +85,21 @@ watch(() => props.disabled || props.measurement, unavailable => { if (unavailabl
 
 <style scoped>
 .sheet-number-format-control { display: flex; width: 160px; max-width: 100%; min-width: 0; align-items: center; color: var(--ribbon-text); }
-.sheet-number-format-trigger { display: flex; width: 100%; height: 28px; align-items: center; justify-content: space-between; padding-inline: 6px; color: inherit; font-size: 12px; }
-.is-grid .sheet-number-format-trigger { height: 24px; }
+.sheet-number-format-trigger { display: flex; box-sizing: border-box; width: 100%; min-width: 0; height: 28px; align-items: center; justify-content: space-between; gap: 4px; padding-inline: 6px; color: inherit; font-size: 14px; line-height: 20px; }
+.sheet-number-format-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-number-format-trigger :deep(svg) { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
+.sheet-number-format-trigger:not(:disabled):hover { background: var(--ribbon-hover-background); }
+.sheet-number-format-trigger[aria-expanded="true"]:not(:disabled),
+.sheet-number-format-trigger[aria-expanded="true"]:not(:disabled):hover,
+.sheet-number-format-trigger[aria-expanded="true"]:not(:disabled):active { background: var(--ribbon-active-background); color: var(--ribbon-primary); }
+.sheet-number-format-trigger:disabled { color: var(--ribbon-disabled); background: transparent; cursor: not-allowed; }
+.is-grid .sheet-number-format-trigger { height: 24px; font-size: 12px; line-height: 16px; }
 .is-overflow { width: 100%; gap: 8px; }
-.is-overflow .sheet-number-format-trigger { max-width: 160px; }
+.is-overflow .sheet-number-format-trigger { max-width: 160px; height: 28px; flex: 1 1 auto; }
 .sheet-number-format-label { min-width: 56px; font-size: 12px; }
 .sheet-number-format-menu { width: 260px; max-width: calc(100vw - 32px); border-inline-end: 0; background: var(--ribbon-background); color: var(--ribbon-text); }
 .sheet-number-format-menu :deep(.ant-menu-item) { height: 28px; margin-block: 2px; line-height: 28px; }
 .sheet-number-format-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.sheet-number-format-preview { color: var(--ribbon-text-secondary); font-size: 12px; }
+.sheet-number-format-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-number-format-preview { flex: 0 0 auto; color: var(--ribbon-text-secondary); font-size: 12px; }
 </style>

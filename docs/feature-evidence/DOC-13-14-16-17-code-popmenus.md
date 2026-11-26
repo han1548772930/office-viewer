@@ -72,6 +72,10 @@ Code 桌面浮动区为字体、语言、More 三个 Ant 触发控件，移动�
 
 新弹层继承现有统一 ConfigProvider，局部布局使用 Overlay 的主题 token；Canvas 绘制/命中、调宽 separator/guide 保留编辑器内核职责。Code 全属性面板可按打开意图聚焦字体、语言或缩进字段，已静态确认 Modal 的 afterOpenChange 和 Drawer 的 close/focusable 接口。
 
+2026-11-27 补充桌面 Code 浮动触发器边界小修，状态仍为**未验收**。固定 [Code ES](../../.research.local/univer-1.6.0/packages/docs-code-ui/lib/es/index.js) 中 `_shouldDrawLanguageButton` 分支的字体、语言均调用 `pn`：宽度 70–118px，文本绘制也限宽。本地沿用 Ant small Button 的尺寸，仅将这两个桌面触发器上限设为 118px，并允许按工具栏剩余空间收缩；通过 Button `classes.content` 约束实际文本 span 的省略，Ant Tooltip 在悬浮或聚焦时显示完整值。字体、未知 language 作者值与命令载荷保持完整，移动 Drawer 入口沿用原布局。
+
+[DocumentStructuredOverlay.vue](../../packages/office-studio/src/components/document/DocumentStructuredOverlay.vue) 复用原 left 定位结果，maxWidth 改为 viewport.width − left − 8px，修正原来预留 290px、却允许整个 viewport 宽度的矛盾；top、目标捕获和焦点恢复逻辑未变。既有 [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) 新增 1 个未执行草稿：真实登记的长字体、作者未知语言与右侧代码块样本，覆盖 classic/light 与 grid/dark 的工具栏/按钮/文本边界、hover 尺寸、完整 Tooltip、真实 Popover 取消与输入焦点，以及保存重开保留原值。浏览器夹具补导入与产品相同的 Ant reset；新增草稿不计入第三批原有 56 个用例，也不代表字体实际加载或运行态验收。
+
 打开时捕获 source、选区、host、revision/generation；提交、取消恢复焦点和内容动作再核对。换模型/选区/host、禁用、失活、缩放或 viewport 尺寸改变会取消未提交弹层。移动 Drawer 禁用自动返回旧触发按钮，由当前有效目标恢复 Canvas 输入焦点；旧目标不恢复焦点。实际焦点顺序、Popover/Select 事件顺序、触控、明暗主题和真实 Windows IME 仍需浏览器验收。
 
 ## 6. 草稿、静态核对与剩余缺口
@@ -84,12 +88,12 @@ Code 桌面浮动区为字体、语言、More 三个 Ant 触发控件，移动�
 | [document-structured-popmenus.contract.test.mjs](../../packages/office-studio/tests/document-structured-popmenus.contract.test.mjs) | 13：7 挂载实际执行，分组/显隐、原容器转换、嵌套 Code 的栏目标、下方容器能力、完整 More patch 和权限/不存在目标原子性 |
 | [document-structured-facade.contract.test.mjs](../../packages/office-studio/tests/document-structured-facade.contract.test.mjs) | 8：实际 OfficeStudio 注册/事件/一次历史、font/More/source 联合事务、内容锁/权限/取消/无效参数、自定义登记解除、legacy 混合 runs、转换/undo/redo/body/保存重开 |
 | [document-structured-canvas.contract.test.mjs](../../packages/office-studio/tests/document-structured-canvas.contract.test.mjs) | 1：字体改变真实 glyph 度量、命中和 Canvas scene.font，逻辑 ID/源码不变；使用可复现人工度量，不是浏览器字体或性能验收 |
-| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 7：实际 Canvas/Ant 桌面字体/More、移动 Drawer、取消/旧目标、T/空段插入、表格后真实 Quote/Column、辅助 header 内容插入；新增 table/blank 样本及 cellBlockId 几何定位 |
+| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 第三批 7：实际 Canvas/Ant 桌面字体/More、移动 Drawer、取消/旧目标、T/空段插入、表格后真实 Quote/Column、辅助 header 内容插入；新增 table/blank 样本及 cellBlockId 几何定位。2026-11-27 另增 1 个桌面触发器边界草稿，见第 5 节 |
 | [document-code-blocks.contract.test.mjs](../../packages/office-studio/tests/document-code-blocks.contract.test.mjs) | 更新旧 fontFamily 返回值和未知 language 不再丢失的预期，没有新增用例 |
 
 静态核对仅为 UTF-8 源码阅读、rg、git status/diff 和声明/来源核对；未执行测试、类型、构建或浏览器。修正了命令标签缺项、legacy 字体漏转发、混合字体同首值无操作、table clip 锚点、Drawer 默认焦点竞争及语言别名原型键误识别；原型键断言并入既有语言保真草稿，56 个新增用例的口径不变。草稿数量不是已通过记录。
 
-三批证据的 105 个本地相对链接（初批 45 / 第二批 32 / 第三批 28）与其中 7 个 Markdown 锚点已按文件存在性及标题/显式锚点静态核对，无缺失；远程链接、在线演示和运行态行为没有验证。
+本次补充前的三批证据中，105 个本地相对链接（初批 45 / 第二批 32 / 第三批 28）与其中 7 个 Markdown 锚点曾按文件存在性及标题/显式锚点静态核对，无缺失。2026-11-27 子任务收尾时没有重新执行整表链接核对；随后主线已完成本轮统一语法、引用、文档链接/锚点和空白检查，范围与结果见[顶部控件静态收尾](../UNIVER_TOOLBAR_PARITY.md#top-ribbon-control-sizing)。远程链接、在线演示和运行态行为没有验证。
 
 剩余工作保持原完整范围：
 

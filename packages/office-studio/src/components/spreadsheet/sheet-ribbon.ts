@@ -17,6 +17,7 @@ import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-fun
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
 import SheetBorderSelector from './SheetBorderSelector.vue'
+import SheetBorderIcon from './SheetBorderIcon.vue'
 import SheetNumberFormatControl from './SheetNumberFormatControl.vue'
 import SheetColorControl from './SheetColorControl.vue'
 import { SHEET_STANDARD_COLORS, sheetColorHex } from '../../features/sheet-workbench/sheet-colors.ts'
@@ -28,11 +29,13 @@ import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from
 import { OPEN_SHEET_RANGE_THEME_OPERATION } from '../../features/sheet-workbench/sheet-range-theme-command.ts'
 import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-commands.ts'
 import SlicerQuickStylePicker from './SlicerQuickStylePicker.vue'
-import { createSheetOutlineRibbonItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
+import { createSheetOutlineContextMenuItem, createSheetOutlineRibbonItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
 import type { SheetOutlineCommandContext } from '../../features/sheet-outline/sheet-outline-command.ts'
+import { getSheetOutlineUpdate, type SheetOutlineAction } from '../../features/sheet-outline/sheet-outline.ts'
+import { sheetOutlineErrorMessage } from '../../features/sheet-outline/sheet-outline-types.ts'
 import { OPEN_SHEET_OUTLINE_SETTINGS_OPERATION } from './use-sheet-outline-workbench.ts'
 import { QUICK_CONDITIONAL_FORMAT_COMMANDS, QUICK_CONDITIONAL_ICON_SETS, type QuickConditionalFormatSelection } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
-import { featureSearchRibbonItem } from '../../platform/ribbon/feature-search'
+import { featureSearchRibbonItem, shortcutPanelRibbonItem } from '../../platform/ribbon/feature-search'
 
 export interface SlicerRibbonControlState {
   id: string
@@ -48,6 +51,7 @@ export interface SheetRibbonState {
   clipboardCapabilities?: SheetClipboardCapabilities
   fontList?: OfficeFontList
   fontEditable?: boolean
+  formulaEditable?: boolean
   rangeThemeEditable?: boolean
   imageEditable?: boolean
   backgroundImageEditable?: boolean
@@ -59,6 +63,8 @@ export interface SheetRibbonState {
   hasSheet: boolean
   canMerge: boolean
   canUnmerge: boolean
+  mergeActive?: boolean
+  drawingFocused?: boolean
   canDeleteRow: boolean
   canDeleteColumn: boolean
   chartAvailable: boolean
@@ -67,10 +73,13 @@ export interface SheetRibbonState {
   quickValidationEditable?: boolean
   quickConditional?: QuickConditionalFormatSelection
   quickConditionalEditable?: boolean
+  quickConditionalWorksheetEditable?: boolean
+  shortcutPanelOpen?: boolean
   validationPanelOpen?: boolean
   hyperlinkAvailable?: boolean
   canSort: boolean
   filterEnabled?: boolean
+  filterHasCriteria?: boolean
   filterCanToggle?: boolean
   fontFamily: string | null
   fontSize: number | null
@@ -119,6 +128,7 @@ const supportedFunctionCategories = new Set(SHEET_FUNCTION_CATALOG.map(entry => 
 const functionCategories = functionCategoryOrder.filter(category => supportedFunctionCategories.has(category))
 const functionCategoryIcons: Record<string, Component> = {
   '常用与统计': FunctionSquare, 数学: Sigma, 逻辑: Workflow, 统计: ChartNoAxesColumnIncreasing,
+  文本: TextCursor, '日期与时间': CalendarDays,
   '查找与引用': SearchCode, 财务: BadgeDollarSign, 工程: Settings2, 信息: Info, 数据库: Database,
 }
 const textRotationOptions: Array<[number | 'v', string]> = [
@@ -142,6 +152,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
   const numberFormatDisabled = !state.hasSheet || state.fontEditable === false
   const fontDisabled = !state.hasSheet || state.fontEditable === false
+  const formulaDisabled = !state.hasSheet || state.formulaEditable === false || state.drawingFocused === true
   const layoutDisabled = fontDisabled
   const selectedWrapStrategy = state.wrapStrategy !== undefined ? state.wrapStrategy : state.wrap === undefined ? null : state.wrap ? 'wrap' : 'overflow'
   const mixedLabel = tr('common.mixed', '混合')
@@ -167,13 +178,22 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const currencySymbol = sheetCurrencySymbol(state.region)
   const currentPattern = state.numberFormatPattern !== undefined ? state.numberFormatPattern
     : state.numberFormat && Object.hasOwn(SHEET_NUMBER_FORMATS, state.numberFormat) ? SHEET_NUMBER_FORMATS[state.numberFormat as keyof typeof SHEET_NUMBER_FORMATS] : null
-  const currencyIcon: Component = (props: { size?: number }) => h('span', { 'aria-hidden': 'true', style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: `${props.size ?? 16}px`, height: `${props.size ?? 16}px`, fontSize: `${Math.min(props.size ?? 16, currencySymbol.length > 1 ? 12 : 18)}px`, fontFamily: 'Arial, sans-serif', lineHeight: 1 } }, currencySymbol)
+  const currencyIcon: Component = (props: { size?: number }) => h('svg', {
+    'aria-hidden': 'true', focusable: 'false', viewBox: '0 0 24 24', width: props.size ?? 16, height: props.size ?? 16,
+  }, [h('text', {
+    x: 12, y: 12, fill: 'currentColor', 'text-anchor': 'middle', 'dominant-baseline': 'central',
+    'font-size': currencySymbol.length > 1 || currencySymbol === '﷼' ? 16 : 20, 'font-family': 'Arial, sans-serif',
+    textLength: currencySymbol.length > 1 || currencySymbol === '﷼' ? 20 : undefined,
+    lengthAdjust: 'spacingAndGlyphs',
+  }, currencySymbol)])
+  const borderIcon: Component = (props: { size?: number }) => h(SheetBorderIcon, { preset: state.borderPreset ?? 'all', size: props.size })
   const presetValues = quickDropdownPresets(tr)
   const presets = (['dropdown-yes-no', 'dropdown-status', 'dropdown-abc'] as const).map(id => ({ id, values: presetValues[id] }))
   const editDropdown = tr('sheet.validation.quick.edit-dropdown', '编辑下拉列表')
   const clearDropdown = tr('sheet.validation.quick.clear-dropdown', '清除下拉列表')
   const { dataBar, iconSet, clear: clearConditional } = QUICK_CONDITIONAL_FORMAT_COMMANDS
   const quickConditionalDisabled = !state.hasSheet || (state.quickConditionalEditable ?? state.fontEditable) === false
+  const quickConditionalWorksheetDisabled = !state.hasSheet || (state.quickConditionalWorksheetEditable ?? state.quickConditionalEditable ?? state.fontEditable) === false
   const dataBarLabel = tr('conditional.quick.data-bar', '数据条')
   const iconSetLabel = tr('conditional.quick.icon-set', '图标集')
   const newConditionalLabel = tr('conditional.quick.create', '新建条件格式')
@@ -184,25 +204,43 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     '3Arrows': { label: tr('conditional.quick.direction', '方向'), icon: ArrowUpRight },
   }
   const newConditional = 'sheet.operation.open-conditional-formatting'
+  const outlineContext = state.hasSheet ? state.outlineContext : undefined
+  const rowOutlineMenu = createSheetOutlineContextMenuItem(outlineContext, 'row')
+  const columnOutlineMenu = createSheetOutlineContextMenuItem(outlineContext, 'column')
+  const outlineActionState = (axis: 'row' | 'column', kind: 'toggle' | 'collapse' | 'expand' | 'summary-position', atStart = false) => {
+    const selection = outlineContext?.selections?.length === 1 ? outlineContext.selections[0] : undefined
+    if (!outlineContext || kind !== 'summary-position' && !selection) return { disabled: true }
+    const action: SheetOutlineAction = kind === 'summary-position' ? { kind, axis, atStart } : {
+      kind, axis, start: axis === 'row' ? selection!.startRow : selection!.startCol,
+      end: axis === 'row' ? selection!.endRow : selection!.endCol,
+    }
+    try {
+      return { disabled: !getSheetOutlineUpdate(outlineContext.sheet, action, outlineContext.userId) }
+    } catch (error) {
+      return { disabled: true, disabledReason: sheetOutlineErrorMessage(error) }
+    }
+  }
   const outlineItems: RibbonItem[] = [
-    createSheetOutlineRibbonItem(state.outlineContext),
-    { id: 'sheet.menu.outline-details', type: 'menu', title: '分组显示', icon: Grid2X2, order: 4, disabled: !state.hasSheet,
+    createSheetOutlineRibbonItem(outlineContext),
+    { id: 'sheet.menu.outline-details', type: 'menu', title: '分组显示', icon: Grid2X2, order: 4, disabled: rowOutlineMenu.disabled,
       gridLayout: { row: 1, column: 2 }, children: [
-        button('sheet.command.outline-selected-rows', '组合行', { icon: Group, params: { value: 'row' } }),
-        button('sheet.command.outline-selected-columns', '组合列', { icon: Group, params: { value: 'column' } }),
-        button('sheet.command.clear-selected-rows-outlines', '取消行分组', { icon: Ungroup, params: { value: 'row' } }),
-        button('sheet.command.clear-selected-columns-outlines', '取消列分组', { icon: Ungroup, params: { value: 'column' } }),
-        button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: Grid2X2 }),
-        button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: Grid2X2 }),
-        button('sheet.operation.outline-collapse-rows', '隐藏行明细'), button('sheet.operation.outline-expand-rows', '显示行明细'),
-        button('sheet.operation.outline-collapse-columns', '隐藏列明细'), button('sheet.operation.outline-expand-columns', '显示列明细'),
+        { ...rowOutlineMenu.children![0]!, title: '组合行', icon: Group },
+        { ...columnOutlineMenu.children![0]!, title: '组合列', icon: Group },
+        { ...rowOutlineMenu.children![1]!, title: '取消行分组', icon: Ungroup },
+        { ...columnOutlineMenu.children![1]!, title: '取消列分组', icon: Ungroup },
+        button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: Grid2X2, ...outlineActionState('row', 'toggle') }),
+        button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: Grid2X2, ...outlineActionState('column', 'toggle') }),
+        button('sheet.operation.outline-collapse-rows', '隐藏行明细', outlineActionState('row', 'collapse')),
+        button('sheet.operation.outline-expand-rows', '显示行明细', outlineActionState('row', 'expand')),
+        button('sheet.operation.outline-collapse-columns', '隐藏列明细', outlineActionState('column', 'collapse')),
+        button('sheet.operation.outline-expand-columns', '显示列明细', outlineActionState('column', 'expand')),
         { id: 'sheet.menu.outline-summary-rows', type: 'menu', title: '汇总行位置', children: [
-          button('sheet.menu.outline-summary-below', '汇总行在下方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: false }, activated: !state.outlineSummaryAbove }),
-          button('sheet.menu.outline-summary-above', '汇总行在上方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: true }, activated: state.outlineSummaryAbove }),
+          button('sheet.menu.outline-summary-below', '汇总行在下方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: false }, activated: !state.outlineSummaryAbove, ...outlineActionState('row', 'summary-position', false) }),
+          button('sheet.menu.outline-summary-above', '汇总行在上方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: true }, activated: state.outlineSummaryAbove, ...outlineActionState('row', 'summary-position', true) }),
         ] },
         { id: 'sheet.menu.outline-summary-columns', type: 'menu', title: '汇总列位置', children: [
-          button('sheet.menu.outline-summary-right', '汇总列在右侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: false }, activated: !state.outlineSummaryLeft }),
-          button('sheet.menu.outline-summary-left', '汇总列在左侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: true }, activated: state.outlineSummaryLeft }),
+          button('sheet.menu.outline-summary-right', '汇总列在右侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: false }, activated: !state.outlineSummaryLeft, ...outlineActionState('column', 'summary-position', false) }),
+          button('sheet.menu.outline-summary-left', '汇总列在左侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: true }, activated: state.outlineSummaryLeft, ...outlineActionState('column', 'summary-position', true) }),
         ] },
       ] },
     button(OPEN_SHEET_OUTLINE_SETTINGS_OPERATION, '大纲设置', { icon: Settings2, order: 5, disabled: !state.outlineSettingsAvailable,
@@ -238,7 +276,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           mark('sheet.command.toggle-strike', '删除线', Strikethrough, state.strike, 4, 'Ctrl+Shift+X'),
           palette('sheet.menu.text-color', '文字颜色', 'color', Palette, 7),
           palette('sheet.menu.fill', '填充颜色', 'background', PaintBucket, 6),
-          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: Grid2X2, params: state.borderPreset ?? 'all', disabled: fontDisabled, gridLayout: { row: 2, column: 5 },
+          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: borderIcon, params: state.borderPreset ?? 'all', disabled: fontDisabled, gridLayout: { row: 2, column: 5 },
             popupComponent: SheetBorderSelector, popupCommandId: 'sheet.command.set-borders', popupProps: {
               value: state.borderOptions ?? { style: 'thin', color: '#1f2937' }, preset: state.borderPreset ?? 'all', selectedColor: state.borderColor, mixed: state.borderColor === undefined, translate: tr, 'onUpdate:value': state.onBorderOptions,
             }, children: [
@@ -248,35 +286,35 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             ] },
         ] },
         { id: 'layout', title: '布局', order: 20, items: [
-          { id: 'sheet.menu.horizontal-align', type: 'menu', title: '水平对齐', tooltip: state.align === undefined ? `水平对齐（${mixedLabel}）` : '水平对齐', icon: state.align === 'center' ? AlignCenter : state.align === 'right' ? AlignRight : AlignLeft, disabled: layoutDisabled, gridLayout: { row: 1, column: 1 }, children: [
+          { id: 'sheet.menu.horizontal-align', type: 'menu', title: '水平对齐', tooltip: state.align === undefined ? `水平对齐（${mixedLabel}）` : '水平对齐', icon: state.align === 'center' ? AlignCenter : state.align === 'right' ? AlignRight : AlignLeft, hidden: state.drawingFocused, disabled: layoutDisabled, gridLayout: { row: 1, column: 1 }, children: [
             button('sheet.command.align-left', '左对齐', { commandId: 'sheet.command.set-align', params: 'left', icon: AlignLeft, activated: state.align === 'left', disabled: layoutDisabled }),
             button('sheet.command.align-center', '居中', { commandId: 'sheet.command.set-align', params: 'center', icon: AlignCenter, activated: state.align === 'center', disabled: layoutDisabled }),
             button('sheet.command.align-right', '右对齐', { commandId: 'sheet.command.set-align', params: 'right', icon: AlignRight, activated: state.align === 'right', disabled: layoutDisabled }),
           ] },
-          { id: 'sheet.menu.vertical-align', type: 'menu', title: '垂直对齐', tooltip: state.vertical === undefined ? `垂直对齐（${mixedLabel}）` : '垂直对齐', icon: state.vertical === 'top' ? AlignVerticalJustifyStart : state.vertical === 'bottom' ? AlignVerticalJustifyEnd : AlignVerticalJustifyCenter, disabled: layoutDisabled, gridLayout: { row: 2, column: 1 }, children: [
+          { id: 'sheet.menu.vertical-align', type: 'menu', title: '垂直对齐', tooltip: state.vertical === undefined ? `垂直对齐（${mixedLabel}）` : '垂直对齐', icon: state.vertical === 'top' ? AlignVerticalJustifyStart : state.vertical === 'bottom' ? AlignVerticalJustifyEnd : AlignVerticalJustifyCenter, hidden: state.drawingFocused, disabled: layoutDisabled, gridLayout: { row: 2, column: 1 }, children: [
             button('sheet.menu.vertical.top', '顶端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'top', icon: AlignVerticalJustifyStart, activated: state.vertical === 'top', disabled: layoutDisabled }),
             button('sheet.menu.vertical.middle', '垂直居中', { commandId: 'sheet.command.set-vertical-align', params: 'middle', icon: AlignVerticalJustifyCenter, activated: state.vertical === 'middle', disabled: layoutDisabled }),
             button('sheet.menu.vertical.bottom', '底端对齐', { commandId: 'sheet.command.set-vertical-align', params: 'bottom', icon: AlignVerticalJustifyEnd, activated: state.vertical === 'bottom', disabled: layoutDisabled }),
           ] },
-          { id: 'sheet.menu.text-wrap', type: 'menu', title: '文本换行', tooltip: selectedWrapStrategy === null ? `文本换行（${mixedLabel}）` : '文本换行', icon: WrapText, disabled: layoutDisabled, gridLayout: { row: 1, column: 2 }, children: [
+          { id: 'sheet.menu.text-wrap', type: 'menu', title: '文本换行', tooltip: selectedWrapStrategy === null ? `文本换行（${mixedLabel}）` : '文本换行', icon: WrapText, hidden: state.drawingFocused, disabled: layoutDisabled, gridLayout: { row: 1, column: 2 }, children: [
             button('sheet.menu.text-wrap.overflow', '溢出', { commandId: 'sheet.command.set-wrap-strategy', params: 'overflow', activated: selectedWrapStrategy === 'overflow', disabled: layoutDisabled }),
             button('sheet.menu.text-wrap.wrap', '自动换行', { commandId: 'sheet.command.set-wrap-strategy', params: 'wrap', icon: WrapText, activated: selectedWrapStrategy === 'wrap', disabled: layoutDisabled }),
             button('sheet.menu.text-wrap.clip', '截断', { commandId: 'sheet.command.set-wrap-strategy', params: 'clip', activated: selectedWrapStrategy === 'clip', disabled: layoutDisabled }),
           ] },
           button('sheet.command.set-shrink-to-fit', '缩小字体填充', {
-            icon: Shrink, params: !(state.shrinkToFit === true && state.wrap !== true),
+            icon: Shrink,
             activated: state.shrinkToFit === true && state.wrap !== true, disabled: layoutDisabled || state.wrap === true,
             tooltip: state.shrinkToFit === undefined ? `缩小字体填充（${mixedLabel}）` : '缩小字体填充',
             disabledReason: state.wrap === true ? '关闭自动换行后可使用缩小字体填充' : undefined,
             gridLayout: { row: 2, column: 2 },
           }),
-          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', tooltip: state.rotation === null ? `文字方向（${mixedLabel}）` : '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, disabled: layoutDisabled, gridLayout: { row: 1, column: 3 }, children: textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
+          { id: 'sheet.menu.text-rotation', type: 'menu', title: '文字方向', tooltip: state.rotation === null ? `文字方向（${mixedLabel}）` : '文字方向', icon: state.rotationVertical ? TextCursor : state.rotation === -45 ? RotateCcw : state.rotation === 45 ? RotateCw : state.rotation === -90 ? RotateCcw : state.rotation === 90 ? RotateCw : Baseline, hidden: state.drawingFocused, disabled: layoutDisabled, gridLayout: { row: 1, column: 3 }, children: textRotationOptions.map(([angle, label]) => button(`sheet.menu.text-rotation.${angle}`, label, {
             commandId: 'sheet.command.set-text-rotation', params: angle,
             disabled: layoutDisabled,
             activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
             icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
           })) },
-          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge && !state.canUnmerge, activated: state.canUnmerge, gridLayout: { row: 2, column: 3 }, children: [
+          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, hidden: state.drawingFocused, disabled: layoutDisabled || !state.canMerge && !state.canUnmerge, activated: state.mergeActive === true, gridLayout: { row: 2, column: 3 }, children: [
             button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
             button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
             button('sheet.command.merge-horizontal', '水平合并', { commandId: 'sheet.command.merge', params: 'horizontal', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
@@ -299,6 +337,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
           button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          shortcutPanelRibbonItem(tr('shortcut-panel.title', '快捷键面板'), state.shortcutPanelOpen),
           featureSearchRibbonItem(tr('feature-search.title', '搜索功能')),
           button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, order: 3, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
           button(OPEN_SHEET_RANGE_THEME_OPERATION, '范围主题', { icon: Palette, order: 4, showLabel: true, disabled: state.rangeThemeEditable === false || !state.hasSheet,
@@ -365,8 +404,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownWideNarrow, disabled: !state.hasSheet }),
           ] },
           { ...button('sheet.data.filter', '筛选', { commandId: 'sheet.command.toggle-auto-filter', icon: Filter, showLabel: true, activated: state.filterEnabled, disabled: !state.filterCanToggle, disabledReason: translate?.('sheet.filter.select-range', '请选择包含标题行和数据行的区域后再启用筛选'), gridLayout: { row: 2, column: 1 } }), type: 'split', children: [
-            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', icon: FilterX, disabled: !state.filterEnabled }),
-            button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterEnabled }),
+            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', icon: FilterX, disabled: !state.filterHasCriteria }),
+            button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterHasCriteria }),
             button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled }),
           ] },
           ...outlineItems,
@@ -376,7 +415,19 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.operation.open-data-validation', tr('sheet.validation.manage-rules', '管理验证规则'), { disabled: quickDisabled, activated: state.validationPanelOpen }),
             button('sheet.operation.add-data-validation', tr('sheet.validation.add', '添加规则'), { disabled: quickDisabled }),
           ] },
-          button('sheet.operation.open-conditional-formatting', '条件格式', { icon: ChartColumnIncreasing, showLabel: true, gridLayout: { row: 2, column: 1, showLabel: true } }),
+          { id: newConditional, type: 'menu', title: '条件格式', icon: ChartColumnIncreasing, showLabel: true,
+            disabled: quickConditionalDisabled && quickConditionalWorksheetDisabled, order: 1, gridLayout: { row: 2, column: 1, showLabel: true }, children: [
+              button(`${newConditional}.highlight`, '突出显示单元格规则', { commandId: newConditional, params: 'highlightCell', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.rank`, '排名和平均值规则', { commandId: newConditional, params: 'top10', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.formula`, '公式规则', { commandId: newConditional, params: 'expression', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.color-scale`, '色阶规则', { commandId: newConditional, params: 'colorScale', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.data-bar`, '数据条规则', { commandId: newConditional, params: 'dataBar', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.icon-set`, '图标集规则', { commandId: newConditional, params: 'iconSet', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.manage`, '管理条件格式', { commandId: newConditional, disabled: quickConditionalWorksheetDisabled }),
+              button(`${newConditional}.create`, newConditionalLabel, { commandId: newConditional, params: 'create', disabled: quickConditionalDisabled }),
+              button(`${newConditional}.clear-range`, clearConditionalLabel, { commandId: clearConditional, params: {}, disabled: quickConditionalDisabled || !state.quickConditional?.canClearRange }),
+              button(`${newConditional}.clear-worksheet`, '清除工作表的规则', { commandId: QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet, params: {}, disabled: quickConditionalWorksheetDisabled || !state.quickConditional?.canClearWorksheet }),
+            ] },
         ] },
         { id: 'pivot', title: '分析', order: 30, items: [
           button('sheet.operation.open-pivot', '数据透视表', { icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, showLabel: true } }),
@@ -397,20 +448,20 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             type: 'menu' as const,
             title: category,
             icon: functionCategoryIcons[category] ?? FunctionSquare,
-            disabled: !state.hasSheet,
+            disabled: formulaDisabled,
             gridLayout: index === 0 ? { row: 1, column: 1, rowSpan: 2, showLabel: false } : undefined,
             children: [...SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
               `sheet.function.${entry.name}`,
               entry.name,
-              { commandId: 'sheet.operation.insert-function', params: entry.name },
-            )), ...(index === 0 ? [button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare })] : [])],
+              { commandId: 'sheet.operation.insert-function', params: entry.name, disabled: formulaDisabled },
+            )), ...(index === 0 ? [button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare, disabled: formulaDisabled })] : [])],
           })),
         ] },
         { id: 'calculation-options', title: '计算选项', order: 10, items: [
-          { id: 'sheet.command.set-calculation-mode', commandId: 'sheet.command.set-calculation-mode', type: 'select', title: '计算模式', width: 116, value: state.calculationMode ?? 'automatic', gridLayout: { row: 1, column: 1, rowSpan: 2, columnSpan: 2, width: 116, showLabel: true }, options: [
+          { id: 'sheet.command.set-calculation-mode', commandId: 'sheet.command.set-calculation-mode', type: 'select', title: '计算模式', width: 116, disabled: !state.hasSheet, value: state.calculationMode ?? 'automatic', gridLayout: { row: 1, column: 1, rowSpan: 2, columnSpan: 2, width: 116, showLabel: true }, options: [
             { label: '自动', value: 'automatic' }, { label: '手动', value: 'manual' },
           ] },
-          button('sheet.operation.start-formula', '编辑公式', { icon: FunctionSquare, gridLayout: { row: 1, column: 3 } }),
+          button('sheet.operation.start-formula', '编辑公式', { icon: FunctionSquare, disabled: formulaDisabled, gridLayout: { row: 1, column: 3 } }),
           button('sheet.command.recalculate', '重新计算', { icon: Calculator, gridLayout: { row: 2, column: 3 } }),
         ] },
       ],

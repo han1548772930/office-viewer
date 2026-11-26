@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { afterAll, beforeAll, test } from 'vitest'
+import { afterAll, afterEach, beforeAll, test } from 'vitest'
 import { createPinia } from 'pinia'
 import { createServer } from 'vite'
 
@@ -14,6 +14,8 @@ let toolbar
 let ribbon
 let ribbonSchema
 let useEditorStore
+let tableInsertion
+const studios = new Set()
 beforeAll(async () => {
   vite = await createServer({ cacheDir: 'node_modules/.vite/docs-table-toolbar', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error' })
   api = await vite.ssrLoadModule('/packages/office-studio/src/index.ts')
@@ -23,9 +25,11 @@ beforeAll(async () => {
   clipboard = await vite.ssrLoadModule('/packages/office-studio/src/features/document/services/document-clipboard.ts')
   toolbar = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-toolbar-state.ts')
   ribbon = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-ribbon.ts')
+  tableInsertion = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/table-insertion.ts')
   ribbonSchema = await vite.ssrLoadModule('/packages/office-studio/src/platform/ribbon/ribbon-schema.ts')
   ;({ useEditorStore } = await vite.ssrLoadModule('/packages/office-studio/src/stores/editorStore.ts'))
 })
+afterEach(() => { for (const studio of studios) studio.dispose(); studios.clear() })
 afterAll(async () => { await vite?.close() })
 
 function fixture(rows = 3, columns = 3) {
@@ -55,6 +59,13 @@ function apply(model, range, id, params = {}) { return commands.executeDocumentC
 const currentTable = model => models.tableForBlock(model.blocks.find(block => block.id === 'table'))
 const cellText = (cell) => cell.blocks.flatMap((block) => block.runs).map((run) => run.text).join('')
 
+function openInsertionDocument(model = { ...api.createBlankDocument(), id: 'table-insertion-contract', blocks: [{ ...models.createParagraph('BeforeAfter'), id: 'table-insert-source' }] }) {
+  const studio = new api.OfficeStudio({ document: model, pinia: createPinia() })
+  studios.add(studio)
+  studio.activateDocument(model.id)
+  return { studio, document: api.FOffice.newAPI(studio).getActiveDocument() }
+}
+
 test('table context follows logical selection and exposes executable structural commands in its context menu', () => {
   const { model } = fixture()
   const state = toolbar.documentToolbarState(model, selection(model, 0, 1, 1, 2))
@@ -80,9 +91,9 @@ test('table dropdown opens the source-matched size dialog and inserts the confir
     .flatMap((tab) => tab.groups.flatMap((group) => group.items))
   const table = items.find((item) => item.id === 'doc-table')
   assert.equal(table.type, 'menu')
-  assert.equal(table.commandId, 'doc.operation.open-table')
+  assert.equal(table.commandId, 'doc.operation.create-table')
   assert.equal(table.children[0].id, 'doc-table-insert')
-  assert.equal(table.children[0].commandId, 'doc.operation.open-table')
+  assert.equal(table.children[0].commandId, 'doc.operation.create-table')
   assert.equal(ribbon.documentCommandFromRibbon('doc.command.insert-table', { rows: 0, cols: 3 }), undefined)
 
   const workbench = readFileSync(new URL('../src/components/DocumentWorkbench.vue', import.meta.url), 'utf8')
@@ -102,6 +113,220 @@ test('table dropdown opens the source-matched size dialog and inserts the confir
   assert.equal(inserted.metadata.table.rows[0].cells.length, 7)
   assert.equal(result.focus.row, 0)
   assert.equal(result.focus.col, 0)
+})
+
+test('table creation aliases share the insertion size budget beyond the old 20 by 20 limit', () => {
+  for (const [rows, columns] of [[3, 5], [21, 21], [10000, 25], [488, 512]]) {
+    assert.deepEqual(tableInsertion.assertDocumentTableInsertionSize(rows, columns), { rows, columns })
+    assert.deepEqual(ribbon.documentCommandFromRibbon('doc.command.create-table', { rowCount: rows, colCount: columns }), {
+      id: 'doc.command.create-table', rowCount: rows, colCount: columns,
+    })
+    assert.deepEqual(ribbon.documentCommandFromRibbon('doc.command.insert-table', { rows, cols: columns }), {
+      id: 'doc.command.insert-table', rows, cols: columns,
+    })
+  }
+  for (const [rows, columns] of [[0, 3], [-1, 3], [1.5, 3], [NaN, 3], [Infinity, 3], [10001, 1], [1, 513], [600, 512], [Number.MAX_SAFE_INTEGER + 1, 1]]) {
+    assert.throws(() => tableInsertion.assertDocumentTableInsertionSize(rows, columns), RangeError)
+    assert.equal(ribbon.documentCommandFromRibbon('doc.command.create-table', { rowCount: rows, colCount: columns }), undefined)
+    assert.equal(ribbon.documentCommandFromRibbon('doc.command.insert-table', { rows, cols: columns }), undefined)
+  }
+  for (const params of [{}, { rowCount: 3 }, { rowCount: '3', colCount: 5 }, { rowCount: null, colCount: 5 }]) {
+    assert.equal(ribbon.documentCommandFromRibbon('doc.command.create-table', params), undefined)
+  }
+})
+
+test('legacy and public creation reject the existing grid limits without publishing partial content or history', () => {
+  const { studio, document } = openInsertionDocument(), before = api.cloneModel(document.getModel()), events = []
+  const selection = models.collapsedSelection({ blockId: 'table-insert-source', offset: 6 })
+  studio.events.addEvent('CommandExecuted', event => events.push(event.id))
+  for (const [rows, columns] of [[10001, 1], [1, 513]]) {
+    for (const command of [{ id: 'doc.command.insert-table', rows, cols: columns }, { id: 'doc.command.create-table', rowCount: rows, colCount: columns }]) {
+      assert.throws(() => document.executeCommand(command, selection), /10000 行|512 列/)
+      assert.deepEqual(document.getModel(), before); assert.equal(studio.editor.history.units[document.id].undo.length, 0)
+    }
+  }
+  assert.deepEqual(events, [])
+})
+
+test('legacy insertion retains inferred dimensions, initial values, geometry and extension options', () => {
+  const model = api.createBlankDocument()
+  const values = [['One\nTwo', 'Right'], ['Bottom']]
+  const options = { id: 'doc.command.insert-table', tableId: 'legacy-insert', values, columnWidths: [120, 180], rowHeights: [36, 42],
+    cellMargin: { top: 3, right: 4, bottom: 5, left: 6 }, headerRowCount: 1, metadata: { retained: 'source' } }
+  const before = structuredClone(options)
+  const block = tableInsertion.createDocumentTableBlock(model, options), table = models.tableForBlock(block)
+  assert.equal(block.id, 'legacy-insert'); assert.equal(block.metadata.retained, 'source')
+  assert.deepEqual(table.rows.map(row => row.cells.map(cell => cell.blocks.map(paragraph => models.runText(paragraph.runs)))), [
+    [['One', 'Two'], ['Right']], [['Bottom'], ['']],
+  ])
+  assert.deepEqual(table.columnWidths, [120, 180]); assert.deepEqual(table.rows.map(row => row.height), [36, 42])
+  assert.deepEqual(table.style.cellMargin, options.cellMargin); assert.equal(table.headerRowCount, 1)
+  assert.deepEqual(options, before)
+  const defaultTable = models.tableForBlock(tableInsertion.createDocumentTableBlock(model, { id: 'doc.command.insert-table' }))
+  assert.equal(defaultTable.rows.length, 1); assert.equal(defaultTable.rows[0].cells.length, 1)
+  assert.deepEqual(defaultTable.columnWidths, [100]); assert.equal(defaultTable.style.width, 100)
+})
+
+test('canonical table creation divides the page content width while legacy insertion retains its column default', () => {
+  for (const id of ['doc.command.create-table', 'doc.command.insert-table']) {
+    const model = api.createBlankDocument()
+    model.page = { ...model.page, width: 540, marginLeft: 90, marginRight: 90 }
+    const command = id === 'doc.command.create-table' ? { id, rowCount: 2, colCount: 3 } : { id, rows: 2, cols: 3 }
+    const before = structuredClone(command)
+    commands.executeDocumentCommand(model, models.collapsedSelection({ blockId: model.blocks[0].id, offset: 0 }), command)
+    const table = models.tableForBlock(model.blocks.find(block => block.type === 'table'))
+    assert.deepEqual(table.columnWidths, id === 'doc.command.create-table' ? [120, 120, 120] : [100, 100, 100])
+    assert.equal(table.style.width, id === 'doc.command.create-table' ? 360 : 300)
+    assert.deepEqual(command, before)
+  }
+})
+
+test('canonical defaults use the actual insertion target and full section page width across columns and reversed selections', () => {
+  for (const target of [
+    { options: {}, anchor: 'second-source', focus: 'second-source', width: 510 },
+    { options: { offset: 0 }, anchor: 'second-source', focus: 'second-source', width: 450 },
+    { options: { position: 'documentEnd' }, anchor: 'first-source', focus: 'first-source', width: 510 },
+    { options: { position: 'offset' }, anchor: 'first-source', focus: 'second-source', width: 510 },
+    { options: {}, anchor: 'second-source', focus: 'first-source', width: 450 },
+    { options: { position: 'documentEnd', offset: 0 }, anchor: 'second-source', focus: 'second-source', width: 450 },
+  ]) {
+    const model = api.createBlankDocument()
+    model.page = { ...model.page, width: 540, marginLeft: 90, marginRight: 90 }
+    model.sectionSetup = { width: 600, marginLeft: 75, marginRight: 75, columnCount: 3, columnGap: 30 }
+    model.blocks = [{ ...models.createParagraph('Before'), id: 'first-source' },
+      { ...models.createParagraph(), id: 'insert-section', type: 'sectionBreak', runs: [],
+        sectionBreak: { type: 'nextPage', setup: { width: 720, marginLeft: 90, marginRight: 120, columnCount: 2, columnGap: 30 } } },
+      { ...models.createParagraph('After'), id: 'second-source' }]
+    const selection = { anchor: { blockId: target.anchor, offset: 0 }, focus: { blockId: target.focus, offset: 0 } }
+    commands.executeDocumentCommand(model, selection, { id: 'doc.command.create-table', rowCount: 1, colCount: 3, ...target.options })
+    const table = models.tableForBlock(model.blocks.find(block => block.type === 'table'))
+    assert.deepEqual(table.columnWidths, [target.width / 3, target.width / 3, target.width / 3])
+    assert.equal(table.style.width, target.width)
+  }
+})
+
+test('canonical defaults preserve explicit column sizes and the existing style patch precedence', () => {
+  for (const target of [
+    { options: { width: 600 }, widths: [200, 200, 200] },
+    { options: { columnWidths: [80] }, widths: [80, 120, 120] },
+    { options: { width: 600, columnWidths: [80] }, widths: [80, 200, 200] },
+    { options: { columnWidths: [80, 120, 160] }, widths: [80, 120, 160] },
+    { options: { width: 450, columnWidths: [90, 180, 270], style: { width: 1080 } }, widths: [180, 360, 540] },
+    { options: { width: 450, columnWidths: [90, 180, 270], style: { columnWidths: [50, 100, 150], width: 600 } }, widths: [100, 200, 300] },
+  ]) {
+    const model = api.createBlankDocument()
+    model.page = { ...model.page, width: 540, marginLeft: 90, marginRight: 90 }
+    const command = { id: 'doc.command.create-table', rowCount: 1, colCount: 3, ...target.options }, before = structuredClone(command)
+    const table = models.tableForBlock(tableInsertion.createDocumentTableBlock(model, command))
+    assert.deepEqual(table.columnWidths, target.widths)
+    assert.equal(table.style.width, target.widths.reduce((sum, width) => sum + width, 0))
+    assert.deepEqual(command, before)
+  }
+})
+
+test('nested canonical tables resolve the containing section without substituting the parent cell width', () => {
+  const { model } = fixture()
+  model.page = { ...model.page, width: 540, marginLeft: 90, marginRight: 90 }
+  model.blocks.splice(1, 0, { ...models.createParagraph(), id: 'nested-insert-section', type: 'sectionBreak', runs: [],
+    sectionBreak: { type: 'nextPage', setup: { width: 600, marginLeft: 30, marginRight: 30, columnCount: 2, columnGap: 30 } } })
+  const result = commands.executeDocumentCommand(model, selection(model), { id: 'doc.command.create-table', rowCount: 1, colCount: 3 })
+  const table = models.tableForBlock(models.findDocumentBlock(model, result.focus.blockId))
+  assert.deepEqual(table.columnWidths, [180, 180, 180]); assert.equal(table.style.width, 540)
+  assert.deepEqual(currentTable(model).columnWidths, [100, 200, 300])
+})
+
+test('registered create-table envelopes insert one real 21 by 21 table with one event and reversible saved history', () => {
+  const { studio, document } = openInsertionDocument(), before = api.cloneModel(document.getModel()), events = []
+  studio.events.addEvent('CommandExecuted', event => events.push(event.id))
+  const result = studio.executeCommandSync('doc.command.create-table', {
+    unitId: document.id, selection: models.collapsedSelection({ blockId: 'table-insert-source', offset: 6 }),
+    command: { id: 'doc.command.create-table', rowCount: 21, colCount: 21 },
+  })
+  assert.equal(result.changed, true)
+  const block = document.getModel().blocks.find(block => block.type === 'table'), table = models.tableForBlock(block)
+  assert.equal(table.rows.length, 21); assert.equal(table.rows[0].cells.length, 21)
+  assert.equal(result.selection.focus.blockId, block.id); assert.equal(result.selection.focus.row, 0); assert.equal(result.selection.focus.col, 0)
+  assert.equal(document.getModel().blocks.filter(block => block.type === 'paragraph').map(block => models.runText(block.runs)).join(''), 'BeforeAfter')
+  assert.deepEqual(events, ['doc.command.create-table']); assert.equal(studio.editor.history.units[document.id].undo.length, 1)
+  assert.equal(document.undo(), true); assert.deepEqual(document.getModel(), before)
+  assert.equal(document.redo(), true)
+  const saved = document.save(), reopened = openInsertionDocument(api.cloneModel(saved)).document
+  assert.deepEqual(models.tableForBlock(reopened.getModel().blocks.find(candidate => candidate.id === block.id)), table)
+})
+
+test('flat create-table uses the current input selection and publishes one content transaction', () => {
+  const { studio, document } = openInsertionDocument(), events = []
+  document.setInputSelection(models.collapsedSelection({ blockId: 'table-insert-source', offset: 6 }))
+  const before = api.cloneModel(document.getModel())
+  studio.events.addEvent('CommandExecuted', event => events.push(event.id))
+  assert.equal(studio.executeCommandSync('doc.command.create-table', { rowCount: 3, colCount: 5 }), true)
+  const block = document.getModel().blocks.find(block => block.type === 'table')
+  assert.equal(models.tableForBlock(block).rows.length, 3); assert.equal(models.tableForBlock(block).rows[0].cells.length, 5)
+  assert.deepEqual(models.tableForBlock(block).columnWidths, [130, 130, 130, 130, 130]); assert.equal(models.tableForBlock(block).style.width, 650)
+  assert.equal(document.getModel().blocks.filter(block => block.type === 'paragraph').map(block => models.runText(block.runs)).join(''), 'BeforeAfter')
+  assert.deepEqual(events, ['doc.command.create-table']); assert.equal(studio.editor.history.units[document.id].undo.length, 1)
+  assert.equal(document.undo(), true); assert.deepEqual(document.getModel(), before); assert.equal(document.redo(), true)
+  const saved = document.save(), reopened = openInsertionDocument(api.cloneModel(saved)).document
+  assert.deepEqual(reopened.getModel().blocks, saved.blocks)
+})
+
+test('invalid or unrepresentable public table sizes reject flat and envelope commands without publishing content or history', () => {
+  const { studio, document } = openInsertionDocument(), events = []
+  const selection = models.collapsedSelection({ blockId: 'table-insert-source', offset: 6 })
+  document.setInputSelection(selection)
+  const before = api.cloneModel(document.getModel())
+  studio.events.addEvent('CommandExecuted', event => events.push(event.id))
+  for (const params of [{}, { rowCount: 3 }, { colCount: 5 }, { rowCount: null, colCount: 5 }, { rowCount: '3', colCount: 5 },
+    { rowCount: 0, colCount: 5 }, { rowCount: 1.5, colCount: 5 }, { rowCount: 10001, colCount: 1 }, { rowCount: 1, colCount: 513 }, { rowCount: 600, colCount: 512 }]) {
+    for (const input of [params, { unitId: document.id, selection, command: { id: 'doc.command.create-table', ...params } }]) {
+      assert.throws(() => studio.executeCommandSync('doc.command.create-table', input), RangeError)
+      assert.deepEqual(document.getModel(), before); assert.equal(studio.editor.history.units[document.id].undo.length, 0)
+    }
+  }
+  assert.deepEqual(events, [])
+})
+
+test('flat table creation refuses absent or invalid input sessions and an active Sheets workbench', () => {
+  for (const target of ['missing-selection', 'invalid-selection', 'sheets']) {
+    const { studio, document } = openInsertionDocument()
+    if (target !== 'missing-selection') document.setInputSelection(models.collapsedSelection({ blockId: 'table-insert-source', offset: 6 }))
+    if (target === 'invalid-selection') studio.documentInput.invalidate(document.id)
+    if (target === 'sheets') studio.activateWorkbook(studio.activeWorkbookId)
+    const before = api.cloneModel(document.getModel())
+    assert.equal(studio.executeCommandSync('doc.command.create-table', { rowCount: 3, colCount: 5 }), false)
+    assert.deepEqual(document.getModel(), before); assert.equal(studio.editor.history.units[document.id].undo.length, 0)
+  }
+})
+
+test('flat and envelope table creation keep a footnote block host through history and snapshot reopening', () => {
+  for (const mode of ['flat', 'envelope']) {
+    const model = { ...api.createBlankDocument(), id: 'table-insertion-footnote-contract', blocks: [{ ...models.createParagraph('Body'), id: 'body-source' }] }
+    model.page = { ...model.page, width: 540, marginLeft: 90, marginRight: 90 }
+    model.blocks.unshift({ ...models.createParagraph('Before'), id: 'footnote-before' },
+      { ...models.createParagraph(), id: 'footnote-section', type: 'sectionBreak', runs: [],
+        sectionBreak: { type: 'nextPage', setup: { width: 720, marginLeft: 90, marginRight: 120, columnCount: 2, columnGap: 30 } } })
+    const reference = models.createRun('1', { metadata: { note: { kind: 'footnote', noteId: 'note' } } })
+    model.blocks[2].runs.push(reference)
+    model.footnotes = { note: { id: 'note', text: 'Note', referenceBlockId: 'body-source', referenceRunId: reference.id,
+      content: { runs: [], paragraphs: [], blocks: [{ ...models.createParagraph('Note'), id: 'note-source' }] } } }
+    const { studio, document } = openInsertionDocument(model), before = api.cloneModel(document.getModel()), events = []
+    const host = { kind: 'note', noteKind: 'footnote', noteId: 'note' }, selection = models.collapsedSelection({ blockId: 'note-source', offset: 4 })
+    document.setInputSelection(selection, undefined, host)
+    studio.events.addEvent('CommandExecuted', event => events.push(event.id))
+    const params = { rowCount: 2, colCount: 3 }
+    const input = mode === 'flat' ? params : { unitId: document.id, selection, command: { id: 'doc.command.create-table', ...params, host } }
+    const result = studio.executeCommandSync('doc.command.create-table', input)
+    assert.equal(mode === 'flat' ? result : result.changed, true)
+    if (mode === 'envelope') assert.deepEqual(result.host, host)
+    assert.deepEqual(document.getModel().blocks, before.blocks)
+    const block = document.getModel().footnotes.note.content.blocks.find(block => block.type === 'table')
+    assert.equal(models.tableForBlock(block).rows.length, 2); assert.equal(models.tableForBlock(block).rows[0].cells.length, 3)
+    assert.deepEqual(models.tableForBlock(block).columnWidths, [170, 170, 170]); assert.equal(models.tableForBlock(block).style.width, 510)
+    assert.deepEqual(events, ['doc.command.create-table']); assert.equal(studio.editor.history.units[document.id].undo.length, 1)
+    assert.equal(document.undo(), true); assert.deepEqual(document.getModel(), before); assert.equal(document.redo(), true)
+    const saved = document.save(), reopened = openInsertionDocument(api.cloneModel(saved)).document
+    assert.deepEqual(reopened.getModel().footnotes.note.content.blocks, saved.footnotes.note.content.blocks)
+  }
 })
 
 test('emoji and symbol selectors render inside toolbar popovers and insert through the document command path', () => {

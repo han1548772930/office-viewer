@@ -14,7 +14,7 @@ function isBlockType(value: unknown): value is DocumentBlock['type'] {
 }
 const BLOCK_DERIVED = ['table', 'html', 'documentTextFields', 'univerBodyParagraphSource', 'univerParagraphPaginationResolution', 'univerBodyTableSource',
   'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodySectionSource', 'univerBodyBreakSource', 'univerNoteSeparatorRangeSource',
-  'univerBodyBlockRangeSource', 'univerBodyColumnGroupSource', 'univerBodyColumnGroupBaseline', 'univerBodyCalloutSource', 'univerBodyCodeSource']
+  'univerBodyBlockRangeSource', 'univerBodyColumnGroupSource', 'univerBodyColumnGroupBaseline', 'univerBodyCalloutSource', 'univerBodyCodeSource', 'documentDividerBorder']
 const RUN_DERIVED = ['univerTextStyle', 'univerTextStyleResolution', 'univerBodyRunSource', 'univerBodyNoteRangeSource',
   'univerBodyHyperlinkSource', 'univerBodyCustomBlock', 'univerBodyDrawingSource', 'univerBodyRawCustomBlock',
   'latexFormula', 'univerBodyLatexRangeSource', 'univerBodyLatexConfigSource']

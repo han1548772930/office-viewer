@@ -29,8 +29,8 @@ function validBoundary(text: string, offset: number): boolean {
 }
 
 /** Merge only supplied properties, preserving empty entities and unchanged run IDs. */
-export function formatDocumentRunRange(runs: readonly DocumentRun[], start: number, end: number, patch: RunPatch): DocumentRun[] {
-  validateDocumentRunPatch(patch)
+export function formatDocumentRunRange(runs: readonly DocumentRun[], start: number, end: number, patch: RunPatch | ((run: DocumentRun) => RunPatch)): DocumentRun[] {
+  if (typeof patch !== 'function') validateDocumentRunPatch(patch)
   const text = runText(runs)
   if (!validBoundary(text, start) || !validBoundary(text, end) || end < start) throw new RangeError('字符格式选区的 UTF-16 位置无效。')
   const result: DocumentRun[] = []
@@ -39,7 +39,7 @@ export function formatDocumentRunRange(runs: readonly DocumentRun[], start: numb
     const from = Math.max(0, start - offset), to = Math.min(run.text.length, end - offset)
     offset += run.text.length
     if (to <= from) { result.push(run); continue }
-    const updated = applyRunPatch(run, patch)
+    const updated = applyRunPatch(run, typeof patch === 'function' ? patch(run) : patch)
     if (JSON.stringify(updated) === JSON.stringify(run)) { result.push(run); continue }
     if (from > 0) result.push({ ...run, text: run.text.slice(0, from) })
     result.push({ ...updated, id: from > 0 ? documentId('run') : run.id, text: run.text.slice(from, to) })

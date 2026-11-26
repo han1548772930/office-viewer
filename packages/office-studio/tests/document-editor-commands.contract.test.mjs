@@ -80,6 +80,63 @@ test('empty edits, edge deletion and current formatting remain no-ops without ge
   }
 })
 
+test('the fixed special-character registration keeps its public events while sharing pending marks, one input transaction and save/reopen', () => {
+  const { studio, document } = openDocument([paragraph('first', 'ABCD'), paragraph('tail', 'Untouched')])
+  const original = copy(document.getModel()), caret = selection(point('first', 1)), value = '👨‍👩‍👧‍👦e\u0301|a|'
+  document.setInputSelection(caret)
+  document.executeCommand({ id: 'doc.command.format-text', patch: { bold: true, fontFamily: 'Georgia', color: '#C81E1E' } }, caret)
+  const events = []
+  for (const [eventName, phase] of [['BeforeCommandExecute', 'before'], ['CommandExecuted', 'after']]) {
+    studio.events.addEvent(eventName, event => events.push({ phase, id: event.id, value: event.params.value, unitId: event.unitId, kind: event.kind }))
+  }
+  const result = document.executeCommand({ id: 'doc.command.insert-text', text: value }, caret, 'doc.command.insert-special-character')
+  assert.equal(result.changed, true)
+  assert.equal(result.selectionCurrent, true)
+  assert.deepEqual(result.selection, selection(point('first', 1 + value.length)))
+  assert.deepEqual(document.getInputState().location.selection, result.selection)
+  assert.equal(documentModel.runText(document.getModel().blocks[0].runs), 'A' + value + 'BCD')
+  const inserted = document.getModel().blocks[0].runs.find(run => run.text === value)
+  assert.deepEqual([inserted.bold, inserted.fontFamily, inserted.color], [true, 'Georgia', '#C81E1E'])
+  assert.deepEqual(document.getModel().blocks[1], original.blocks[1])
+  assert.deepEqual(events, ['before', 'after'].map(phase => ({ phase, id: 'doc.command.insert-special-character', value, unitId: document.id, kind: 'document' })))
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  assert.equal(document.undo(), true)
+  assert.deepEqual(document.getModel(), original)
+  assert.equal(document.redo(), true)
+  const saved = document.save(), reopened = openDocument(saved.blocks, saved)
+  assert.deepEqual(reopened.document.getModel().blocks, saved.blocks)
+})
+
+test('flat special-character values replace the active range while empty, canceled, stale and locked requests preserve history', () => {
+  const { studio, document } = openDocument([paragraph('first', 'ABCD')])
+  const range = selection(point('first', 1), point('first', 3)), original = copy(document.getModel()), id = 'doc.command.insert-special-character'
+  document.setInputSelection(range)
+  assert.equal(studio.executeCommandSync(id, { value: '' }), false)
+  assert.deepEqual(studio.executeCommandSync(id, { unitId: document.id, command: { id: 'doc.command.insert-text', text: 'ignored' }, selection: range, value: '' }), { changed: false, selection: range })
+  assert.throws(() => studio.executeCommandSync(id, { value: 1 }), TypeError)
+  assert.throws(() => studio.executeCommandSync(id, { unitId: document.id, command: { id: 'doc.command.format-text', patch: { bold: true } }, selection: range, value: '©' }), TypeError)
+  const canceled = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === id) event.cancel = true })
+  assert.throws(() => document.executeCommand({ id: 'doc.command.insert-text', text: '©' }, range, id), /canceled/)
+  canceled.dispose()
+  const moved = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === id) document.setInputSelection(selection(point('first', 4))) })
+  assert.throws(() => document.executeCommand({ id: 'doc.command.insert-text', text: '©' }, range, id), /输入选区已更改/)
+  moved.dispose()
+  assert.deepEqual(document.getModel(), original)
+  assert.deepEqual(history(studio, document.id), { undo: 0, redo: 0, dirty: false })
+  document.setInputSelection(range)
+  assert.equal(studio.executeCommandSync(id, { value: '|a|' }), true)
+  assert.equal(document.getText(), 'A|a|D')
+  assert.deepEqual(document.getInputState().location.selection, selection(point('first', 4)))
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  const protectedModel = copy(original)
+  controls.createDocumentContentControl(protectedModel, { type: 'text', blockId: 'first', startOffset: 1, endOffset: 3, lock: 'contentLocked' })
+  const blocked = openDocument(protectedModel.blocks, protectedModel), before = copy(blocked.document.getModel())
+  blocked.document.setInputSelection(range)
+  assert.throws(() => blocked.studio.executeCommandSync(id, { value: '©' }), /locked/)
+  assert.deepEqual(blocked.document.getModel(), before)
+  assert.deepEqual(history(blocked.studio, blocked.document.id), { undo: 0, redo: 0, dirty: false })
+})
+
 test('public clear uses the document defaults, one history transaction, stable repeat no-ops and persisted defaults', () => {
   const block = paragraph('formatted', 'Hello world')
   block.type = 'heading'; block.level = 3; block.list = { id: 'ordered', preset: 'ORDER_LIST' }; block.style.align = 'center'
@@ -215,6 +272,24 @@ test('commands and undo histories remain isolated while editing an inactive docu
   first.undo()
   assert.equal(first.getText(), 'One!')
   assert.equal(second.getText(), 'Two')
+})
+
+test('flat special-character insertion uses the active table cell and retains its coordinates through history and save/reopen', () => {
+  const table = paragraph('table', '')
+  table.type = 'table'; table.runs = []; table.metadata.table = documentModel.createTable(1, 1)
+  table.metadata.table.rows[0].cells[0].blocks = [paragraph('cell', 'AB')]
+  const { studio, document } = openDocument([table]), original = copy(document.getModel()), value = '👩‍💻'
+  const coordinates = { row: 0, col: 0, cellBlockId: 'cell' }, range = selection(point('table', 1, coordinates), point('table', 2, coordinates))
+  document.setInputSelection(range)
+  assert.equal(studio.executeCommandSync('doc.command.insert-special-character', { value }), true)
+  assert.equal(documentModel.runText(document.getModel().blocks[0].metadata.table.rows[0].cells[0].blocks[0].runs), 'A' + value)
+  assert.deepEqual(document.getInputState().location.selection, selection(point('table', 1 + value.length, coordinates)))
+  assert.deepEqual(history(studio, document.id), { undo: 1, redo: 0, dirty: true })
+  assert.equal(document.undo(), true)
+  assert.deepEqual(document.getModel(), original)
+  assert.equal(document.redo(), true)
+  const saved = document.save(), reopened = openDocument(saved.blocks, saved)
+  assert.deepEqual(reopened.document.getModel().blocks, saved.blocks)
 })
 
 test('table navigation returns its new logical caret without a content history entry and rejects stale cell paragraphs', () => {

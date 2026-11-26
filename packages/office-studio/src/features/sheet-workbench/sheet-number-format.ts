@@ -1,7 +1,7 @@
 import type { CellScalar } from '../../domain/model.ts'
-import { isDateNumberFormatSection, numberFormatDecimalPlaces, numberFormatWithoutDecimals, readNumberFormatSections, setNumberFormatDecimalPlaces } from './number-format-pattern.ts'
+import { numberFormatDecimalPlaces, numberFormatWithoutDecimals, readNumberFormatSections, setNumberFormatDecimalPlaces } from './number-format-pattern.ts'
 import { numberFormatCurrency, sheetCurrencyPattern, sheetCurrencySymbol } from './sheet-currency.ts'
-import { renderSheetNumberFormat } from './number-format-render.ts'
+import { describeSheetNumberFormat, renderSheetNumberFormat } from './number-format-render.ts'
 
 export type SheetNumberFormat = 'general' | 'number' | 'currency' | 'accounting' | 'percent' | 'scientific' | 'financial' | 'roundingCurrency' | 'date' | 'time' | 'datetime' | 'duration' | 'text'
 /** Exact fixed-version menu defaults; percent's direct button intentionally uses zero decimals. */
@@ -23,23 +23,29 @@ export function sheetNumberFormatPattern(kind: SheetNumberFormat, region = 'zh-C
 export function classifySheetNumberFormat(pattern: string): SheetNumberFormat | 'custom' {
   if (!pattern || /^general$/i.test(pattern)) return 'general'
   if (isSheetTextNumberFormat(pattern)) return 'text'
-  const first = readNumberFormatSections(pattern)?.[0]
-  if (!first) return 'custom'
-  if (isDateNumberFormatSection(first)) {
+  const sections = readNumberFormatSections(pattern)
+  const description = describeSheetNumberFormat(pattern)
+  if (!sections || !description) return 'custom'
+  const first = sections[0]!
+  if (description.isText) return 'text'
+  if (description.isDate) {
     if (first.tokens.some(token => token.kind === 'bracket' && /^(?:h+|m+|s+)$/i.test(token.value))) return 'duration'
-    return /[yd]/i.test(first.mask) ? /[hs]/i.test(first.mask) ? 'datetime' : 'date'
-      : /[hs]/i.test(first.mask) ? 'time' : 'date'
+    return description.type === 'datetime' ? 'datetime' : description.type === 'time' ? 'time' : 'date'
   }
-  if (first.mask.includes('%')) return 'percent'
-  if (/[eE][+-]?[0#?]+/.test(first.mask)) return 'scientific'
-  if (numberFormatCurrency(first)) {
+  if (description.type === 'currency' || numberFormatCurrency(first)) {
     const firstPlaceholder = /[0#?]/.exec(first.mask)?.index ?? -1
     return first.text.startsWith('_(') || first.tokens.some(token => token.kind === 'fill')
       || firstPlaceholder > 0 && first.mask[firstPlaceholder - 1] === ' ' ? 'accounting' : 'currency'
   }
+  if (description.type === 'scientific') return 'scientific'
+  if (description.type === 'percent') return 'percent'
   if (numberFormatWithoutDecimals(pattern) === numberFormatWithoutDecimals(SHEET_NUMBER_FORMATS.financial)) return 'financial'
-  const mask = first.mask.replaceAll('\u0000', '').trim()
-  return /^[#,0?.()\-+ ]+$/.test(mask) && /[0#?]/.test(mask) ? 'number' : 'custom'
+  if (description.type === 'general') {
+    return sections.some(section =>
+      section.tokens.some(token => token.kind === 'bracket' && /^(?:<=|>=|<>|<|>|=)/.test(token.value)))
+      ? 'number' : 'general'
+  }
+  return description.type === 'number' || description.type === 'grouped' ? 'number' : 'custom'
 }
 
 export function isSheetTextNumberFormat(pattern: string | undefined): boolean {

@@ -1029,7 +1029,7 @@ export class OfficeStudio {
     })
   }
 
-  executeDocumentEditorCommand(unitId: string, command: DocumentCommand, selection: DocumentSelection): DocumentEditorCommandResult {
+  executeDocumentEditorCommand(unitId: string, command: DocumentCommand, selection: DocumentSelection, sourceCommandId?: 'doc.command.insert-special-character'): DocumentEditorCommandResult {
     this.assertAlive()
     if (command.id === 'doc.command.set-document-permission-rules') {
       const changed = this.executeCommandSync<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>(command.id, { unitId, rules: command.rules })
@@ -1040,8 +1040,9 @@ export class OfficeStudio {
     const expectedHistoryGeneration = this.editor.history.captureSavepoint(unitId).generation
     const effective = command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula'
       ? { ...command, marks: mergeDocumentInputMarks(this.getDocumentInputMarks(unitId, selection, undefined, command.host), command.marks ?? {}) } : command
-    return this.executeCommandSync<DocumentEditorCommandRequest, DocumentEditorCommandResult>(command.id,
-      { unitId, command: effective, selection, expectedRevision, expectedHistoryGeneration, inputGeneration })
+    return this.executeCommandSync<DocumentEditorCommandRequest & { value?: string }, DocumentEditorCommandResult>(sourceCommandId ?? command.id,
+      { unitId, command: effective, selection, expectedRevision, expectedHistoryGeneration, inputGeneration,
+        ...(sourceCommandId && effective.id === 'doc.command.insert-text' ? { value: effective.text } : {}) })
   }
 
   executeDocumentNoteCommand(unitId: string, request: DocumentNoteMutationRequest): DocumentNoteCommandResult {
@@ -1700,7 +1701,10 @@ export class OfficeStudio {
         if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
         const selected = this.getSelection()
         const sheetId = input?.sheetId ?? input?.subUnitId ?? (selected?.unitId === unitId ? selected.sheetId : undefined) ?? workbook.activeSheetId
-        const ranges = sheetLayoutFormatInputRanges(input) ?? this.commandSelectionRanges(unitId, sheetId)
+        const explicitRanges = sheetLayoutFormatInputRanges(input)
+        const ranges = explicitRanges ?? this.commandSelectionRanges(unitId, sheetId)
+        const selectedPrimary = !explicitRanges && selected?.unitId === unitId && selected.sheetId === sheetId ? this.getSelectionState()?.primary : undefined
+        const primary = input?.primary !== undefined ? input.primary : selectedPrimary ? { row: selectedPrimary.row, col: selectedPrimary.column } : undefined
         if (!ranges.length) return false
         assertSheetLayoutFormatRanges(ranges)
         this.assertCanEditWorksheet(unitId, sheetId)
@@ -1710,7 +1714,7 @@ export class OfficeStudio {
         return this.commitWorkbook(unitId, label, model => {
           const sheet = requireSheet(model, sheetId)
           const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheetId).flatMap(table => table.autoFilter?.filteredRows ?? [])]
-          applySheetLayoutFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, model)
+          applySheetLayoutFormatCommand(sheet, ranges, action, this.currentUserId, filteredRows, model, primary)
         }, { recalculate: false })
       })
     }
@@ -1847,7 +1851,7 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; sheetId: string; column?: number }, boolean>('sheet.command.clear-filter', ({ unitId, sheetId, column }) => this.commitWorkbook(unitId, 'Clear worksheet filter', (model) => {
       clearFilter(requireSheet(model, sheetId), column)
     }))
-    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', ({ unitId, sheetId }) => this.commitWorkbook(unitId, 'Reapply worksheet filter', (model) => {
+    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', ({ unitId, sheetId }) => this.applyWorkbookOperation(unitId, (model) => {
       refreshAutoFilter(requireSheet(model, sheetId))
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', ({ unitId, sheetId, range, criteria, options, order, expectedRevision }) => {
@@ -2175,8 +2179,45 @@ export class OfficeStudio {
       const { unitId, index, text, expectedRevision } = input
       return this.commitIndexedDocumentInput(unitId, index, index, text, expectedRevision)
     })
+    this.registerCommand<{ value: string } | (DocumentEditorCommandRequest & { value: string }), boolean | DocumentEditorCommandResult>('doc.command.insert-special-character', input => {
+      if (!input || typeof input !== 'object' || typeof input.value !== 'string') throw new TypeError('特殊字符插入参数无效。')
+      if ('command' in input) {
+        const request = { ...input, command: { ...input.command, text: input.value } }
+        if (!input.value.length) {
+          assertDocumentEditorCommandRequest(request, 'doc.command.insert-text')
+          return { changed: false, selection: cloneDocumentSelection(request.selection) }
+        }
+        return this.commitDocumentEditorCommand('doc.command.insert-text', request)
+      }
+      if (!input.value.length || this.editor.state.activeKind !== 'document') return false
+      const unitId = this._activeDocumentId, session = this.documentInput.get(unitId)
+      if (!session?.valid || session.location.kind !== 'body' || session.modelRevision !== this.getDocumentRevision(unitId)) return false
+      return this.commitDocumentEditorCommand('doc.command.insert-text', {
+        unitId, selection: session.location.selection,
+        command: { id: 'doc.command.insert-text', text: input.value,
+          ...(session.location.host ? { host: session.location.host } : {}) },
+        expectedRevision: session.modelRevision,
+        expectedHistoryGeneration: this.editor.history.captureSavepoint(unitId).generation,
+        inputGeneration: session.generation,
+      }).changed
+    })
+    this.registerCommand<{ rowCount: number; colCount: number } | DocumentEditorCommandRequest, boolean | DocumentEditorCommandResult>('doc.command.create-table', input => {
+      if (!input || typeof input !== 'object') throw new TypeError('表格插入参数无效。')
+      if ('command' in input) return this.commitDocumentEditorCommand('doc.command.create-table', input)
+      if (this.editor.state.activeKind !== 'document') return false
+      const unitId = this._activeDocumentId, session = this.documentInput.get(unitId)
+      if (!session?.valid || session.location.kind !== 'body' || session.modelRevision !== this.getDocumentRevision(unitId)) return false
+      return this.commitDocumentEditorCommand('doc.command.create-table', {
+        unitId, selection: session.location.selection,
+        command: { id: 'doc.command.create-table', rowCount: input.rowCount, colCount: input.colCount,
+          ...(session.location.host ? { host: session.location.host } : {}) },
+        expectedRevision: session.modelRevision,
+        expectedHistoryGeneration: this.editor.history.captureSavepoint(unitId).generation,
+        inputGeneration: session.generation,
+      }).changed
+    })
     for (const commandId of Object.keys(DOCUMENT_EDITOR_COMMAND_LABELS)) {
-      if (commandId === 'doc.command.insert-text') continue
+      if (commandId === 'doc.command.insert-text' || commandId === 'doc.command.create-table') continue
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))

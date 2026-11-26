@@ -8,7 +8,7 @@ import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from '.
 import { conditionalFormatAverageEditorOperator, conditionalFormatAverageRuleOperator, conditionalFormatEditorFormula, conditionalFormatEditorText, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
   prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../../features/conditional-formatting/conditional-format-rule-editor.ts'
 import { assertSheetConditionalFormatRuleSnapshot, type SheetConditionalFormatSubmitResult } from '../../features/conditional-formatting/conditional-format-command.ts'
-import { QUICK_CONDITIONAL_DATA_BAR, type QuickConditionalFormatType } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
+import { QUICK_CONDITIONAL_DATA_BAR, type ConditionalFormatPanelInitialType } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
 import { conditionalIconPresets } from '../../features/conditional-formatting/conditional-icon-presets.ts'
 import { conditionalIconSequence, createConditionalIconConfig, EMPTY_CONDITIONAL_ICON_TYPE, validateConditionalIconConfig, validateConditionalThreshold } from '../../features/conditional-formatting/icon-set-config.ts'
 import ConditionalIcon from './ConditionalIcon.vue'
@@ -16,7 +16,7 @@ import ConditionalThresholdInput from './ConditionalThresholdInput.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme.ts'
 
-const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; initialType?: QuickConditionalFormatType;
+const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; initialType?: ConditionalFormatPanelInitialType;
   submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
@@ -102,7 +102,8 @@ watch(() => props.open, open => {
   error.value = ''
   if (props.initialType) {
     newRule()
-    ruleType.value = props.initialType
+    ruleType.value = props.initialType === 'create' ? 'highlightCell' : props.initialType
+    if (props.initialType === 'expression') formula1.value = '='
     if (props.initialType === 'dataBar') {
       fill.value = QUICK_CONDITIONAL_DATA_BAR.positiveColor
       negativeColor.value = QUICK_CONDITIONAL_DATA_BAR.nativeColor
@@ -112,10 +113,10 @@ watch(() => props.open, open => {
   if (localRules.value.length) {
     selectRule(localRules.value[0]!)
     editing.value = false
-  } else {
-    newRule()
-    editing.value = false
+    return
   }
+  newRule()
+  editing.value = false
 }, { immediate: true })
 
 function newRule() {

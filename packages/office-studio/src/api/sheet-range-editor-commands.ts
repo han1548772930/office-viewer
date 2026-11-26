@@ -3,7 +3,7 @@ import type { CellRange } from '../domain/model.ts'
 import { applySheetClearCommand, clearModeForCommand, SHEET_CLEAR_COMMAND_IDS, type SheetClearCommandInput } from '../features/sheet-workbench/sheet-clear-command.ts'
 import { applySheetMergeCommand, mergeActionForCommand, previewSheetMergeCommand, SHEET_MERGE_COMMAND_IDS,
   type SheetMergeCommandInput, type SheetMergeMode } from '../features/sheet-workbench/sheet-merge-command.ts'
-import { sheetRangeCommandInputRanges, type SheetRangeCommandInput } from '../features/sheet-workbench/sheet-range-command.ts'
+import { sheetRangeCommandInputRanges, sheetRangesIntersect, type SheetRangeCommandInput } from '../features/sheet-workbench/sheet-range-command.ts'
 import { assertSheetRangeChangedValuesValid } from '../features/sheet-workbench/sheet-range-editor-validation.ts'
 
 export function resolveSheetRangeCommandTarget(api: OfficeStudio, input?: SheetRangeCommandInput) {
@@ -58,10 +58,17 @@ export function registerSheetRangeEditorCommands(api: OfficeStudio): void {
       return false
     }
     if (!preview.added.length && !preview.removed.length) return false
+    const selection = action.kind === 'unmerge' ? api.getSelectionState(target.unitId, target.sheetId) : null
+    const activeRange = selection?.ranges[selection.activeRangeIndex]
+    const selections = selection && activeRange && selection.ranges.some(range => preview.removed.some(merge => sheetRangesIntersect(merge, {
+      startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn,
+    }))) ? { sheetId: target.sheetId, before: selection, after: {
+      ...selection, primary: { row: activeRange.startRow, column: activeRange.startColumn },
+    } } : undefined
     const changed = api.commitWorkbook(target.unitId, action.kind === 'unmerge' ? '取消合并' : '合并单元格', model => {
       applySheetMergeCommand(model.sheets.find(candidate => candidate.id === target.sheetId)!, target.ranges, action, api.currentUserId)
       if (action.kind === 'merge') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
-    })
+    }, { selections })
     if (changed && action.kind === 'merge') changedValueEvent(api, target.unitId, target.sheetId, target.ranges)
     return changed
   })

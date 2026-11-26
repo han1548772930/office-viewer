@@ -1,6 +1,7 @@
 import type { DocumentBlock, DocumentDefaultStyle, InlineRun } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
-import { applyNamedParagraphStyle, createParagraph, createRun, DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../features/document/model/document-model'
+import { applyNamedParagraphStyle, createParagraph, createRun, runText, DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../features/document/model/document-model'
+import { DOCUMENT_HORIZONTAL_LINE_BORDER, documentHorizontalLineBorder } from '../features/document/model/document-horizontal-line'
 import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex, clearBlockNumbering, consecutiveNumberingGroup, numberingDefinitionFromParts, numberingRecord, type DocumentNumberingDefinition } from '../features/document/model/document-numbering'
 import { blockListPreset, isListPreset, presetNumberingDefinition } from '../features/document/model/document-lists'
 import { bodyBoolean, bodyColor, bodyLength, bodyNumber, bodyRecord, documentParagraphStyleFromBody, documentParagraphStyleToBody, documentRunStyleFromBody, documentRunStyleToBody, type UniverBodyRecord } from './document-body-style'
@@ -61,6 +62,8 @@ export function documentParagraphFromBody(raw: UniverBodyRecord, runs: InlineRun
   if (bodyBoolean(raw.headingCollapsed) !== undefined) block.metadata.headingCollapsed = bodyBoolean(raw.headingCollapsed)
   const paragraphType = block.type, paragraphLevel = block.level
   applyDocumentBodyBlockSource(block, raw)
+  const hasText = runText(block.runs).length > 0
+  if (block.type === 'divider' && hasText) { block.type = paragraphType; block.level = paragraphLevel }
   const sourceDefinition = blockNumberingDefinition(block), contract = bodyRecord(bodyRecord(raw.officeStudio).numberingContract)
   // Public bullets are current data. The extension contributes provenance,
   // never an obsolete list/check state after a public edit or bullet:null.
@@ -78,6 +81,19 @@ export function documentParagraphFromBody(raw: UniverBodyRecord, runs: InlineRun
     const preserve = sourceDefinition && (contract.listType === listType && contract.listId === (effective.listId ?? listType)
       || !Object.keys(contract).length && (sourceDefinition.abstract.univerBodyPublicListType === listType || documentBodyListType(sourceDefinition, blockNumberingId(block) ?? String(effective.listId ?? listType)) === listType))
     applyBullet(block, current, lists, options.defaults, preserve ? sourceDefinition : undefined)
+  }
+  const border = bodyRecord(paragraphStyle.borderBottom)
+  if (!hasText && (block.type === 'divider' || Object.keys(border).length)) {
+    const width = bodyNumber(border.width) ?? DOCUMENT_HORIZONTAL_LINE_BORDER.width
+    const padding = bodyNumber(border.padding) ?? DOCUMENT_HORIZONTAL_LINE_BORDER.padding
+    const dashStyle = bodyNumber(border.dashStyle) ?? 1
+    if (width < 0 || padding < 0 || ![0, 1, 2, 3].includes(dashStyle)) throw new RangeError('分隔线边框的宽度、间距或线型无效。')
+    if (bullet !== undefined) bodyRecord(bodyRecord(block.metadata.univerBodyParagraphSource).paragraph).bullet = cloneModel(bullet)
+    block.type = 'divider'
+    delete block.checklist
+    block.runs = []
+    block.metadata.documentDividerBorder = { width, padding, color: bodyColor(border.color) ?? DOCUMENT_HORIZONTAL_LINE_BORDER.color,
+      style: dashStyle === 2 ? 'dot' : dashStyle === 3 ? 'dash' : 'solid' }
   }
   return block
 }
@@ -169,17 +185,24 @@ export function documentParagraphToBody(block: DocumentBlock, end: number, insta
   result.startIndex = end; result.paragraphId = block.id
   result.paragraphStyle = documentParagraphStyleToBody(block.style, result.paragraphStyle, block.metadata.univerParagraphPaginationResolution)
   const style = bodyRecord(result.paragraphStyle)
+  if (block.type === 'divider') {
+    const border = documentHorizontalLineBorder(block)
+    style.borderBottom = { ...bodyRecord(style.borderBottom), width: border.width, padding: border.padding,
+      color: { rgb: border.color }, dashStyle: border.style === 'dot' ? 2 : border.style === 'dash' ? 3 : 1 }
+  }
   if (typeof block.metadata.documentCodeFontFamily === 'string') {
     style.textStyle = { ...bodyRecord(style.textStyle), ff: block.metadata.documentCodeFontFamily }
   }
   if (block.type === 'heading') { style.outlineLevel = Math.max(0, block.level - 1); style.namedStyleType = block.level <= 5 ? block.level + 3 : 0 }
   else { delete style.outlineLevel; style.namedStyleType = namedStyles.indexOf(block.metadata.namedStyleType as DocumentNamedParagraphStyle) > 0 ? namedStyles.indexOf(block.metadata.namedStyleType as DocumentNamedParagraphStyle) : 1 }
   if (block.metadata.headingCollapsed !== undefined) result.headingCollapsed = block.metadata.headingCollapsed
-  if (blockHasNumbering(block)) {
+  const hasNumbering = blockHasNumbering(block)
+  if (hasNumbering) {
     const listId = instanceId ?? blockNumberingId(block) ?? block.id
     result.bullet = { ...bodyRecord(result.bullet), listId, listType: documentBodyListTypeForBlock(block), nestingLevel: blockNumberingLevelIndex(block) }
     delete bodyRecord(result.bullet).startNumber
-  } else { result.bullet = null; delete result.sourceBullet; delete result.directBullet }
+  }
+  if (!hasNumbering && block.type !== 'divider') { result.bullet = null; delete result.sourceBullet; delete result.directBullet }
   result.officeStudio = { ...documentBodyBlockSource(block), ...(result.bullet ? { numberingContract: cloneModel(result.bullet) } : {}) }
   return result
 }

@@ -298,18 +298,115 @@ test('merge confirmation is a versioned request with no history until accepted; 
   sheet.cells['0:0'] = createCell(0, 0, 'first'); sheet.cells['0:1'] = createCell(0, 1, 'second')
   await withStudio(workbook, (studio, api) => {
     const requests = []; studio.events.addEvent('SheetMergeConfirmationRequested', event => requests.push(copy(event)))
+    studio.setSelections(workbook.id, sheet.id, [coordinates(range(0, 0, 0, 1))], { primary: { row: 0, column: 1 } })
+    const initialSelection = copy(studio.getSelectionState())
     const input = { unitId: workbook.id, sheetId: sheet.id, ranges: [range(0, 0, 0, 1)] }
     assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMANDS.merge, input), false)
     assert.equal(undoCount(studio), 0); assert.equal(requests.length, 1)
+    assert.deepEqual(studio.getSelectionState(), initialSelection)
     assert.deepEqual(requests[0].input.ranges, input.ranges); assert.equal(requests[0].discardedContentCount, 1)
     const cancel = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === SHEET_MERGE_COMMANDS.merge) event.cancel = true })
     const before = copy(studio.getWorkbookModel(workbook.id))
     assert.throws(() => studio.executeCommandSync(SHEET_MERGE_COMMANDS.merge, { ...input, defaultMerge: true }), /canceled/)
-    assert.deepEqual(studio.getWorkbookModel(workbook.id), before); assert.equal(undoCount(studio), 0); cancel.dispose()
+    assert.deepEqual(studio.getWorkbookModel(workbook.id), before); assert.equal(undoCount(studio), 0)
+    assert.deepEqual(studio.getSelectionState(), initialSelection); cancel.dispose()
     api.getActiveWorkbook().getActiveSheet().getRange('D1').setValue('new revision')
     const changed = copy(studio.getWorkbookModel(workbook.id))
     assert.throws(() => studio.executeCommandSync(requests[0].commandId, { ...requests[0].input, defaultMerge: true, expectedRevision: requests[0].baseRevision }), /已更改/)
     assert.deepEqual(studio.getWorkbookModel(workbook.id), changed); assert.equal(undoCount(studio), 1)
+    assert.deepEqual(studio.getSelectionState(), initialSelection)
+    assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMANDS.merge, input), false)
+    const request = requests[1]
+    studio.setSelections(workbook.id, sheet.id, [coordinates(range(0, 3, 0, 4))], { primary: { row: 0, column: 4 } })
+    const acceptedSelection = copy(studio.getSelectionState()), book = api.getActiveWorkbook()
+    assert.equal(studio.executeCommandSync(request.commandId, { ...request.input, defaultMerge: true, expectedRevision: request.baseRevision }), true)
+    assert.deepEqual(studio.getSelectionState(), acceptedSelection)
+    assert.deepEqual(studio.getWorkbookModel(workbook.id).sheets[0].mergedRanges, input.ranges)
+    assert.equal(undoCount(studio), 2)
+    book.undo()
+    assert.deepEqual(studio.getSelectionState(), acceptedSelection)
+    assert.equal(studio.getWorkbookModel(workbook.id).sheets[0].cells['0:1'].value, 'second')
+    book.redo()
+    assert.deepEqual(studio.getSelectionState(), acceptedSelection)
+    assert.deepEqual(studio.getWorkbookModel(workbook.id).sheets[0].mergedRanges, input.ranges)
+  })
+})
+
+test('all merge modes retain actual primary coordinates and derive its merged shape through one content history', async () => {
+  for (const [mode, mergedPrimary] of [
+    ['all', range(1, 1, 3, 3)], ['horizontal', range(2, 1, 2, 3)], ['vertical', range(1, 2, 3, 2)],
+  ]) {
+    const workbook = createBlankWorkbook(), sheet = workbook.sheets[0], target = range(1, 1, 3, 3)
+    await withStudio(workbook, (studio, api) => {
+      const book = api.getActiveWorkbook(), facade = book.getActiveSheet()
+      studio.setSelections(workbook.id, sheet.id, [coordinates(range(8, 8)), coordinates(target)], { primary: { row: 2, column: 2 } })
+      const before = copy(studio.getSelectionState())
+      assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMANDS.merge, { unitId: workbook.id, sheetId: sheet.id, ranges: [target], mode, defaultMerge: true }), true)
+      assert.deepEqual(studio.getSelectionState(), before)
+      const current = { ...coordinates(mergedPrimary), actualRow: 2, actualColumn: 2, rangeType: 0, isMerged: true, isMergedMainCell: false }
+      assert.deepEqual(facade.getSelection().getCurrentCell(), current)
+      assert.equal(undoCount(studio), 1)
+      studio.setSelection(workbook.id, sheet.id, coordinates(range(10, 10)))
+      book.undo()
+      assert.deepEqual(studio.getSelectionState(), before)
+      assert.equal(facade.getSelection().getCurrentCell().isMerged, false)
+      book.redo()
+      assert.deepEqual(studio.getSelectionState(), before)
+      assert.deepEqual(facade.getSelection().getCurrentCell(), current)
+    })
+  }
+})
+
+test('unmerge relocates only the active primary and restores complete multi-selections through undo and redo', async () => {
+  for (const activeRangeIndex of [0, 1]) {
+    const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+    sheet.mergedRanges = [range(0, 0, 1, 1), range(3, 3, 4, 4)]
+    await withStudio(workbook, (studio, api) => {
+      const book = api.getActiveWorkbook(), facade = book.getActiveSheet(), targets = [range(0, 0, 2, 2), range(3, 3, 5, 5)]
+      const primary = activeRangeIndex === 0 ? { row: 1, column: 1 } : { row: 4, column: 4 }
+      studio.setSelections(workbook.id, sheet.id, targets.map(coordinates), { activeRangeIndex, primary })
+      const before = copy(studio.getSelectionState()), notifications = []
+      studio.events.addEvent('SelectionsChanged', event => notifications.push(copy(event.selection)))
+      assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMAND_ALIASES.unmerge, { unitId: workbook.id, subUnitId: sheet.id, ranges: targets }), true)
+      const active = targets[activeRangeIndex], after = { ...before, primary: { row: active.startRow, column: active.startCol } }
+      assert.deepEqual(studio.getSelectionState(), after)
+      assert.deepEqual(notifications.at(-1), after)
+      assert.equal(facade.getSelection().getCurrentCell().isMerged, false)
+      assert.equal(undoCount(studio), 1)
+      studio.setSelection(workbook.id, sheet.id, coordinates(range(10, 10)))
+      book.undo()
+      assert.deepEqual(studio.getSelectionState(), before)
+      assert.equal(facade.getSelection().getCurrentCell().isMerged, true)
+      studio.setSelection(workbook.id, sheet.id, coordinates(range(11, 11)))
+      book.redo()
+      assert.deepEqual(studio.getSelectionState(), after)
+      assert.deepEqual(notifications.at(-1), after)
+      assert.deepEqual(studio.getWorkbookModel(workbook.id).sheets[0].mergedRanges, [])
+    })
+  }
+})
+
+test('explicit unmerge outside saved selections leaves the active and inactive sheet selections unchanged', async () => {
+  const workbook = createBlankWorkbook(), first = workbook.sheets[0], second = createBlankSheet('Second')
+  second.mergedRanges = [range(0, 0, 1, 1)]; workbook.sheets.push(second)
+  await withStudio(workbook, (studio, api) => {
+    const book = api.getActiveWorkbook()
+    studio.setSelections(workbook.id, second.id, [coordinates(range(4, 4, 5, 5))], { primary: { row: 5, column: 5 } })
+    const inactiveSelection = copy(studio.getSelectionState(workbook.id, second.id))
+    studio.setSelections(workbook.id, first.id, [coordinates(range(7, 7, 8, 8))], { primary: { row: 8, column: 8 } })
+    const activeSelection = copy(studio.getSelectionState()), input = { unitId: workbook.id, subUnitId: second.id, ranges: [range(0, 0, 1, 1)] }
+    assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMAND_ALIASES.unmerge, input), true)
+    assert.deepEqual(studio.getSelectionState(), activeSelection)
+    assert.deepEqual(studio.getSelectionState(workbook.id, second.id), inactiveSelection)
+    for (const transition of [() => book.undo(), () => book.redo()]) {
+      transition()
+      assert.deepEqual(studio.getSelectionState(), activeSelection)
+      assert.deepEqual(studio.getSelectionState(workbook.id, second.id), inactiveSelection)
+      assert.equal(studio.getWorkbookModel(workbook.id).activeSheetId, first.id)
+    }
+    assert.equal(studio.executeCommandSync(SHEET_MERGE_COMMAND_ALIASES.unmerge, input), false)
+    assert.equal(undoCount(studio), 1)
+    assert.deepEqual(studio.getSelectionState(), activeSelection)
   })
 })
 

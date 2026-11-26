@@ -25,6 +25,29 @@ test('feature search indexes available command variants once and retains live Ri
   assert.equal(collectFeatureSearchResults(input, 'Ribbon')[0].title, 'alternate-font')
 })
 
+test('context selectors retain their menu key, option command and complete parameters', () => {
+  const context = { title: 'Context menu', groups: [group('format', [
+    { id: 'context-style', type: 'select', title: 'Paragraph style', options: [
+      { value: 'normal', label: 'Normal', commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle: 'normal' } },
+      { value: 'heading', label: 'Heading 1', commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle: 'heading1' } },
+      { value: 'disabled', label: 'Disabled', commandId: 'doc.command.set-paragraph-named-style', disabled: true, params: { namedStyle: 'heading2' } },
+    ] },
+    { id: 'context-border', type: 'menu', title: 'Borders', children: [button('context-border-all', {
+      commandId: 'sheet.command.set-borders', params: { value: 'all', style: 'thin', color: '#008080' },
+    })] },
+    { id: 'disabled-context', type: 'menu', title: 'Unavailable', disabled: true, children: [button('unavailable-action')] },
+  ])] }
+  const before = JSON.stringify(context)
+  const results = collectFeatureSearchResults([], 'Ribbon', context)
+  assert.deepEqual(results.map(({ title, contextId, commandId, params }) => ({ title, contextId, commandId, params })), [
+    { title: 'Normal', contextId: 'context-style', commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle: 'normal' } },
+    { title: 'Heading 1', contextId: 'context-style', commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle: 'heading1' } },
+    { title: 'context-border-all', contextId: 'context-border-all', commandId: 'sheet.command.set-borders', params: { value: 'all', style: 'thin', color: '#008080' } },
+  ])
+  assert.equal(results[0].path, 'Context menu / Paragraph style')
+  assert.equal(JSON.stringify(context), before)
+})
+
 test('simple measures each placement independently while retaining command and slot IDs', () => {
   const tabs = visibleRibbonTabs(['home', 'insert'].map(id => tab(id, [group('tools', [button('shared', { params: id })])])))
   const groups = simpleRibbonTab(tabs).groups

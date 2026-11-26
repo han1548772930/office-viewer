@@ -10,7 +10,7 @@
 | 增加小数位 | r2c3 | `sheet.command.numfmt.add.decimal.command` | `sheet.command.increase-decimals` |
 | 减少小数位 | r2c4 | `sheet.command.numfmt.subtract.decimal.command` | `sheet.command.decrease-decimals` |
 
-固定来源为 `packages/sheets-numfmt-ui/src/menu/schema.ts`、`menu.ts` 与 `number-format-options.ts`。数字组 5 个常驻根，格式菜单 13 个预设、4 个分隔、1 个面板入口。Classic 和 Grid 复用入口，More 收纳同组。扩展、独立溢出、上下文和常驻根的本批增量均为 0。固定版仅在 Sheets 显示，禁用条件读取 workbook 可编辑、worksheet 可编辑及设置样式权限和范围编辑权限。本项目保留 Sheets 工作台、工作表/范围保护、编辑会话状态和混合格式的现有判断。
+固定来源为 `packages/sheets-numfmt-ui/src/menu/schema.ts`、`menu.ts` 与 `number-format-options.ts`。数字组 5 个常驻根，格式菜单 13 个预设、4 个分隔、1 个面板入口。Classic 和 Grid 复用入口，More 收纳同组。扩展、独立溢出、上下文和常驻根的本批增量均为 0。固定版仅在 Sheets 显示，禁用条件读取 workbook 可编辑、worksheet 可编辑及设置样式权限和范围编辑权限。本项目保留 Sheets 工作台、工作表/范围保护和编辑会话状态判断。
 
 ## 区域、草稿与持久化
 
@@ -25,3 +25,43 @@
 已静态核对固定源码、地区目录及现有命令、快照和写出路径。给 `sheet-number-format.contract.test.mjs` 和 `sheet-number-format.browser.test.mjs` 各补两条草稿，涵盖 19 个地区模板、符号识别、会计分段保持、快捷按钮激活、负数地区预览、Facade、撤销重做及内部快照重开。
 
 测试、类型检查、构建、浏览器及 Rust/WASM 留待统一阶段。真实 XLSX 导出与独立 Office 重开、全部地区实际预览、主题和焦点的真实复核，以及大范围格式应用性能仍为未验收。
+
+<a id="number-group-review-2026-11-27"></a>
+
+## 2026-11-27 数字组续核
+
+本次按开始页从左到右继续追踪同一组 5 个常驻根、13 个预设和 1 个更多格式入口，入口数量没有增加。领域分类、科学数值格式限制，以及主线的工作台主格状态、预设应用范围和浏览器草稿均已落盘，运行验证后置。
+
+### 固定来源与可观察契约
+
+- [数字组 schema](../../../univer/packages/sheets-numfmt-ui/src/menu/schema.ts)与 [菜单状态](../../../univer/packages/sheets-numfmt-ui/src/menu/menu.ts)确认格式选择器跨第 1 行四列，第二行依次为百分比、区域货币、增加小数位、减少小数位。显隐由 Sheets 类型判断，禁用由 workbook/worksheet/范围编辑和 worksheet 设置样式权限判断；本项目继续通过既有工作台能力和保护模型判断。
+- [numfmt-menu-util.ts](../../../univer/packages/sheets-numfmt-ui/src/menu/numfmt-menu-util.ts)读取末段 selection 的 `primary ?? range` 起点格式；selector 标签、百分比和货币 activated 都从该模式派生。货币 activated 要求 `getPatternType(pattern) === 'currency'` 且正值段符号等于当前区域符号。固定版的会计、整数货币预设仍属于引擎的 currency 类，本项目保留更细的菜单分类。
+- [MoreNumfmtType.tsx](../../../univer/packages/sheets-numfmt-ui/src/views/components/MoreNumfmtType.tsx)的预设仅遍历末段 selection.range。[百分比命令](../../../univer/packages/sheets-numfmt/src/commands/commands/set-percent.command.ts)、[货币命令](../../../univer/packages/sheets-numfmt/src/commands/commands/set-currency.command.ts)、[增加小数位](../../../univer/packages/sheets-numfmt/src/commands/commands/add-decimal.command.ts)和 [减少小数位](../../../univer/packages/sheets-numfmt/src/commands/commands/subtract-decimal.command.ts)遍历全部当前 selections，均未过滤筛选隐藏行；百分比直接写 `0%`，菜单预设写 `0.00%`。显式 Facade/ranges/values 继续使用调用方给出的目标。
+- [pattern.ts](../../../univer/packages/sheets-numfmt/src/utils/pattern.ts)的 `getPatternType` 复用 [format-info.ts](../../../univer/packages/core/src/shared/numfmt/format-info.ts)，General 带条件 token 时归为 number。标准数值元数据以正值段取数字类型和精度，`isDate` / `isPercent` 读取全部分段；日期与文本排除货币判断，货币优先于科学计数和百分比，正值段的科学计数优先于百分比。标签不能仅凭首段字符正则推断。
+- [SetNumfmtCommand](../../../univer/packages/sheets-numfmt/src/commands/commands/set-numfmt.command.ts)与 [scientific-notation.ts](../../../univer/packages/sheets-numfmt/src/utils/scientific-notation.ts)限制科学数值可用格式；[core numfmt utils](../../../univer/packages/core/src/shared/numfmt/utils.ts)中的 `isDefaultFormat` / `isTextFormat` 精确接受缺省/`General`、`@`/`@@@`，不能用同类标签代替这些格式码。格式 mutation 与 undo/redo 一起提交，格式删除也进入历史。
+
+### 本地修正、保持行为与差异
+
+- [sheet-number-format.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-number-format.ts)复用 [number-format-render.ts](../../packages/office-studio/src/features/sheet-workbench/number-format-render.ts)现有的格式解析缓存与 `describeSheetNumberFormat`。分类使用真实引擎元数据，再保留本地完整地区符号、会计、财务及持续时间分类，不建立第二套格式引擎。带单位的普通数字、多段百分比/日期、纯文本及条件 General 使用同一分类结果。
+- 原先 `"$"0.00E+00` 被首段正则判成 scientific，科学数值因此被错误放行；现在判为 currency。[sheet-number-format-command.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-number-format-command.ts)分别检查精确 `General`、`@`/`@@@` 与 scientific 类型。`"item "@`、`[Red]General` 可以分别显示文本、常规类标签，但不能因此绕过科学数值的格式限制；`0.00E+00%` 按固定引擎优先级仍是 scientific。限制只跳过目标单元格的格式 patch，保留其他可应用单元格、原始数值、文本类型和公式缓存。
+- 小数位仍由现有 [number-format-pattern.ts](../../packages/office-studio/src/features/sheet-workbench/number-format-pattern.ts)和同一个 model/view 计划执行。[上游 decimal.ts](../../../univer/packages/sheets-numfmt/src/utils/decimal.ts)确认 0–30 位、补位复制末个可选占位符、忽略引号/转义/方括号/留位/填充操作数、保留日期时间段。本地继续保留负值颜色、段顺序、字面量和地区符号；General 科学值先按尾数精度生成至少两位的科学格式，再统一增减，普通数字保持普通格式。达到上限或仅选日期时间时不产生 patch。
+- 已记录的算法差异：固定源码对无格式普通数值仅在 `!maxDecimals` 时读取原值的小数位，结果会依赖遍历顺序；显式存储的 `General` 又会由引擎报告 9 位。本地继续从所有有效 General 数值取最大原值/尾数精度，显式 General 与缺省采用同一计划。无小数点的格式也只在整数部分补位，避免修改分母或指数。本批没有复制这些上游内部差异，尚无 Microsoft Office 多选区样本实测证明最终效果一致。
+- [OfficeStudio 数字命令](../../packages/office-studio/src/api/office-studio.ts)仍通过 `commitWorkbook(..., { recalculate: false })`提交；[Facade](../../packages/office-studio/src/api/facade.ts)的 `setNumberFormat` / `setNumberFormats` 复用同一注册和计划。全部目标被跳过或格式已相同不会新增内容历史。格式码继续存入 `CellStyle.numberFormat`，内部快照保存原始模型；[XLSX writer](../../crates/office-writer/src/xlsx.rs)以完整格式码注册 numFmt 并写出转义后的 formatCode，未修改协议或写出路径。
+- [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 的选择器标签、百分比和货币激活态读取活动主格的实际格式；13 个预设只应用于活动选区段，百分比、货币和小数位快捷命令继续应用全部选区。更多格式面板保留首个选区起点作为草稿基准，确认仍应用全部目标范围；显式 API/ranges/values 不改目标。
+- [sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 的地区货币图标使用 24×24 SVG viewBox；文字中心为 12/12，单字符字号 20，多字符及 `﷼` 字号 16、文字宽度限制 20。外框按 classic/grid 的实际图标尺寸缩放，避免 NT$/HK$/﷼ 的字形超过悬停按钮。浏览器草稿测量 SVG 文字与按钮矩形，此处不声称实际字体边界已通过。
+
+### 静态核对与未验收项
+
+[sheet-number-format.contract.test.mjs](../../packages/office-studio/tests/sheet-number-format.contract.test.mjs)增加 3 个合同草稿：16 个真实格式的分类与菜单 key；domain/view 对科学数值、带类型文本和普通数值采用相同限制；上游小数位别名在混合普通/科学/可选占位符/字面量/日期/百分比/文本选区中复用计划，重叠范围只执行一次，日期和 30 位上限返回无操作。测试直接调用既有模型、视图适配器和命令，作者格式通过现有 setter 构造。
+
+[sheet-number-format.browser.test.mjs](../../packages/office-studio/tests/sheet-number-format.browser.test.mjs) 补活动主格、活动段预设与全选区快捷命令、首范围面板基准的真实 Studio 草稿；另补 classic/grid 中 en-US、zh-TW、zh-HK、fa-IR 的字形中心、按钮内边界、悬停命中、明暗主题和无内容/历史变更的草稿。全部未运行。
+
+只执行本批文件静态 diff、链接和固定源码路径检查。合同、浏览器、类型、构建及 Rust/WASM 均未运行；主格与预设范围的浏览器闭环、历史/保存重开、真实 XLSX 与 Office 样本、主题/焦点/IME、格式大范围性能与内存继续保留未验收。
+
+### 数字组命令与边界复查
+
+再次读取上述四条快捷命令、SetNumfmtCommand、菜单状态及本地 Studio/model/view 调用，没有新增入口或生产修改。快捷货币按执行时区域生成模板，百分比固定写 `0%`，小数位继续读取全部目标；本地显式 `ranges / values` 由调用方确定，重叠范围在计划入口去重。工作表及范围保护在应用计划前拒绝，Studio 提交继续使用 `recalculate:false` 和既有文档历史；相同格式或所有目标被跳过时不发布内容变化。上述结论是静态调用链核对，未新增运行验收证据。
+
+[Currency.tsx](../../../univer/packages/sheets-numfmt-ui/src/views/components/Currency.tsx) 和 [Accounting.tsx](../../../univer/packages/sheets-numfmt-ui/src/views/components/Accounting.tsx) 的 InputNumber 明确为 0–20 位；工具栏 [decimal.ts](../../../univer/packages/sheets-numfmt/src/utils/decimal.ts) 的算法上限则为 30 位。[CustomNumberFormatPanel.vue](../../packages/office-studio/src/components/spreadsheet/CustomNumberFormatPanel.vue) 与 [number-format-pattern.ts](../../packages/office-studio/src/features/sheet-workbench/number-format-pattern.ts) 采用对应两级限制，不能把面板 20 位上限认定为与固定版本不一致。表单及控件仍使用 [本地文档](../llm.md) 所述 Form、Select、InputNumber、Menu 的受控值、禁用和变更事件。
+
+新增记录的比较差异：[core isPatternEqualWithoutDecimal](../../../univer/packages/core/src/shared/numfmt/utils.ts) 按引擎 token 忽略小数、COLOR 和 SKIP，并对颜色后的 MINUS 特殊处理；本地 `numberFormatWithoutDecimals` 保留颜色、留位、字面量和段序后转小写。因此带附加颜色或留位的作者格式可能得到不同的预设标签/负数选项，不能仅凭函数注释宣称比较语义完全相同，也不能以内部 token 规则代替 Office 可观察行为验证。现有完整格式码保存和小数位改写行为继续保留，该比较差异仍待浏览器与文件样本验收。

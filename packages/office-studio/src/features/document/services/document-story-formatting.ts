@@ -1,6 +1,6 @@
 import type { DocumentModel, DocumentParagraphStyle, DocumentSectionHeaderFooter } from '../../../domain/model'
 import { hasEastAsianLetters } from '../model/document-font'
-import { applyRunPatch, createRun, type DocumentRun, type RunPatch } from '../model/document-model'
+import { applyRunPatch, createRun, DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle, type DocumentRun, type RunPatch } from '../model/document-model'
 import { formatDocumentRunRange, validateDocumentRunPatch } from '../model/document-run-range'
 import { DOCUMENT_STORY_KEYS, documentStoryContent, documentStoryDefaultStyle, documentStoryFieldCache, documentStoryFieldDisplayRuns, documentStoryTextStyle, isDocumentTextBoundary, type DocumentStoryRange } from '../model/document-story'
 import { assertDocumentPermission, type DocumentPermissionContext } from '../permissions/document-permissions'
@@ -55,7 +55,7 @@ function fieldCaretCharacter(text: string, offset: number): string {
 
 /** Read the actual story runs and field caches, never the dormant body selection. */
 export function documentStorySelectionFormatting(model: DocumentModel, request: DocumentStoryRange, pending: RunPatch = {}): {
-  styles: RunPatch[]; paragraphs: DocumentParagraphStyle[]; hasSelection: boolean
+  styles: RunPatch[]; paragraphs: DocumentParagraphStyle[]; hasSelection: boolean; namedStyle: DocumentNamedParagraphStyle
 } {
   const { section, buffer, range, content } = readRange(model, request)
   const { start, end } = range, collapsed = start === end
@@ -84,10 +84,13 @@ export function documentStorySelectionFormatting(model: DocumentModel, request: 
   }
   if (!styles.length) styles.push(storyRunStyleAt(section, range.story, start, end, model))
   const from = buffer.literalOffsets[start]!, to = buffer.literalOffsets[end]!
+  const paragraphAtStart = content.paragraphs.find(paragraph => paragraph.startOffset <= from && paragraph.endOffset >= from)
   const paragraphs = collapsed || from === to
-    ? [content.paragraphs.find(paragraph => paragraph.startOffset <= from && paragraph.endOffset >= from)?.style ?? documentStoryDefaultStyle(model).paragraph]
+    ? [paragraphAtStart?.style ?? documentStoryDefaultStyle(model).paragraph]
     : content.paragraphs.filter(paragraph => paragraph.startOffset < to && paragraph.endOffset >= from).map(paragraph => paragraph.style)
-  return { styles, paragraphs, hasSelection: !collapsed }
+  const namedStyle = paragraphAtStart?.metadata?.namedStyleType
+  return { styles, paragraphs, hasSelection: !collapsed,
+    namedStyle: typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle) ? namedStyle as DocumentNamedParagraphStyle : 'normal' }
 }
 
 /** CJK cache text participates in family selection even though input stores one object marker. */

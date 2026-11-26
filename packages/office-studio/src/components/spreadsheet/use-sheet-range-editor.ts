@@ -5,7 +5,7 @@ import { applyExcelWorkbookView, parseCellKey, toExcelWorkbookView, type ExcelWo
 import { applySheetViewClearCommand, clearModeForCommand, type SheetClearCommandInput, type SheetClearOptions } from '../../features/sheet-workbench/sheet-clear-command.ts'
 import { applySheetViewMergeCommand, mergeActionForCommand, type SheetMergeCommandInput, type SheetMergeConfirmationRequest } from '../../features/sheet-workbench/sheet-merge-command.ts'
 import { assertSheetRangeChangedValuesValid } from '../../features/sheet-workbench/sheet-range-editor-validation.ts'
-import { sheetRangesEqual, sheetRangesIntersect } from '../../features/sheet-workbench/sheet-range-command.ts'
+import { sheetRangeContainsCell, sheetRangesEqual, sheetRangesIntersect } from '../../features/sheet-workbench/sheet-range-command.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
 
 interface SheetRangeEditorContext {
@@ -13,6 +13,8 @@ interface SheetRangeEditorContext {
   workbook(): ExcelWorkbookView
   sheetId(): string
   ranges(): CellRange[]
+  primary(): { row: number; col: number }
+  resetPrimary(): void
   userId(): string
   region(): string
   active(): boolean
@@ -81,6 +83,10 @@ export function useSheetRangeEditor(context: SheetRangeEditorContext) {
       && !ranges.some((range, index) => ranges.slice(0, index).some(previous => !sheetRangesEqual(previous, range) && sheetRangesIntersect(previous, range)))
   })
   const canUnmerge = computed(() => editable.value && affectedMerges.value.length > 0)
+  const mergeActive = computed(() => {
+    const primary = context.primary()
+    return merges.value.some(merge => sheetRangeContainsCell(merge, primary.row, primary.col))
+  })
 
   function cancelMerge(): void { pending.value = null; mergeError.value = '' }
   function afterMergeClose(): void {
@@ -152,6 +158,7 @@ export function useSheetRangeEditor(context: SheetRangeEditorContext) {
     const before = applyExcelWorkbookView(createBlankWorkbook(), current, context.region())
     if (action.kind === 'merge') assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === targetId)!, applyExcelWorkbookView(before, candidate, context.region()), targetId)
     context.applyView(candidate)
+    if (action.kind === 'unmerge') context.resetPrimary()
     context.changed(action.kind === 'merge')
     return true
   }
@@ -180,5 +187,5 @@ export function useSheetRangeEditor(context: SheetRangeEditorContext) {
     } catch (error: unknown) { mergeError.value = error instanceof Error ? error.message : '合并失败，数据没有修改。' }
   }
 
-  return { canMerge, canUnmerge, mergeRequest, mergeError, runClear, runMerge, confirmMerge, cancelMerge, afterMergeClose }
+  return { canMerge, canUnmerge, mergeActive, mergeRequest, mergeError, runClear, runMerge, confirmMerge, cancelMerge, afterMergeClose }
 }

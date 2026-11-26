@@ -2,12 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { createBlankSheet, createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
-import { sheetNumberFormatMenu, SHEET_NUMBER_FORMATS } from '../src/features/sheet-workbench/sheet-number-format.ts'
+import { classifySheetNumberFormat, sheetNumberFormatKey, sheetNumberFormatMenu, SHEET_NUMBER_FORMATS } from '../src/features/sheet-workbench/sheet-number-format.ts'
 import { applySheetNumberFormatCommand, applySheetViewNumberFormatCommand, numberFormatActionForCommand } from '../src/features/sheet-workbench/sheet-number-format-command.ts'
 import { presentSheetCellNumber } from '../src/features/sheet-workbench/sheet-number-presentation.ts'
 import { positionSheetNumberFormatRuns, renderSheetNumberFormat } from '../src/features/sheet-workbench/number-format-render.ts'
 import { validateCustomNumberFormat } from '../src/features/sheet-workbench/custom-number-format.ts'
 import { numberFormatCurrency, sheetCurrencyPattern } from '../src/features/sheet-workbench/sheet-currency.ts'
+import { setSheetCellStyleProperties } from '../src/features/sheet-workbench/sheet-style-inheritance.ts'
 import { createSheetNumberFormatDraft, readSheetNumberFormatPreferences, rememberSheetNumberFormat,
   SHEET_NUMBER_FORMAT_PANEL_CURRENCIES, sheetNumberFormatDraftPattern } from '../src/features/sheet-workbench/number-format-panel.ts'
 
@@ -100,6 +101,108 @@ test('domain and standalone view commands share decimal plans and keep text type
   assert.equal(view.cells.A1.rawNumberFormat, sheet.cells['0:0'].style.numberFormat)
   assert.equal(view.cells.B1.rawNumberFormat, sheet.cells['0:1'].style.numberFormat)
   assert.equal(view.cells.B1.displayValue, '00123')
+})
+
+test('format classification uses numeric sections and keeps currency, scientific and text precedence', () => {
+  for (const [pattern, expected] of [
+    ['"$"0.00E+00', 'currency'],
+    ['"$"0.00%', 'currency'],
+    ['0.00E+00%', 'scientific'],
+    ['0.00;[Red]-0.00%', 'percent'],
+    ['0.00;yyyy-mm-dd', 'date'],
+    ['"item "@', 'text'],
+    ['0.00" kg"', 'number'],
+    ['[Red]General', 'general'],
+    ['[>100]General;General', 'number'],
+    ['General;[<0]General', 'number'],
+    ['# ?/?', 'custom'],
+    ['[$CAD-en-CA]#,##0.00', 'currency'],
+    ['"Rp"0.00E+00', 'currency'],
+    [SHEET_NUMBER_FORMATS.accounting, 'accounting'],
+    [SHEET_NUMBER_FORMATS.financial, 'financial'],
+    [SHEET_NUMBER_FORMATS.duration, 'duration'],
+  ]) {
+    assert.equal(classifySheetNumberFormat(pattern), expected, pattern)
+    assert.equal(sheetNumberFormatKey(pattern, 'en-US'), expected, pattern)
+  }
+})
+
+test('domain and view commands apply the same scientific format guard without changing typed values', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  sheet.cells['0:0'] = createCell(0, 0, 1e21)
+  sheet.cells['0:1'] = { ...createCell(0, 1, '1e21'), dataType: 'text' }
+  sheet.cells['0:2'] = createCell(0, 2, 12.25)
+  const view = toExcelWorkbookView(workbook).sheets[0]
+  const rawValues = Object.values(sheet.cells).map(cell => [cell.value, cell.dataType])
+  const scientificCell = structuredClone(sheet.cells['0:0'])
+  const scientificViewCell = structuredClone(view.cells.A1)
+  const currencyScientific = { kind: 'set', pattern: '"$"0.00E+00' }
+  assert.equal(applySheetNumberFormatCommand(sheet, [range(0, 2)], currencyScientific), true)
+  assert.equal(applySheetViewNumberFormatCommand(view, [range(0, 2)], currencyScientific), true)
+  assert.deepEqual(sheet.cells['0:0'], scientificCell)
+  assert.deepEqual(view.cells.A1, scientificViewCell)
+  assert.equal(sheet.cells['0:1'].style.numberFormat, currencyScientific.pattern)
+  assert.equal(view.cells.B1.rawNumberFormat, currencyScientific.pattern)
+  assert.equal(sheet.cells['0:2'].style.numberFormat, currencyScientific.pattern)
+  for (const pattern of [currencyScientific.pattern, '"item "@', '[Red]General', '0.00']) {
+    const action = { kind: 'set', pattern }
+    assert.equal(applySheetNumberFormatCommand(sheet, [range(0)], action), false, pattern)
+    assert.equal(applySheetViewNumberFormatCommand(view, [range(0)], action), false, pattern)
+    assert.deepEqual(sheet.cells['0:0'], scientificCell)
+    assert.deepEqual(view.cells.A1, scientificViewCell)
+  }
+
+  for (const pattern of ['0.00E+00%', '@', '@@@', '0.0000E+00', 'General']) {
+    const action = { kind: 'set', pattern }
+    assert.equal(applySheetNumberFormatCommand(sheet, [range(0)], action), true, pattern)
+    assert.equal(applySheetViewNumberFormatCommand(view, [range(0)], action), true, pattern)
+    assert.equal(sheet.cells['0:0'].style.numberFormat, pattern)
+    assert.equal(view.cells.A1.rawNumberFormat, pattern)
+    assert.deepEqual(Object.values(sheet.cells).map(cell => [cell.value, cell.dataType]), rawValues)
+    assert.equal(view.cells.A1.rawValue, 1e21)
+    assert.equal(view.cells.B1.rawValue, '1e21')
+  }
+})
+
+test('decimal aliases preserve scientific mantissas, optional placeholders, literals and date formats', () => {
+  const workbook = createBlankWorkbook()
+  const sheet = workbook.sheets[0]
+  const optional = '0.0#" a.b";[Red]-0.0#"E+00"'
+  const entries = [[1.2, 'General'], [1.2345e31, 'General'], [-12.34, optional],
+    [45000, 'hh:mm:ss.000'], [.125, '0.0%'], ['00123', 'General']]
+  for (const [col, [value, pattern]] of entries.entries()) {
+    const cell = createCell(0, col, value)
+    setSheetCellStyleProperties(cell, { numberFormat: pattern })
+    sheet.cells[`0:${col}`] = cell
+  }
+  const view = toExcelWorkbookView(workbook).sheets[0]
+  const rawValues = Object.values(sheet.cells).map(cell => [cell.value, cell.dataType])
+  const increase = numberFormatActionForCommand('sheet.command.numfmt.add.decimal.command')
+  const decrease = numberFormatActionForCommand('sheet.command.numfmt.subtract.decimal.command')
+  for (const [action, expected] of [
+    [increase, ['0.00000', '0.00000E+00', '0.0##" a.b";[Red]-0.0##"E+00"', 'hh:mm:ss.000', '0.00%', '0.00000']],
+    [decrease, ['0.0000', '0.0000E+00', optional, 'hh:mm:ss.000', '0.0%', '0.0000']],
+  ]) {
+    assert.equal(applySheetNumberFormatCommand(sheet, [range(0, 5), range(0, 1)], action), true)
+    assert.equal(applySheetViewNumberFormatCommand(view, [range(0, 5), range(0, 1)], action), true)
+    assert.deepEqual(Object.values(sheet.cells).map(cell => cell.style.numberFormat), expected)
+    assert.deepEqual(['A1', 'B1', 'C1', 'D1', 'E1', 'F1'].map(address => view.cells[address].rawNumberFormat), expected)
+    assert.deepEqual(Object.values(sheet.cells).map(cell => [cell.value, cell.dataType]), rawValues)
+    assert.equal(view.cells.F1.displayValue, '00123')
+  }
+  for (const action of [increase, decrease]) {
+    assert.equal(applySheetNumberFormatCommand(sheet, [range(3)], action), false)
+    assert.equal(applySheetViewNumberFormatCommand(view, [range(3)], action), false)
+  }
+  const maximum = '0.' + '0'.repeat(30)
+  const setMaximum = { kind: 'set', pattern: maximum }
+  assert.equal(applySheetNumberFormatCommand(sheet, [range(0)], setMaximum), true)
+  assert.equal(applySheetViewNumberFormatCommand(view, [range(0)], setMaximum), true)
+  assert.equal(applySheetNumberFormatCommand(sheet, [range(0)], increase), false)
+  assert.equal(applySheetViewNumberFormatCommand(view, [range(0)], increase), false)
+  assert.equal(sheet.cells['0:0'].style.numberFormat, maximum)
+  assert.equal(view.cells.A1.rawNumberFormat, maximum)
 })
 
 test('a malformed pattern or protected target rejects the whole format plan before mutation', () => {

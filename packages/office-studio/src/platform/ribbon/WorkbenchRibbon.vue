@@ -19,7 +19,7 @@ const props = withDefaults(defineProps<{ tabs: RibbonTab[]; modelValue?: string;
   featureSearchScope?: HTMLElement | null; featureSearchContext?: () => readonly RibbonGroup[]; uiHost?: WorkbenchUiHost;
   shortcuts?: readonly { title: string; shortcut: string }[]; hidden?: boolean }>(), { modelValue: undefined, label: '功能区', variant: 'classic' })
 const emit = defineEmits<{
-  'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown]; contextCommand: [key: string]; shortcutPanel: [open: boolean]
+  'update:modelValue': [id: string]; execute: [commandId: string, params?: unknown]; contextCommand: [key: string, commandId: string, params?: unknown]; shortcutPanel: [open: boolean]
 }>()
 const id = useId()
 const translate = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
@@ -58,6 +58,7 @@ const moreMenuRef = ref<{ focus: () => void } | null>(null)
 const availableWidth = ref(Number.POSITIVE_INFINITY)
 const measuredWidths = ref<Record<string, number>>({})
 const moreOpen = ref(false)
+const moreTooltipOpen = ref(false)
 const featureSearchOpen = ref(false)
 const shortcutPanelOpen = ref(false)
 watch(shortcutPanelOpen, open => emit('shortcutPanel', open))
@@ -139,14 +140,14 @@ function execute(commandId: string, params?: unknown) {
 
 function executeSearchResult(result: FeatureSearchResult) {
   if (result.contextId) {
-    emit('contextCommand', result.contextId)
+    emit('contextCommand', result.contextId, result.commandId, result.params)
     return
   }
   execute(result.commandId, result.params)
 }
 
 function onWorkbenchUiShortcut(event: KeyboardEvent) {
-  if (!hostActive || !(event.target instanceof Element)) return
+  if (!hostActive || props.hidden || !(event.target instanceof Element)) return
   if (event.target.closest('[role="dialog"]:not([data-office-shortcut-panel])')) return
   const id = workbenchUiShortcut(event)
   if (!id) return
@@ -198,7 +199,7 @@ watch(activeId, (value) => {
 watch(() => props.variant, () => { moreOpen.value = selectorOpen.value = false; popupScope.close(); void measure() })
 watch(selector, (element, previous) => { if (previous) observer?.unobserve(previous); if (element) observer?.observe(element) }, { flush: 'post' })
 watch(selectorOpen, open => { if (open) { moreOpen.value = false; popupScope.close() } })
-watch(moreOpen, (open) => { if (open) popupScope.close() })
+watch(moreOpen, (open) => { moreTooltipOpen.value = false; if (open) popupScope.close() })
 watch(activeTab, () => { void measure() }, { flush: 'post' })
 watch(toolbar, (element, previous) => {
   if (previous) observer?.unobserve(previous)
@@ -230,7 +231,7 @@ onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.v
 <template>
   <section v-if="tabs.length" class="workbench-ribbon" data-testid="workbench-ribbon" :dir="direction" :aria-label="label" :style="[ribbonStyle, themeStyle]">
     <div v-if="!singleRow" ref="tablist" class="workbench-ribbon-tabs" :class="{ 'is-grid': variant === 'grid' }" role="tablist" :aria-label="label" aria-orientation="horizontal" @keydown="onTabKeydown">
-      <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual, 'is-grid-tab': variant === 'grid' }" :style="tabStyle(tab)" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
+      <Button v-for="tab in tabs" :id="`${id}-tab-${tab.id}`" :key="tab.id" type="text" role="tab" class="workbench-ribbon-tab" :styles="{ root: { border: 0 } }" :class="{ 'is-selected': tab.id === activeId, 'is-contextual': tab.contextual, 'is-grid-tab': variant === 'grid' }" :style="tabStyle(tab)" :aria-selected="tab.id === activeId" :aria-controls="`${id}-panel`" :tabindex="tab.id === activeId ? 0 : -1" :data-tab-id="tab.id" @mousedown.prevent @click="selectTab(tab.id)">{{ tab.title }}</Button>
       <div v-if="$slots['tab-extra']" class="ribbon-tab-extra"><slot name="tab-extra" /></div>
     </div>
     <div v-else-if="$slots['tab-extra']" class="ribbon-tab-extra ribbon-single-row-extra"><slot name="tab-extra" /></div>
@@ -241,7 +242,7 @@ onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.v
       <template v-else>
         <span v-if="variant === 'collapsed'" ref="selector" class="ribbon-category-anchor">
           <Popover v-model:open="selectorOpen" :trigger="['hover', 'click']" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'">
-            <Button type="text" size="small" class="ribbon-category-toggle" aria-haspopup="menu" :aria-expanded="selectorOpen" @mousedown.prevent @keydown.down.prevent="openSelector" @keydown.esc.stop.prevent="closeSelector">{{ activeTab?.title }}<ChevronDown :size="14" /></Button>
+            <Button type="text" size="small" class="ribbon-category-toggle" :styles="{ root: { border: 0 } }" aria-haspopup="menu" :aria-expanded="selectorOpen" @mousedown.prevent @keydown.down.prevent="openSelector" @keydown.esc.stop.prevent="closeSelector">{{ activeTab?.title }}<ChevronDown :size="14" /></Button>
             <template #content><Menu ref="selectorMenu" class="ribbon-category-menu" :items="categoryItems" :selected-keys="activeId ? [activeId] : []" @click="({ key }) => { selectTab(String(key)); closeSelector() }" @keydown.esc.stop.prevent="closeSelector" /></template>
           </Popover>
         </span>
@@ -255,7 +256,7 @@ onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.v
         </div>
         <span v-if="overflowGroups.length" ref="moreButton" class="ribbon-more-anchor" :class="{ 'has-visible-groups': visibleGroups.length > 0 }">
           <Popover v-model:open="moreOpen" trigger="click" :placement="direction === 'rtl' ? 'bottomLeft' : 'bottomRight'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-            <Tooltip :title="translate('common.more', '更多功能')"><Button type="text" size="small" class="ribbon-more-button" :aria-label="translate('common.more', '更多功能')" aria-haspopup="dialog" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
+            <Tooltip :title="translate('common.more', '更多功能')" :trigger="['hover', 'focus']" :open="!moreOpen && moreTooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { moreTooltipOpen = !moreOpen && value }"><Button type="text" size="small" class="ribbon-more-button" :styles="{ root: { border: 0 } }" :aria-label="translate('common.more', '更多功能')" aria-haspopup="dialog" :aria-expanded="moreOpen" @mousedown.prevent @keydown.down.prevent="openMore" @keydown.esc="closeMore"><MoreVertical :size="CLASSIC_RIBBON.iconSize" /></Button></Tooltip>
             <template #content>
               <RibbonOverflowPanel ref="moreMenuRef" :groups="overflowGroups" :direction="direction" :label="translate('common.more', '更多功能')" @execute="execute" @close="closeMore">
                 <template v-for="(_, name) in $slots" #[name]="slotProps"><slot :name="name" v-bind="slotProps" /></template>
@@ -283,10 +284,12 @@ onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.v
 .workbench-ribbon-tabs { display: flex; height: var(--ribbon-tab-height); min-width: 0; gap: 4px; align-items: center; justify-content: safe center; padding: 0 var(--ribbon-horizontal-padding); overflow-x: auto; scrollbar-width: none; border-radius: 6px; background: var(--ribbon-surface, #f8fafc); box-sizing: border-box; }
 .workbench-ribbon-tabs::-webkit-scrollbar { display: none; }
 .workbench-ribbon-tabs.is-grid { align-items: flex-end; justify-content: flex-start; gap: 0; padding-inline: 8px; border-radius: 0; }
-.workbench-ribbon-tab { position: relative; flex: 0 0 auto; height: var(--ribbon-tab-button-height); min-width: 0; padding: 4px 8px; border-radius: 2px; color: var(--ribbon-text-secondary, #475569); font-size: 14px; line-height: 20px; }
-.workbench-ribbon-tab.is-selected { color: var(--ribbon-primary, #315bc2); background: var(--ribbon-active-background, #e7edfa); font-weight: 600; box-shadow: 0 1px 2px #1d2c4914; }
+.workbench-ribbon-tab { position: relative; box-sizing: border-box; flex: 0 0 auto; height: var(--ribbon-tab-button-height); min-width: 0; padding: 0 8px; border-radius: 2px; color: var(--ribbon-text-secondary, #475569); font-size: 14px; line-height: 20px; }
+.workbench-ribbon-tab.is-selected,
+.workbench-ribbon-tab.is-selected:not(:disabled):hover,
+.workbench-ribbon-tab.is-selected:not(:disabled):active { color: var(--ribbon-primary, #315bc2); background: var(--ribbon-active-background, #e7edfa); font-weight: 600; box-shadow: 0 1px 2px #1d2c4914; }
 .workbench-ribbon-tab.is-contextual { color: #7450af; }
-.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab { border: 0 !important; border-radius: 0; background: transparent; color: var(--ribbon-text-secondary, #475569); font-weight: 600; }
+.workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab { border-radius: 0; background: transparent; color: var(--ribbon-text-secondary, #475569); font-weight: 600; }
 .workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab::after { position: absolute; inset-inline: 0; bottom: 0; height: 3px; background: transparent; content: ''; }
 .workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab.is-selected { background: transparent; color: var(--ribbon-primary, #315bc2); box-shadow: none; }
 .workbench-ribbon-tabs.is-grid .workbench-ribbon-tab.is-grid-tab.is-selected::after { background: var(--ribbon-primary, #315bc2); }
@@ -305,7 +308,12 @@ onDeactivated(() => { hostActive = featureSearchOpen.value = shortcutPanelOpen.v
 .workbench-ribbon-group + .workbench-ribbon-group { border-inline-start: var(--ribbon-separator-width) solid var(--ribbon-border, #e2e8f0); }
 .ribbon-more-anchor { display: flex; flex: 0 0 auto; padding-inline-start: var(--ribbon-group-padding); }
 .ribbon-more-anchor.has-visible-groups { border-inline-start: var(--ribbon-separator-width) solid var(--ribbon-border, #e2e8f0); }
-.ribbon-more-button { display: inline-flex; height: var(--ribbon-button-height); width: var(--ribbon-button-height); min-width: var(--ribbon-button-height); align-items: center; justify-content: center; padding: 0; }
+.ribbon-more-button { display: inline-flex; box-sizing: border-box; height: var(--ribbon-button-height); width: var(--ribbon-button-height); min-width: var(--ribbon-button-height); align-items: center; justify-content: center; padding: 0; }
+.ribbon-more-button :deep(svg) { display: block; flex: 0 0 auto; }
+.ribbon-more-button:not(:disabled):hover { background: var(--ribbon-hover-background); }
+.ribbon-more-button[aria-expanded="true"]:not(:disabled),
+.ribbon-more-button[aria-expanded="true"]:not(:disabled):hover,
+.ribbon-more-button[aria-expanded="true"]:not(:disabled):active { background: var(--ribbon-active-background); color: var(--ribbon-primary); }
 .ribbon-custom-item { display: inline-flex; align-items: center; min-height: 28px; flex: 0 0 auto; }
 .ribbon-measurer { position: absolute; inset-inline-start: 0; top: 0; display: flex; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; contain: layout; }
 .ribbon-measure-item { display: inline-flex; flex: 0 0 auto; }

@@ -2,15 +2,31 @@ import type { DocumentModel, DocumentStoryContent } from '../domain/model'
 import { documentDefaultStyle } from '../features/document/model/document-default-style'
 import type { DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host'
 import { isDocumentTextBoundary } from '../features/document/model/document-story'
-import { sameTarget, textTargets, type DocumentPoint, type DocumentSelection } from '../features/document/model/document-model'
+import { collapsedSelection, sameTarget, textTargets, type DocumentPoint, type DocumentSelection } from '../features/document/model/document-model'
 import { documentModelForBlockHost, resolveDocumentBlockHost } from '../features/document/services/document-block-host'
 import { findDocumentParagraphs, flattenDocumentBody, type DocumentParagraphInfo } from '../features/document/services/document-facade'
+import { documentHyperlinks, documentHyperlinkSelectionState, type DocumentHyperlink } from '../features/document/services/document-hyperlinks'
+import { permissionTargetsForSelection, resolveDocumentPermission, type DocumentPermissionContext } from '../features/document/permissions/document-permissions'
 import { encodeDocumentBodyWithPositions, documentBodyContentControls } from './document-body-codec'
 import { documentBodyLocalOffset, type DocumentBodyEncodeResult } from './document-body-types'
 import { bodyRecord } from './document-body-style'
 import { documentSelectionAtBodyRange } from './document-indexed-input'
+import { resolveDocumentSegmentHost } from './document-segments'
 
 export interface DocumentPublicBodyIndex extends DocumentBodyEncodeResult { model: DocumentModel }
+
+export type DocumentHyperlinkOperation = 'doc.operation.show-hyper-link-edit-popup' | 'doc.operation.click-hyper-link'
+
+export type DocumentHyperlinkOperationTarget =
+  | { kind: 'selection' }
+  | {
+    kind: 'link'
+    source: DocumentModel
+    model: DocumentModel
+    link: DocumentHyperlink
+    host: DocumentAuxiliaryBlockHost | undefined
+    segmentPage: number | undefined
+  }
 
 /** Public stream coordinates include tables, fields, ranges and one-token note references. */
 export function documentPublicBodyIndex(model: DocumentModel, host?: DocumentAuxiliaryBlockHost): DocumentPublicBodyIndex {
@@ -62,6 +78,53 @@ export function documentSelectionAtPublicBodyRange(model: DocumentModel, start: 
   const first = flat.segments.find(segment => sameTarget(segment, anchor)), last = flat.segments.find(segment => sameTarget(segment, focus))
   if (!first || !last) return undefined
   return documentSelectionAtBodyRange(index.model, first.startOffset + anchor.offset, last.startOffset + focus.offset)
+}
+
+/** Resolve public operation parameters once; edit indices must match the current inclusive stream range. */
+export function resolveDocumentHyperlinkOperation(source: DocumentModel, id: DocumentHyperlinkOperation, params: unknown,
+  permissionContext: DocumentPermissionContext = { documentId: source.id ?? '', userId: 'local-user' }): DocumentHyperlinkOperationTarget | undefined {
+  if (id === 'doc.operation.show-hyper-link-edit-popup' && params === undefined) return { kind: 'selection' }
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return undefined
+  const input = bodyRecord(params)
+  if (id === 'doc.operation.show-hyper-link-edit-popup' && input.link === undefined) return { kind: 'selection' }
+  const value = id === 'doc.operation.show-hyper-link-edit-popup' ? input.link : input
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const request = bodyRecord(value)
+  if (typeof request.unitId !== 'string' || request.unitId !== source.id || typeof request.linkId !== 'string' || !request.linkId
+    || request.segmentId !== undefined && typeof request.segmentId !== 'string'
+    || request.segmentPage !== undefined && (typeof request.segmentPage !== 'number' || !Number.isSafeInteger(request.segmentPage) || request.segmentPage < 0)) return undefined
+  let host: DocumentAuxiliaryBlockHost | undefined
+  try {
+    host = resolveDocumentSegmentHost(source, request.segmentId ?? '')
+  } catch (error) {
+    if (error instanceof RangeError) return undefined
+    throw error
+  }
+  const index = documentPublicBodyIndex(source, host)
+  const range = index.data.body.customRanges?.find(range => range.rangeType === 0 && range.rangeId === request.linkId)
+  if (!range) return undefined
+  if (id === 'doc.operation.show-hyper-link-edit-popup' && (request.startIndex !== range.startIndex || request.endIndex !== range.endIndex)) return undefined
+  const link = documentHyperlinks(index.model).find(link => link.id === range.rangeId)
+  if (!link) return undefined
+  if (id === 'doc.operation.show-hyper-link-edit-popup' && !documentHyperlinkSelectionState(index.model, link.selection, permissionContext).available) return undefined
+  if (id === 'doc.operation.click-hyper-link'
+    && !resolveDocumentPermission(index.model.permissionRules ?? [], permissionContext, 'view', permissionTargetsForSelection(index.model, link.selection)).allowed) return undefined
+  return { kind: 'link', source, model: index.model, link, host, segmentPage: request.segmentPage }
+}
+
+export function documentHyperlinkTargetSelection(model: DocumentModel, target: string): DocumentSelection | undefined {
+  if (!target.startsWith('#')) return undefined
+  const index = documentPublicBodyIndex(model)
+  const id = target.slice(1)
+  const bookmark = index.data.body.customRanges?.find(range => range.rangeType === 3
+    && (range.rangeId === id || range.properties?.bookmarkId === id))
+  const paragraphIndex = index.data.body.paragraphs?.findIndex(paragraph => paragraph.paragraphId === id
+    || paragraph.paragraphStyle?.headingId === id) ?? -1
+  const offset = bookmark?.startIndex ?? (paragraphIndex < 0 ? undefined
+    : paragraphIndex === 0 ? 0 : index.data.body.paragraphs![paragraphIndex - 1]!.startIndex + 1)
+  if (offset === undefined) return undefined
+  const point = pointAt(index, offset, 'start', true)
+  return point && collapsedSelection(point)
 }
 
 export function documentPublicParagraphs(index: DocumentPublicBodyIndex): DocumentParagraphInfo[] {

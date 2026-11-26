@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
-  testDir: '.', testMatch: 'sheet-toolbar.spec.ts', outputDir: '../../test-results/sheet-toolbar',
+  testDir: '.', testMatch: ['sheet-toolbar.spec.ts', 'sheet-quick-validation.spec.ts'], outputDir: '../../test-results/sheet-toolbar',
   workers: 1, fullyParallel: false, timeout: 45_000, expect: { timeout: 8_000 }, reporter: 'list',
   use: { baseURL: 'http://127.0.0.1:4199', browserName: 'chromium', channel: 'msedge', headless: true,
     viewport: { width: 2200, height: 1000 }, screenshot: 'off', video: 'off', trace: 'off' },

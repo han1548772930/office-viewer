@@ -193,6 +193,6 @@ defineExpose({ focus })
 .formula-input { display: block; box-sizing: border-box; flex: 1; min-width: 0; height: 100%; }
 .formula-toolbar textarea.formula-input, .formula-input :deep(textarea) { box-sizing: border-box; height: 100%; resize: none; border: 0; border-radius: 0; padding: 4px 10px; background: transparent; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 12px; line-height: 19px; white-space: pre-wrap; overflow-y: auto; }
 .formula-toolbar textarea.formula-input:focus, .formula-input :deep(textarea:focus) { box-shadow: inset 0 0 0 1px var(--formula-accent); }
-.formula-expand { display: flex; flex: 0 0 26px; width: 26px; height: 27px; align-items: center; justify-content: center; padding: 0; }
+.formula-expand { display: flex; flex: 0 0 26px; width: 26px; height: 100%; align-items: center; justify-content: center; padding: 0; }
 .formula-error { position: absolute; z-index: 8; top: 100%; inset-inline-start: 0; max-width: min(360px, 90vw); }
 </style>

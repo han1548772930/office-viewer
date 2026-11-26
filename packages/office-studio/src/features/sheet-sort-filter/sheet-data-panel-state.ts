@@ -1,7 +1,7 @@
 import type { CellRange, CellScalar, SheetFilterCriteria, SheetSortCriterion, SpreadsheetSheet, WorkbookModel } from '../../domain/model'
 import { cloneModel } from '../../domain/serialization'
 import { parseSheetAddress } from '../sheet-workbench/sheet-workbench'
-import { readCellValue, setAutoFilter, setFilterCriteria } from './sort-filter-engine'
+import { clearFilter, readCellValue, setAutoFilter, setFilterCriteria } from './sort-filter-engine'
 
 export const CONFIGURE_SHEET_FILTER_COMMAND = 'sheet.command.configure-filter'
 export interface ConfigureSheetFilterInput {
@@ -85,7 +85,7 @@ export function configureFilterFromPanel(workbook: WorkbookModel, input: Configu
   const plan: SpreadsheetSheet = { ...sheet, autoFilter: sheet.autoFilter ? cloneModel(sheet.autoFilter) : undefined }
   setAutoFilter(plan, input.range)
   if (input.range !== null) {
-    plan.autoFilter!.columns = {}
+    clearFilter(plan)
     for (const [column, criteria] of Object.entries(input.columns)) setFilterCriteria(plan, Number(column), criteria)
   }
   sheet.autoFilter = plan.autoFilter

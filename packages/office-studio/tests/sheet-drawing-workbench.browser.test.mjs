@@ -53,6 +53,25 @@ async function drag(start, dx, dy, cancel = false) {
   await page.mouse.up()
 }
 
+for (const variant of ['classic', 'grid']) test(variant + ' native drawing focus hides cell layout menus and clearing it restores them without content history', async () => {
+  await page.setViewportSize({ width: 1800, height: 1000 })
+  await page.evaluate(variant => window.sheetDrawingFixture.appearance(false, variant), variant)
+  const roots = ['sheet.menu.horizontal-align', 'sheet.menu.vertical-align', 'sheet.menu.text-wrap', 'sheet.menu.text-rotation', 'sheet.menu.merge']
+  const item = id => page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"], .ribbon-grid-group:not(.is-hidden) [data-ribbon-item="' + id + '"]')
+  const before = await state()
+  for (const id of roots) await expect(item(id)).toBeVisible()
+  await clickRef('image', 'a')
+  await waitSelection([key('image', 'a')])
+  for (const id of roots) await expect(item(id)).toHaveCount(0)
+  await expect(item('sheet.command.set-shrink-to-fit')).toBeVisible()
+  await page.evaluate(variant => window.sheetDrawingFixture.appearance(true, variant), variant)
+  for (const id of roots) await expect(item(id)).toHaveCount(0)
+  await page.evaluate(() => window.sheetDrawingFixture.select([]))
+  for (const id of roots) await expect(item(id)).toBeVisible()
+  assert.deepEqual((await state()).model, before.model)
+  assert.deepEqual((await state()).history, before.history)
+})
+
 test('Ctrl-click shares native image/chart selection and Ant alignment commits one history entry with undo/redo/reopen', async () => {
   await clickRef('image', 'a'); await clickRef('chart', 'c', 'Control'); await waitSelection(mixed)
   await expect(toolbar()).toBeVisible(); const before = await state()

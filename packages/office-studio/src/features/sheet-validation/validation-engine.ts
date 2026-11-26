@@ -193,13 +193,16 @@ function isValidValue(
   if (isFormulaError(actual)) return false
 
   if (rule.type === 'checkbox') {
-    if (rule.formula1 === undefined && rule.formula2 === undefined) return typeof actual === 'boolean' || ['TRUE', 'FALSE', '1', '0'].includes(String(actual).toUpperCase())
-    return [rule.formula1, rule.formula2].some(value => value !== undefined && String(actual) === value)
+    const value = String(actual).replace(/^true$/i, '1').replace(/^false$/i, '0')
+    return sheetDataValidationOptions(rule, workbook, sheet.id).some(option =>
+      value === option.replace(/^true$/i, '1').replace(/^false$/i, '0'))
   }
   if (rule.type === 'list' || rule.type === 'listMultiple') {
     const options = sheetDataValidationOptions(rule, workbook, sheet.id).map(normalizeListValue)
     if (!options.length) return false
-    const selected = rule.type === 'listMultiple' ? String(actual).split(',').map(item => item.trim()).filter(Boolean) : [String(actual)]
+    // Cell CSV has no formula1 wrapper; add it so the parser preserves quoted fields.
+    const selected = rule.type === 'listMultiple'
+      ? parseValidationListItems(`"${String(actual)}"`) : [String(actual)]
     return selected.length > 0 && selected.every(item => options.includes(normalizeListValue(item)))
   }
   if (rule.type === 'custom') {

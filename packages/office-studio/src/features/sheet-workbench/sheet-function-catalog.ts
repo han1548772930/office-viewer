@@ -121,11 +121,20 @@ export const SHEET_FUNCTION_CATALOG: readonly SheetFunctionEntry[] = [
   { name: 'SECOND', label: '秒', category: '日期与时间', example: 'TIME(12,30,15)' },
   { name: 'TIMEVALUE', label: '时间文本转序列值', category: '日期与时间', example: '"15:20:59"' },
   { name: 'TO_DATE', label: '值转日期类型', category: '日期与时间', example: '40826.4375' },
+  { name: 'ISBLANK', label: '检查空白', category: '信息', example: 'A1' },
+  { name: 'ISERR', label: '检查错误（不含 #N/A）', category: '信息', example: '1/0' },
+  { name: 'ISERROR', label: '检查错误', category: '信息', example: '1/0' },
+  { name: 'ISLOGICAL', label: '检查逻辑值', category: '信息', example: 'TRUE' },
+  { name: 'ISNA', label: '检查 #N/A', category: '信息', example: 'NA()' },
+  { name: 'ISNONTEXT', label: '检查非文本', category: '信息', example: 'A1' },
+  { name: 'ISNUMBER', label: '检查数值', category: '信息', example: 'A1' },
+  { name: 'ISTEXT', label: '检查文本', category: '信息', example: 'B1' },
+  { name: 'NA', label: '返回 #N/A', category: '信息', example: '' },
 ]
 
 export function buildSheetFunctionFormula(name: string, argumentsText: string): string {
   if (!SHEET_FUNCTION_CATALOG.some(entry => entry.name === name)) throw new Error('请选择当前函数目录中的函数。')
-  if (!argumentsText.trim() && !['TRUE', 'FALSE', 'NOW', 'TODAY'].includes(name)) throw new Error('请输入函数参数或单元格区域。')
+  if (!argumentsText.trim() && !['TRUE', 'FALSE', 'NOW', 'TODAY', 'NA'].includes(name)) throw new Error('请输入函数参数或单元格区域。')
   const formula = `=${name}(${argumentsText.trim()})`
   try { parseFormula(formula) } catch { throw new Error('参数语法无效，请检查括号、引号和单元格引用。') }
   return formula

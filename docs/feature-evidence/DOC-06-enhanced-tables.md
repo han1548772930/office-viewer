@@ -2,7 +2,7 @@
 
 状态：**未验收**。本批按固定上游完成静态入口与命令追踪，再推进本项目独立实现。未运行测试、类型检查、构建、浏览器、Rust/WASM 或基准；测试草稿和静态读取不代表功能、像素或 Office 往返已通过。
 
-更新日期：2026-11-24。当前是候选实现与待统一验证的草稿记录；本次 DOC-06 切片收束不代表全部 Docs / Sheets / Pro 目标结束。
+更新日期：2026-11-27。当前是候选实现与待统一验证的草稿记录；本次 DOC-06 切片收束不代表全部 Docs / Sheets / Pro 目标结束。
 
 ## 固定来源与证据边界
 
@@ -129,10 +129,67 @@
 
 ## 真实剩余缺口与未核实项
 
-- 页眉/页脚及 footnote/endnote 目前保留原段落 story 契约，完整 `storyContent.blocks` 表格目标继续开发；不能以 body/nested 表格实现替代 story 编辑、选择、布局、权限及原生 IO 验收。
+- 页眉/页脚及 footnote/endnote 已有辅助块 host 与作用域命令；本批只复用其参数传递。完整 `storyContent.blocks` 表格目标继续开发和验收，不能以 body/nested 表格或 host 接线替代 story 编辑、选择、布局、权限及原生 IO 验收。
 - 通用 HTML 不保存完整字段定义、SDT、媒体/其他资源依赖与原始 Office provenance；正文、跨度与续格结构保留不能证明完整跨文档资源粘贴。Normalized blocks 的字段 ID/remap 与跨文档共享资源导入须分开验证。
 - tracked row/cell/property revisions、gridBefore/gridAfter 不规则格、零/塌缩宽度或 exact height、原生条件样式/编号与复杂字段/SDT 相交等仍需 native IO 与域模型补齐，具体 IO 缺口见 DOC-22。
 - mobile/触控、floating occlusion、跨页拖动 source 控件生命周期、真实剪贴板权限、主题弹层、焦点与中文 Windows IME 尚未验收；合成事件草稿不等同真实 IME 或系统剪贴板验证。
 - UI 及算法候选没有真实大样本 Worker/Rust/WASM、Canvas2D/WebGPU 对照、内存/复制/主线程长任务或同数据集前后基准。不得声称已优化或性能达标。
 
 跨页碎片与重复表头、嵌套内容、控件锁/字段跨段/批注、ACL、undo/redo、JSON/DOCX 重开、Canvas2D/WebGPU、主题/焦点/IME与大样本均留待统一验证，DOC-06 继续保持未验收。
+
+## 2026-11-27 顶部表格插入操作接线
+
+本轮回读固定 [schema.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/schema.ts)、[menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts)、[doc-create-table.operation.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/doc-create-table.operation.ts) 和 [doc-table-create.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-create.command.ts)。表菜单是一个常驻根，INSERT / MEDIA，order 2、grid r1c2；插入表格为一个子项，order 0，执行 `doc.operation.create-table`。操作打开默认 3 行、5 列的尺寸弹窗，确认转发 `{ rowCount, colCount }` 到 `doc.command.create-table`。根内子项、classic/grid 和 More 副本不增加常驻计数。
+
+[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的 `doc-table` 和 `doc-table-insert` 已由本地 open-table 改接真实 create-table ID；[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 接受真实 ID，并保留旧 open-table 调用。沿用 [DocumentTableInsertDialog.vue](../../packages/office-studio/src/components/document/DocumentTableInsertDialog.vue) 的 Ant Modal/Form/InputNumber 和 3×5 默认值，经 `insertTableFromDialog` 将确认尺寸作为 `doc.command.create-table` 的 rowCount/colCount 提交，保留已有插入选项并进入现有模型与内容历史。默认页宽接线见下文；没有新增 UI、内容模型或 Worker/WASM 协议。
+
+[docs-table-toolbar.contract.test.mjs](../../packages/office-studio/tests/docs-table-toolbar.contract.test.mjs) 同步真实根与子项 ID；[document-toolbar.browser.test.mjs](../../packages/office-studio/tests/document-toolbar.browser.test.mjs) 新增一个真实 Ribbon → 菜单 → Ant 尺寸表单 → 插入的草稿，检查默认 3×5、确认 4×7、保留作者文字、撤销/重做和内部快照重开。全部草稿未运行，不把源码读取断言当成实际 UI 或 Office 验收。
+
+本段记录顶部操作接线；公开内容命令与尺寸预算的后续接线见下节。从 Studio 注册表转发到 UI 操作的完整宿主协议、结构 gap 和完整 story 插表仍需继续补齐；实际主题、焦点恢复、输入法、浏览器、Office 样本和大样本保持未验收。常规根数与完整功能目标没有因本批改名增加或缩减。
+
+## 2026-11-27 公开创建命令与尺寸预算
+
+本批补读固定 [doc-table-create.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-create.command.ts)、[doc-table-create.command.spec.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/__tests__/doc-table-create.command.spec.ts) 和 [TableCreate.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/table/create/TableCreate.tsx)。公开内容命令只要求 `rowCount: number`、`colCount: number`；上游优先消费段落菜单插入范围，否则读取当前 Docs 文本选区，并以当前 segment 和 skeleton 的页内容宽度构建表格，合成一次 RichTextEditingMutation。测试明确覆盖当前选区、无活动选区时的菜单插入范围、表格/高级块内部与 custom block 拒绝、表格前后边界和缺少 skeleton 的拒绝。上游数字表单上限是 20 行、20 列，不能据此推断本地已有大尺寸插入链路只能处理 20×20。
+
+- [table-command-types.ts](../../packages/office-studio/src/features/document/commands/table-command-types.ts) 增加 `DocumentTableCreateCommand`，用必填 rowCount/colCount 接入现有 DocumentCommand；本地可选插入属性沿用 `DocumentTableInsertOptions`。[document-editor-commands.ts](../../packages/office-studio/src/api/document-editor-commands.ts) 增加创建命令标签。
+- [table-insertion.ts](../../packages/office-studio/src/features/document/commands/table-insertion.ts) 在已有插入校验中映射公开尺寸，保留旧 insert-table 的 rows/cols、尺寸推导、1×1 默认值、初始数据和样式等选项。新增共用尺寸校验供插入服务与 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 适配器复用：正安全整数、最多 10000 行 / 512 列 / 250000 格。10000 行 / 512 列来自现有网格构建范围，250000 格是原单次插入内存预算；Ant 数字表单也使用上述行列范围。原参数校验只限制正整数与格数，但真实插表还经过网格限制，本批将相同拒绝提前到生成单元格之前，没有收窄旧 API 的实际可用范围，也没有建立第二套表格引擎。
+- [document-commands.ts](../../packages/office-studio/src/features/document/commands/document-commands.ts) 的 create-table / insert-table 共用原插表分支，并共用候选模型、实际位置权限、字段与批注/控件锚点处理和发布路径；没有二次进入 command bus 或追加逐格内容命令。
+- [office-studio.ts](../../packages/office-studio/src/api/office-studio.ts) 单独注册创建命令。公开 flat `{ rowCount, colCount }` 读取当前活动 Docs 的有效正文输入会话，保留已有块 host 和 revision/history/inputGeneration，直接进入同一个 commitDocumentEditorCommand，返回 changed:boolean；原 `{ unitId, command, selection, ...guards }` envelope 保留 DocumentEditorCommandResult。没有有效输入选区、输入会话修订不匹配或当前活动 Sheets 时，flat 返回 false；尺寸非法时抛出现有 RangeError，不发布部分内容历史。
+
+[docs-table-toolbar.contract.test.mjs](../../packages/office-studio/tests/docs-table-toolbar.contract.test.mjs) 新增草稿覆盖 21×21、合法预算边界、缺失/错误类型/非整数/行列与格数越界、old/create 在既有 10000 行 / 512 列边界共同拒绝且不改变模型/历史、旧默认值与初始数据/几何保留、真实 Studio flat/envelope 注册、一次 CommandExecuted/内容历史、撤销重做和内部快照重开；已有 footnote 块 host 的接线另覆盖正文不变与 note 内容保存。这些草稿均未执行，未启动服务或浏览器，也未运行类型、构建、Rust/WASM 或性能检查。
+
+[document-table-grid.ts](../../packages/office-studio/src/features/document/model/document-table-grid.ts) 的原有 10000 行 / 512 列构建限制保留。10001×1 / 1×513 虽曾能通过旧尺寸参数校验，真实 createDocumentTableBlock 仍会被该网格限制拒绝；本批只是提前拒绝，未宣称这些尺寸此前可插入或已获得真实性能改善。
+
+本地插入继续使用原位置/范围替换与嵌套能力；后续小批已补 canonical 默认页宽，旧 insert-table 保留 100 CSS px/列，具体规则和物理页差异见下节。菜单插入范围消费和结构 gap 尚未对齐。现有块 host 参数传递不等同完整页眉页脚及 footnote/endnote 表格编辑、布局、权限与 Office IO 已通过。实际弹层主题、焦点/IME、浏览器、DOCX 文件重开和大样本测量保持未验收，DOC-06 总体状态不变。
+
+## 2026-11-27 创建表格的默认页面宽度
+
+固定 [doc-table-create.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-create.command.ts) 从插入位置的 glyph 取得其实际物理页，并将 `pageWidth - marginLeft - marginRight` 传给 `genTableSource`。该值是整页正文宽度，不是节内单栏或父表格单元格宽度。[doc-table-create.command.spec.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/__tests__/doc-table-create.command.spec.ts) 的 2×3 样本使用 540 px 页宽、左右各 90 px 页边距，得到三列各 120 px。
+
+- [table-insertion.ts](../../packages/office-studio/src/features/document/commands/table-insertion.ts) 的 `createDocumentTableBlock` 增加可选插入点和来源文档参数。canonical 未设置 width 时复用 `documentEffectiveSectionSetup`，按目标段落的顶层祖先定位所在节，并以该节整页正文宽度均分列；不减栏间距或除栏数。辅助 host 复用其作用域模型中已记录的 section ID，从来源文档读取节几何，保留后续节的宽度与页边距。
+- [document-commands.ts](../../packages/office-studio/src/features/document/commands/document-commands.ts) 在原插表分支先解析 offset、documentEnd 或 selection，再将 `orderedSelection(...).start` 交给表格构建。反向选区按真实替换起点计算，offset 优先于 documentEnd；范围替换、块插入、权限、锚点和原子发布路径继续共用。已有第 5 个来源文档参数命名扩为 sourceModel，沿递归 host 接线保留；原超链接目标解析行为不变。
+- [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的顶部确认已调用 canonical 命令；当当前布局属于同一个模型且不是 inspection 虚拟页时，复用 `lineForPoint` 定位当前选区起点，并将 `pages[line.page].content.width` 传入 width。显式对话框 width 优先；没有可用物理页时由内容命令按有效节设置计算，不为创建默认宽度同步重排整篇文档。
+
+单列 `columnWidths[column]` 优先于 `width / colCount`；canonical 缺省 width 使用上述页面宽度，旧 insert-table 缺省仍为 100 px/列。已有 style.columnWidths 随后整体替换列宽，style.width 再按解析后的比例缩放；初始内容、标题行、行高、边距、列类型及扩展元数据保持原处理顺序。传入命令对象不会因默认宽度计算被修改。
+
+[docs-table-toolbar.contract.test.mjs](../../packages/office-studio/tests/docs-table-toolbar.contract.test.mjs) 新增 4 个声明，文件共 35 个声明：固定 540/90/90 样本与旧默认、节级覆盖和多栏的整页宽度、offset/documentEnd/反向选区、显式宽度/部分与完整列宽/style 优先级、嵌套表格所在节。已有 flat 内容历史及 footnote flat/envelope 草稿补列宽断言，后者使用第二节的 720/90/120 几何，连同撤销重做与内部快照重开检查来源节设置未丢失。根任务同步补顶部浏览器草稿；这些声明均未运行，也未执行类型、构建、Rust/WASM、服务或基准。
+
+已知差异：headless canonical 未收到实际 width 时使用 nominal 节几何。本地 [document-section-flow.ts](../../packages/office-studio/src/features/document/layout/document-section-flow.ts) 的连续分节可沿用前一节物理页的边距，到新页才采用当前节设置，因此不同页边距的 continuous 场景可能与实际物理页宽度不同；精确页定位仍待核实。顶部已接当前实际页宽度，但完整辅助 host/inspection、跨页光标与布局版本行为尚未通过浏览器验证。嵌套表格沿用本地增强能力，不能由默认宽度补齐推断上游限制、跨页布局或 Office 往返全部等价。
+
+本批未新增可替换 UI，沿用 Ant Modal/Form/InputNumber；真实主题、焦点恢复、Windows IME、Canvas2D/WebGPU、DOCX 文件样本与性能保持未验收。DOC-06 状态仍为未验收。
+
+<a id="table-insert-live-disabled"></a>
+
+## 2026-11-27 插表弹窗的实时禁用状态
+
+复读固定 `schema.ts:345–353`、`menu.ts:1156–1193`、`doc-create-table.operation.ts` 和 `TableCreate.tsx` 后，确认顶部仍为一个表格根、一个插入子项、默认 3×5，尺寸确认进入 `doc.command.create-table`。没有新增常驻、扩展、溢出或上下文根；本轮根增量为 0。
+
+[DocumentTableInsertDialog.vue](../../packages/office-studio/src/components/document/DocumentTableInsertDialog.vue) 增加可选 disabled，并传给 Ant Form、Modal 的插入按钮与既有提交函数。[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的现有调用同步输入会话失效、编辑器组合输入、legacy story 与当前选区权限状态。表单全部输入控件通过 Form 继承禁用态；指定宽度输入已有显式 disabled，本轮合并总状态，避免 `InputNumber` 的显式 false 覆盖 Form 上下文。实际安装的 `antdv-next/dist/input-number/index.js`、`input/TextArea.js`、`switch/index.js` 均优先读取控件的 disabled，再读取上下文；`form/Form.js` 提供该上下文。
+
+禁用期间保留表单草稿和取消操作，尺寸不合法的现有提示仍只由尺寸与数据校验决定。恢复权限或结束编辑器组合输入后可继续编辑，沿用原 create-table、候选模型、权限、内容历史与保存链路。本轮没有修改业务命令、WASM/Worker 协议或保存格式；组件接口仅增加可选 disabled。
+
+[document-table-workbench.browser.test.mjs](../../packages/office-studio/tests/document-table-workbench.browser.test.mjs) 增加一个 test.each 声明，共四个案例：light/classic、dark/grid 下分别在打开弹窗后通过真实 FDocument 权限 API 收回编辑权，或对现有 Canvas 输入桥发送合成 composition。草稿检查五个数字输入、两个开关、初始数据及插入按钮禁用，指定宽度保留、取消仍可用、Form submit 不发布模型/历史，恢复后继续使用同一表单。全部未运行；合成事件不是 Windows 原生 IME 或弹窗文本输入的验收证据。
+
+相邻的[分隔线](DOC-02-horizontal-line.md)与[分隔符](DOC-03-section-breaks.md)本轮仅复核现有注册、默认值与执行路径。结构 gap、非空段落下边框绘制、分隔符完整辅助 host 状态、插表模式/位置和物理页差异继续保留缺口。实际弹层尺寸、主题、hover、关闭后焦点、原生 IME、浏览器、Office 文件样本与性能均未验收。
+
+本轮限定静态检查通过：两个 Vue 脚本/模板、一个浏览器草稿及一段夹具脚本、两个样式块、126 处本地引用；两份专项文档的 48 条本地链接均存在，五个修改文件无尾随空白或冲突标记，限定 diff 检查通过。首次解析器入口未在根依赖中暴露，随后改用实际安装的 `vue/compiler-sfc` 与 Vite 的 PostCSS 依赖完成检查；没有安装依赖、执行产品模块或运行测试。

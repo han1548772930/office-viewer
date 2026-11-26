@@ -84,6 +84,23 @@ test.each(['cell', 'row', 'column'])('the %s Canvas context menu opens real full
   assert.equal((await state()).history.undo, 0)
 })
 
+test.each(['cell', 'row'])('the %s Canvas deletion preserves unselected members of the same sparkline group', async kind => {
+  await action('select', ['G1'])
+  const before = await state(), point = await action('point', 'G1', kind)
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  await page.getByRole('menuitem', { name: '迷你图', exact: true }).last().hover()
+  await page.getByRole('menuitem', { name: '删除迷你图', exact: true }).last().click()
+  await waitHistory(1)
+  const saved = await state()
+  assert.equal(value(saved, 'G1'), null)
+  for (const address of ['G2', 'G4', 'G5']) assert.deepEqual(value(saved, address), value(before, address))
+  assert.equal(saved.model.sheets[0].cells['0:1'].value, 2)
+  await action('undo'); assert.deepEqual((await state()).model, before.model)
+  await action('redo'); await action('reopen')
+  assert.equal(value(await state(), 'G1'), null)
+  assert.deepEqual(value(await state(), 'G2'), value(before, 'G2'))
+})
+
 test('basic Ant settings apply presets, six markers, line width and gradient to the entire selected group', async () => {
   await open(['G2']); const before = await state(), south = value(before, 'G4')
   await option('迷你图主题', '清新'); await option('迷你图线宽', '4 px')

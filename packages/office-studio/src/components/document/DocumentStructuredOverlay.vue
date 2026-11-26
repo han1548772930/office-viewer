@@ -53,8 +53,9 @@ const activeContainer = computed(() => containers.value.find(container => contai
 const toolbarStyle = computed(() => {
   const rectangle = activeContainer.value
   if (!rectangle) return { display: 'none' }
-  return { left: `${Math.max(8, Math.min(offset.value.x + rectangle.x * scale.value, props.viewport.width - 290))}px`,
-    top: `${Math.max(8, offset.value.y + rectangle.y * scale.value - 34)}px`, maxWidth: `${Math.max(120, props.viewport.width - 16)}px` }
+  const left = Math.max(8, Math.min(offset.value.x + rectangle.x * scale.value, props.viewport.width - 290))
+  return { left: `${left}px`,
+    top: `${Math.max(8, offset.value.y + rectangle.y * scale.value - 34)}px`, maxWidth: `${props.viewport.width - left - 8}px` }
 })
 const paragraphLine = computed(() => props.inactive || props.selection.tableSelection ? undefined : lineForPoint(props.layout, props.selection.focus))
 const latexState = computed(() => documentLatexSelectionState(props.model, props.selection, context.value, disabled.value))

@@ -1,5 +1,6 @@
 import type { DocumentBlock, DocumentCodeConfig } from '../../../domain/model'
 import { imageForBlock, tableForBlock, type TextTarget } from '../model/document-model'
+import { documentHorizontalLineBorder } from '../model/document-horizontal-line'
 import { documentTableHorizontalOffset } from '../model/document-table-style'
 import type { ParagraphListMarker } from '../model/document-lists'
 import { codeBlockData } from '../code-blocks/code-blocks'
@@ -150,7 +151,10 @@ export function measureDocumentBlockCollections(collections: readonly (readonly 
           if (!floated) cursor += height
         }
       } else if (paragraph.type === 'divider') {
-        output.dividers.push({ x: left, y: cursor + 9, width: contentWidth, height: 1, page: 0 }); cursor += 18
+        const border = documentHorizontalLineBorder(paragraph)
+        output.dividers.push({ x: left, y: cursor + border.padding + border.width / 2, width: contentWidth, height: border.width, page: 0,
+          color: border.color, style: border.style })
+        cursor += Math.max(18, border.padding * 2 + border.width)
       } else if (!['pageBreak', 'columnBreak', 'sectionBreak'].includes(paragraph.type)) {
         const list = markers.get(paragraph.id), code = codeBlockData(paragraph)
         let sourceOffset = 0

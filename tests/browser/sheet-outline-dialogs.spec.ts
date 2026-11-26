@@ -17,7 +17,7 @@ async function read(page: Page) {
     const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
     const { studio, officeAPI } = await import(path) as RuntimeModule
     const book = officeAPI.getActiveWorkbook()!, workbook = studio.getWorkbookModel(book.getId())!
-    return { workbook: JSON.parse(JSON.stringify(workbook)), revision: studio.getWorkbookRevision(book.getId()),
+    return { workbook: JSON.parse(JSON.stringify(workbook)) as typeof workbook, revision: studio.getWorkbookRevision(book.getId()),
       history: studio.editor.history.units[book.getId()]?.undo.length ?? 0, snapshot: book.getSnapshot() }
   })
 }
@@ -31,18 +31,19 @@ async function prompt(page: Page): Promise<Locator> {
   const dialog = page.getByRole('dialog', { name: '组合行列', exact: true })
   await expect(dialog).toBeVisible(); return dialog
 }
-async function settings(page: Page): Promise<Locator> {
+async function outlineRibbonButton(page: Page, title: string): Promise<Locator> {
   const ribbon = page.getByTestId('workbench-ribbon')
   await ribbon.getByRole('tab', { name: '数据', exact: true }).click()
-  const direct = ribbon.getByRole('button', { name: '大纲设置', exact: true })
-  if (await direct.count()) await direct.click()
-  else {
-    const button = ribbon.getByRole('button', { name: '组合', exact: true }), selector = ribbon.getByRole('combobox', { name: /组合/ })
-    if (await button.count()) await button.click(); else await selector.click()
-    const menuItem = page.getByRole('menuitem', { name: '大纲设置', exact: true })
-    if (await menuItem.count()) await menuItem.click()
-    else await page.locator('.ant-select-dropdown:visible').getByTitle('大纲设置', { exact: true }).click()
-  }
+  const direct = ribbon.getByRole('button', { name: title, exact: true })
+  if (await direct.count()) return direct
+  const more = ribbon.getByRole('button', { name: '更多', exact: true })
+  if (await more.getAttribute('aria-expanded') !== 'true') await more.click()
+  const overflow = page.getByRole('dialog', { name: '更多', exact: true })
+  await expect(overflow).toBeVisible()
+  return overflow.getByRole('button', { name: title, exact: true })
+}
+async function settings(page: Page): Promise<Locator> {
+  await (await outlineRibbonButton(page, '大纲设置')).click()
   const dialog = page.getByRole('dialog', { name: '大纲汇总设置', exact: true })
   await expect(dialog).toBeVisible(); return dialog
 }
@@ -82,7 +83,7 @@ test('a content edit makes the axis draft stale until explicit reread', async ({
   await expect(dialog.getByRole('button', { name: '确定', exact: true })).toBeEnabled()
   await dialog.getByRole('button', { name: '确定', exact: true }).click()
   await expect.poll(async () => (await read(page)).workbook.sheets[0].outline?.groups.length).toBe(2)
-  expect((await read(page)).workbook.sheets[0].outline.groups).toEqual(expect.arrayContaining([
+  expect((await read(page)).workbook.sheets[0].outline?.groups).toEqual(expect.arrayContaining([
     expect.objectContaining({ axis: 'row', start: 2, end: 4 }), expect.objectContaining({ axis: 'column', start: 7, end: 8 }),
   ]))
 })
@@ -113,6 +114,68 @@ test('row and column summary settings publish atomically and survive undo, redo 
     const { officeAPI } = await import(path) as RuntimeModule; officeAPI.getActiveWorkbook()!.redo()
   })
   expect((await read(page)).workbook.sheets[0].outline).toMatchObject({ summaryAbove: true, summaryLeft: true })
+})
+
+test('outline details block the protected outer row group and collapse the editable column through history', async ({ page }) => {
+  await setup(page)
+  await page.evaluate(async () => {
+    const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio, officeAPI } = await import(path) as RuntimeModule
+    const workbook = officeAPI.getActiveWorkbook()!.save()
+    workbook.id = 'outline-menu-range-guard'
+    const sheet = workbook.sheets.find(sheet => sheet.id === workbook.activeSheetId)!
+    sheet.rowCount = 20
+    sheet.columnCount = 10
+    sheet.outline = { summaryAbove: false, summaryLeft: false, groups: [
+      { id: 'outer-row', axis: 'row', start: 1, end: 8, collapsed: false },
+      { id: 'selected-column', axis: 'column', start: 3, end: 5, collapsed: false },
+    ] }
+    sheet.rangeProtectionRules = [{ id: 'range-guard', permissionId: 'range-guard', ownerUserId: 'other-user',
+      editState: 'onlyMe', viewState: 'othersCanView', allowedUserIds: [], ranges: [{ startRow: 7, endRow: 7, startCol: 8, endCol: 8 }] }]
+    const book = officeAPI.createWorkbook(workbook)
+    studio.setSelections(book.getId(), sheet.id, [{ startRow: 2, endRow: 4, startColumn: 3, endColumn: 5 }])
+  })
+  const before = await read(page)
+  await (await outlineRibbonButton(page, '分组显示')).click()
+  const menu = page.getByRole('menu', { name: '分组显示', exact: true })
+  await expect(menu.getByRole('menuitem', { name: '折叠/展开行组', exact: true })).toBeDisabled()
+  await expect(menu.getByRole('menuitem', { name: '隐藏行明细', exact: true })).toBeDisabled()
+  await expect(menu.getByRole('menuitem', { name: '隐藏列明细', exact: true })).toBeEnabled()
+  const opened = await read(page)
+  expect(opened.workbook).toEqual(before.workbook)
+  expect(opened.revision).toBe(before.revision); expect(opened.history).toBe(before.history)
+  await menu.getByRole('menuitem', { name: '隐藏列明细', exact: true }).click()
+  await expect.poll(async () => (await read(page)).workbook.sheets[0].outline?.groups).toEqual([
+    { id: 'outer-row', axis: 'row', start: 1, end: 8, collapsed: false },
+    { id: 'selected-column', axis: 'column', start: 3, end: 5, collapsed: true },
+  ])
+  const after = await read(page)
+  expect(after.revision).toBe(before.revision + 1); expect(after.history).toBe(before.history + 1)
+})
+
+test('worksheet protection disables the independent outline settings and details roots', async ({ page }) => {
+  await setup(page)
+  await page.evaluate(async () => {
+    const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio, officeAPI } = await import(path) as RuntimeModule
+    const workbook = officeAPI.getActiveWorkbook()!.save()
+    workbook.id = 'outline-menu-worksheet-guard'
+    const sheet = workbook.sheets.find(sheet => sheet.id === workbook.activeSheetId)!
+    sheet.rowCount = 20
+    sheet.columnCount = 10
+    sheet.worksheetProtection = { id: 'worksheet-guard', unitType: 'worksheet', permissionId: 'worksheet-guard',
+      ownerUserId: 'other-user', editState: 'onlyMe', viewState: 'othersCanView', allowedUserIds: [] }
+    const book = officeAPI.createWorkbook(workbook)
+    studio.setSelections(book.getId(), sheet.id, [{ startRow: 2, endRow: 4, startColumn: 3, endColumn: 5 }])
+  })
+  const before = await read(page)
+  await expect(await outlineRibbonButton(page, '大纲设置')).toBeDisabled()
+  await expect(await outlineRibbonButton(page, '分组显示')).toBeDisabled()
+  await expect(page.getByRole('dialog', { name: '大纲汇总设置', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('menu', { name: '分组显示', exact: true })).toHaveCount(0)
+  const after = await read(page)
+  expect(after.workbook).toEqual(before.workbook)
+  expect(after.revision).toBe(before.revision); expect(after.history).toBe(before.history)
 })
 
 test('switching worksheets invalidates summary publication and cancellation retains the new host', async ({ page }) => {

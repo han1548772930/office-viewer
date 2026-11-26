@@ -10,6 +10,7 @@ import type { DocumentBlock, DocumentContentControl, DocumentContentControlType,
 import type { FDocument } from '../api/facade'
 import type { ApiEventMap } from '../api/events'
 import { applyDocumentEditorCommand } from '../api/document-editor-commands'
+import { documentHyperlinkTargetSelection, resolveDocumentHyperlinkOperation } from '../api/document-public-body'
 import { createBlankDocument } from '../domain/model'
 import DocumentCanvasViewport from './document/DocumentCanvasViewport.vue'
 import DocumentContentControlPanel from './document/DocumentContentControlPanel.vue'
@@ -48,7 +49,7 @@ import { isDocumentTableCommand, type DocumentTableCommand, type DocumentTableIn
 import { documentTableGrid, documentTableWholeRange, type DocumentTableCellRange } from '../features/document/model/document-table-grid'
 import { documentBlockAncestry, findDocumentBlock, tableForBlock } from '../features/document/model/document-model'
 import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
-import type { RibbonItem, RibbonVariant } from '../platform/ribbon/ribbon-schema'
+import type { RibbonGroup, RibbonItem, RibbonVariant } from '../platform/ribbon/ribbon-schema'
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
@@ -57,12 +58,12 @@ import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCo
 import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
 import { documentParagraphPagination } from '../features/document/model/document-paragraph-pagination'
 import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
-import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, documentCommandSupportsBlockHost, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
-import { emptyLayout, type DocumentLayout } from '../features/document/layout/document-layout'
+import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, documentCommandSupportsBlockHost, documentNamedParagraphStyleState, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
+import { emptyLayout, lineForPoint, type DocumentLayout } from '../features/document/layout/document-layout'
 import { findDocumentStoryPage } from '../features/document/layout/document-story-navigation'
 import { createDocumentNumericPageField } from '../features/document/model/document-page-field-result'
 import type { DocumentScrollOffset, DocumentViewportLocation } from '../features/document/layout/document-viewport'
-import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, runText, runsForTarget, safeUrl, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
+import { blocksFromHtml, clampPoint, cloneDocument, collapsedSelection, documentHtml, documentRunFormatPatch, marksAtPoint, normalizeDocument, orderedSelection, runText, runsForTarget, safeUrl, sameTarget, selectedPlainText, selectionCollapsed, textTargets, type DocumentPoint, type DocumentSelection, type RunPatch } from '../features/document/model/document-model'
 import { DOCUMENT_DEFAULT_TEXT_COLOR, rememberDocumentColors, type DocumentColorMemory } from '../features/document/services/document-colors'
 import { printDocumentModel } from '../features/document/services/document-print'
 import { DOCUMENT_PASTE_OPTIONS, documentClipboardPermissions, documentPasteCommand, documentPasteSpecialCommand, documentSelectionClipboardData, documentTablePasteCommand, readDocumentClipboard, writeDocumentClipboard, type DocumentClipboardData, type DocumentPasteMode } from '../features/document/services/document-clipboard'
@@ -109,6 +110,7 @@ import { captureDocumentFormat, documentPainterTarget, type DocumentPainterForma
 import { documentClearFormattingState, prepareDocumentStoryClearFormatting } from '../features/document/services/document-clear-formatting'
 import { documentStoryTextFormattingState, prepareDocumentStoryTextFormatting } from '../features/document/services/document-story-formatting'
 import { documentTextFormattingState } from '../features/document/services/document-text-formatting'
+import { documentHyperlinkSelectionState, type DocumentHyperlink, type DocumentHyperlinkCommand } from '../features/document/services/document-hyperlinks'
 import { DOCUMENT_STORY_KEYS, clampDocumentTextRange, type DocumentStoryKey, type DocumentStoryRange } from '../features/document/model/document-story'
 import type { DocumentInputSession, DocumentStoryInputCommit } from '../features/document/model/document-input-session'
 import { sameDocumentInputLocation, sanitizeDocumentInputSelection } from '../features/document/model/document-input-session'
@@ -233,7 +235,10 @@ const pendingMarks = computed<RunPatch>(() => props.documentApi
 const modalOpen = ref(false)
 const modalKind = ref<'image' | 'link'>('image')
 const modalValue = ref('')
+const modalLabel = ref('')
 const modalError = ref('')
+const hyperlinkDialog = shallowRef<{ target: StructureDialogTarget; link?: DocumentHyperlink }>()
+let pendingHyperlinkFocus: StructureDialogTarget | undefined
 const pictureImageBusy = ref(false)
 const insertModalComposing = ref(false)
 const imageOverlayActive = ref(false)
@@ -242,7 +247,12 @@ const tableFloatingToolbarOpen = ref(false)
 const tableColors = shallowRef<{ background?: string; border?: string }>({})
 const tableProperties = shallowRef<{ open: boolean; tableId: string; range: DocumentTableCellRange; kind: DocumentTablePropertiesKind; host?: DocumentAuxiliaryBlockHost; type?: 'text' | 'number' | 'date' | 'checkbox' | 'dropdown' }>()
 const notice = ref('')
-const documentContextMenu = shallowRef<{ left: number; top: number; structuredTarget?: DocumentStructuredCanvasTarget; fieldRequest?: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number } }>()
+interface DocumentContextTarget {
+  structuredTarget?: DocumentStructuredCanvasTarget
+  fieldRequest: { source: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost; bodySelection?: DocumentSelection; requestScope: number }
+}
+const documentContextMenu = shallowRef<DocumentContextTarget & { left: number; top: number }>()
+const featureSearchTarget = shallowRef<DocumentContextTarget>()
 const contentControlPanelOpen = ref(false)
 const activeContentControlId = ref<string>()
 const activeContentControlPopupMode = ref<DocumentContentControlPopupMode>('value')
@@ -276,18 +286,35 @@ const storyLinkedToPrevious = computed(() => !!storyKey.value && sectionStoryLin
 const storyValue = computed(() => storyKey.value && storyBuffer(storySection.value, storyKey.value).value)
 const paragraphSettingsPanelOpen = ref(false)
 const sectionSettingsPanelOpen = ref(false)
+const paragraphContext = computed(() => {
+  const range = currentStoryRange.value
+  if (!range) return { model: editingModel.value, selection: selection.value, host: editingHost.value }
+  const host = { kind: 'story' as const, sectionId: range.sectionId, story: range.story }
+  return { model: documentModelForBlockHost(model.value, host),
+    selection: documentBlockHostSelectionFromLegacyRange(model.value, range.sectionId, range.story, range.start, range.end), host }
+})
+const hyperlinkState = computed(() => {
+  const state = documentHyperlinkSelectionState(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value)
+  if (!inputStateActive || documentInputComposing.value) return { ...state, available: false, reason: t('document.hyperlink.finish-input', '请先完成当前输入。') }
+  if (paragraphContext.value.host?.kind === 'story' && (!canEditStory.value || storyLinkedToPrevious.value)) {
+    return { ...state, available: false, reason: t('document.hyperlink.story-unavailable', '当前页眉或页脚不能编辑链接。') }
+  }
+  return state
+})
+const activeParagraphPoint = computed(() => paragraphContext.value.selection.tableSelection
+  ? documentTableSelectedTextTargets(paragraphContext.value.model, paragraphContext.value.selection.tableSelection)[0]
+  : orderedSelection(paragraphContext.value.model, paragraphContext.value.selection).start)
 const activeParagraphBlock = computed(() => {
-  const point = selection.value.tableSelection ? documentTableSelectedTextTargets(editingModel.value, selection.value.tableSelection)[0] : selection.value.focus
-  return point && blockAtPoint(editingModel.value, point)
+  const point = activeParagraphPoint.value
+  return point && blockAtPoint(paragraphContext.value.model, point)
 })
 const paragraphSettingsStyle = computed(() => documentParagraphSettingsStyle({ ...activeParagraphBlock.value?.style,
-  ...documentParagraphPagination(activeParagraphBlock.value?.style ?? {}, editingModel.value) }))
+  ...documentParagraphPagination(activeParagraphBlock.value?.style ?? {}, paragraphContext.value.model) }))
 const paragraphSettingsFontSize = computed(() => activeParagraphBlock.value?.runs[0]?.fontSize ?? 11)
-const paragraphSettingsSelectionKey = computed(() => `${model.value.id}:${editingHost.value ? documentBlockHostId(editingHost.value) : 'body'}:${JSON.stringify(selection.value)}`)
+const paragraphSettingsSelectionKey = computed(() => `${model.value.id}:${paragraphContext.value.host ? documentBlockHostId(paragraphContext.value.host) : 'body'}:${JSON.stringify(paragraphContext.value.selection)}`)
 const paragraphSettingsLineMetrics = computed<DocumentParagraphLineMetrics | undefined>(() => {
-  const focus = selection.value.focus
-  const lines = editingLayout.value.lines.filter(line => sameTarget(line.target, focus))
-  const line = lines.find(candidate => focus.offset >= candidate.start && focus.offset < candidate.end) ?? lines.at(-1)
+  const point = activeParagraphPoint.value
+  const line = point && editingLayout.value.lines.find(candidate => sameTarget(candidate.target, point))
   return line?.glyphLineHeight === undefined ? undefined : { glyphLineHeight: line.glyphLineHeight, renderedLineHeight: line.height }
 })
 const activeSectionSetup = computed(() => documentSectionSetup(model.value, headerFooterSectionId.value))
@@ -507,7 +534,7 @@ const contextMenuActions = computed(() => {
   const paragraphSettings = {
     id: 'doc-context-paragraph-settings', title: translate('doc.context.paragraph-settings', 'Paragraph settings'),
     commandId: 'sidebar.operation.doc-paragraph-setting-panel', params: undefined,
-    disabled: !canEditContextSelection.value, group: 'layout' as const,
+    disabled: !inputStateActive || documentInputComposing.value || !canEditContextSelection.value, group: 'layout' as const,
   }
   const layoutActions = [paragraphSettings]
   if (!editingHost.value && supportsDocumentTableOfContents(model.value) && selection.value.focus.row == null) layoutActions.push({
@@ -589,15 +616,51 @@ function documentContextMenuItem(item: { id: string; title: string; disabled?: b
     ...(item.children?.length ? { children: item.children.filter(child => !child.hidden).map(documentContextMenuItem) } : {}) }
 }
 const currentMarks = computed(() => toolbarState.value.marks)
+const namedStyleState = computed(() => documentNamedParagraphStyleState(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value))
+const shortcutPanelOpen = ref(false)
+const workbenchUiHost = computed(() => props.documentApi?.workbenchUiHost())
+const ribbonShortcuts = computed(() => [
+  { title: t('items.doc-redo', '重做'), shortcut: 'Ctrl+Shift+Z' },
+  { title: t('items.doc-copy', '复制'), shortcut: 'Ctrl+C' },
+  { title: t('items.doc-cut', '剪切'), shortcut: 'Ctrl+X' },
+  { title: t('items.doc-paste-text', '仅保留文本'), shortcut: 'Ctrl+Shift+V' },
+  { title: t('shortcut-panel.select-all', '全选'), shortcut: 'Ctrl+A' },
+  { title: t('workspace.save', '保存'), shortcut: 'Ctrl+S' },
+  { title: t('shortcut-panel.refresh-fields', '更新选中字段'), shortcut: 'F9' },
+  ...(!legacyStoryActive.value ? [
+    { title: t('shortcut-panel.insert-paragraph', '插入段落'), shortcut: 'Enter' },
+    { title: t('shortcut-panel.line-break', '插入换行'), shortcut: 'Shift+Enter' },
+    { title: t('shortcut-panel.previous-word', '移到上一个词'), shortcut: 'Ctrl+←' },
+    { title: t('shortcut-panel.next-word', '移到下一个词'), shortcut: 'Ctrl+→' },
+    { title: t('shortcut-panel.document-start', '移到文档开头'), shortcut: 'Ctrl+Home' },
+    { title: t('shortcut-panel.document-end', '移到文档末尾'), shortcut: 'Ctrl+End' },
+  ] : []),
+  ...(!legacyStoryActive.value && !editingHost.value && activeStructuredBlock.value?.type !== 'code'
+    ? [{ title: t('items.doc-page-break', '分页符'), shortcut: 'Ctrl+Enter' }] : []),
+  ...(toolbarState.value.table && activeStructuredBlock.value?.type !== 'code' ? [
+    { title: t('shortcut-panel.next-cell', '移到下一个单元格'), shortcut: 'Tab' },
+    { title: t('shortcut-panel.previous-cell', '移到上一个单元格'), shortcut: 'Shift+Tab' },
+  ] : []),
+  ...(activeStructuredBlock.value?.type === 'code' ? [
+    { title: t('shortcut-panel.exit-code', '退出代码块'), shortcut: 'Ctrl+Enter' },
+    { title: t('shortcut-panel.indent-code', '增加代码缩进'), shortcut: 'Tab' },
+    { title: t('shortcut-panel.unindent-code', '减少代码缩进'), shortcut: 'Shift+Tab' },
+  ] : []),
+])
 const officeFonts = inject(OfficeFontListKey, undefined)
 const painter = shallowRef<{ format: DocumentPainterFormat; continuous: boolean }>()
-const modalTitle = computed(() => pictureReplacementRequest.value ? '更换图片' : ({ image: '插入图片', link: '插入链接' })[modalKind.value])
+const modalTitle = computed(() => modalKind.value === 'link'
+  ? hyperlinkDialog.value?.link ? t('document.hyperlink.edit', '编辑链接') : t('document.hyperlink.insert', '插入链接')
+  : pictureReplacementRequest.value ? '更换图片' : '插入图片')
 const pictureReplacementState = computed(() => {
   const request = pictureReplacementRequest.value
   return request ? contentControlPictureCommandState(model.value, request.controlId, {
     host: editingHost.value, permission: permissionContext.value, disabled: !pictureRequestCurrent(request),
   }) : { available: true }
 })
+const insertModalAvailable = computed(() => modalKind.value === 'link'
+  ? !!hyperlinkDialog.value && structureTargetCurrent(hyperlinkDialog.value.target) && hyperlinkState.value.available
+  : pictureReplacementState.value.available)
 const ribbonTabs = computed(() => {
   const control = selectedContentControl.value
   const resetPlaceholder = control && contentControlValueCommandState(model.value,
@@ -627,13 +690,18 @@ const ribbonTabs = computed(() => {
     lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
     defaultTextColor: DOCUMENT_DEFAULT_TEXT_COLOR, defaultHighlightColor: themeToken.value.colorPrimary,
     numbering: { canRestart: canRestartDocumentNumbering(editingModel.value, selection.value, permissionContext.value), canContinue: canContinueDocumentNumbering(editingModel.value, selection.value, permissionContext.value) },
-    indentation: { canDecrease: canChangeDocumentParagraphIndent(editingModel.value, selection.value, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(editingModel.value, selection.value, 1, permissionContext.value) },
+    indentation: { canDecrease: canChangeDocumentParagraphIndent(paragraphContext.value.model, paragraphContext.value.selection, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(paragraphContext.value.model, paragraphContext.value.selection, 1, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || legacyStoryActive.value,
     clearFormatting: clearFormattingState.value,
     clipboard: clipboardRibbonState.value,
+    hyperlink: hyperlinkState.value,
+    shortcutPanelOpen: shortcutPanelOpen.value,
     mode: pageMode.value,
     editingDisabled: legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value,
     textFormattingDisabled: !textFormattingState.value.available,
+    namedStyleDisabled: !inputStateActive || documentInputComposing.value || !namedStyleState.value.available
+      || (legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value),
+    namedStyleDisabledReason: namedStyleState.value.reason,
     editingHeaderFooter: !!storyLocation.value,
     editingAuxiliaryContent: !!storyLocation.value || !!editingHost.value,
     headerFooter: storyLocation.value && {
@@ -645,7 +713,7 @@ const ribbonTabs = computed(() => {
       differentOddEven: storySection.value.differentOddEven, marginHeader: activeSectionSetup.value.marginHeader ?? 48,
       marginFooter: activeSectionSetup.value.marginFooter ?? 48,
     },
-    state: toolbarState.value,
+    state: { ...toolbarState.value, paragraph: paragraphSettingsStyle.value, mixedParagraph: [] },
     canUndo: !!props.canUndo,
     canRedo: !!props.canRedo,
     outline: showOutline.value,
@@ -764,6 +832,7 @@ watch([() => props.documentApi, () => model.value, () => selection.value, () => 
   () => permissionContext.value, () => documentInputComposing.value, () => legacyStoryActive.value], () => {
   const request = pictureReplacementRequest.value
   if (modalOpen.value && request && !pictureRequestCurrent(request)) { abortPictureImageRead(); modalOpen.value = false }
+  if (modalOpen.value && modalKind.value === 'link' && hyperlinkDialog.value && !structureTargetCurrent(hyperlinkDialog.value.target)) modalOpen.value = false
 }, { flush: 'post' })
 watch(modalOpen, open => { insertModalComposing.value = false; if (!open) abortPictureImageRead() }, { flush: 'sync' })
 
@@ -1008,7 +1077,11 @@ function refreshStandaloneDocumentFieldCaches(locale: string, timestamp: number,
   }
   return true
 }
-function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number; error?: string }) {
+function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number; error?: string }, sourceCommandId?: 'doc.command.insert-special-character') {
+  if ((editingHost.value || legacyStoryActive.value)
+    && (command.id === 'doc.command.insert-page-break'
+      || command.id === 'doc.command.insert-column-break'
+      || command.id === 'doc.command.insert-section-break')) return false
   if ((isDocumentStructureCommand(command) || isDocumentImageCommand(command)) && (!inputStateActive || documentInputComposing.value)) return false
   if (!command.host && legacyStoryActive.value && documentCommandSupportsBlockHost(command)
     && command.id !== 'doc.command.format-text' && command.id !== 'doc.command.clear-formatting') activateStoryBlockEditing()
@@ -1030,7 +1103,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
   const targets = (command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
     : command.host ? permissionTargetsForSelection(editingModel.value, selection.value)
     : 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(editingModel.value, selection.value)
-  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && !isDocumentTableCommand(command) && !isDocumentImageCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
+  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.create-table' && !isDocumentTableCommand(command) && !isDocumentImageCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
   try {
     if (derivedFieldRefresh && !documentApi) {
       if (command.id !== 'doc.command.refresh-header-footer-fields') return false
@@ -1058,7 +1131,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     }
     const nextCommand = !documentApi && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula') ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     if (documentApi) {
-      const result = documentApi.executeCommand(nextCommand, selection.value)
+      const result = documentApi.executeCommand(nextCommand, selection.value, sourceCommandId)
       if (feedback) feedback.modelRevision = result.modelRevision
       if (result.selectionCurrent === false || documentApi !== props.documentApi || documentApi.id !== model.value.id || !inputStateActive) {
         if (feedback) feedback.selectionCurrent = false
@@ -1592,9 +1665,11 @@ function applyParagraphSettings(patch: Partial<DocumentParagraphStyle>) {
   execute({ id: 'doc.command.format-paragraph', patch }, false)
 }
 function setParagraphSettingsPanelOpen(open: boolean) {
+  if (open && documentInputComposing.value) return
+  if (open && legacyStoryActive.value) activateStoryBlockEditing()
   paragraphSettingsPanelOpen.value = open
-  if (open) commentsPanelOpen.value = false
-  else void nextTick(() => canvasRef.value?.focus())
+  if (!open) { scheduleInputFocus(() => canvasRef.value?.focus()); return }
+  commentsPanelOpen.value = false
 }
 function resizeDocumentDock(sizes: number[]) {
   if (documentDockOpen.value && sizes[1] !== undefined && Number.isFinite(sizes[1])) documentDockWidth.value = Math.max(280, Math.min(800, sizes[1]))
@@ -1824,6 +1899,23 @@ function onViewportChange(location: DocumentViewportLocation) {
   visibleBlockId.value = location.firstVisibleBlockId
 }
 function navigateOutline(item: DocumentOutlineItem) { if (item.blockId) jumpToHeading(item.blockId); else setActivePage(0) }
+function captureDocumentContextTarget(story = currentStoryRange.value): DocumentContextTarget {
+  return {
+    ...(!story ? { structuredTarget: captureDocumentStructuredCanvasTarget(model.value, selection.value, editingHost.value, props.documentApi ? captureInputSession(model.value) : undefined) } : {}),
+    fieldRequest: { source: model.value, requestScope: storyActionVersion.value,
+      ...(editingHost.value ? { host: { ...editingHost.value } } : {}),
+      ...(story ? { story: { ...story } } : { bodySelection: cloneDocumentSelection(selection.value) }) },
+  }
+}
+function featureSearchContext(): RibbonGroup[] {
+  if (legacyStoryActive.value && !currentStoryRange.value) return []
+  featureSearchTarget.value = captureDocumentContextTarget()
+  return [...new Set(contextMenuActions.value.map(action => action.group))].map(group => ({
+    id: group,
+    title: group === 'paste-special' ? t('doc.context.paste-special', '选择性粘贴') : undefined,
+    items: contextMenuActions.value.filter(action => action.group === group).map(action => ({ type: 'button' as const, ...action })),
+  }))
+}
 function openDocumentContextMenu(payload: { x: number; y: number; source?: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost }) {
   if (payload.source && payload.source !== model.value) return
   if (!sameDocumentBlockHost(payload.host, editingHost.value)) return
@@ -1835,20 +1927,17 @@ function openDocumentContextMenu(payload: { x: number; y: number; source?: Docum
   documentContextMenu.value = {
     left: Math.max(4, Math.min(payload.x - bounds.left, bounds.width - 238)),
     top: Math.max(4, Math.min(payload.y - bounds.top, bounds.height - 300)),
-    ...(!story ? { structuredTarget: captureDocumentStructuredCanvasTarget(model.value, selection.value, editingHost.value, props.documentApi ? captureInputSession(model.value) : undefined) } : {}),
-    fieldRequest: { source: model.value, requestScope: storyActionVersion.value,
-      ...(editingHost.value ? { host: { ...editingHost.value } } : {}),
-      ...(story ? { story: { ...story } } : { bodySelection: cloneDocumentSelection(selection.value) }) },
+    ...captureDocumentContextTarget(story),
   }
 }
-function runContextMenuAction(action: { id: string; commandId?: string; params?: unknown }) {
+function runContextMenuAction(action: { id: string; commandId?: string; params?: unknown }, context: DocumentContextTarget | undefined = documentContextMenu.value) {
   if (action.commandId === DOCUMENT_LATEX_POPUP_OPERATIONS.open || action.commandId === DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen) {
-    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    const target = context?.structuredTarget; documentContextMenu.value = undefined
     if (target && structuredCanvasTargetCurrent(target)) requestLatexPopup(action.params)
     return
   }
   if (['doc-context-latex-edit', 'doc-context-latex-remove', 'doc-context-latex-text'].includes(action.id)) {
-    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    const target = context?.structuredTarget; documentContextMenu.value = undefined
     if (!target || !structuredCanvasTargetCurrent(target) || !action.params || typeof action.params !== 'object'
       || !('rangeId' in action.params) || typeof action.params.rangeId !== 'string') return
     const item = selectedLatexFormula(editingModel.value, target.selection)
@@ -1859,14 +1948,14 @@ function runContextMenuAction(action: { id: string; commandId?: string; params?:
   }
   const structure = action.commandId && documentStructureCommandFromMenu(action.commandId, action.params)
   if (structure || ['doc.operation.edit-structured-block', 'doc.operation.edit-code-font', 'doc.operation.edit-code-settings'].includes(action.commandId ?? '')) {
-    const target = documentContextMenu.value?.structuredTarget; documentContextMenu.value = undefined
+    const target = context?.structuredTarget; documentContextMenu.value = undefined
     if (!target || !structuredCanvasTargetCurrent(target)) return
     if (structure) execute(structure)
     else onRibbonExecute(action.commandId!, action.params)
     return
   }
   if (action.commandId === 'doc.command.update-selected-fields') {
-    const request = documentContextMenu.value?.fieldRequest, native = canvasRef.value?.storyRange()
+    const request = context?.fieldRequest, native = canvasRef.value?.storyRange()
     documentContextMenu.value = undefined
     if (!request || request.requestScope !== storyActionVersion.value
       || !sameDocumentBlockHost(request.host, editingHost.value)
@@ -1880,13 +1969,18 @@ function runContextMenuAction(action: { id: string; commandId?: string; params?:
   if (['doc.command.copy', 'doc.command.cut', 'doc.command.paste', 'doc.command.paste-special'].includes(commandId)) return
   if (!tableProperties.value?.open) void nextTick(() => canvasRef.value?.focus())
 }
-function selectDocumentContextMenuItem(info: { key: string | number }) {
-  const find = (items: readonly { id: string; commandId?: string; params?: unknown; disabled?: boolean; children?: RibbonItem[] }[]): { id: string; commandId?: string; params?: unknown; disabled?: boolean } | undefined => {
-    for (const item of items) { if (item.id === String(info.key)) return item; const nested = item.children && find(item.children); if (nested) return nested }
+function selectDocumentContextMenuItem(info: { key: string | number; commandId?: string; params?: unknown }, context: DocumentContextTarget | undefined = documentContextMenu.value) {
+  const find = (items: readonly { id: string; commandId?: string; params?: unknown; disabled?: boolean; hidden?: boolean; children?: RibbonItem[] }[]): { id: string; commandId?: string; params?: unknown } | undefined => {
+    for (const item of items) {
+      if (item.disabled || item.hidden) continue
+      if (item.id === String(info.key)) return item
+      const nested = item.children && find(item.children)
+      if (nested) return nested
+    }
     return undefined
   }
   const action = find(contextMenuActions.value)
-  if (action && !action.disabled) runContextMenuAction(action)
+  if (action) runContextMenuAction(info.commandId ? { ...action, commandId: info.commandId, params: info.params } : action, context)
 }
 function openTableProperties(params?: unknown) {
   if (documentInputComposing.value || legacyStoryActive.value || !params || typeof params !== 'object' || Array.isArray(params)) return
@@ -1908,7 +2002,10 @@ function applyTableProperties(command: DocumentTableCommand) {
 }
 function closeTableProperties() { scheduleInputFocus(() => canvasRef.value?.focus()) }
 function insertTableFromDialog(size: { rows: number; columns: number; options?: DocumentTableInsertOptions }) {
-  execute({ ...size.options, id: 'doc.command.insert-table', rows: size.rows, cols: size.columns })
+  const line = editingLayoutSource.value === model.value && !blockHostInspection.value
+    ? lineForPoint(editingLayout.value, orderedSelection(editingModel.value, selection.value).start) : undefined
+  execute({ ...size.options, width: size.options?.width ?? (line ? editingLayout.value.pages[line.page]!.content.width : undefined),
+    id: 'doc.command.create-table', rowCount: size.rows, colCount: size.columns })
 }
 function openTocInsertDialog(mode: 'automatic' | 'custom') {
   if (!canInsertToc.value) return
@@ -1971,9 +2068,15 @@ function dismissTableContextMenu(event?: Event) {
   documentContextMenu.value = undefined
 }
 function onWorkbenchKeydown(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k'
+    && event.target instanceof HTMLElement && event.target === document.activeElement
+    && event.target.closest('.document-input-bridge, .document-story-bridge')) {
+    event.preventDefault(); event.stopPropagation(); onRibbonExecute('doc.operation.show-hyper-link-edit-popup'); return
+  }
   if (event.key === 'Escape' && painter.value && !event.isComposing) { event.preventDefault(); painter.value = undefined; canvasRef.value?.focus(); return }
-  if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus() }
-  else if (event.key === 'Escape' && editingHost.value?.kind === 'note' && !event.isComposing) { event.preventDefault(); closeStory() }
+  if (event.key === 'Escape' && documentContextMenu.value) { event.preventDefault(); documentContextMenu.value = undefined; canvasRef.value?.focus(); return }
+  if (event.key === 'Escape' && editingHost.value?.kind === 'note') { event.preventDefault(); closeStory() }
 }
 const imageEditor = useDocumentImageEditor({ source: () => model.value, model: () => editingModel.value, host: () => editingHost.value, selection: () => selection.value,
   api: () => props.documentApi, session: () => captureInputSession(), permission: () => permissionContext.value,
@@ -2000,7 +2103,66 @@ function onImageOperation(request: DocumentImageCanvasOperationRequest) {
   if (selectedImageIds.value.length === 1 && imageCanvasCurrent(request.target, true)) imageEditor.show(request.mode, request.target.imageId)
 }
 function insertImage(paragraphMenuPlacement?: 'below') { imageEditor.show('insert', undefined, paragraphMenuPlacement) }
-function insertLink() { abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
+function insertLink(params?: unknown) {
+  if (!inputStateActive || documentInputComposing.value) return
+  const resolved = resolveDocumentHyperlinkOperation(model.value, 'doc.operation.show-hyper-link-edit-popup', params, permissionContext.value)
+  if (!resolved) return
+  if (resolved.kind === 'link') {
+    const source = model.value, previousTab = activeTab.value
+    const changeHost = legacyStoryActive.value || !sameDocumentBlockHost(resolved.host, editingHost.value)
+    if (changeHost) {
+      activateNotePosition({ host: resolved.host, selection: resolved.link.selection }, !!resolved.host)
+      activeTab.value = previousTab
+    }
+    if (!changeHost) onSelection(cloneDocumentSelection(resolved.link.selection))
+    if (source !== model.value || !sameDocumentBlockHost(resolved.host, editingHost.value)
+      || JSON.stringify(resolved.link.selection) !== JSON.stringify(selection.value)) return
+  }
+  if (!hyperlinkState.value.available) return
+  const target = captureStructureTarget()
+  if (!target) return
+  const link = resolved.kind === 'link' ? resolved.link : hyperlinkState.value.link
+  abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined
+  hyperlinkDialog.value = { target, link }; pendingHyperlinkFocus = undefined
+  modalKind.value = 'link'; modalValue.value = link?.target ?? currentMarks.value.href ?? ''
+  modalLabel.value = link?.label ?? ''; modalError.value = ''; modalOpen.value = true
+}
+function applyHyperlink(command: DocumentHyperlinkCommand) {
+  if (!modalOpen.value || modalKind.value !== 'link' || insertModalComposing.value || !insertModalAvailable.value) return
+  const feedback: { selectionCurrent: boolean; error?: string } = { selectionCurrent: true }
+  if (!execute(command, false, feedback)) {
+    modalError.value = feedback.error ?? hyperlinkState.value.reason ?? t('document.hyperlink.unavailable', '当前选区无法编辑链接。')
+    return
+  }
+  modalOpen.value = false
+  if (!feedback.selectionCurrent) return
+  const source = model.value, api = props.documentApi, epoch = inputStateEpoch
+  void nextTick(() => {
+    if (!modalOpen.value && source === model.value && api === props.documentApi && epoch === inputStateEpoch) pendingHyperlinkFocus = captureStructureTarget()
+  })
+}
+function removeHyperlink() {
+  const link = hyperlinkDialog.value?.link
+  if (link) applyHyperlink({ id: 'docs.command.delete-hyper-link', linkId: link.id })
+}
+function openHyperlink(target: string) {
+  if (!inputStateActive || documentInputComposing.value) return
+  if (!target.startsWith('#')) {
+    const url = safeUrl(target)
+    if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  const destination = documentHyperlinkTargetSelection(model.value, target)
+  if (!destination || !resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'view', permissionTargetsForSelection(model.value, destination)).allowed) return
+  const source = model.value, api = props.documentApi
+  closeStory(false); onSelection(destination)
+  if (source !== model.value || api !== props.documentApi) return
+  scheduleInputFocus(() => {
+    if (source !== model.value || documentInputComposing.value) return
+    canvasRef.value?.scrollToBlock(destination.focus.cellBlockId ?? destination.focus.blockId)
+    canvasRef.value?.focus()
+  })
+}
 function pictureRequestCurrent(request: DocumentPictureReplacementRequest): boolean {
   return request === pictureReplacementRequest.value && request.api === props.documentApi && contentControlRequestCurrent(request, true)
     && contentControlPictureCommandState(model.value, request.controlId, { host: editingHost.value, permission: permissionContext.value }).available
@@ -2016,6 +2178,7 @@ function openSelectedPictureReplacement() {
   const state = contentControlPictureCommandState(source, control.id, { host: request.host, permission: permissionContext.value })
   if (!state.available) { notify(state.reason ?? '无法更换此内容控件的图片。'); return }
   abortPictureImageRead(); pendingPictureFocus = undefined; pictureReplacementRequest.value = request
+  hyperlinkDialog.value = undefined; pendingHyperlinkFocus = undefined
   modalKind.value = 'image'; modalValue.value = ''; modalError.value = ''; modalOpen.value = true
 }
 function executeSelectedRepeatingItem(id: DocumentContentControlRepeatingItemCommand['id']) {
@@ -2060,6 +2223,12 @@ function executeSelectedRepeatingItem(id: DocumentContentControlRepeatingItemCom
 }
 function onInsertModalClosed() {
   if (modalOpen.value) return
+  if (modalKind.value === 'link') {
+    const target = pendingHyperlinkFocus ?? hyperlinkDialog.value?.target
+    hyperlinkDialog.value = undefined; pendingHyperlinkFocus = undefined
+    closeStructureDialog(target)
+    return
+  }
   const request = pictureReplacementRequest.value
   const token = pendingPictureFocus ?? (request && captureDocumentContentControlFocusToken(request, captureInputSession()))
   abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined
@@ -2071,12 +2240,23 @@ function onInsertModalClosed() {
   })
 }
 function confirmModal() {
-  if (!modalOpen.value || insertModalComposing.value || pictureImageBusy.value || !pictureReplacementState.value.available) return
+  if (!modalOpen.value || insertModalComposing.value || pictureImageBusy.value || !insertModalAvailable.value) return
+  modalError.value = ''
+  if (modalKind.value === 'link') {
+    const target = modalValue.value.trim()
+    if (target.startsWith('#') && !documentHyperlinkTargetSelection(model.value, target)) {
+      modalError.value = t('document.hyperlink.missing-target', '找不到链接指向的书签或标题。')
+      return
+    }
+    const link = hyperlinkDialog.value!.link
+    applyHyperlink(link
+      ? { id: 'docs.command.update-hyper-link', linkId: link.id, payload: modalValue.value, label: modalLabel.value }
+      : { id: 'docs.command.add-hyper-link', payload: modalValue.value })
+    return
+  }
   const value = safeUrl(modalValue.value)
   if (!value) { modalError.value = '请输入有效的 http 或 https 地址'; return }
-  if (modalKind.value === 'link') {
-    if (execute({ id: 'doc.command.format-text', patch: { href: value, underline: true, color: '#2563b6' } })) modalOpen.value = false
-  } else void applyPictureImageSource(value)
+  void applyPictureImageSource(value)
 }
 function beforeImageUpload(file: File): false { void applyPictureImageSource(file); return false }
 async function applyPictureImageSource(source: string | File) {
@@ -2318,7 +2498,6 @@ function pasteFromCanvas(data: DocumentClipboardData, mode: DocumentPasteMode) {
   clipboardRequest++
   applyClipboardPaste(data, mode)
 }
-function insertCharacter(text: string) { execute({ id: 'doc.command.insert-text', text }) }
 function savePermissionRules(rules: DocumentPermissionRule[]) {
   if (!canManagePermissionRules.value) return
   execute({ id: 'doc.command.set-document-permission-rules', rules })
@@ -2707,7 +2886,7 @@ function onRibbonExecute(id: string, params?: unknown) {
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
   if (id === 'core.command.redo') { if (props.canRedo) redo(); return }
   const command = documentCommandFromRibbon(id, params)
-  if (command) { execute(command); return }
+  if (command) { execute(command, true, undefined, id === 'doc.command.insert-special-character' ? id : undefined); return }
   switch (id) {
     case 'doc.operation.insert-table-of-contents':
       if (params && typeof params === 'object' && 'mode' in params && (params.mode === 'automatic' || params.mode === 'custom')) openTocInsertDialog(params.mode)
@@ -2775,13 +2954,25 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.print': printDocument(); break
     case 'doc.command.refresh-header-footer-fields': execute({ id, locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now() }); break
     case 'doc.command.update-selected-fields': refreshSelectedFields(model.value, currentStoryRange.value); break
+    case 'doc.operation.create-table':
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image':
     case 'doc.command.insert-float-image': insertImage(params && typeof params === 'object' && Reflect.get(params, 'paragraphMenuPlacement') === 'below' ? 'below' : undefined); break
     case 'doc.operation.edit-doc-image': if (selectedImageIds.value.length === 1) imageEditor.show('edit', selectedImageId.value); break
     case 'doc.operation.crop-image': if (selectedImageIds.value.length === 1) imageEditor.show('crop', selectedImageId.value); break
     case 'doc.operation.replace-image': if (selectedImageIds.value.length === 1) imageEditor.show('replace', selectedImageId.value); break
-    case 'doc.operation.open-link': insertLink(); break
+    case 'doc.operation.show-hyper-link-edit-popup':
+    case 'doc.operation.open-link': insertLink(params); break
+    case 'doc.operation.click-hyper-link': {
+      if (params && typeof params === 'object' && 'source' in params && params.source !== model.value) break
+      if (params && typeof params === 'object' && 'target' in params && typeof params.target === 'string') {
+        openHyperlink(params.target)
+        break
+      }
+      const resolved = resolveDocumentHyperlinkOperation(model.value, id, params, permissionContext.value)
+      if (resolved?.kind === 'link') openHyperlink(resolved.link.target)
+      break
+    }
     case 'doc.operation.insert-content-control':
       if (typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox', 'picture', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(params)) insertContentControl(params as DocumentContentControlType)
       else insertContentControl('richText')
@@ -2881,9 +3072,6 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.toggle-selected-sdt-temporary':
       if ((selectedContentControl.value?.type === 'text' || selectedContentControl.value?.type === 'richText') && props.documentApi) props.documentApi.getContentControl(selectedContentControl.value.id)?.update({ temporary: !selectedContentControl.value.temporary })
       break
-    case 'doc.command.insert-character':
-      if (typeof params === 'string') insertCharacter(params)
-      break
     case 'doc.operation.toggle-outline': showOutline.value = !showOutline.value; break
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
     case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
@@ -2896,7 +3084,7 @@ function onRibbonExecute(id: string, params?: unknown) {
       if (page !== undefined) openStory({ page, area: 'header' })
       break
     }
-    case 'sidebar.operation.doc-paragraph-setting-panel': paragraphSettingsPanelOpen.value = true; commentsPanelOpen.value = false; break
+    case 'sidebar.operation.doc-paragraph-setting-panel': setParagraphSettingsPanelOpen(true); break
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
     case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
@@ -2918,7 +3106,9 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       </Upload>
     </header>
     <WorkbenchRibbon v-if="chrome.toolbar && !isFocusMode" v-model="activeTab" class="document-ribbon" :tabs="ribbonTabs" :variant="props.ribbonVariant"
-      :feature-search-scope="workbenchRef" label="文档功能区" @execute="onRibbonExecute">
+      :feature-search-scope="workbenchRef" :feature-search-context="featureSearchContext" :ui-host="workbenchUiHost" :shortcuts="ribbonShortcuts" label="文档功能区"
+      @context-command="(key, commandId, params) => selectDocumentContextMenuItem({ key, commandId, params }, featureSearchTarget)"
+      @shortcut-panel="value => { shortcutPanelOpen = value }" @execute="onRibbonExecute">
       <template #tab-extra>
         <div v-if="showFind" class="find-replace-toolbar">
           <div class="find-row">
@@ -2965,8 +3155,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         </SplitterPanel>
         <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
           <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">
-            <DocumentParagraphSettingsPanel :open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :mixed="toolbarState.mixedParagraph" :font-size="paragraphSettingsFontSize"
-              :line-metrics="paragraphSettingsLineMetrics" :selection-key="paragraphSettingsSelectionKey" :read-only="!canEditContextSelection || legacyStoryActive" @apply="applyParagraphSettings" @update:open="setParagraphSettingsPanelOpen" />
+            <DocumentParagraphSettingsPanel :open="paragraphSettingsPanelOpen" :style="paragraphSettingsStyle" :font-size="paragraphSettingsFontSize"
+              :line-metrics="paragraphSettingsLineMetrics" :selection-key="paragraphSettingsSelectionKey" :read-only="!inputStateActive || !canEditContextSelection || documentInputComposing" @apply="applyParagraphSettings" @update:open="setParagraphSettingsPanelOpen" />
           </aside>
           <aside v-else-if="commentsPanelOpen" class="document-comments-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.comments.title', 'Comments')">
             <DocumentCommentsPanel
@@ -2997,21 +3187,27 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Menu mode="vertical" :selectable="false" :items="documentContextMenuItems" @click="selectDocumentContextMenuItem" />
     </div>
     <Modal v-model:open="modalOpen" :title="modalTitle" ok-text="确定" cancel-text="取消" :width="440" destroy-on-hidden
-      :focus-trigger-after-close="!pictureReplacementRequest" :after-close="onInsertModalClosed"
+      :focus-trigger-after-close="modalKind === 'image' && !pictureReplacementRequest" :after-close="onInsertModalClosed"
       :keyboard="!insertModalComposing" :closable="!insertModalComposing" :mask-closable="!insertModalComposing" :cancel-button-props="{ disabled: insertModalComposing }"
-      :confirm-loading="pictureImageBusy" :ok-button-props="{ disabled: insertModalComposing || pictureImageBusy || !pictureReplacementState.available }" @ok="confirmModal">
-      <Form layout="vertical" class="insert-form" :disabled="pictureImageBusy || !pictureReplacementState.available" @submit.prevent @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false">
-        <FormItem :label="modalKind === 'image' ? '图片地址' : '链接地址'"><Input v-model:value="modalValue" placeholder="https://" allow-clear :disabled="pictureImageBusy || !pictureReplacementState.available" @press-enter="confirmModal" @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false" /></FormItem>
+      :confirm-loading="pictureImageBusy" :ok-button-props="{ disabled: insertModalComposing || pictureImageBusy || !insertModalAvailable }" @ok="confirmModal">
+      <Form layout="vertical" class="insert-form" :disabled="pictureImageBusy || !insertModalAvailable" @submit.prevent @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false">
+        <FormItem v-if="modalKind === 'link' && hyperlinkDialog?.link" :label="t('document.hyperlink.label', '显示文字')"><Input v-model:value="modalLabel" :disabled="!insertModalAvailable" @press-enter="confirmModal" /></FormItem>
+        <FormItem :label="modalKind === 'image' ? '图片地址' : t('document.hyperlink.address', '链接地址')"><Input v-model:value="modalValue" placeholder="https://" allow-clear :disabled="pictureImageBusy || !insertModalAvailable" @press-enter="confirmModal" @compositionstart="insertModalComposing = true" @compositionend="insertModalComposing = false" /></FormItem>
         <FormItem v-if="modalKind === 'image'" label="本地图片"><Upload accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" :show-upload-list="false" :before-upload="beforeImageUpload" :disabled="pictureImageBusy || !pictureReplacementState.available">
           <Button type="primary" :disabled="pictureImageBusy || !pictureReplacementState.available"><FileUp :size="15" />选择本地图片</Button>
         </Upload></FormItem>
       </Form>
       <Alert v-if="modalError" type="error" show-icon :message="modalError" role="alert" class="insert-error" />
+      <template v-if="modalKind === 'link'" #footer>
+        <Button v-if="hyperlinkDialog?.link" :disabled="insertModalComposing || !insertModalAvailable" @click="removeHyperlink">{{ t('document.hyperlink.remove', '移除链接') }}</Button>
+        <Button :disabled="insertModalComposing" @click="modalOpen = false">{{ t('common.cancel', '取消') }}</Button>
+        <Button type="primary" :disabled="insertModalComposing || !insertModalAvailable" @click="confirmModal">{{ t('common.apply', '应用') }}</Button>
+      </template>
     </Modal>
     <DocumentImagePanel :open="imagePanelOpen" :mode="imagePanelMode" :image="imagePanelImage" :editor-key="imagePanelKey" :busy="imagePanelBusy" :error="imagePanelError" :read-only="imagePanelReadOnly"
       @update:open="value => { if (!value) imageEditor.close() }" @apply="imageEditor.apply" @source="imageEditor.choose" @closed="imageEditor.closed" @composing="value => imagePanelComposing = value" />
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" :read-only="!canEditContextSelection || legacyStoryActive" @error="notify" />
-    <DocumentTableInsertDialog v-model:open="tableInsertOpen" @insert="insertTableFromDialog" />
+    <DocumentTableInsertDialog v-model:open="tableInsertOpen" :disabled="!inputStateActive || documentInputComposing || legacyStoryActive || !canEditContextSelection" @insert="insertTableFromDialog" />
     <DocumentTablePropertiesDialog v-if="tableProperties" :open="tableProperties.open" :model="editingModel" :selection="selection" :permission="permissionContext"
       :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="documentInputComposing"
       :layout="editingLayoutSource === model ? editingLayout : undefined"

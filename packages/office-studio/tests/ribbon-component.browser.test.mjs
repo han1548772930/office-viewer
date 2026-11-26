@@ -15,6 +15,9 @@ import { createApp, computed, h, ref } from 'vue'
 import { Button, ConfigProvider, theme } from 'antdv-next'
 import { Bold, Undo2 } from 'lucide-vue-next'
 import WorkbenchRibbon from '/packages/office-studio/src/platform/ribbon/WorkbenchRibbon.vue'
+import DocumentColorControl from '/packages/office-studio/src/components/document/DocumentColorControl.vue'
+import SheetColorControl from '/packages/office-studio/src/components/spreadsheet/SheetColorControl.vue'
+import SheetNumberFormatControl from '/packages/office-studio/src/components/spreadsheet/SheetNumberFormatControl.vue'
 const active = ref('home')
 const variant = ref('classic')
 const locked = ref(false)
@@ -27,6 +30,8 @@ const longTabTitles = ref(false)
 const popupTools = ref(false)
 const dark = ref(false)
 const customSlot = ref(false)
+const geometryTools = ref(false)
+const longCaptions = ref(false)
 const PopupPicker = {
   emits: ['insert'],
   setup(_props, { emit }) {
@@ -34,7 +39,8 @@ const PopupPicker = {
   },
 }
 window.ribbonInvocations = []
-window.ribbonFixture = { active, variant, locked, showContext, menusVisible, direction, family, bold, longTabTitles, popupTools, dark, customSlot }
+window.ribbonFixture = { active, variant, locked, showContext, menusVisible, direction, family, bold, longTabTitles, popupTools, dark, customSlot, geometryTools, longCaptions }
+window.ribbonContextInvocations = []
 const tabs = computed(() => menusVisible.value ? [
   { id: 'home', title: longTabTitles.value ? '开始与格式编辑' : '开始', order: 0, groups: [
     { id: 'history', title: '历史', items: [
@@ -72,8 +78,33 @@ const tabs = computed(() => menusVisible.value ? [
         { id: 'popup-split-last', type: 'button', title: '最后选项', commandId: 'doc.command.split-last' },
       ] },
       { id: 'popup-select', type: 'select', title: '选择测试', value: 'one', options: [{ label: '一', value: 'one' }], commandId: 'doc.command.select' },
+      { id: 'popup-large-menu', type: 'menu', title: '大号菜单', icon: Bold, children: [{ id: 'popup-large-action', type: 'button', title: '大号菜单动作', commandId: 'doc.command.large-action' }] },
     ] },
     { id: 'popup-custom', items: [{ id: 'custom-tool', type: 'button', title: '自定义工具', hidden: !customSlot.value, disabled: locked.value }] },
+  ] },
+  { id: 'data', title: '数据', order: 4, hidden: !geometryTools.value, groups: [{ id: 'data-alignment', items: [
+    { id: 'data-split', type: 'split', title: '数据拆分', icon: Bold, commandId: 'sheet.command.data-main', children: [
+      { id: 'data-split-option', type: 'button', title: '数据选项', commandId: 'sheet.command.data-option' },
+    ] },
+  ] }] },
+  { id: 'geometry-tools', title: '控件尺寸', order: 5, hidden: !geometryTools.value, groups: [
+    { id: 'geometry-font', items: [
+      { id: 'editable-font', type: 'select', edit: { kind: 'font' }, title: '编辑字体', commandId: 'doc.command.font', value: 'Arial', disabled: locked.value, width: 180, options: [{ label: 'Arial', value: 'Arial' }] },
+      { id: 'row-zoom', type: 'select', title: '缩放', commandId: 'sheet.operation.zoom', value: 100, disabled: locked.value, width: 88, options: [{ label: '100%', value: 100 }] },
+    ] },
+    { id: 'geometry-color', items: [
+      { id: 'document-color', type: 'split', title: longCaptions.value ? '文档字体颜色与当前选区颜色的长名称' : '文档颜色', icon: Bold, inlineComponent: DocumentColorControl,
+        popupCommandId: 'doc.command.format-text', popupProps: { title: longCaptions.value ? '文档字体颜色与当前选区颜色的长名称' : '文档颜色', field: 'color', icon: Bold, defaultColor: '#000000' } },
+      { id: 'sheet-color', type: 'split', title: longCaptions.value ? '表格填充颜色与当前选区颜色的长名称' : '表格颜色', icon: Bold, inlineComponent: SheetColorControl,
+        popupProps: { title: longCaptions.value ? '表格填充颜色与当前选区颜色的长名称' : '表格颜色', field: 'background', commandId: 'sheet.command.set-background', icon: Bold, defaultColor: '#315bc2' } },
+    ] },
+    { id: 'geometry-format', items: [
+      { id: 'number-format', type: 'select', title: '数字格式', inlineComponent: SheetNumberFormatControl, popupProps: { pattern: '0.00', title: '数字格式' }, popupCommandId: 'sheet.command.set-number-format' },
+    ] },
+    { id: 'geometry-dropdown', items: [
+      { id: 'row-dropdown', type: 'menu', title: '下拉菜单', icon: Bold, children: [{ id: 'row-action', type: 'button', title: '下拉菜单动作', commandId: 'doc.command.row-action' }] },
+      { id: 'caption-dropdown', type: 'menu', title: longCaptions.value ? '带有很长标题文字的下拉菜单' : '标题菜单', icon: Bold, children: [{ id: 'caption-action', type: 'button', title: '标题菜单动作', commandId: 'doc.command.caption-action' }] },
+    ] },
   ] },
 ] : [])
 const gridLayoutById = {
@@ -90,10 +121,29 @@ const gridLayoutById = {
   'popup-other': { row: 2, column: 1 },
   'popup-split': { row: 1, column: 2, rowSpan: 2 },
   'popup-select': { row: 1, column: 3, width: 96 },
+  'popup-large-menu': { row: 1, column: 4, rowSpan: 2, width: 84, showLabel: true },
   'custom-tool': { row: 1, column: 1, rowSpan: 2, width: 120 },
+  'data-split': { row: 1, column: 1, width: 56, showLabel: false },
+  'editable-font': { row: 1, column: 1, width: 180, minWidth: 120 },
+  'row-zoom': { row: 2, column: 1, width: 88, showLabel: true },
+  'document-color': { row: 1, column: 1, width: 40, minWidth: 38 },
+  'sheet-color': { row: 2, column: 1, width: 40, minWidth: 38 },
+  'number-format': { row: 1, column: 1, width: 160 },
+  'row-dropdown': { row: 1, column: 1, width: 40 },
+  'caption-dropdown': { row: 2, column: 1, width: 112, minWidth: 88, showLabel: true },
 }
 const gridTabs = computed(() => tabs.value.map((tab) => ({ ...tab, groups: tab.groups.map((group) => ({ ...group, items: group.items.map((item) => ({ ...item, gridLayout: gridLayoutById[item.id] })) })) })))
-createApp({ render() { return h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#315bc2' } }, direction: direction.value }, { default: () => h(WorkbenchRibbon, { tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value, 'onUpdate:modelValue': (value) => active.value = value, onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value } }, { 'tab-extra': () => null, 'item-custom-tool': ({ item, execute, overflow }) => h(Button, { disabled: item.disabled, onClick: () => execute('doc.command.custom', { overflow: Boolean(overflow) }) }, () => '自定义动作') }) }) } }).mount('#app')
+createApp({ render() { return h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#315bc2' } }, direction: direction.value }, { default: () => h(WorkbenchRibbon, {
+  tabs: gridTabs.value, variant: variant.value, modelValue: active.value, direction: direction.value,
+  featureSearchScope: document.getElementById('app'),
+  shortcuts: [{ title: '重做', shortcut: 'Ctrl+Shift+Z' }, { title: '切换工作表', shortcut: 'Control+PageDown' }],
+  featureSearchContext: () => [{ id: 'context', items: [{ id: 'context-style', type: 'select', title: '上下文段落样式', options: [
+    { value: 'heading', label: '搜索测试标题', commandId: 'doc.command.set-paragraph-named-style', params: { namedStyle: 'heading1' } },
+  ] }] }],
+  onContextCommand: (key, commandId, params) => window.ribbonContextInvocations.push([key, commandId, params]),
+  'onUpdate:modelValue': (value) => active.value = value,
+  onExecute: (id, params) => { window.ribbonInvocations.push([id, params]); if (id === 'doc.command.font') family.value = params; if (id === 'doc.command.bold') bold.value = !bold.value },
+}, { 'tab-extra': () => null, 'item-custom-tool': ({ item, execute, overflow }) => h(Button, { disabled: item.disabled, onClick: () => execute('doc.command.custom', { overflow: Boolean(overflow) }) }, () => '自定义动作') }) }) } }).mount('#app')
 `
 
 beforeAll(async () => {
@@ -196,6 +246,15 @@ test('classic rows center their contents and match reference button, selector, g
   assert.equal(geometry.itemGap, 8)
   assert.equal(geometry.emptyExtraHidden, true)
   assert.notEqual(geometry.selectedTabBackground, geometry.unselectedTabBackground)
+  const selectedTab = page.getByRole('tab', { name: '开始', exact: true })
+  const tabBounds = await selectedTab.boundingBox()
+  await selectedTab.hover()
+  await expect.poll(() => selectedTab.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(geometry.selectedTabBackground)
+  assert.deepEqual(await selectedTab.evaluate(element => {
+    const style = getComputedStyle(element)
+    return [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
+  }), ['0px', '0px', '0px', '0px'])
+  assert.deepEqual(await selectedTab.boundingBox(), tabBounds)
   assert.deepEqual(errors, [])
 })
 
@@ -482,7 +541,7 @@ test('popup-component menus remain available and dispatch their payload in both 
     await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
     const trigger = page.getByRole('button', { name: '符号选择', exact: true })
     await trigger.click()
-    const menu = page.getByRole('menu', { name: '符号选择', exact: true })
+    const menu = page.getByRole('dialog', { name: '符号选择', exact: true })
     await expect(menu).toBeVisible()
     await menu.getByRole('button', { name: '插入测试符号', exact: true }).click()
     await expect(menu).toBeHidden()
@@ -498,9 +557,9 @@ test('sibling menus and selects share one open popup without closing the active 
   const first = page.getByRole('button', { name: '符号选择', exact: true })
   const second = page.getByRole('button', { name: '其他选项', exact: true })
   await first.click()
-  await expect(page.getByRole('menu', { name: '符号选择', exact: true })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '符号选择', exact: true })).toBeVisible()
   await second.click()
-  await expect(page.getByRole('menu', { name: '符号选择', exact: true })).toBeHidden()
+  await expect(page.getByRole('dialog', { name: '符号选择', exact: true })).toBeHidden()
   await expect(page.getByRole('menu', { name: '其他选项', exact: true })).toBeVisible()
   await page.evaluate(() => { window.ribbonFixture.locked.value = true })
   await expect(page.getByRole('menu', { name: '其他选项', exact: true })).toBeVisible()
@@ -559,5 +618,366 @@ test('ConfigProvider theme and direction reach Ribbon controls and portaled comm
   assert.equal(await red.evaluate(element => getComputedStyle(element).color), darkText)
   await page.evaluate(() => { window.ribbonFixture.dark.value = false })
   await expect.poll(() => red.evaluate(element => getComputedStyle(element).color)).toBe(light.text)
+  assert.deepEqual(errors, [])
+})
+
+function measureRibbonButtons(buttons) {
+  return buttons.map(button => {
+    const bounds = button.getBoundingClientRect()
+    const style = getComputedStyle(button)
+    const arrow = button.querySelector('.ribbon-dropdown-chevron, .ribbon-grid-more-label svg')
+      ?? (button.closest('.document-color-arrow, .sheet-color-arrow') || button.classList.contains('sheet-number-format-trigger') ? button.querySelector('svg') : null)
+    const arrowBounds = arrow?.getBoundingClientRect()
+    const captionBounds = (arrow?.closest('.ribbon-dropdown-caption, .ribbon-grid-more-label') ?? button).getBoundingClientRect()
+    return {
+      title: button.getAttribute('aria-label'), width: bounds.width, height: bounds.height,
+      borders: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth],
+      hit: document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)?.closest('button') === button,
+      contents: [...button.querySelectorAll('svg, .ribbon-button-label, .ribbon-dropdown-caption, .ribbon-grid-more-label, .document-color-bar, .sheet-color-bar, .document-color-main-label, .sheet-color-main-label, .sheet-number-format-trigger > span')].map(element => {
+        const content = element.getBoundingClientRect()
+        return { className: element.getAttribute('class'), within: content.left >= bounds.left - 0.5 && content.right <= bounds.right + 0.5 && content.top >= bounds.top - 0.5 && content.bottom <= bounds.bottom + 0.5 }
+      }),
+      arrow: arrowBounds ? { width: arrowBounds.width, height: arrowBounds.height, centerOffset: (arrowBounds.top + arrowBounds.bottom - captionBounds.top - captionBounds.bottom) / 2,
+        horizontalOffset: button.classList.contains('ribbon-split-arrow') || button.closest('.document-color-arrow, .sheet-color-arrow') ? (arrowBounds.left + arrowBounds.right - bounds.left - bounds.right) / 2 : 0 } : null,
+    }
+  })
+}
+
+function assertRibbonButtonGeometry(buttons) {
+  for (const button of buttons) {
+    assert.equal(button.hit, true, JSON.stringify(button))
+    assert.ok(button.contents.every(content => content.within), JSON.stringify(button))
+    if (!button.arrow) continue
+    assert.equal(button.arrow.width, 12, JSON.stringify(button))
+    assert.equal(button.arrow.height, 12, JSON.stringify(button))
+    assert.ok(Math.abs(button.arrow.centerOffset) <= 0.5, JSON.stringify(button))
+    assert.ok(Math.abs(button.arrow.horizontalOffset) <= 0.05, JSON.stringify(button))
+  }
+}
+
+test.each([['classic', 'ltr', false], ['classic', 'rtl', true], ['grid', 'ltr', false], ['grid', 'rtl', true]])('%s %s dark %s dropdown captions and split arrows fit their toolbar and overflow hover rectangles', async (variant, direction, dark) => {
+  await page.evaluate(({ variant, direction, dark }) => {
+    window.ribbonFixture.variant.value = variant
+    window.ribbonFixture.direction.value = direction
+    window.ribbonFixture.dark.value = dark
+    window.ribbonFixture.popupTools.value = true
+  }, { variant, direction, dark })
+  await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+  const toolbar = page.getByRole('toolbar', { name: '弹层工具', exact: true })
+  const buttons = await toolbar.locator('button:visible').evaluateAll(measureRibbonButtons)
+  assert.equal(buttons.length, 5)
+  assertRibbonButtonGeometry(buttons)
+  for (const button of buttons) assert.deepEqual(button.borders, ['0px', '0px', '0px', '0px'])
+  const arrow = toolbar.getByRole('button', { name: '分离菜单选项', exact: true })
+  const main = toolbar.getByRole('button', { name: '分离菜单', exact: true })
+  const mainBounds = await main.boundingBox()
+  const arrowBounds = await arrow.boundingBox()
+  assert.equal(arrowBounds.height, mainBounds.height)
+  assert.equal(arrowBounds.height, variant === 'grid' ? 52 : 28)
+  assert.equal(arrowBounds.width, variant === 'grid' ? 16 : 24)
+  const initial = await arrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  await arrow.hover()
+  await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(initial)
+  await expect.poll(() => arrow.evaluate(element => element.getAnimations().length)).toBe(0)
+  assert.equal(await main.evaluate(element => element.matches(':hover')), false)
+  const hoverBackground = await arrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  assert.deepEqual(await arrow.boundingBox(), arrowBounds)
+  await page.mouse.down()
+  assert.equal(await arrow.evaluate(element => element.matches(':active')), true)
+  const pressed = await arrow.evaluateAll(measureRibbonButtons)
+  assertRibbonButtonGeometry(pressed)
+  assert.deepEqual(pressed[0].borders, ['0px', '0px', '0px', '0px'])
+  assert.deepEqual(await arrow.boundingBox(), arrowBounds)
+  await page.mouse.move(1, 1)
+  await page.mouse.up()
+  await arrow.press('ArrowDown')
+  await expect(arrow).toHaveAttribute('aria-expanded', 'true')
+  await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(hoverBackground)
+  await expect.poll(() => arrow.evaluate(element => element.getAnimations().length)).toBe(0)
+  const openBackground = await arrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  await arrow.hover()
+  assert.equal(await arrow.evaluate(element => getComputedStyle(element).backgroundColor), openBackground)
+  assert.deepEqual(await arrow.boundingBox(), arrowBounds)
+  await arrow.press('Escape')
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  const textSplit = page.getByRole('toolbar', { name: '开始', exact: true }).locator('[data-ribbon-item="list-toggle"]')
+  await expect(textSplit).toBeVisible()
+  assertRibbonButtonGeometry(await textSplit.locator('button').evaluateAll(measureRibbonButtons))
+  const textArrow = textSplit.getByRole('button', { name: '列表选项', exact: true })
+  assert.deepEqual(await textArrow.evaluate(element => {
+    const style = getComputedStyle(element)
+    return [style.paddingInlineStart, style.paddingInlineEnd]
+  }), ['0px', '0px'])
+  assert.equal((await textArrow.boundingBox()).width, variant === 'grid' ? 16 : 24)
+  await textArrow.hover()
+  assert.equal(await textSplit.getByRole('button', { name: '列表', exact: true }).evaluate(element => element.matches(':hover')), false)
+  await page.getByRole('tab', { name: '弹层工具', exact: true }).click()
+  await page.setViewportSize({ width: 200, height: 700 })
+  const more = page.getByRole('button', { name: '更多功能', exact: true })
+  await more.focus()
+  await more.press('ArrowDown')
+  const popup = page.getByRole('dialog', { name: '更多功能', exact: true })
+  await expect(popup).toBeVisible()
+  assertRibbonButtonGeometry(await popup.locator('button:visible').evaluateAll(measureRibbonButtons))
+  const overflowArrow = popup.getByRole('button', { name: '分离菜单选项', exact: true })
+  const overflowMain = popup.getByRole('button', { name: '分离菜单', exact: true })
+  assert.equal((await overflowArrow.boundingBox()).width, 24)
+  assert.equal((await overflowArrow.boundingBox()).height, 28)
+  const overflowInitial = await overflowArrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  await overflowArrow.hover()
+  await expect.poll(() => overflowArrow.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(overflowInitial)
+  assert.equal(await overflowMain.evaluate(element => element.matches(':hover')), false)
+  await page.keyboard.press('Escape')
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await more.focus()
+  await more.press('ArrowDown')
+  const overflowTextSplit = popup.locator('[data-ribbon-item="list-toggle"]')
+  await expect(overflowTextSplit).toBeVisible()
+  assertRibbonButtonGeometry(await overflowTextSplit.locator('button').evaluateAll(measureRibbonButtons))
+  assert.deepEqual(await overflowTextSplit.getByRole('button', { name: '列表选项', exact: true }).evaluate(element => {
+    const style = getComputedStyle(element)
+    return [element.getBoundingClientRect().width, style.paddingInlineStart, style.paddingInlineEnd]
+  }), [24, '0px', '0px'])
+  assert.deepEqual(errors, [])
+})
+
+test.each(['ltr', 'rtl'])('data grid %s aligns the main action to the start and centers its independent split arrow', async direction => {
+  await page.evaluate(value => {
+    window.ribbonFixture.variant.value = 'grid'
+    window.ribbonFixture.direction.value = value
+    window.ribbonFixture.geometryTools.value = true
+  }, direction)
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  const item = page.locator('.ribbon-grid-toolbar [data-ribbon-item="data-split"]')
+  await expect(item).toHaveClass(/is-grid-align-start/)
+  assertRibbonButtonGeometry(await item.locator('button').evaluateAll(measureRibbonButtons))
+  const main = item.getByRole('button', { name: '数据拆分', exact: true })
+  const arrow = item.getByRole('button', { name: '数据拆分选项', exact: true })
+  assert.equal(await main.evaluate(element => getComputedStyle(element).justifyContent), 'flex-start')
+  assert.equal(await arrow.evaluate(element => getComputedStyle(element).justifyContent), 'center')
+  assert.equal((await arrow.boundingBox()).width, 16)
+  assert.equal((await arrow.boundingBox()).height, 24)
+  await arrow.hover()
+  assert.equal(await main.evaluate(element => element.matches(':hover')), false)
+  await arrow.click()
+  await page.getByRole('menuitem', { name: '数据选项', exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [['sheet.command.data-option', undefined]])
+  assert.deepEqual(errors, [])
+})
+
+test.each([['classic', 'ltr', 1200], ['classic', 'rtl', 200], ['grid', 'rtl', 1200], ['grid', 'ltr', 200]])('%s %s color presets keep square swatches within their hover padding at %spx', async (variant, direction, width) => {
+  await page.setViewportSize({ width, height: 700 })
+  await page.evaluate(({ variant, direction }) => {
+    window.ribbonFixture.variant.value = variant
+    window.ribbonFixture.direction.value = direction
+    window.ribbonFixture.geometryTools.value = true
+  }, { variant, direction })
+  await page.getByRole('tab', { name: '控件尺寸', exact: true }).click()
+  if (width === 200) {
+    const more = page.getByRole('button', { name: '更多功能', exact: true })
+    await more.focus()
+    await more.press('ArrowDown')
+  }
+  const scope = width === 200 ? page.getByRole('dialog', { name: '更多功能', exact: true }) : page.getByRole('toolbar', { name: '控件尺寸', exact: true })
+  for (const product of ['document', 'sheet']) {
+    await scope.locator('[data-ribbon-item="' + product + '-color"] .' + product + '-color-arrow button').click()
+    const panel = page.locator('.' + product + '-color-panel:visible')
+    await expect(panel).toBeVisible()
+    const presets = panel.locator('.' + product + '-color-preset')
+    await expect(presets).toHaveCount(45)
+    const firstColor = await presets.first().getAttribute('aria-label')
+    assert.equal(await presets.first().getAttribute('title'), null)
+    for (const dark of [false, true]) {
+      await page.evaluate(value => { window.ribbonFixture.dark.value = value }, dark)
+      await page.mouse.move(0, 650)
+      const bounds = await presets.first().boundingBox()
+      const background = await presets.first().evaluate(element => getComputedStyle(element).backgroundColor)
+      await presets.first().hover()
+      await expect.poll(() => presets.first().evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(background)
+      await expect(page.locator('.ant-tooltip-inner:visible')).toHaveText(firstColor)
+      assert.deepEqual(await presets.first().boundingBox(), bounds)
+      const geometry = await presets.evaluateAll(buttons => buttons.map(button => {
+        const bounds = button.getBoundingClientRect()
+        const style = getComputedStyle(button)
+        const swatch = button.firstElementChild.getBoundingClientRect()
+        return {
+          width: bounds.width, height: bounds.height, swatchWidth: swatch.width, swatchHeight: swatch.height,
+          withinPadding: swatch.left >= bounds.left + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.borderLeftWidth) - 0.5
+            && swatch.right <= bounds.right - Number.parseFloat(style.paddingRight) - Number.parseFloat(style.borderRightWidth) + 0.5
+            && swatch.top >= bounds.top + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.borderTopWidth) - 0.5
+            && swatch.bottom <= bounds.bottom - Number.parseFloat(style.paddingBottom) - Number.parseFloat(style.borderBottomWidth) + 0.5,
+          centerX: (swatch.left + swatch.right - bounds.left - bounds.right) / 2,
+          centerY: (swatch.top + swatch.bottom - bounds.top - bounds.bottom) / 2,
+        }
+      }))
+      for (const preset of geometry) {
+        assert.equal(preset.height, 32, JSON.stringify(preset))
+        assert.ok(preset.width <= 32.5, JSON.stringify(preset))
+        assert.ok(Math.abs(preset.swatchWidth - preset.swatchHeight) <= 0.5, JSON.stringify(preset))
+        assert.ok(preset.swatchWidth > 0 && preset.swatchWidth <= 24.5, JSON.stringify(preset))
+        assert.equal(preset.withinPadding, true, JSON.stringify(preset))
+        assert.ok(Math.abs(preset.centerX) <= 0.5 && Math.abs(preset.centerY) <= 0.5, JSON.stringify(preset))
+        if (width === 1200) assert.equal(preset.swatchWidth, 24, JSON.stringify(preset))
+      }
+      await page.mouse.move(0, 650)
+      await presets.first().focus()
+      await expect(page.locator('.ant-tooltip-inner:visible')).toHaveText(firstColor)
+      await presets.first().evaluate(button => button.blur())
+    }
+    await page.keyboard.press('Escape')
+    await expect(panel).toHaveCount(0)
+  }
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
+  assert.deepEqual(errors, [])
+})
+
+test.each(['ltr', 'rtl'])('compressed grid %s keeps editable inputs, row labels and both color controls inside their cells', async direction => {
+  await page.setViewportSize({ width: 520, height: 700 })
+  await page.evaluate(value => {
+    window.ribbonFixture.direction.value = value
+    window.ribbonFixture.variant.value = 'grid'
+    window.ribbonFixture.geometryTools.value = true
+  }, direction)
+  await page.getByRole('tab', { name: '控件尺寸', exact: true }).click()
+  const toolbar = page.getByTestId('ribbon-grid-toolbar')
+  await expect.poll(() => toolbar.evaluate(element => element.style.getPropertyValue('--ribbon-grid-density'))).toBe('1')
+  assert.equal(await toolbar.locator('.ribbon-grid-group:not(.is-hidden)').count(), 4)
+  const geometry = await toolbar.evaluate(element => {
+    const fontElement = element.querySelector('[data-ribbon-item="editable-font"] .ribbon-edit')
+    const font = fontElement.getBoundingClientRect()
+    const fontStyle = getComputedStyle(fontElement)
+    const input = element.querySelector('[data-ribbon-item="editable-font"] .ant-select').getBoundingClientRect()
+    const zoom = element.querySelector('[data-ribbon-item="row-zoom"]').getBoundingClientRect()
+    const title = element.querySelector('[data-ribbon-item="row-zoom"] label').getBoundingClientRect()
+    const select = element.querySelector('[data-ribbon-item="row-zoom"] .ribbon-select').getBoundingClientRect()
+    return { fontWidth: font.width, inputWidth: input.width, inputHeight: input.height, fontHeight: font.height,
+      fontContentWidth: font.width - Number.parseFloat(fontStyle.borderInlineStartWidth) - Number.parseFloat(fontStyle.borderInlineEndWidth),
+      fontContentHeight: font.height - Number.parseFloat(fontStyle.borderTopWidth) - Number.parseFloat(fontStyle.borderBottomWidth),
+      labelWithinRow: title.top >= zoom.top && title.bottom <= zoom.bottom,
+      selectWithinRow: select.top >= zoom.top && select.bottom <= zoom.bottom,
+      rowHeight: zoom.height,
+      colors: [...element.querySelectorAll('.document-color-control, .sheet-color-control')].map(control => ({ width: control.getBoundingClientRect().width, height: control.getBoundingClientRect().height })),
+    }
+  })
+  assert.equal(geometry.fontWidth, 120)
+  assert.equal(geometry.inputWidth, geometry.fontContentWidth)
+  assert.equal(geometry.inputHeight, geometry.fontContentHeight)
+  assert.equal(geometry.fontHeight, 24)
+  assert.equal(geometry.rowHeight, 24)
+  assert.equal(geometry.labelWithinRow, true)
+  assert.equal(geometry.selectWithinRow, true)
+  assert.deepEqual(geometry.colors, [{ width: 38, height: 24 }, { width: 38, height: 24 }])
+  assertRibbonButtonGeometry(await toolbar.locator('button:visible').evaluateAll(measureRibbonButtons))
+  const arrow = toolbar.locator('.document-color-arrow button')
+  const light = await arrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  await arrow.hover()
+  await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(light)
+  const lightHover = await arrow.evaluate(element => getComputedStyle(element).backgroundColor)
+  await page.evaluate(() => { window.ribbonFixture.dark.value = true })
+  await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(lightHover)
+  assertRibbonButtonGeometry(await toolbar.locator('button:visible').evaluateAll(measureRibbonButtons))
+  assert.deepEqual(errors, [])
+})
+
+test.each(['classic', 'grid'])('%s disabled editable and standard selectors keep their background while hovered', async variant => {
+  await page.evaluate(value => {
+    window.ribbonFixture.variant.value = value
+    window.ribbonFixture.geometryTools.value = true
+    window.ribbonFixture.locked.value = true
+  }, variant)
+  await page.getByRole('tab', { name: '控件尺寸', exact: true }).click()
+  const toolbar = page.getByRole('toolbar', { name: '控件尺寸', exact: true })
+  for (const dark of [false, true]) {
+    await page.evaluate(value => { window.ribbonFixture.dark.value = value }, dark)
+    for (const id of ['editable-font', 'row-zoom']) {
+      const selector = toolbar.locator('[data-ribbon-item="' + id + '"] .ribbon-select')
+      await page.mouse.move(0, 650)
+      const initial = await selector.evaluate(element => getComputedStyle(element).backgroundColor)
+      await selector.hover()
+      assert.equal(await selector.evaluate(element => getComputedStyle(element).backgroundColor), initial)
+      assert.equal(await selector.evaluate(element => element.closest('[data-ribbon-item]').classList.contains('is-disabled')), true)
+    }
+  }
+  await expect(toolbar.getByRole('combobox', { name: '编辑字体', exact: true })).toBeDisabled()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
+  assert.deepEqual(errors, [])
+})
+
+test.each([['classic', 'ltr', false], ['classic', 'rtl', true], ['grid', 'ltr', false], ['grid', 'rtl', true]])('%s %s overflow contains long captions, selectors, colors and number-format hover areas', async (variant, direction, dark) => {
+  await page.setViewportSize({ width: 200, height: 700 })
+  await page.evaluate(({ variant, direction, dark }) => {
+    window.ribbonFixture.variant.value = variant
+    window.ribbonFixture.direction.value = direction
+    window.ribbonFixture.dark.value = dark
+    window.ribbonFixture.geometryTools.value = true
+    window.ribbonFixture.longCaptions.value = true
+  }, { variant, direction, dark })
+  await page.getByRole('tab', { name: '控件尺寸', exact: true }).click()
+  const more = page.getByRole('button', { name: '更多功能', exact: true })
+  const initial = await more.evaluate(element => getComputedStyle(element).backgroundColor)
+  const normalBounds = await more.boundingBox()
+  await more.hover()
+  await expect.poll(() => more.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(initial)
+  await expect.poll(() => more.evaluate(element => element.getAnimations().length)).toBe(0)
+  const hoverBackground = await more.evaluate(element => getComputedStyle(element).backgroundColor)
+  const moreBounds = await more.boundingBox()
+  assert.deepEqual(moreBounds, normalBounds)
+  const tooltip = page.getByRole('tooltip', { name: '更多功能', exact: true })
+  await expect(tooltip).toBeVisible()
+  assertRibbonButtonGeometry(await more.evaluateAll(measureRibbonButtons))
+  assert.deepEqual((await more.evaluateAll(measureRibbonButtons))[0].borders, ['0px', '0px', '0px', '0px'])
+  await more.focus()
+  await more.press('ArrowDown')
+  const popup = page.getByRole('dialog', { name: '更多功能', exact: true })
+  await expect(popup).toBeVisible()
+  await expect(tooltip).toBeHidden()
+  assert.equal(await more.getAttribute('aria-expanded'), 'true')
+  await expect.poll(() => more.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(hoverBackground)
+  await expect.poll(() => more.evaluate(element => element.getAnimations().length)).toBe(0)
+  const openBackground = await more.evaluate(element => getComputedStyle(element).backgroundColor)
+  await more.hover()
+  assert.equal(await more.evaluate(element => getComputedStyle(element).backgroundColor), openBackground)
+  assert.deepEqual(await more.boundingBox(), moreBounds)
+  await expect(tooltip).toBeHidden()
+  assert.equal(await popup.locator('[data-ribbon-item]').count(), 7)
+  assertRibbonButtonGeometry(await popup.locator('button').evaluateAll(measureRibbonButtons))
+  const colors = await popup.locator('.document-color-control, .sheet-color-control').evaluateAll(elements => elements.map(element => {
+    const label = element.querySelector('.document-color-main-label, .sheet-color-main-label')
+    return { height: element.getBoundingClientRect().height, ellipsis: getComputedStyle(label).textOverflow, clipped: label.scrollWidth > label.clientWidth }
+  }))
+  assert.deepEqual(colors, [{ height: 28, ellipsis: 'ellipsis', clipped: true }, { height: 28, ellipsis: 'ellipsis', clipped: true }])
+  const selector = await popup.locator('[data-ribbon-item="editable-font"] .ant-select').boundingBox()
+  assert.equal(selector.height, 28)
+  const numberFormat = popup.getByRole('button', { name: '数字格式', exact: true })
+  assert.equal((await numberFormat.boundingBox()).height, 28)
+  await numberFormat.click()
+  await page.getByRole('menu', { name: '数字格式', exact: true }).getByText('百分比', { exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations.at(-1)), ['sheet.command.set-number-format', { pattern: '0.00%' }])
+  await expect(popup).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(more).toBeFocused()
+  assert.equal(await more.getAttribute('aria-expanded'), 'false')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  assert.deepEqual(errors, [])
+})
+
+test('feature search forwards the context selector command and complete parameters, and the shortcut panel lists editor shortcuts', async () => {
+  await page.getByRole('tab', { name: '开始', exact: true }).focus()
+  await page.keyboard.press('Control+Shift+P')
+  const search = page.getByRole('dialog', { name: '搜索功能', exact: true })
+  await expect(search).toBeVisible()
+  await search.getByRole('combobox', { name: '搜索功能', exact: true }).fill('搜索测试标题')
+  await search.getByText('搜索测试标题', { exact: true }).click()
+  await expect(search).toBeHidden()
+  assert.deepEqual(await page.evaluate(() => window.ribbonContextInvocations), [['context-style', 'doc.command.set-paragraph-named-style', { namedStyle: 'heading1' }]])
+  assert.deepEqual(await page.evaluate(() => window.ribbonInvocations), [])
+  await page.getByRole('tab', { name: '开始', exact: true }).focus()
+  await page.keyboard.press('Control+Backslash')
+  const panel = page.getByRole('dialog', { name: '快捷键面板', exact: true })
+  await expect(panel).toBeVisible()
+  await expect(panel.getByText('重做', { exact: true })).toBeVisible()
+  await expect(panel.getByText('Ctrl+Shift+Z', { exact: true })).toBeVisible()
+  await expect(panel.getByText('切换工作表', { exact: true })).toBeVisible()
+  await expect(panel.getByText('Control+PageDown', { exact: true })).toBeVisible()
   assert.deepEqual(errors, [])
 })

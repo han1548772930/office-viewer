@@ -30,7 +30,7 @@ export function sheetOutlineCommandForShortcut(event: Pick<KeyboardEvent, 'key' 
     if (event.key === 'ArrowRight') return 'sheet.command.outline-selected-dimension-shortcut'
     if (event.key === 'ArrowLeft') return 'sheet.command.clear-selected-dimension-outlines-shortcut'
   }
-  if (mac && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+  if (mac && (event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey) {
     if (event.key.toLowerCase() === 'k') return 'sheet.command.outline-selected-dimension-shortcut'
     if (event.key.toLowerCase() === 'j') return 'sheet.command.clear-selected-dimension-outlines-shortcut'
   }

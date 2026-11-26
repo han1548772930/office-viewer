@@ -45,6 +45,7 @@ function onKey(event: KeyboardEvent) {
 
 <style scoped>
 .ribbon-edit { display: inline-flex; min-width: 0; height: var(--ribbon-selector-height); align-items: center; }
-.ribbon-edit :deep(.ant-select) { width: 100%; min-width: 0; height: 100%; font-size: inherit; }
-.ribbon-edit :deep(.ant-select-suffix) { pointer-events: none; }
+.ribbon-edit :deep(.ant-select) { box-sizing: border-box; width: 100%; min-width: 0; height: 100%; align-items: center; padding-block: 0; font-size: inherit; line-height: inherit; }
+.ribbon-edit :deep(.ant-select-suffix) { display: inline-flex; align-items: center; justify-content: center; line-height: 0; pointer-events: none; }
+.ribbon-edit :deep(.ant-select-suffix svg) { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
 </style>

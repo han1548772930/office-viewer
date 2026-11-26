@@ -87,6 +87,25 @@ test('filter preflight, stale revisions and cancelled commands preserve model an
   } finally { studio.dispose() }
 })
 
+test('detached filter clearing resets derived rows without relying on a workbook commit', () => {
+  const { studio, workbook, range, target } = setup()
+  try {
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: { 0: { kind: 'values', selectedItems: ['东'] } } })
+    const detached = JSON.parse(JSON.stringify(workbook.save()))
+    detached.sheets[0].hiddenRows = [2]
+    const cells = JSON.parse(JSON.stringify(detached.sheets[0].cells))
+    const before = JSON.stringify(studio.getWorkbookModel(workbook.getId()))
+    assert.deepEqual(detached.sheets[0].autoFilter.filteredRows, [2, 4])
+    panel.configureFilterFromPanel(detached, { ...target, range, columns: {} })
+    assert.deepEqual(detached.sheets[0].autoFilter.range, range)
+    assert.deepEqual(detached.sheets[0].autoFilter.columns, {})
+    assert.deepEqual(detached.sheets[0].autoFilter.filteredRows, [])
+    assert.deepEqual(detached.sheets[0].hiddenRows, [2])
+    assert.deepEqual(detached.sheets[0].cells, cells)
+    assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), before)
+  } finally { studio.dispose() }
+})
+
 test('empty choices hide all rows while clear and remove keep manual hiding separate', () => {
   const { studio, workbook, sheet, range, target } = setup()
   try {
@@ -94,6 +113,7 @@ test('empty choices hide all rows while clear and remove keep manual hiding sepa
     studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: { 0: { kind: 'values', selectedItems: [] } } })
     assert.deepEqual(sheet.getFilteredRows(), [1, 2, 3, 4])
     studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: {} })
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [])
     assert.deepEqual(sheet.getFilteredRows(), [])
     studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range: null, columns: {} })
     assert.equal(sheet.getAutoFilter(), null)
@@ -101,7 +121,7 @@ test('empty choices hide all rows while clear and remove keep manual hiding sepa
   } finally { studio.dispose() }
 })
 
-test('filter toggle, clear criteria and reapply are undoable worksheet commands', () => {
+test('filter toggle and clearing are undoable while reapply preserves content history', () => {
   const { studio, workbook, sheet, range, target } = setup()
   try {
     studio.executeCommandSync('sheet.command.toggle-auto-filter', { ...target, range })
@@ -117,11 +137,17 @@ test('filter toggle, clear criteria and reapply are undoable worksheet commands'
 
     const modelSheet = studio.getWorkbookModel(workbook.getId()).sheets[0]
     modelSheet.autoFilter.filteredRows = []
+    const beforeReapply = JSON.parse(JSON.stringify(studio.editor.history.units[workbook.getId()]))
+    const modified = workbook.save().modified
     studio.executeCommandSync('sheet.command.reapply-filter', target)
     assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [2, 4])
-    workbook.undo()
-    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [])
+    assert.deepEqual(studio.editor.history.units[workbook.getId()].undo, beforeReapply.undo)
+    assert.deepEqual(studio.editor.history.units[workbook.getId()].redo, beforeReapply.redo)
+    assert.equal(workbook.save().modified, modified)
     workbook.redo()
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.columns, {})
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [])
+    workbook.undo()
     assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].autoFilter.filteredRows, [2, 4])
 
     studio.executeCommandSync('sheet.command.toggle-auto-filter', { ...target, range })

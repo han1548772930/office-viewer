@@ -38,7 +38,7 @@ export function registerPublicSparklineCommands(studio: OfficeStudio): void {
       request = { kind: 'insert', sourceRanges: references(raw.sourceRanges), targetRanges: references(raw.targetRanges, true), settings: sparklineConfigFromPublic(raw.config ?? {}) }
     } else if (id === SPARKLINE_PUBLIC_COMMANDS.remove) {
       if ('isSingle' in raw && raw.isSingle !== undefined && typeof raw.isSingle !== 'boolean') throw new TypeError('迷你图删除模式无效。')
-      request = { kind: 'clear', ranges: references(ranges, true), scope: 'isSingle' in raw && raw.isSingle ? 'item' : 'group' }
+      request = { kind: 'clear', ranges: references(ranges, true), scope: 'isSingle' in raw && raw.isSingle === false ? 'group' : 'item' }
     } else {
       if (!('isChangeDataSource' in raw) || typeof raw.isChangeDataSource !== 'boolean' || !raw.config || typeof raw.config !== 'object') throw new TypeError('迷你图设置命令缺少配置。')
       if (raw.combine !== undefined && typeof raw.combine !== 'boolean' || raw.unCombine !== undefined && typeof raw.unCombine !== 'boolean'

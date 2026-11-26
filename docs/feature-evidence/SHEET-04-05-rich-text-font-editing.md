@@ -30,6 +30,20 @@
 - [Facade](../../packages/office-studio/src/api/facade.ts) 的 `FRange.setRichTextStyle(start, end, style)` 使用 raw-cell UTF-16 offsets，要求单格或完整合并范围，校验字段/代理对边界后仅修改字体运行；保留 value、dataType、display、numberFormat 和 metadata，不通过数字/日期输入解析。返回单格命令结果，经共享注册、权限和内容历史提交。
 - 纯字体输入提交在原值、公式和规范化类型不变时不重新阻止已经存在的无效数据；真实内容变化仍按 stop/warning 验证。非法、取消和过期会话不能部分写入，草稿保留。输入 trace、typing、选区、焦点和滚动属于编辑视图，不应写入持久内容。
 
+### 2026-11-27 增大/减小字号续核
+
+本轮核对字体组第一行第 3、4 项：增大字号、减小字号。两项是既有常驻根，grid 位于第 1 行第 6、7 列；未新增插件、上下文或独立 overflow 根。完整字体组仍为 11 根，本记录的行内入口范围仍为 9 根。
+
+固定版 `packages/sheets-ui/src/commands/commands/inline-format.command.ts` 的 `SetRangeFontIncreaseCommand` / `SetRangeFontDecreaseCommand` 在编辑态读取 `menu/utils.ts` 的 `getFontStyleAtCursor()`；后者要求一个 textRun 包含完整选区。匹配到运行时按实际字号做单侧 ±1；跨运行选区匹配不到时，两项都把初始化的 `DEFAULT_STYLES.fs=11` 交给行内格式命令。这也适用于字号相同但属于不同运行的选区，不等同于给每段独立步进。
+
+本地 `ExcelWorkbench.executeRibbon()` 已在 `finishEdit()` 之前交给 `runInlineFontFormatCommand()`，通过 `sheet.operation.format-cell-input` 将既有按钮/别名 ID、会话、UTF-16 选区、输入 trace 和格式草稿送入真实 planner。权限、过期源校验、光标 typing 和最后一次输入提交沿用既有实现；本轮未改工作台、Canvas 或注册协议。
+
+修正 [sheet-cell-inline-format.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-cell-inline-format.ts) 的现有字号步进分支：多个运行与选区相交时直接应用固定默认 11，替代原来的首个相交运行 ±1。单个运行内仍按有效运行字号步进；光标优先采用同位置的 typing 字号，连续增减继续累积 typing 偏好。整格字号、mark、颜色、模型和内容历史接口保持原有契约。
+
+`font.menu.ts` 的字号状态在跨运行匹配不到时不更新；本地继续按全部选中运行显示混合态，应用 11 后显示共同字号。这项状态呈现差异保留并记录；绘图内文字、所有继承/主题字体和纯文本未生成 run 的编辑态仍须完整核验，不能据本轮分支推导全部等价。
+
+补 3 个真实 planner 契约草稿，覆盖按钮和固定别名的局部范围、字号相同/不同的跨运行默认 11，以及连续光标增减和后续插入。另补 classic/grid 两个浏览器用例，读取真实活动字号，核对库输入焦点/原生选区、暂存期间模型与内容历史不变、最终一次提交及撤销重做。全部未运行，未新增运行通过结论。
+
 ## 布局、Canvas 与库输入桥
 
 [sheet-cell-rich-text-layout.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-cell-rich-text-layout.ts) 按源区间切运行，使用实际运行字体、宽度和可变行高，供普通显示、旋转/缩小适应及[自动适应尺寸](../../packages/office-studio/src/features/sheet-workbench/sheet-auto-fit.ts)共用。[cell-text.ts](../../packages/office-studio/src/rendering/spreadsheet/cell-text.ts) 输出两渲染后端共用 DrawCommand；justify 分词保留前导空白。可选 glyphHeight 的非法数值回退到行高。
@@ -51,13 +65,13 @@
 | 草稿 | 数量 | 计划覆盖 |
 | --- | --- | --- |
 | [sheet-cell-rich-text-font.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-rich-text-font.contract.test.mjs) | 7 | 别名/继承、未知字段、显式 false、整格运行更新、颜色恢复、筛除与保护。 |
-| [sheet-cell-inline-format.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-inline-format.contract.test.mjs) | 11 | 运行拆分/身份、重置、无效轨迹、时间重放、typing、apostrophe、journal 分支、文本类型和验证。 |
+| [sheet-cell-inline-format.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-inline-format.contract.test.mjs) | 14 | 运行拆分/身份、重置、无效轨迹、时间重放、typing、apostrophe、journal 分支、文本类型、验证和字号步进。 |
 | [sheet-cell-rich-text-rendering.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-rich-text-rendering.contract.test.mjs) | 15 | 运行宽度/行高、重复文字、grapheme、绘制/缩放、auto-fit、justify、命中/导航、滚动、主题/IME、懒测及共享偏移的视觉行 affinity。 |
 | [sheet-cell-inline-format-api.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-inline-format-api.contract.test.mjs) | 7 | 注册/API、取消/no-op、目标隔离、合并、权限、内容历史、内部快照重开与过期会话。 |
 | [sheet-cell-rich-text-scroll.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-rich-text-scroll.contract.test.mjs) | 5 | clip/内容界限、方向/距离/速度上限、静止鼠标连续步进/反向、帧时间/晚帧、非法值和隐藏 clip。 |
-| [sheet-cell-inline-format.browser.test.mjs](../../packages/office-studio/tests/sheet-cell-inline-format.browser.test.mjs) | 10 | 真实库输入/Ribbon、公式栏、弹层焦点、Canvas 拖选/导航、数字外观文本、主题/替换宿主、静止鼠标滚动/取消后重入及重复 End/Home 行边界。 |
+| [sheet-cell-inline-format.browser.test.mjs](../../packages/office-studio/tests/sheet-cell-inline-format.browser.test.mjs) | 12 | 真实库输入/Ribbon、公式栏、弹层焦点、Canvas 拖选/导航、数字外观文本、主题/替换宿主、静止鼠标滚动/取消后重入、重复 End/Home 行边界及 classic/grid 字号步进。 |
 
-共 **55 个用例草稿，全部未运行**。[浏览器样本](../../packages/office-studio/tests/fixtures/sheet-rich-text-input.html) 保留 A1–D1 原样本，新增 E1 `A🙂BC` 混合字号、F1 `aa\nbb` 可变行高、E2 General 文本 `123`、G1 两段混合字号长文本及 H1 隐式换行样本。仅静态阅读了本批代码和草稿；没有声称这些用例通过。
+共 **60 个用例草稿，全部未运行**。[浏览器样本](../../packages/office-studio/tests/fixtures/sheet-rich-text-input.html) 保留 A1–D1 原样本，新增 E1 `A🙂BC` 混合字号、F1 `aa\nbb` 可变行高、E2 General 文本 `123`、G1 两段混合字号长文本及 H1 隐式换行样本。仅静态阅读了本批代码和草稿；没有声称这些用例通过。
 
 - 默认/行列/theme/direct 组合、目录引用和选择性 reset、空白格来源与缓存重开基础已续作，见[默认样式证据](SHEET-04-default-style-inheritance.md)及其 58 个未运行草稿；family/size/mark null 恢复有效继承，无上层来源才回退 Aptos/11。本地默认与固定 Arial/11、完整范围主题/主题字体及 Office 映射差异仍保留。
 - 富剪贴板、局部链接编辑、全部扩展字体属性、绘图内文字和跨宿主权限需要继续闭环，不以运行字段保留替代功能验收。

@@ -239,3 +239,44 @@ test('read-only Ant filter controls and shared transform keys leave native conte
   await grid().focus(); await grid().press('ArrowRight'); await grid().press('Delete')
   assert.deepEqual((await state()).model, before.model); assert.equal((await state()).history.undo, before.history.undo)
 })
+
+for (const kind of ['slicer', 'timeline']) test(`${kind} authored quick styles use the live Workbench model and persist one command through undo and reopen`, async () => {
+  const source = (await state()).model, id = kind === 'slicer' ? 's' : 't', name = 'Authored ribbon default'
+  source[kind === 'slicer' ? 'slicerStyles' : 'timelineStyles'] = {
+    [kind === 'slicer' ? 'defaultSlicerStyle' : 'defaultTimelineStyle']: name,
+    styles: [{ name, wholeStyle: { bg: { rgb: '#102030' } }, [kind === 'slicer' ? 'slicerStyleElements' : 'timelineStyleElements']: [] }],
+  }
+  delete source.slicers.find(control => control.id === id).style
+  await page.evaluate(model => window.sheetDrawingFixture.mount({ model }), source)
+  await select([{ kind, id }])
+  const trigger = page.locator('[data-ribbon-item="sheet.menu.slicer-quick-style"]:visible button[aria-haspopup]')
+  await expect(trigger).toBeEnabled()
+  await trigger.click()
+  const gallery = page.locator('.slicer-quick-styles:visible')
+  await expect(gallery.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(gallery.getByRole('button', { name, exact: true }).locator('.slicer-quick-sample')).toHaveCSS('background-color', 'rgb(16, 32, 48)')
+  const before = await state(), builtin = kind === 'slicer' ? 'SlicerStyleDark2' : 'TimelineStyleDark2'
+  await gallery.getByRole('button', { name: builtin, exact: true }).click()
+  await waitHistory(before.history.undo + 1)
+  const styled = await state()
+  assert.equal(owner(styled, id).style, builtin)
+  assert.deepEqual(geometry(styled, kind, id), geometry(before, kind, id))
+  assert.equal(styled.commands.filter(command => command.id === 'sheet.command.update-slicer-presentation').length, 1)
+  await page.evaluate(() => window.sheetDrawingFixture.undo())
+  assert.deepEqual((await state()).model, before.model)
+  await page.evaluate(() => window.sheetDrawingFixture.redo())
+  await page.evaluate(() => window.sheetDrawingFixture.reopen())
+  assert.deepEqual((await state()).model, styled.model)
+  await select([{ kind, id }])
+  await trigger.click()
+  await expect(gallery.getByRole('button', { name: builtin, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const reopened = await state()
+  await gallery.getByRole('button', { name: '文档默认值', exact: true }).click()
+  await waitHistory(reopened.history.undo + 1)
+  assert.equal(owner(await state(), id).style, undefined)
+  await trigger.click()
+  await expect(gallery.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.keyboard.press('Escape')
+  await page.evaluate(() => window.sheetDrawingFixture.undo())
+  assert.deepEqual((await state()).model, reopened.model)
+})

@@ -4,6 +4,7 @@ import { createSheetOutlineState, getSheetOutlineUpdate } from '../src/features/
 import { getSheetOutlinePromptChoices, outlineSelectionLabel, resolveSheetOutlineCommand as resolve,
   sheetOutlineCommandInput, SHEET_OUTLINE_CORE_COMMAND_IDS, SHEET_OUTLINE_UI_COMMAND_IDS } from '../src/features/sheet-outline/sheet-outline-command.ts'
 import { createSheetOutlineContextMenuItem, createSheetOutlineRibbonItem, SHEET_OUTLINE_SHORTCUTS } from '../src/features/sheet-outline/sheet-outline-menu.ts'
+import { sheetOutlineCommandForShortcut } from '../src/components/spreadsheet/use-sheet-outline-workbench.ts'
 import { ribbonInvocation } from '../src/platform/ribbon/ribbon-schema.ts'
 
 // Command and state drafts, not an executed feature acceptance report.
@@ -94,6 +95,17 @@ test('selector children and keyboard descriptors preserve fixed command routing'
   assert.deepEqual(ribbonInvocation(item, 'ungroup'), { commandId: 'sheet.command.clear-selected-dimension-outlines-shortcut', params: {} })
   assert.deepEqual(SHEET_OUTLINE_SHORTCUTS.map(item => [item.key, item.altKey, item.shiftKey, item.macKey, item.macPrimary]),
     [['ArrowRight', true, true, 'k', true], ['ArrowLeft', true, true, 'j', true]])
+  const event = { key: 'ArrowRight', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false, isComposing: false, keyCode: 0 }
+  for (const shortcut of SHEET_OUTLINE_SHORTCUTS) {
+    assert.equal(sheetOutlineCommandForShortcut({ ...event, key: shortcut.key }), shortcut.commandId)
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+      const macEvent = { ...event, key: shortcut.macKey.toUpperCase(), altKey: false, [modifier]: true }
+      assert.equal(sheetOutlineCommandForShortcut(macEvent, true), shortcut.commandId)
+      assert.equal(sheetOutlineCommandForShortcut({ ...macEvent, shiftKey: false }, true), undefined)
+      assert.equal(sheetOutlineCommandForShortcut(macEvent, false), undefined)
+      assert.equal(sheetOutlineCommandForShortcut({ ...macEvent, isComposing: true }, true), undefined)
+    }
+  }
 })
 
 test('command resolution forwards the captured owner and rejects ambiguous or invalid ownership fields', () => {

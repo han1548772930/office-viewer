@@ -109,11 +109,12 @@ const executed = () => page.evaluate(() => window.sheetBorderFixture.commands())
 const border = async (row = 0, col = 0) => (await snapshot()).sheets[0].cells[row + ':' + col]?.style.border ?? {}
 const modelContent = model => Object.fromEntries(Object.entries(model.sheets[0].cells).filter(([, cell]) => cell.value !== '' || cell.formula).map(([key, { value, formula, display, dataType, cachedDataType }]) => [key, { value, formula, display, dataType, cachedDataType }]))
 async function homeItem(id) {
-  const item = page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"]')
+  const selector = '[data-ribbon-item="' + id + '"]'
+  const item = page.locator('.ribbon-visible-groups ' + selector + ', .ribbon-grid-group:not(.is-hidden) ' + selector)
   if (await item.count() && await item.isVisible()) return item
   const overflow = page.locator('.ribbon-overflow-panel:visible')
-  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button').click()
-  const result = overflow.locator('[data-ribbon-item="' + id + '"]'); await expect(result).toBeVisible(); return result
+  if (!await overflow.isVisible()) await page.locator('.ribbon-more-button:visible, .ribbon-grid-more-button:visible').click()
+  const result = overflow.locator(selector); await expect(result).toBeVisible(); return result
 }
 async function selectRange(address) {
   const input = page.getByRole('textbox', { name: '名称框', exact: true })
@@ -171,13 +172,17 @@ test('border custom colors remain draft until confirmation and Escape restores t
   await expect(panel).toBeVisible(); await expect(page.locator('.sheet-color-panel')).toBeHidden()
 })
 
-test('the main border button reuses the accepted preset and repeated application adds no history', async () => {
+for (const variant of ['classic', 'grid']) test('the main border icon follows the accepted preset and keeps its repeat action in ' + variant, async () => {
+  await page.evaluate(layout => window.sheetBorderFixture.variant(layout), variant)
   await selectRange('A1:A3')
+  await expect((await homeItem('sheet.menu.borders')).locator('.ribbon-button-icon .border-preview')).toHaveAttribute('data-border-preset', 'all')
   const panel = await openBorder(); await panel.getByRole('button', { name: '外侧框线', exact: true }).click()
   await expect.poll(async () => (await state()).type).toBe('outside')
+  const item = await homeItem('sheet.menu.borders')
+  await expect(item.locator('.ribbon-button-icon .border-preview')).toHaveAttribute('data-border-preset', 'outside')
   assert.equal((await executed()).at(-1).id, 'sheet.command.set-borders')
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
-  await (await homeItem('sheet.menu.borders')).locator('button').first().click()
+  await item.locator('button').first().click()
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
   assert.equal((await border(1)).top, undefined)
   assert.equal((await border(1)).bottom, undefined)
@@ -219,6 +224,7 @@ test('Facade border changes update the open selector and retain their explicit w
   const panel = await openBorder()
   await page.evaluate(() => { window.sheetBorderFixture.apiBorder('outside', 7, '#AbC', 'A1:A3') })
   await expect(panel.getByRole('button', { name: '外侧框线', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect((await homeItem('sheet.menu.borders')).locator('.ribbon-button-icon .border-preview')).toHaveAttribute('data-border-preset', 'outside')
   await expect(panel.locator('.ant-select-selection-item')).toHaveText('双线')
   assert.deepEqual(await state(), { type: 'outside', style: 'double', color: '#aabbcc', active: true })
   assert.deepEqual((await executed()).at(-1).params.ranges, [{ startRow: 0, endRow: 2, startCol: 0, endCol: 0 }])
@@ -261,6 +267,7 @@ test('a protected reverse neighbor rejects UI application without changing conte
   await expect.poll(async () => page.evaluate(() => window.sheetBorderFixture.notifications().length)).toBe(1)
   assert.deepEqual(await snapshot(), original); assert.deepEqual(await history(), { undo: 0, redo: 0 })
   assert.deepEqual(await state(), { type: 'all', style: 'thin', color: '#000000', active: false })
+  await expect((await homeItem('sheet.menu.borders')).locator('.ribbon-button-icon .border-preview')).toHaveAttribute('data-border-preset', 'all')
   const reopened = await openBorder(); await expect(reopened.getByRole('button', { name: '所有边框', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
 

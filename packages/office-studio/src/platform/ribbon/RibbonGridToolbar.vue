@@ -21,6 +21,7 @@ const overflowMenuRef = ref<{ focus: () => void } | null>(null)
 const groupElements = new Map<string, HTMLElement>()
 const visibleGroupCount = ref(props.groups.length)
 const moreOpen = ref(false)
+const moreTooltipOpen = ref(false)
 const placements = computed(() => props.groups.map((group) => ({ group, items: placeRibbonGridItems(group.items) })))
 const overflowGroups = computed(() => placements.value.slice(visibleGroupCount.value))
 const hiddenGroups = computed(() => overflowGroups.value.map(({ group }) => group))
@@ -122,7 +123,7 @@ watch(() => props.groups, async () => {
 watch(() => overflowGroups.value.length, (count) => {
   if (!count) moreOpen.value = false
 })
-watch(moreOpen, () => { popupScope?.close() })
+watch(moreOpen, () => { moreTooltipOpen.value = false; popupScope?.close() })
 watch(visibleGroupCount, () => { moreOpen.value = false; popupScope?.close() })
 
 onMounted(() => {
@@ -194,10 +195,11 @@ onBeforeUnmount(() => {
       :inert="overflowGroups.length === 0"
     >
       <Popover v-model:open="moreOpen" trigger="click" :placement="direction === 'rtl' ? 'bottomLeft' : 'bottomRight'" :align="{ overflow: { shiftX: true, adjustX: true, adjustY: true } }" :destroy-on-hidden="true">
-        <Tooltip :title="translate('common.more', '更多功能')">
+        <Tooltip :title="translate('common.more', '更多功能')" :trigger="['hover', 'focus']" :open="!moreOpen && moreTooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { moreTooltipOpen = !moreOpen && value }">
           <Button
             type="text"
             class="ribbon-grid-more-button"
+            :styles="{ root: { border: 0 } }"
             :aria-label="translate('common.more', '更多功能')"
             aria-haspopup="dialog"
             :aria-expanded="moreOpen"
@@ -206,7 +208,7 @@ onBeforeUnmount(() => {
             @keydown.esc="closeOverflow"
           >
             <MoreHorizontal :size="20" />
-            <span class="ribbon-grid-more-label">{{ translate('common.more', '更多') }}<ChevronDown :size="12" /></span>
+            <span class="ribbon-grid-more-label"><span class="ribbon-grid-more-title">{{ translate('common.more', '更多') }}</span><ChevronDown :size="12" /></span>
           </Button>
         </Tooltip>
         <template #content>
@@ -233,6 +235,12 @@ onBeforeUnmount(() => {
 .ribbon-grid-more-anchor { display: flex; box-sizing: border-box; width: var(--ribbon-grid-more-width); flex: 0 0 var(--ribbon-grid-more-width); align-items: stretch; padding: 8px; }
 .ribbon-grid-more-anchor.is-hidden { position: absolute; visibility: hidden; pointer-events: none; }
 .ribbon-grid-more-button { display: inline-flex; box-sizing: border-box; width: 56px; min-width: 56px; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 2px; font-size: 12px; line-height: 16px; }
-.ribbon-grid-more-label { display: flex; align-items: center; gap: 4px; }
+.ribbon-grid-more-label { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: 4px; }
+.ribbon-grid-more-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ribbon-grid-more-button :deep(svg) { display: block; flex: 0 0 auto; }
+.ribbon-grid-more-button:not(:disabled):hover { background: var(--ribbon-hover-background); }
+.ribbon-grid-more-button[aria-expanded="true"]:not(:disabled),
+.ribbon-grid-more-button[aria-expanded="true"]:not(:disabled):hover,
+.ribbon-grid-more-button[aria-expanded="true"]:not(:disabled):active { background: var(--ribbon-active-background); color: var(--ribbon-primary); }
 .ribbon-grid-more-button:focus-visible { outline: 2px solid var(--ribbon-primary, #5274d7); outline-offset: -2px; }
 </style>

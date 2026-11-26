@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
+import { CalendarDays, Info, TextCursor } from 'lucide-vue-next'
 import { createSheetRibbon } from '../src/components/spreadsheet/sheet-ribbon.ts'
 import { placeRibbonGridItems, ribbonInvocation, visibleRibbonTabs } from '../src/platform/ribbon/ribbon-schema.ts'
 import { SHEET_FUNCTION_CATALOG } from '../src/features/sheet-workbench/sheet-function-catalog.ts'
 import { QUICK_CONDITIONAL_FORMAT_COMMANDS as conditional } from '../src/features/conditional-formatting/quick-conditional-formatting.ts'
 import { frozenPaneCountsForSelection } from '../src/features/sheet-workbench/sheet-workbench.ts'
+import { createSheetOutlineState } from '../src/features/sheet-outline/sheet-outline.ts'
 
 const state = {
-  canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false,
+  canUndo: false, canRedo: true, hasSheet: true, canMerge: false, canUnmerge: false, mergeActive: false,
   canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, dataValidationAvailable: true, canSort: true,
   filterEnabled: false, filterCanToggle: true,
   fontFamily: 'Aptos', fontSize: 11, numberFormat: 'general', bold: false, italic: true, underline: false,
@@ -59,6 +61,49 @@ test('format activation and mixed selectors reflect supplied selection state', (
   assert.equal(items.find(item => item.id === 'sheet.command.align-center').activated, false)
 })
 
+test('merge activation follows the primary cell independently of merge capability', () => {
+  for (const context of [
+    { canMerge: true, canUnmerge: true, mergeActive: false, disabled: false },
+    { canMerge: true, canUnmerge: true, mergeActive: true, disabled: false },
+    { canMerge: false, canUnmerge: false, mergeActive: true, disabled: true },
+  ]) {
+    const merge = flatten(createSheetRibbon({ ...state, ...context })).find(item => item.id === 'sheet.menu.merge')
+    assert.equal(merge.activated, context.mergeActive)
+    assert.equal(merge.disabled, context.disabled)
+  }
+})
+
+test('shrink-to-fit leaves the toggle value to the shared command for uniform and mixed selections', () => {
+  for (const shrinkToFit of [true, false, undefined]) {
+    const shrink = flatten(createSheetRibbon({ ...state, shrinkToFit })).find(item => item.id === 'sheet.command.set-shrink-to-fit')
+    assert.deepEqual(ribbonInvocation(shrink), { commandId: 'sheet.command.set-shrink-to-fit', params: undefined })
+    assert.equal(shrink.activated, shrinkToFit === true)
+  }
+})
+
+test('drawing focus hides the five source layout roots while retaining the shrink-to-fit action', () => {
+  const roots = drawingFocused => visibleRibbonTabs(createSheetRibbon({ ...state, drawingFocused }))
+    .find(tab => tab.id === 'home').groups.find(group => group.id === 'layout').items
+  assert.deepEqual(roots(false).map(item => item.id), [
+    'sheet.menu.horizontal-align', 'sheet.menu.vertical-align', 'sheet.menu.text-wrap',
+    'sheet.command.set-shrink-to-fit', 'sheet.menu.text-rotation', 'sheet.menu.merge',
+  ])
+  assert.deepEqual(roots(true).map(item => item.id), ['sheet.command.set-shrink-to-fit'])
+  assert.deepEqual(ribbonInvocation(roots(true)[0]), { commandId: 'sheet.command.set-shrink-to-fit', params: undefined })
+})
+
+test('shrink activation and permission follow the primary wrap state independently of its stored shrink value', () => {
+  for (const context of [
+    { wrap: true, shrinkToFit: true, fontEditable: true, disabled: true, activated: false },
+    { wrap: false, shrinkToFit: true, fontEditable: true, disabled: false, activated: true },
+    { wrap: false, shrinkToFit: true, fontEditable: false, disabled: true, activated: true },
+  ]) {
+    const shrink = flatten(createSheetRibbon({ ...state, ...context })).find(item => item.id === 'sheet.command.set-shrink-to-fit')
+    assert.equal(shrink.disabled, context.disabled)
+    assert.equal(shrink.activated, context.activated)
+  }
+})
+
 test('font changes carry their own scalar without overwriting the other format controls', () => {
   const items = flatten(createSheetRibbon({ ...state, fontFamily: 'Imported Face', fontSize: 15 }))
   const font = items.find(item => item.title === '字体')
@@ -97,7 +142,7 @@ test('freezing a selected range keeps both the rows above and columns to its lef
   assert.deepEqual(frozenPaneCountsForSelection({ startRow: 0, startColumn: 0, endRow: 2, endColumn: 2 }), { rows: 0, columns: 0 })
 })
 
-test('formula categories expose function dropdowns and insert functions directly', () => {
+test('formula categories expose populated dropdowns and dispatch the selected function name', () => {
   const items = flatten(createSheetRibbon(state))
   const picker = items.find(item => item.id === 'sheet.operation.open-function')
   const categories = items.filter(item => item.id.startsWith('sheet.operation.open-function.category-'))
@@ -109,13 +154,48 @@ test('formula categories expose function dropdowns and insert functions directly
   assert.deepEqual(ribbonInvocation(picker), { commandId: 'sheet.operation.open-function', params: undefined })
   assert.deepEqual(categories.map(item => item.title), supportedCategories)
   assert.ok(categories.every(item => item.type === 'menu' && item.children.length > 0))
+  assert.equal(categories.find(item => item.title === '文本').icon, TextCursor)
+  assert.equal(categories.find(item => item.title === '日期与时间').icon, CalendarDays)
+  assert.equal(categories.at(-1).title, '信息')
+  assert.equal(categories.at(-1).icon, Info)
+  assert.deepEqual(categories.at(-1).children.map(item => item.title), [
+    'ISBLANK', 'ISERR', 'ISERROR', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISTEXT', 'NA',
+  ])
   assert.equal(categories[0].children.at(-1), picker)
   for (const category of categories) {
     const functions = SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category.title)
     const entries = category === categories[0] ? category.children.slice(0, -1) : category.children
     assert.deepEqual(entries.map(item => item.title), functions.map(entry => entry.name))
-    assert.ok(entries.every(item => item.commandId === 'sheet.operation.insert-function'))
+    assert.deepEqual(entries.map(item => ribbonInvocation(item)), functions.map(entry =>
+      ({ commandId: 'sheet.operation.insert-function', params: entry.name })))
   }
+  const unavailable = createSheetRibbon({ ...state, hasSheet: false }).find(tab => tab.id === 'formulas')
+  assert.ok(unavailable.groups.flatMap(group => group.items).every(item => item.disabled
+    && (item.children ?? []).every(child => child.disabled)))
+})
+
+test('calculation mode preserves its value and disables the selector without a worksheet', () => {
+  for (const overrides of [{}, { calculationMode: 'manual' }, { hasSheet: false }]) {
+    const item = flatten(createSheetRibbon({ ...state, ...overrides })).find(entry => entry.id === 'sheet.command.set-calculation-mode')
+    assert.equal(item.value, overrides.calculationMode ?? 'automatic')
+    assert.equal(item.disabled, overrides.hasSheet === false)
+    assert.deepEqual(item.options, [{ label: '自动', value: 'automatic' }, { label: '手动', value: 'manual' }])
+    assert.deepEqual(ribbonInvocation(item, 'manual'), item.disabled ? undefined
+      : { commandId: 'sheet.command.set-calculation-mode', params: 'manual' })
+  }
+})
+
+test('formula capability and drawing focus disable insertion without disabling workbook calculation', () => {
+  for (const overrides of [{ formulaEditable: false }, { drawingFocused: true }]) {
+    const formulas = createSheetRibbon({ ...state, ...overrides }).find(tab => tab.id === 'formulas')
+    const categories = formulas.groups.find(group => group.id === 'formula-edit').items
+    assert.ok(categories.every(item => item.disabled && item.children.every(child => child.disabled)))
+    assert.equal(ribbonInvocation(categories[0].children.at(-1)), undefined)
+    const calculation = formulas.groups.find(group => group.id === 'calculation-options').items
+    assert.deepEqual(calculation.map(item => item.disabled), [false, true, false])
+  }
+  const enabled = createSheetRibbon({ ...state, formulaEditable: true, fontEditable: false }).find(tab => tab.id === 'formulas')
+  assert.ok(enabled.groups.find(group => group.id === 'formula-edit').items.every(item => !item.disabled))
 })
 
 test('Insert cell tools fill two rows in source order and keep their quick-rule commands', () => {
@@ -140,7 +220,7 @@ test('Insert cell tools fill two rows in source order and keep their quick-rule 
 })
 
 test('quick conditional menus reflect active rule and type-specific clear state', () => {
-  const quickConditional = { hasDataBar: true, hasIconSet: true, canClearDataBar: true, canClearIconSet: true, activeIconSet: '3TrafficLights1' }
+  const quickConditional = { hasDataBar: true, hasIconSet: true, canClearDataBar: true, canClearIconSet: true, canClearRange: true, canClearWorksheet: true, activeIconSet: '3TrafficLights1' }
   const roots = value => createSheetRibbon({ ...state, ...value, quickConditional }).find(tab => tab.id === 'insert')
     .groups.find(group => group.id === 'cells').items.slice(-2)
   const [dataBar, iconSet] = roots({})
@@ -158,6 +238,22 @@ test('data validation ribbon entry opens the worksheet rule panel operation', ()
   assert.deepEqual(ribbonInvocation(validation), { commandId: 'sheet.operation.open-data-validation', params: undefined })
 })
 
+test('conditional formatting management exposes the ten source actions with shared commands and scope permissions', () => {
+  const root = value => flatten(createSheetRibbon({ ...state, ...value })).find(item => item.id === 'sheet.operation.open-conditional-formatting')
+  const management = root({ quickConditional: { canClearRange: true, canClearWorksheet: false } })
+  assert.equal(management.type, 'menu')
+  assert.deepEqual(management.gridLayout, { row: 2, column: 1, showLabel: true })
+  assert.deepEqual(management.children.map(item => ribbonInvocation(item)), [
+    ...['highlightCell', 'top10', 'expression', 'colorScale', 'dataBar', 'iconSet', undefined, 'create'].map(params =>
+      ({ commandId: 'sheet.operation.open-conditional-formatting', params })),
+    { commandId: conditional.clear, params: {} },
+    { commandId: conditional.clearWorksheet, params: {} },
+  ])
+  assert.equal(management.children.at(-2).disabled, false)
+  assert.equal(management.children.at(-1).disabled, true)
+  assert.ok(root({ fontEditable: false }).children.every(item => item.disabled))
+})
+
 test('filter split menu toggles auto-filter and exposes clear, reapply, and panel commands', () => {
   const filter = flatten(createSheetRibbon(state)).find(item => item.id === 'sheet.data.filter')
   assert.equal(filter.type, 'split')
@@ -169,19 +265,90 @@ test('filter split menu toggles auto-filter and exposes clear, reapply, and pane
 
   const enabled = flatten(createSheetRibbon({ ...state, filterEnabled: true, filterCanToggle: true })).find(item => item.id === 'sheet.data.filter')
   assert.equal(enabled.activated, true)
-  assert.ok(enabled.children.every(item => !item.disabled))
+  assert.deepEqual(enabled.children.map(item => item.disabled), [true, true, false])
+  const filtered = flatten(createSheetRibbon({ ...state, filterEnabled: true, filterHasCriteria: true, filterCanToggle: true })).find(item => item.id === 'sheet.data.filter')
+  assert.ok(filtered.children.every(item => !item.disabled))
 })
 
 test('data tools follow the source group order and row or column structure stays in header menus', () => {
   const tabs = createSheetRibbon(state)
   const insert = tabs.find(tab => tab.id === 'insert')
   const data = tabs.find(tab => tab.id === 'data')
-  assert.deepEqual(data.groups.map(group => group.id), ['organization', 'rules', 'pivot', 'outline', 'data-tools'])
-  assert.deepEqual(data.groups.map(group => group.title), ['数据整理', '规则', '分析', '分组显示', '工具'])
-  assert.deepEqual(data.groups.find(group => group.id === 'organization').items.map(item => item.title), ['排序', '筛选'])
-  assert.ok(data.groups.find(group => group.id === 'rules').items.some(item => item.commandId === 'sheet.operation.open-conditional-formatting'))
+  assert.deepEqual(data.groups.map(group => group.id), ['organization', 'rules', 'pivot', 'data-tools'])
+  assert.deepEqual(data.groups.map(group => group.title), ['数据整理', '规则', '分析', '工具'])
+  assert.deepEqual(data.groups.find(group => group.id === 'organization').items.map(item => item.title), ['排序', '筛选', '组合', '分组显示', '大纲设置'])
+  assert.ok(data.groups.find(group => group.id === 'rules').items.some(item => item.id === 'sheet.operation.open-conditional-formatting'))
   assert.ok(!tabs.some(tab => tab.groups.some(group => group.items.some(item => /^sheet\.command\.(insert|delete)-(row|column)$/.test(item.commandId)))))
   assert.ok(insert.groups.some(group => group.items.some(item => item.commandId === 'sheet.operation.insert-chart')))
+})
+
+test('outline details follow grouping candidates, collapse no-ops, and selection scope', () => {
+  const context = { unitId: 'outline-book', sheetId: 'outline-sheet', userId: 'visitor',
+    selections: [{ startRow: 2, endRow: 4, startCol: 3, endCol: 5 }],
+    sheet: { rowCount: 20, columnCount: 10, outline: createSheetOutlineState() } }
+  const menu = outlineContext => flatten(createSheetRibbon({ ...state, outlineContext })).find(item => item.id === 'sheet.menu.outline-details')
+  assert.equal(menu(undefined).disabled, true)
+  const empty = menu(context)
+  for (const suffix of ['rows', 'columns']) {
+    assert.equal(empty.children.find(item => item.id === `sheet.command.outline-selected-${suffix}`).disabled, false)
+    assert.equal(empty.children.find(item => item.id === `sheet.command.clear-selected-${suffix}-outlines`).disabled, true)
+    for (const operation of ['toggle', 'collapse', 'expand']) {
+      assert.equal(empty.children.find(item => item.id === `sheet.operation.outline-${operation}-${suffix}`).disabled, true)
+    }
+  }
+  const grouped = { ...context, sheet: { ...context.sheet, outline: { ...context.sheet.outline, groups: [
+    { id: 'outer-row', axis: 'row', start: 1, end: 8, collapsed: false },
+    { id: 'selected-column', axis: 'column', start: 3, end: 5, collapsed: false },
+  ] } } }
+  const expanded = menu(grouped)
+  assert.equal(expanded.children.find(item => item.id === 'sheet.command.clear-selected-rows-outlines').disabled, true)
+  assert.equal(expanded.children.find(item => item.id === 'sheet.command.clear-selected-columns-outlines').disabled, false)
+  assert.deepEqual(ribbonInvocation(expanded.children.find(item => item.id === 'sheet.command.outline-selected-rows')),
+    { commandId: 'sheet.command.outline-selected-rows', params: { value: 'row' } })
+  const collapsed = menu({ ...grouped, sheet: { ...grouped.sheet, outline: { ...grouped.sheet.outline,
+    groups: grouped.sheet.outline.groups.map(group => ({ ...group, collapsed: true })) } } })
+  for (const suffix of ['rows', 'columns']) {
+    assert.equal(expanded.children.find(item => item.id === `sheet.operation.outline-toggle-${suffix}`).disabled, false)
+    assert.equal(expanded.children.find(item => item.id === `sheet.operation.outline-collapse-${suffix}`).disabled, false)
+    assert.equal(expanded.children.find(item => item.id === `sheet.operation.outline-expand-${suffix}`).disabled, true)
+    assert.equal(collapsed.children.find(item => item.id === `sheet.operation.outline-collapse-${suffix}`).disabled, true)
+    assert.equal(collapsed.children.find(item => item.id === `sheet.operation.outline-expand-${suffix}`).disabled, false)
+  }
+  const multiple = menu({ ...grouped, selections: [...grouped.selections, { startRow: 10, endRow: 12, startCol: 6, endCol: 8 }] })
+  assert.ok(multiple.children.filter(item => item.type === 'button').every(item => item.disabled))
+  assert.equal(multiple.children.find(item => item.id === 'sheet.menu.outline-summary-rows').children
+    .find(item => item.id === 'sheet.menu.outline-summary-above').disabled, false)
+})
+
+test('outline menu permissions include the changed group footprint and retain an editable inner group', () => {
+  const context = { unitId: 'outline-book', sheetId: 'outline-sheet', userId: 'visitor',
+    selections: [{ startRow: 2, endRow: 4, startCol: 3, endCol: 5 }],
+    sheet: { rowCount: 20, columnCount: 10, outline: { ...createSheetOutlineState(), groups: [
+      { id: 'outer-row', axis: 'row', start: 1, end: 8, collapsed: false },
+      { id: 'selected-column', axis: 'column', start: 3, end: 5, collapsed: false },
+    ] }, rangeProtectionRules: [{ id: 'range-guard', permissionId: 'range-guard', ownerUserId: 'owner', editState: 'onlyMe',
+      viewState: 'othersCanView', allowedUserIds: [], ranges: [{ startRow: 7, endRow: 7, startCol: 8, endCol: 8 }] }] } }
+  const menu = outlineContext => flatten(createSheetRibbon({ ...state, outlineContext })).find(item => item.id === 'sheet.menu.outline-details')
+  const guarded = menu(context)
+  const rowToggle = guarded.children.find(item => item.id === 'sheet.operation.outline-toggle-rows')
+  assert.equal(guarded.disabled, false)
+  assert.equal(rowToggle.disabled, true); assert.match(rowToggle.disabledReason, /受保护/)
+  assert.equal(guarded.children.find(item => item.id === 'sheet.operation.outline-collapse-rows').disabled, true)
+  assert.equal(guarded.children.find(item => item.id === 'sheet.operation.outline-collapse-columns').disabled, false)
+  assert.equal(guarded.children.find(item => item.id === 'sheet.menu.outline-summary-rows').children
+    .find(item => item.id === 'sheet.menu.outline-summary-above').disabled, true)
+  assert.equal(guarded.children.find(item => item.id === 'sheet.menu.outline-summary-columns').children
+    .find(item => item.id === 'sheet.menu.outline-summary-left').disabled, false)
+  const nested = menu({ ...context, sheet: { ...context.sheet, outline: { ...context.sheet.outline,
+    groups: [...context.sheet.outline.groups, { id: 'inner-row', axis: 'row', start: 2, end: 4, collapsed: false }] } } })
+  assert.equal(nested.children.find(item => item.id === 'sheet.operation.outline-toggle-rows').disabled, false)
+  assert.equal(nested.children.find(item => item.id === 'sheet.menu.outline-summary-rows').children
+    .find(item => item.id === 'sheet.menu.outline-summary-above').disabled, true)
+  const protectedSheet = menu({ ...context, sheet: { ...context.sheet,
+    worksheetProtection: { id: 'worksheet-guard', unitType: 'worksheet', permissionId: 'worksheet-guard', ownerUserId: 'owner',
+      editState: 'onlyMe', viewState: 'othersCanView', allowedUserIds: [] } } })
+  assert.equal(protectedSheet.disabled, true)
+  assert.ok(protectedSheet.children.flatMap(item => item.children ?? [item]).every(item => item.disabled))
 })
 
 test('pivot chart is reachable from data analysis only when pivot tables are available', () => {

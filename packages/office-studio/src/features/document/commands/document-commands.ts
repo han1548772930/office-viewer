@@ -4,7 +4,7 @@ import { reconcileDocumentContentControlBlockEdits } from '../model/content-cont
 import { transformDocumentCommentAnchorsForBodyRangeEdit, transformDocumentCommentAnchorsForTextEdit } from '../comments/document-comment-anchors'
 import { executeDocumentTableCommand, type DocumentTableCommand } from './table-commands'
 import { isDocumentTableCommand } from './table-command-types'
-import type { DocumentTableInsertCommand } from './table-command-types'
+import type { DocumentTableCreateCommand, DocumentTableInsertCommand } from './table-command-types'
 import { createDocumentTableBlock } from './table-insertion'
 import { documentPointAtClampedBodyOffset, insertDocumentBlocksAtPoint } from '../services/document-block-insertion'
 import { reconcileDocumentTableAnchors } from '../services/document-table-anchors'
@@ -46,9 +46,11 @@ import { executeDocumentImageCommand, isDocumentImageCommand, type DocumentImage
 import { documentImageEntries, normalizeDocumentImage } from '../images/document-image-model'
 import { DOCUMENT_IMAGE_ATOM, documentImageAtom, setDocumentImageAtom } from '../images/document-image-atom'
 import { synchronizeDocumentPictureControlImages } from '../services/document-image-controls'
+import { executeDocumentHyperlinkCommand, isDocumentHyperlinkCommand, type DocumentHyperlinkCommand } from '../services/document-hyperlinks'
+import { DOCUMENT_HORIZONTAL_LINE_BORDER } from '../model/document-horizontal-line'
 export { blockAtPoint } from '../model/document-model'
 import {
-  applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
+  DOCUMENT_NAMED_PARAGRAPH_STYLES, applyNamedParagraphStyle, applyRunPatch, blockAtPoint, clampPoint, collapsedSelection, compactRuns, createParagraph, createRun, documentId, documentRunFormatPatch,
   marksAtPoint, orderedSelection, runText, runsForTarget, sameTarget, selectionCollapsed,
   setTargetRuns, sliceRuns, tableForBlock, textTargets, findDocumentBlock, findDocumentBlockContainer, reconcileDocumentLatexBlockMarker,
   type DocumentImage, type DocumentNamedParagraphStyle, type DocumentPoint, type DocumentRun, type DocumentSelection, type RunPatch, type TextTarget,
@@ -59,6 +61,7 @@ export type DocumentBodyCommand =
   | DocumentStructureCommand
   | DocumentLatexCommand
   | DocumentImageCommand
+  | DocumentHyperlinkCommand
   | { id: 'doc.command.insert-text'; text: string; marks?: RunPatch }
   | { id: 'doc.command.delete'; direction: -1 | 1 }
   | { id: 'doc.command.format-text'; patch: RunPatch; clearFields?: Array<'color' | 'highlight'>; story?: DocumentStoryRange }
@@ -77,8 +80,11 @@ export type DocumentBodyCommand =
   | { id: 'doc.command.insert-column-break' }
   | { id: 'doc.command.insert-section-break'; type: DocumentSectionBreakType }
   | DocumentTableInsertCommand
+  | DocumentTableCreateCommand
   | { id: 'doc.command.insert-image'; image: DocumentImage; imageId?: string; paragraphMenuPlacement?: 'below' }
   | { id: 'doc.command.insert-divider' }
+  | { id: 'doc.command.horizontal-line' }
+  | { id: 'doc.command.insert-horizontal-line-bellow' }
   | { id: 'doc.command.paste-blocks'; blocks: DocumentBlock[]; tablePasteMode?: 'source' | 'destination' }
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch; input?: DocumentStoryInputCommit }
@@ -298,11 +304,41 @@ function paragraphIndentPlan(model: DocumentModel, selection: DocumentSelection,
   })
 }
 
+function prepareDocumentParagraphIndent(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1, context: DocumentPermissionContext) {
+  const changes = paragraphIndentPlan(model, selection, direction)
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', changes.flatMap(change => permissionTargetsForSelection(model, collapsedSelection({ ...change.target, offset: 0 }))))
+  for (const change of changes) {
+    assertDocumentTextSelectionEditable(model, {
+      anchor: { ...change.target, offset: 0 }, focus: { ...change.target, offset: runText(change.block.runs).length },
+    })
+  }
+  return changes
+}
+
 export function canChangeDocumentParagraphIndent(model: DocumentModel, selection: DocumentSelection, direction: -1 | 1, permissionContext?: DocumentPermissionContext): boolean {
   try {
-    const changes = paragraphIndentPlan(model, selection, direction)
-    return changes.length > 0 && numberingPermissionsAllowed(model, changes.map(change => change.target), permissionContext)
+    return prepareDocumentParagraphIndent(model, selection, direction, permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }).length > 0
   } catch { return false }
+}
+
+function namedParagraphStyleTargets(model: DocumentModel, selection: DocumentSelection, context: DocumentPermissionContext) {
+  return selectedTargets(model, selection).flatMap((target) => {
+    const block = blockAtPoint(model, target)
+    if (!block || !['paragraph', 'heading', 'quote', 'bullet', 'numbered', 'checklist'].includes(block.type)) return []
+    const range = { anchor: { ...target, offset: 0 }, focus: { ...target, offset: runText(block.runs).length } }
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(model, range))
+    assertDocumentTextSelectionEditable(model, range)
+    return [block]
+  })
+}
+
+export function documentNamedParagraphStyleState(model: DocumentModel, selection: DocumentSelection, permissionContext?: DocumentPermissionContext): { available: boolean; reason?: string } {
+  try {
+    const targets = namedParagraphStyleTargets(model, selection, permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' })
+    return targets.length ? { available: true } : { available: false, reason: '当前选择没有可设置段落样式的文字。' }
+  } catch (error) {
+    return { available: false, reason: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 function applyListNestingLevel(block: DocumentBlock, level: number): void {
@@ -329,19 +365,27 @@ export function executeDocumentCommand(
   selection: DocumentSelection,
   command: DocumentCommand,
   permissionContext?: DocumentPermissionContext,
+  sourceModel: DocumentModel = model,
 ): DocumentSelection {
+  if (command.id === 'doc.command.insert-horizontal-line-bellow') {
+    if (selection.tableSelection) throw new RangeError('分隔线需要文字插入位置。')
+    const scoped = command.host ? documentModelForBlockHost(model, command.host) : model
+    const point = clampPoint(scoped, selection.focus)
+    return executeDocumentCommand(model, collapsedSelection({ ...point, offset: runText(runsForTarget(scoped, point)).length }),
+      { ...command, id: 'doc.command.horizontal-line' }, permissionContext, sourceModel)
+  }
   const blockControls = (model.contentControls ?? []).some(control => control.blockRange)
   const pictureControls = (model.contentControls ?? []).some(control => control.type === 'picture' && typeof control.metadata?.pictureBlockId === 'string')
-  if (!blockControls && !pictureControls && !hasManagedDocumentQuotePagination(model)) return executeDocumentCommandMutation(model, selection, command, permissionContext)
+  if (!blockControls && !pictureControls && !hasManagedDocumentQuotePagination(model)) return executeDocumentCommandMutation(model, selection, command, permissionContext, sourceModel)
   const candidate = cloneModel(model)
-  const result = executeDocumentCommandMutation(candidate, selection, command, permissionContext)
+  const result = executeDocumentCommandMutation(candidate, selection, command, permissionContext, sourceModel)
   if (pictureControls) synchronizeDocumentPictureControlImages(model, candidate)
   reconcileDocumentQuotePagination(candidate)
   assertDocumentParagraphPaginationChangesEditable(model, candidate)
   if (blockControls) reconcileDocumentContentControlBlockEdits(model, candidate, { selection, activeControlId: command.activeContentControlId,
     absorbAdjacentInsertions: ['doc.command.insert-text', 'doc.command.paste-blocks', 'doc.command.insert-image',
       'doc.command.insert-latex-formula',
-      'doc.command.insert-table', 'doc.command.insert-divider', 'doc.command.insert-page-break', 'doc.command.insert-column-break',
+      'doc.command.insert-table', 'doc.command.create-table', 'doc.command.insert-divider', 'doc.command.horizontal-line', 'doc.command.insert-horizontal-line-bellow', 'doc.command.insert-page-break', 'doc.command.insert-column-break',
       'doc.command.insert-section-break'].includes(command.id) })
   validateDocumentContentControlRanges(candidate)
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
@@ -353,8 +397,9 @@ export function executeDocumentCommand(
 function executeDocumentCommandMutation(
   model: DocumentModel,
   selection: DocumentSelection,
-  command: DocumentCommand,
+  command: Exclude<DocumentCommand, { id: 'doc.command.insert-horizontal-line-bellow' }>,
   permissionContext?: DocumentPermissionContext,
+  sourceModel: DocumentModel = model,
 ): DocumentSelection {
   const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
   if (command.id === 'doc.command.indent-code-block') return executeDocumentStructureCommand(model, selection, command, context)
@@ -390,7 +435,7 @@ function executeDocumentCommandMutation(
         ...(local.metadata ? { metadata: cloneModel(local.metadata) } : {}) }], next.focus.offset - cache.length)
     } else {
       if (local.id === 'doc.command.update-selected-fields') { local.stories = []; local.bodySelection = cloneDocumentSelectionForHost(selection) }
-      next = executeDocumentCommand(scoped, selection, local, context)
+      next = executeDocumentCommand(scoped, selection, local, context, sourceModel)
     }
     applyDocumentBlockHostModel(draft, host, scoped)
     if (host.kind === 'story') assertDocumentStoryLocksPreserved(resolveSectionHeaderFooter(model, host.sectionId), resolveSectionHeaderFooter(draft, host.sectionId), host.story, model)
@@ -400,13 +445,15 @@ function executeDocumentCommandMutation(
   }
   if (command.id === 'doc.command.set-document-permission-rules') {
     if (!canManageDocumentPermissions(context)) throw new Error('Only the document permission administrator can update permission rules')
-  } else if (command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
-    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command) && !isDocumentStructureCommand(command) && !isDocumentLatexCommand(command) && !isDocumentImageCommand(command)
+  } else if (command.id !== 'doc.command.set-paragraph-named-style' && command.id !== 'doc.command.change-paragraph-indent' && command.id !== 'doc.command.refresh-header-footer-fields' && command.id !== 'doc.command.update-selected-fields'
+    && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.create-table' && command.id !== 'doc.command.table-tab' && !isDocumentTableCommand(command) && !isDocumentStructureCommand(command) && !isDocumentLatexCommand(command) && !isDocumentImageCommand(command) && !isDocumentHyperlinkCommand(command)
     && !(selection.tableSelection && command.id === 'doc.command.paste-blocks') && !((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story)) {
     assertDocumentPermission(model.permissionRules ?? [], context, 'edit', 'sectionId' in command ? [{ scope: 'section', id: command.sectionId }] : permissionTargetsForSelection(model, selection))
   }
   if (isDocumentTableCommand(command)) return executeDocumentTableCommand(model, selection, command, context)
   if (isDocumentImageCommand(command)) return executeDocumentImageCommand(model, selection, command, context, replaceSelectionText)
+  if (isDocumentHyperlinkCommand(command)) return executeDocumentHyperlinkCommand(model, selection, command, context,
+    (candidate, target, text) => replaceSelectionText(candidate, target, text, undefined, { activeControlId: command.activeContentControlId }), sourceModel)
   if (command.id === 'doc.command.exit-structured-block') {
     const block = findDocumentBlock(model, command.blockId)
     if (block && !isDocumentStructuredBlock(block) && codeBlockData(block)) {
@@ -472,8 +519,7 @@ function executeDocumentCommandMutation(
       return selection
     }
     case 'doc.command.change-paragraph-indent': {
-      const changes = paragraphIndentPlan(model, selection, command.direction)
-      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', changes.flatMap(change => permissionTargetsForSelection(model, collapsedSelection({ ...change.target, offset: 0 }))))
+      const changes = prepareDocumentParagraphIndent(model, selection, command.direction, context)
       selection = replaceImportedNumberingMarkers(model, changes.filter(change => change.level !== undefined).map(change => change.target), selection, context)
       for (const change of changes) {
         if (change.level !== undefined) applyListNestingLevel(change.block, change.level)
@@ -482,10 +528,8 @@ function executeDocumentCommandMutation(
       return selection
     }
     case 'doc.command.set-paragraph-named-style': {
-      selectedTargets(model, selection).forEach((target) => {
-        const block = blockAtPoint(model, target)
-        if (block && ['paragraph', 'heading', 'quote'].includes(block.type)) applyNamedParagraphStyle(block, command.namedStyle)
-      })
+      const targets = namedParagraphStyleTargets(model, selection, context)
+      for (const block of targets) applyNamedParagraphStyle(block, command.namedStyle)
       return selection
     }
     case 'doc.command.toggle-checklist-item': {
@@ -576,7 +620,12 @@ function executeDocumentCommandMutation(
       if (type === 'code' || type === 'callout' || type === 'columns') throw new RangeError('结构容器需要使用高级块命令创建。')
       const level = command.id === 'doc.command.set-block-type' ? command.level : undefined
       const isList = type === 'bullet' || type === 'numbered' || type === 'checklist'
-      const toggleOff = !explicit && isList && targets.length > 0 && targets.every((target) => blockAtPoint(model, target)?.type === type)
+      const toggleOff = !explicit && isList && targets.length > 0 && targets.every((target) => {
+        const block = blockAtPoint(model, target)
+        if (type === 'checklist') return block?.type === 'checklist'
+        if (type === 'numbered') return orderedNumberingParagraph(block)
+        return !!block && block.type !== 'checklist' && blockHasNumbering(block) && !orderedNumberingParagraph(block)
+      })
       let list: DocumentBlock['list']
       let adjacent: DocumentBlock | undefined
       if (!toggleOff && (type === 'bullet' || type === 'numbered')) {
@@ -584,7 +633,8 @@ function executeDocumentCommandMutation(
         if (!explicit && targets.length === 1 && first && last) {
           const before = blockContainer(model, first), after = blockContainer(model, last)
           const left = before.indexOf(blockAtPoint(model, first)!), right = after.indexOf(blockAtPoint(model, last)!)
-          adjacent = [before[left - 1], after[right + 1]].find(b => b?.type === type && (b.list || blockNumberingDefinition(b)))
+          adjacent = [before[left - 1], after[right + 1]].find(block => block && (block.list || blockNumberingDefinition(block))
+            && (type === 'numbered' ? orderedNumberingParagraph(block) : block.type !== 'checklist' && !orderedNumberingParagraph(block)))
         }
         list = adjacent?.list ?? (adjacent && blockNumberingDefinition(adjacent) ? undefined : { id: documentId('list'), preset: explicit ?? (type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST') })
       }
@@ -596,18 +646,40 @@ function executeDocumentCommandMutation(
       targets.forEach((target) => {
         const block = blockAtPoint(model, target)
         if (!block) return
-        const wasList = block.type === 'bullet' || block.type === 'numbered' || block.type === 'checklist'
-        block.type = toggleOff ? 'paragraph' : type
-        delete block.metadata.namedStyleType
-        block.level = block.type === 'paragraph' ? 0 : level ?? (isList && wasList ? block.level : 0)
+        if (!isList) {
+          block.type = type
+          delete block.metadata.namedStyleType
+          block.level = type === 'paragraph' ? 0 : level ?? 0
+          clearBlockNumbering(block)
+          delete block.checklist
+          if (type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: level === 1 ? 24 : level === 2 ? 18 : 14 }))
+          if (type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
+          return
+        }
+        const listDepth = blockHasNumbering(block) ? blockNumberingLevelIndex(block) : 0
+        const headingLevel = block.type === 'heading' ? block.level
+          : DOCUMENT_NAMED_PARAGRAPH_STYLES[block.metadata.namedStyleType as DocumentNamedParagraphStyle]?.level ?? 0
         clearBlockNumbering(block)
+        if (toggleOff) {
+          block.type = headingLevel > 0 ? 'heading' : 'paragraph'
+          block.level = headingLevel
+          delete block.checklist
+          return
+        }
+        if (type === 'checklist') {
+          block.type = 'checklist'
+          block.level = listDepth
+          block.checklist = { listId: checklistListId ?? block.checklist?.listId ?? documentId('checklist'), checked: block.checklist?.checked === true }
+          return
+        }
+        block.type = headingLevel > 0 ? 'heading' : type
+        block.level = headingLevel > 0 ? headingLevel : listDepth
         if (adjacent) copyBlockNumbering(adjacent, block)
-        else if (list) block.list = { ...list }
-        if (block.type === 'bullet' || block.type === 'numbered') block.level = blockListLevel(block).index
-        if (block.type === 'checklist') block.checklist = { listId: checklistListId ?? block.checklist?.listId ?? documentId('checklist'), checked: block.checklist?.checked === true }
-        else delete block.checklist
-        if (type === 'heading') block.runs = block.runs.map((run) => ({ ...run, bold: true, fontSize: level === 1 ? 24 : level === 2 ? 18 : 14 }))
-        if (type === 'paragraph') block.runs = block.runs.map((run) => ({ ...run, bold: false, fontSize: 11 }))
+        if (list) block.list = { ...list }
+        const nextDepth = Math.min(blockListLevel(block).maximum, listDepth)
+        if (block.type === 'heading') block.metadata.numberingLevel = nextDepth
+        if (block.type !== 'heading') block.level = nextDepth
+        delete block.checklist
       })
       return selection
     }
@@ -620,8 +692,9 @@ function executeDocumentCommandMutation(
     }
     case 'doc.command.insert-column-break': return insertBreakBlock(model, selection, 'columnBreak')
     case 'doc.command.insert-section-break': return insertBreakBlock(model, selection, 'sectionBreak', command.type)
+    case 'doc.command.create-table':
     case 'doc.command.insert-table': {
-      const block = createDocumentTableBlock(model, command), draft = cloneModel(model)
+      const draft = cloneModel(model)
       const fieldIds = new Set(documentTextFieldRanges(model).map(range => range.field.id))
       let input = selection
       if (command.offset !== undefined) input = collapsedSelection(documentPointAtClampedBodyOffset(draft, command.offset))
@@ -635,6 +708,7 @@ function executeDocumentCommandMutation(
           input = collapsedSelection({ blockId: paragraph.id, offset: 0 })
         }
       } else if (command.position === 'offset') input = collapsedSelection(selection.focus)
+      const block = createDocumentTableBlock(draft, command, orderedSelection(draft, input).start, sourceModel)
       assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForSelection(draft, input))
       const collapsed = replaceSelectionText(draft, input, '')
       const inserted = insertDocumentBlocksAtPoint(draft, collapsed.focus, [block])
@@ -662,7 +736,16 @@ function executeDocumentCommandMutation(
       setDocumentImageAtom(inserted.inline.run, imageId, image)
       return next
     }
-    case 'doc.command.insert-divider': return insertBlocks(model, selection, [{ ...createParagraph(), type: 'divider', runs: [] }])
+    case 'doc.command.insert-divider':
+    case 'doc.command.horizontal-line': {
+      if (selection.tableSelection) throw new RangeError('分隔线需要文字插入位置。')
+      const divider = createParagraph()
+      divider.type = 'divider'
+      divider.runs = []
+      divider.style = { ...divider.style, spaceAfter: 10 * 4 / 3 }
+      divider.metadata.documentDividerBorder = { ...DOCUMENT_HORIZONTAL_LINE_BORDER }
+      return insertBlocks(model, selection, [divider], { activeControlId: command.activeContentControlId })
+    }
     case 'doc.command.paste-blocks': {
       const blocks = copyDocumentBlocksForPaste(command.blocks)
       const paragraph = blocks.length === 1 && blocks[0]?.type === 'paragraph' ? blocks[0] : undefined

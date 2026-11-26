@@ -10,6 +10,7 @@ const fixturePath = '/__document-structured-workbench-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Docs structured blocks</title><style>body{margin:0}#app{height:100vh}</style></head><body><div id="app"></div><script type="module">
 import { computed, createApp, h, ref, shallowRef } from 'vue'
 import { ConfigProvider, theme } from 'antdv-next'
+import 'antdv-next/dist/reset.css'
 import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
 import { FDocument } from '/packages/office-studio/src/api/facade'
 import { createBlankDocument } from '/packages/office-studio/src/domain/model'
@@ -19,11 +20,13 @@ import { documentLayoutForBlockHost } from '/packages/office-studio/src/features
 import { documentModelForBlockHost } from '/packages/office-studio/src/features/document/services/document-block-host'
 import { projectDocumentStoryBlocks } from '/packages/office-studio/src/features/document/model/document-story-blocks'
 import { initializeDocumentQuotePagination } from '/packages/office-studio/src/features/document/model/document-paragraph-pagination'
+import { registerDocumentCodeFontFamilies } from '/packages/office-studio/src/features/document/code-blocks/document-code-fonts'
 import { EMPTY_SECTION_HEADER_FOOTER } from '/packages/office-studio/src/features/document/services/section-header-footer'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
 import { createOfficeI18n, createOfficeTranslator, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
 import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
 const query = new URLSearchParams(location.search), copy = value => JSON.parse(JSON.stringify(value)), standalone = query.has('standalone')
+const codeControlValues = { fontFamily: 'Registered Office Code Font '.repeat(6).trim(), language: 'author-code-language-'.repeat(8) }
 const paragraph = (id, text = '') => ({ ...createParagraph(text), id })
 const columnBlock = (id, count = 3) => ({ ...paragraph(id), type: 'columns', runs: [], columns: { version: 1, gap: 16, horizontalPadding: 8, minHeight: 72,
   layout: 'fixed', responsive: 'shrink', columns: Array.from({ length: count }, (_, index) => ({ id: id + '-column-' + index, widthRatio: 1, minWidth: 32,
@@ -36,6 +39,12 @@ initial.blocks = [{ ...paragraph('code'), type: 'code', runs: [], children: [par
   columnBlock('columns-three'), columnBlock('columns-two', 2),
   { ...paragraph('long-code'), type: 'code', runs: [], children: [paragraph('long-code-p', 'abcdefgh'.repeat(100))],
     code: { language: 'typescript', showLineNumbers: true, tabSize: 4, wrap: false } }, paragraph('tail', 'Outside')]
+if (query.has('long-controls')) {
+  initial.page = { ...initial.page, width: 900, marginLeft: 680 }
+  initial.blocks = [initial.blocks[0], paragraph('tail', 'Outside')]
+  initial.blocks[0].code.language = codeControlValues.language
+  registerDocumentCodeFontFamilies([{ value: codeControlValues.fontFamily, category: 'monospace' }])
+}
 if (new URLSearchParams(location.search).has('blank')) initial.blocks = [paragraph('empty'), paragraph('tail', 'Outside')]
 if (new URLSearchParams(location.search).has('table')) {
   const table = createTable(1, 1); table.rows[0].cells[0].blocks = [paragraph('table-cell', 'Retained table')]
@@ -65,6 +74,14 @@ if (standalone) delete initial.id
 let studio = standalone ? undefined : new OfficeStudio({ document: initial, currentUserId: 'editor' })
 studio?.activateDocument(initial.id)
 const api = shallowRef(studio ? new FDocument(studio, initial.id) : undefined), model = shallowRef(api.value?.getModel() ?? initial)
+const commandEvents = []
+for (const [eventName, phase] of [['BeforeCommandExecute', 'before'], ['CommandExecuted', 'after']]) {
+  studio?.events.addEvent(eventName, event => commandEvents.push({ phase, id: event.id, value: event.params?.value, unitId: event.unitId, kind: event.kind }))
+}
+if (query.has('long-controls')) {
+  api.value.getCode('code').setFontFamily(codeControlValues.fontFamily)
+  model.value = api.value.getModel()
+}
 const dark = ref(false), variant = ref('classic'), notices = [], locale = ref(query.get('locale') ?? 'zh-CN')
 const translator = computed(() => createOfficeTranslator(locale.value))
 function sync() { if (api.value) model.value = api.value.getModel() }
@@ -76,7 +93,9 @@ function select(blockId, offset = 0, endId = blockId, endOffset = offset, host) 
   return api.value.setInputSelection({ anchor: { ...anchor, offset }, focus: { ...focus, offset: endOffset } }, undefined, host)
 }
 window.documentStructuredFixture = {
+  codeControlValues,
   snapshot: () => copy(api.value?.getModel() ?? model.value), notices,
+  commandEvents: () => copy(commandEvents),
   source: () => findDocumentBlock(api.value?.getModel() ?? model.value, 'code').children.map(block => block.runs.map(run => run.text).join('')).join('\\n'),
   history: () => studio ? { undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 } : undefined,
   select, dark: value => dark.value = value, variant: value => variant.value = value,
@@ -97,7 +116,7 @@ window.documentStructuredFixture = {
   longSource: () => findDocumentBlock(api.value?.getModel() ?? model.value, 'long-code').children.map(block => block.runs.map(run => run.text).join('')).join('\\n'),
   changeSource: value => { api.value.getCode('code').setText(value); sync() },
   replaceSameSnapshot: () => { model.value = copy(model.value) },
-  saveAndReopen: (paragraphId = 'code-p') => { const saved = api.value.save(); studio.dispose(); studio = new OfficeStudio({ document: copy(saved), currentUserId: 'editor' }); studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); sync(); select(paragraphId, 0); return copy(saved) },
+  saveAndReopen: (paragraphId = 'code-p', host) => { const saved = api.value.save(); studio.dispose(); studio = new OfficeStudio({ document: copy(saved), currentUserId: 'editor' }); studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); sync(); select(paragraphId, 0, paragraphId, 0, host); return copy(saved) },
   point: (id, offset = 0, codeOffset = 0, host) => {
     const viewport = document.querySelector('.document-scroll'), rect = viewport.getBoundingClientRect()
     const layout = documentLayoutForBlockHost(layoutDocument(api.value?.getModel() ?? model.value, createTextMeasurer()), host)
@@ -108,7 +127,7 @@ window.documentStructuredFixture = {
   },
 }
 const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
-  default: () => h(DocumentWorkbench, { modelValue: model.value, documentApi: api.value, canUndo: studio?.editor.canUndo, canRedo: studio?.editor.canRedo, ribbonVariant: variant.value,
+  default: () => h(DocumentWorkbench, { modelValue: model.value, documentApi: api.value, canUndo: studio?.editor.canUndo, canRedo: studio?.editor.canRedo, ribbonVariant: variant.value, showOutline: query.has('long-controls') ? false : undefined,
     'onUpdate:modelValue': next => model.value = next, onNotify: message => notices.push(message) }),
 }) })
 const i18n = createOfficeI18n(); i18n.global.locale.value = locale.value
@@ -147,6 +166,55 @@ async function contextProperty(blockId, name) {
   await page.getByRole('menuitem', { name, exact: true }).click()
   return page.getByRole('dialog')
 }
+
+test('symbol and emoji popups execute the fixed value command in body and header Code with focus, themes, geometry and persistence', async () => {
+  const header = { kind: 'story', sectionId: 'first', story: 'header' }
+  for (const [variant, dark, query, paragraphId, host] of [['classic', false, '', 'code-p', undefined], ['grid', true, '?auxiliary', 'header-code-p', header]]) {
+    for (const [itemId, title, value] of [['doc-emoji', '表情', '👨‍👩‍👧‍👦'], ['doc-symbol', '符号', '|a|e\u0301'], ['doc-symbol', '符号', ' '], ['doc-symbol', '符号', '\u00a0']]) {
+      await page.goto(baseURL + query); await page.waitForFunction(() => !!window.documentStructuredFixture)
+      await page.evaluate(({ variant, dark, paragraphId, host }) => {
+        window.documentStructuredFixture.variant(variant); window.documentStructuredFixture.dark(dark)
+        window.documentStructuredFixture.select(paragraphId, 1, paragraphId, 3, host)
+      }, { variant, dark, paragraphId, host })
+      const before = await page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.block(paragraphId, host), { paragraphId, host })
+      const previous = await history(), input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+      await input.focus()
+      await page.getByRole('tab', { name: '插入', exact: true }).click()
+      const button = page.locator(`.ribbon-visible-groups [data-ribbon-item="${itemId}"] button`).first()
+      const background = await button.evaluate(element => getComputedStyle(element).backgroundColor)
+      await button.hover()
+      await expect.poll(() => button.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(background)
+      const geometry = await button.evaluate(element => {
+        const button = element.getBoundingClientRect(), arrow = element.querySelector('.ribbon-dropdown-chevron').getBoundingClientRect()
+        return { height: button.height, inside: arrow.left >= button.left && arrow.right <= button.right,
+          center: Math.abs(arrow.top + arrow.height / 2 - button.top - button.height / 2) }
+      })
+      assert.equal(geometry.height, variant === 'classic' ? 28 : 24); assert.equal(geometry.inside, true); assert.ok(geometry.center <= 0.05)
+      await button.click()
+      const popup = page.getByRole('dialog', { name: title, exact: true })
+      await expect(popup.locator('.ant-form')).toHaveCount(2)
+      const cell = popup.locator('.character-grid .ant-btn').first(), character = await cell.textContent()
+      assert.equal(await cell.evaluate(element => element.getBoundingClientRect().height), 42)
+      await cell.hover(); await expect(page.getByRole('tooltip')).toContainText(character)
+      await popup.getByRole('textbox', { name: '自定义字符', exact: true }).fill(value)
+      await popup.getByRole('button', { name: '插入字符', exact: true }).click()
+      await expect(popup).toBeHidden(); await expect(input).toBeFocused()
+      const originalText = before.runs.map(run => run.text).join(''), expected = originalText.slice(0, 1) + value + originalText.slice(3)
+      await expect.poll(() => page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.block(paragraphId, host).runs.map(run => run.text).join(''), { paragraphId, host })).toBe(expected)
+      const events = await page.evaluate(() => window.documentStructuredFixture.commandEvents().filter(event => event.id === 'doc.command.insert-special-character' || event.id === 'doc.command.insert-text'))
+      assert.deepEqual(events, ['before', 'after'].map(phase => ({ phase, id: 'doc.command.insert-special-character', value, unitId: 'structured-browser', kind: 'document' })))
+      assert.equal((await history()).undo, previous.undo + 1)
+      const location = await page.evaluate(() => window.documentStructuredFixture.selection())
+      assert.equal(location.kind, 'body'); assert.equal(location.selection.focus.offset, 1 + value.length)
+      assert.deepEqual(location.host, host)
+      await page.evaluate(() => window.documentStructuredFixture.undo())
+      assert.deepEqual(await page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.block(paragraphId, host), { paragraphId, host }), before)
+      await page.evaluate(() => window.documentStructuredFixture.redo())
+      await page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.saveAndReopen(paragraphId, host), { paragraphId, host })
+      assert.equal(await page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.block(paragraphId, host).runs.map(run => run.text).join(''), { paragraphId, host }), expected)
+    }
+  }
+})
 
 test('code Tab and Shift+Tab use the current range and one undo item for each indentation action', async () => {
   await page.evaluate(() => window.documentStructuredFixture.select('code-last', 3, 'code-p', 1))
@@ -350,6 +418,46 @@ async function chooseCodeOption(name, label) {
   await controls().getByRole('combobox', { name, exact: true }).click()
   await page.getByRole('option', { name: label, exact: true }).click()
 }
+
+test('desktop Code long font and author language remain inside the right edge with full Ant tooltips', async () => {
+  await page.setViewportSize({ width: 900, height: 900 })
+  await page.goto(baseURL + '?long-controls=1'); await page.waitForFunction(() => !!window.documentStructuredFixture)
+  const values = await page.evaluate(() => window.documentStructuredFixture.codeControlValues), before = await block(), previous = await history()
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  for (const [dark, variant] of [[false, 'classic'], [true, 'grid']]) {
+    await page.evaluate(({ dark, variant }) => {
+      window.documentStructuredFixture.dark(dark); window.documentStructuredFixture.variant(variant); window.documentStructuredFixture.select('code-p')
+    }, { dark, variant })
+    await input.focus()
+    const toolbar = page.locator('[data-document-structured-toolbar]'); await expect(toolbar).toBeVisible()
+    const bounds = await toolbar.evaluate(element => {
+      const rectangle = element.getBoundingClientRect(), viewport = element.closest('.document-canvas-viewport').getBoundingClientRect()
+      return { left: rectangle.left, right: rectangle.right, viewportLeft: viewport.left, viewportRight: viewport.right, viewportWidth: viewport.width }
+    })
+    assert.ok(bounds.viewportWidth > 640); assert.ok(bounds.left >= bounds.viewportLeft + 8 - 1); assert.ok(bounds.right <= bounds.viewportRight - 8 + 1)
+    for (const [name, value, field] of [['代码块字体', values.fontFamily, '代码块等宽字体'], ['代码块语言选择', values.language, '代码块语言']]) {
+      const trigger = toolbar.getByRole('button', { name, exact: true })
+      await expect(trigger.locator('.structured-code-control__label')).toHaveText(value)
+      const geometry = await trigger.evaluate(element => {
+        const button = element.getBoundingClientRect(), label = element.querySelector('.structured-code-control__label'), text = label.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return { width: button.width, left: button.left, right: button.right, textLeft: text.left, textRight: text.right,
+          innerLeft: button.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+          innerRight: button.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight), clipped: label.scrollWidth > label.clientWidth }
+      })
+      assert.ok(geometry.width <= 119); assert.ok(geometry.left >= bounds.left + 4 - 1); assert.ok(geometry.right <= bounds.right - 4 + 1)
+      assert.ok(geometry.textLeft >= geometry.innerLeft - 1); assert.ok(geometry.textRight <= geometry.innerRight + 1); assert.equal(geometry.clipped, true)
+      await trigger.hover(); await expect(page.getByRole('tooltip').filter({ hasText: value })).toHaveText(value)
+      const hovered = await trigger.boundingBox(); assert.ok(hovered); assert.ok(Math.abs(hovered.width - geometry.width) <= 1)
+      await expect(input).toBeFocused(); await trigger.click()
+      await expect(controls().getByRole('combobox', { name: field, exact: true })).toBeVisible()
+      await controls().getByRole('button', { name: '取消', exact: true }).click(); await expect(controls()).toHaveCount(0); await expect(input).toBeFocused()
+    }
+    assert.deepEqual(await block(), before); assert.deepEqual(await history(), previous)
+  }
+  await page.evaluate(() => window.documentStructuredFixture.saveAndReopen())
+  assert.equal((await block()).code.language, values.language); assert.equal((await block()).children[0].runs[0].fontFamily, values.fontFamily)
+})
 
 test('desktop Code font Popover uses Ant controls in both themes, cancels without history, and applies real font formatting', async () => {
   for (const dark of [false, true]) {

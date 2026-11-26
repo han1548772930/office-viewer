@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { Button, Form, FormItem, Select, Tooltip, theme } from 'antdv-next'
 import SheetColorControl from './SheetColorControl.vue'
+import SheetBorderIcon from './SheetBorderIcon.vue'
 import { sheetColorHex } from '../../features/sheet-workbench/sheet-colors.ts'
 import { sheetBorderLabels, sheetBorderStyleLabels, type SheetBorderOptions, type SheetBorderPreset, type SheetBorderStyle } from '../../features/sheet-workbench/sheet-toolbar-format.ts'
 import type { OfficeTranslator } from '../../i18n/office-i18n.ts'
@@ -58,11 +59,11 @@ function apply(preset: SheetBorderPreset): void {
 </script>
 
 <template>
-      <section class="border-selector" :style="{ '--edge-ink': token.colorText, '--edge-guide': token.colorBorder, '--edge-active': token.colorPrimaryBg }">
+      <section class="border-selector" :style="{ '--edge-ink': token.colorText, '--edge-guide': token.colorBorder, '--edge-active': token.colorPrimaryBg, '--edge-control-height': `${token.controlHeightSM}px` }">
         <div class="border-selector-options">
-          <Tooltip v-for="preset in presetOrder" :key="preset" :title="label(preset)">
+          <Tooltip v-for="preset in presetOrder" :key="preset" :title="label(preset)" :trigger="['hover', 'focus']">
             <Button type="text" class="border-preset" :disabled="disabled" :aria-label="label(preset)" :aria-pressed="props.preset === preset" @mousedown.prevent @click="apply(preset)">
-              <span class="border-preview" :class="`is-${preset}`"><svg v-if="preset.includes('pair') || preset.includes('triple')" viewBox="0 0 20 20" aria-hidden="true"><path :d="preset === 'diagonal-up-pair' ? 'M0 10 L20 0 L10 20' : preset === 'diagonal-down-triple' ? 'M20 10 L0 0 L10 20 M0 0 L20 20' : 'M20 10 L0 0 L10 20'" fill="none" stroke="currentColor" /></svg></span>
+              <SheetBorderIcon :preset="preset" />
             </Button>
           </Tooltip>
         </div>
@@ -82,23 +83,9 @@ function apply(preset: SheetBorderPreset): void {
 .border-selector-options { display: grid; grid-template-columns: repeat(5, 1fr); justify-items: center; gap: 8px; }
 .border-preset[aria-pressed="true"] { background: var(--edge-active); }
 .border-preset { display: grid; width: 24px; min-width: 24px; height: 24px; place-items: center; padding: 0; }
-.border-preview { position: relative; box-sizing: border-box; display: block; width: 18px; height: 18px; border: 1px solid var(--edge-guide); color: var(--edge-ink); }
-.border-preview.is-all { border-color: currentColor; }
-.border-preview.is-outside { border: 2px solid currentColor; }
-.border-preview.is-all, .border-preview.is-inside { background: linear-gradient(90deg, transparent 46%, currentColor 47%, currentColor 53%, transparent 54%), linear-gradient(transparent 46%, currentColor 47%, currentColor 53%, transparent 54%); }
-.border-preview.is-top { border-top: 2px solid currentColor; }
-.border-preview.is-bottom { border-bottom: 2px solid currentColor; }
-.border-preview.is-left { border-left: 2px solid currentColor; }
-.border-preview.is-right { border-right: 2px solid currentColor; }
-.border-preview.is-horizontal { background: linear-gradient(transparent 46%, currentColor 47%, currentColor 53%, transparent 54%); }
-.border-preview.is-vertical { background: linear-gradient(90deg, transparent 46%, currentColor 47%, currentColor 53%, transparent 54%); }
-.border-preview.is-diagonal-down::after, .border-preview.is-diagonal-up::after { position: absolute; top: 8px; left: -2px; width: 20px; border-top: 1px solid currentColor; content: ''; }
-.border-preview.is-diagonal-down::after { transform: rotate(45deg); }
-.border-preview.is-diagonal-up::after { transform: rotate(-45deg); }
-.border-preview.is-none { border: 1px dashed var(--edge-guide); }
 .border-selector-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
 .border-selector-fields :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .border-selector-fields :deep(.ant-form-item-label) { padding-bottom: 4px; font-size: 12px; }
-.border-color-field :deep(.sheet-color-control) { width: 100%; height: 28px; }
+.border-color-field :deep(.sheet-color-control) { width: 100%; height: var(--edge-control-height); }
 .border-style-field :deep(.ant-select) { width: 100%; }
 </style>

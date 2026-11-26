@@ -170,15 +170,15 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
 <template>
   <span ref="root" class="document-color-control" :class="{ 'is-grid': grid, 'is-overflow': overflow }" :style="themeStyle">
     <Tooltip :title="measurement ? undefined : title" :open="open || measurement ? false : undefined" :mouse-enter-delay="0.6">
-      <Button type="text" size="small" class="document-color-main" :disabled="unavailable" :aria-label="title" @mousedown.prevent @click="apply({ patch: { [field]: mainColor } })">
+      <Button type="text" size="small" class="document-color-main" :styles="{ root: { border: 0 } }" :disabled="unavailable" :aria-label="title" @mousedown.prevent @click="apply({ patch: { [field]: mainColor } })">
         <span class="document-color-icon" aria-hidden="true"><component :is="icon" :size="iconSize" /><span class="document-color-bar" :style="{ backgroundColor: documentColorPreview(field, mainColor, defaultColor) }" /></span>
-        <span v-if="overflow">{{ title }}</span>
+        <span v-if="overflow" class="document-color-main-label">{{ title }}</span>
       </Button>
     </Tooltip>
     <ColorPicker :value="draft" :open="open" value-format="hex" v-model:format="format" :disabled-alpha="true" :disabled="unavailable" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :arrow="false" :destroy-on-hidden="true" @update:value="updateDraft" @update:open="setOpen">
       <span ref="arrow" class="document-color-arrow">
         <Tooltip :title="measurement ? undefined : optionsTitle" :open="open || measurement ? false : undefined" :mouse-enter-delay="0.6">
-          <Button type="text" size="small" :disabled="unavailable" :aria-label="optionsTitle" aria-haspopup="dialog" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown="onTriggerKeydown"><ChevronDown :size="12" /></Button>
+          <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="unavailable" :aria-label="optionsTitle" aria-haspopup="dialog" :aria-expanded="open" :aria-controls="popupId" @mousedown.prevent @keydown="onTriggerKeydown"><ChevronDown :size="12" /></Button>
         </Tooltip>
       </span>
       <template #panelRender="{ panel }">
@@ -197,9 +197,11 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
           <template v-else>
             <div class="document-color-presets" role="group" :aria-label="translate('document.color.standard', '标准颜色')">
               <div v-for="(row, rowIndex) in DOCUMENT_COLOR_PRESETS" :key="rowIndex" class="document-color-preset-row">
-                <Button v-for="color in row" :key="color" type="text" size="small" class="document-color-preset" :disabled="unavailable" :aria-label="color.toUpperCase()" :aria-pressed="presetActive(color)" :title="color.toUpperCase()" @click="apply(documentColorParams(field, color))">
-                  <span class="document-color-swatch" :style="{ backgroundColor: color }" aria-hidden="true" />
-                </Button>
+                <Tooltip v-for="color in row" :key="color" :title="color.toUpperCase()" :trigger="['hover', 'focus']">
+                  <Button type="text" size="small" class="document-color-preset" :disabled="unavailable" :aria-label="color.toUpperCase()" :aria-pressed="presetActive(color)" @click="apply(documentColorParams(field, color))">
+                    <span class="document-color-swatch" :style="{ backgroundColor: color }" aria-hidden="true" />
+                  </Button>
+                </Tooltip>
               </div>
             </div>
             <span ref="more" class="document-color-more">
@@ -221,25 +223,33 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
 </template>
 
 <style scoped>
-.document-color-control { display: inline-flex; align-items: center; height: var(--ribbon-selector-height, 28px); }
-.document-color-control.is-grid { width: 100%; height: 100%; }
-.document-color-main { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 4px; color: var(--ribbon-text); }
-.document-color-control.is-grid .document-color-main { flex: 1 1 auto; min-width: 20px; height: 100%; }
-.document-color-icon { position: relative; display: inline-flex; flex: 0 0 auto; }
+.document-color-control { display: inline-flex; box-sizing: border-box; min-width: calc(var(--ribbon-icon-size, 16px) + 24px); align-items: center; height: var(--ribbon-selector-height, 28px); }
+.document-color-control.is-grid { width: 100%; min-width: calc(var(--ribbon-icon-size, 16px) + 20px); height: 100%; }
+.document-color-main { display: inline-flex; box-sizing: border-box; align-items: center; justify-content: center; min-width: calc(var(--ribbon-icon-size, 16px) + 8px); height: 100%; padding: 0 4px; color: var(--ribbon-text); }
+.document-color-control.is-grid .document-color-main { flex: 1 1 auto; min-width: calc(var(--ribbon-icon-size, 16px) + 4px); height: 100%; padding-inline: 2px; }
+.document-color-icon { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; }
+.document-color-icon :deep(svg) { display: block; }
 .document-color-bar { position: absolute; inset-inline: 0; bottom: -2px; height: 3px; border-radius: 1px; }
 .document-color-main:disabled .document-color-bar { opacity: 0.35; }
-.document-color-arrow { display: inline-flex; height: 28px; }
-.document-color-arrow :deep(button) { min-width: 16px; width: 16px; height: 28px; padding: 0; border-inline-start: 1px solid var(--ribbon-border); border-start-start-radius: 0; border-end-start-radius: 0; color: var(--ribbon-text); }
-.document-color-control.is-grid .document-color-arrow, .document-color-control.is-grid .document-color-arrow :deep(button) { height: 100%; border: 0; }
-.document-color-control.is-overflow { width: 100%; }
+.document-color-arrow { display: inline-flex; flex: 0 0 16px; height: 100%; }
+.document-color-arrow :deep(button) { display: inline-flex; box-sizing: border-box; align-items: center; justify-content: center; min-width: 16px; width: 16px; height: 100%; padding: 0; border-start-start-radius: 0; border-end-start-radius: 0; color: var(--ribbon-text); }
+.document-color-arrow :deep(button)::before { position: absolute; inset-block: 0; inset-inline-start: 0; width: 1px; background: var(--ribbon-border); content: ''; pointer-events: none; }
+.document-color-arrow :deep(svg) { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
+.document-color-control.is-grid .document-color-arrow, .document-color-control.is-grid .document-color-arrow :deep(button) { height: 100%; }
+.document-color-control.is-grid .document-color-arrow :deep(button)::before { display: none; }
+.document-color-control.is-overflow { width: 100%; min-width: 0; height: 28px; }
 .document-color-control.is-overflow .document-color-main { justify-content: flex-start; gap: 8px; flex: 1 1 auto; }
+.document-color-main-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-color-main:not(:disabled):hover, .document-color-arrow :deep(button:not(:disabled):hover) { background: var(--ribbon-hover-background); }
+.document-color-main:disabled, .document-color-arrow :deep(button:disabled) { color: var(--ribbon-disabled); background: transparent; }
 .document-color-panel { box-sizing: border-box; width: 288px; max-width: calc(100vw - 32px); max-height: 70vh; overflow: auto; color: var(--ribbon-text); }
 .document-color-actions { display: flex; gap: 8px; }
 .document-color-actions.is-custom { justify-content: flex-end; }
 .document-color-custom :deep(.ant-form-item) { margin-bottom: 12px; }
 .document-color-preset-row { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); }
-.document-color-preset { display: flex; align-items: center; justify-content: center; width: 32px; max-width: 100%; height: 32px; padding: 4px; }
+.document-color-preset { display: flex; box-sizing: border-box; align-items: center; justify-content: center; width: 32px; max-width: 100%; height: 32px; padding: 3px; }
 .document-color-swatch { box-sizing: border-box; display: inline-block; width: 24px; height: 24px; border: 1px solid var(--ribbon-border); border-radius: 4px; }
+.document-color-preset .document-color-swatch { max-width: 100%; height: auto; aspect-ratio: 1; }
 .document-color-preset[aria-pressed="true"] { background: var(--ribbon-active-background); }
 .document-color-preset[aria-pressed="true"] .document-color-swatch { outline: 2px solid var(--ribbon-primary); outline-offset: 1px; }
 .document-color-more { display: block; margin-top: 8px; }

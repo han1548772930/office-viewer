@@ -183,15 +183,15 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
 <template>
   <span ref="root" class="sheet-color-control" :class="{ 'is-grid': grid, 'is-overflow': overflow, 'is-select': !split }" :style="themeStyle">
     <Tooltip v-if="split" :title="measurement ? undefined : title" :open="popupOpen || measurement ? false : undefined" :mouse-enter-delay="0.6">
-      <Button type="text" size="small" class="sheet-color-main" :disabled="unavailable || composing" :aria-label="title" @mousedown.prevent @click="apply(mainColor)">
+      <Button type="text" size="small" class="sheet-color-main" :styles="{ root: { border: 0 } }" :disabled="unavailable || composing" :aria-label="title" @mousedown.prevent @click="apply(mainColor)">
         <span class="sheet-color-icon" aria-hidden="true"><component :is="icon" v-if="icon" :size="iconSize" /><span class="sheet-color-bar" :style="{ backgroundColor: mainColor }" /></span>
-        <span v-if="overflow">{{ title }}</span>
+        <span v-if="overflow" class="sheet-color-main-label">{{ title }}</span>
       </Button>
     </Tooltip>
     <ColorPicker :value="draft" :open="popupOpen" value-format="hex" v-model:format="format" :disabled-alpha="true" :disabled="unavailable" :placement="direction === 'rtl' ? 'bottomRight' : 'bottomLeft'" :get-popup-container="popupContainer" :arrow="false" :destroy-on-hidden="true" @update:value="updateDraft" @update:open="setOpen">
       <span ref="trigger" class="sheet-color-arrow">
         <Tooltip :title="measurement ? undefined : optionsTitle" :open="popupOpen || measurement ? false : undefined" :mouse-enter-delay="0.6">
-          <Button type="text" size="small" :disabled="unavailable || composing" :aria-label="optionsTitle" aria-haspopup="dialog" :aria-expanded="popupOpen" :aria-controls="popupId" @mousedown.prevent @keydown="onTriggerKeydown">
+          <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="unavailable || composing" :aria-label="optionsTitle" aria-haspopup="dialog" :aria-expanded="popupOpen" :aria-controls="popupId" @mousedown.prevent @keydown="onTriggerKeydown">
             <span v-if="!split" class="sheet-color-swatch" :style="{ backgroundColor: mainColor }" aria-hidden="true" /><ChevronDown :size="12" />
           </Button>
         </Tooltip>
@@ -212,9 +212,11 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
           <template v-else>
             <div class="sheet-color-presets" role="group" :aria-label="translate('sheet.color.standard', '标准颜色')">
               <div v-for="(row, rowIndex) in SHEET_COLOR_PRESETS" :key="rowIndex" class="sheet-color-preset-row">
-                <Button v-for="color in row" :key="color" type="text" size="small" class="sheet-color-preset" :disabled="unavailable" :aria-label="color.toUpperCase()" :aria-pressed="presetActive(color)" :title="color.toUpperCase()" @mousedown.prevent @click="apply(color)">
-                  <span class="sheet-color-swatch" :style="{ backgroundColor: color }" aria-hidden="true" />
-                </Button>
+                <Tooltip v-for="color in row" :key="color" :title="color.toUpperCase()" :trigger="['hover', 'focus']">
+                  <Button type="text" size="small" class="sheet-color-preset" :disabled="unavailable" :aria-label="color.toUpperCase()" :aria-pressed="presetActive(color)" @mousedown.prevent @click="apply(color)">
+                    <span class="sheet-color-swatch" :style="{ backgroundColor: color }" aria-hidden="true" />
+                  </Button>
+                </Tooltip>
               </div>
             </div>
             <span ref="more" class="sheet-color-more"><Button type="text" size="small" :disabled="unavailable" @click="openCustom">
@@ -233,28 +235,36 @@ onBeforeUnmount(() => { view?.removeEventListener('keydown', onWindowKeydown, tr
 </template>
 
 <style scoped>
-.sheet-color-control { display: inline-flex; align-items: center; height: var(--ribbon-selector-height, 28px); }
-.sheet-color-control.is-grid { width: 100%; height: 100%; }
-.sheet-color-main { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 4px; color: var(--ribbon-text); }
-.sheet-color-control.is-grid .sheet-color-main { flex: 1 1 auto; min-width: 20px; height: 100%; }
-.sheet-color-icon { position: relative; display: inline-flex; flex: 0 0 auto; }
+.sheet-color-control { display: inline-flex; box-sizing: border-box; min-width: calc(var(--ribbon-icon-size, 16px) + 24px); align-items: center; height: var(--ribbon-selector-height, 28px); }
+.sheet-color-control.is-grid { width: 100%; min-width: calc(var(--ribbon-icon-size, 16px) + 20px); height: 100%; }
+.sheet-color-main { display: inline-flex; box-sizing: border-box; align-items: center; justify-content: center; min-width: calc(var(--ribbon-icon-size, 16px) + 8px); height: 100%; padding: 0 4px; color: var(--ribbon-text); border: 0; }
+.sheet-color-control.is-grid .sheet-color-main { flex: 1 1 auto; min-width: calc(var(--ribbon-icon-size, 16px) + 4px); height: 100%; padding-inline: 2px; }
+.sheet-color-icon { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; }
+.sheet-color-icon :deep(svg) { display: block; }
 .sheet-color-bar { position: absolute; inset-inline: 0; bottom: -2px; height: 3px; border-radius: 1px; }
 .sheet-color-main:disabled .sheet-color-bar { opacity: 0.35; }
-.sheet-color-arrow { display: inline-flex; height: 28px; }
-.sheet-color-arrow :deep(button) { min-width: 16px; width: 16px; height: 28px; padding: 0; border-inline-start: 1px solid var(--ribbon-border); border-start-start-radius: 0; border-end-start-radius: 0; color: var(--ribbon-text); }
+.sheet-color-arrow { display: inline-flex; flex: 0 0 16px; height: 100%; }
+.sheet-color-arrow :deep(button) { position: relative; display: inline-flex; box-sizing: border-box; align-items: center; justify-content: center; min-width: 16px; width: 16px; height: 100%; padding: 0; border: 0; border-start-start-radius: 0; border-end-start-radius: 0; color: var(--ribbon-text); }
+.sheet-color-arrow :deep(button)::before { position: absolute; inset-block: 0; inset-inline-start: 0; width: 1px; background: var(--ribbon-border); content: ''; pointer-events: none; }
+.sheet-color-main:disabled, .sheet-color-arrow :deep(button:disabled) { color: var(--ribbon-disabled); }
+.sheet-color-arrow :deep(svg) { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
 .sheet-color-control.is-grid .sheet-color-arrow, .sheet-color-control.is-grid .sheet-color-arrow :deep(button) { height: 100%; border: 0; }
-.sheet-color-control.is-overflow { width: 100%; }
+.sheet-color-control.is-grid .sheet-color-arrow :deep(button)::before, .sheet-color-control.is-select .sheet-color-arrow :deep(button)::before { display: none; }
+.sheet-color-control.is-overflow { width: 100%; min-width: 0; height: 28px; }
 .sheet-color-control.is-overflow .sheet-color-main { justify-content: flex-start; gap: 8px; flex: 1 1 auto; }
+.sheet-color-main-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-color-control.is-select { width: 100%; }
-.sheet-color-control.is-select .sheet-color-arrow { width: 100%; }
+.sheet-color-control.is-select .sheet-color-arrow { width: 100%; flex: 1 1 auto; }
 .sheet-color-control.is-select .sheet-color-arrow :deep(button) { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 0 4px; border: 0; }
 .sheet-color-control.is-select .sheet-color-swatch { width: 20px; height: 20px; }
+.sheet-color-main:not(:disabled):hover, .sheet-color-arrow :deep(button:not(:disabled):hover) { background: var(--ribbon-hover-background); }
 .sheet-color-panel { box-sizing: border-box; width: 288px; max-width: calc(100vw - 32px); max-height: 70vh; overflow: auto; color: var(--ribbon-text); }
 .sheet-color-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .sheet-color-custom :deep(.ant-form-item) { margin-bottom: 12px; }
 .sheet-color-preset-row { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); }
-.sheet-color-preset { display: flex; align-items: center; justify-content: center; width: 32px; max-width: 100%; height: 32px; padding: 4px; }
+.sheet-color-preset { display: flex; box-sizing: border-box; align-items: center; justify-content: center; width: 32px; max-width: 100%; height: 32px; padding: 3px; }
 .sheet-color-swatch { box-sizing: border-box; display: inline-block; width: 24px; height: 24px; border: 1px solid var(--ribbon-border); border-radius: 4px; }
+.sheet-color-preset .sheet-color-swatch { max-width: 100%; height: auto; aspect-ratio: 1; }
 .sheet-color-preset[aria-pressed="true"] { background: var(--ribbon-active-background); }
 .sheet-color-preset[aria-pressed="true"] .sheet-color-swatch { outline: 2px solid var(--ribbon-primary); outline-offset: 1px; }
 .sheet-color-more { display: block; margin-top: 8px; }

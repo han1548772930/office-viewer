@@ -302,6 +302,31 @@ function evaluateFunction(
     return formulaError('#N/A')
   }
 
+  if (['ISBLANK', 'ISERR', 'ISERROR', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISTEXT'].includes(name)) {
+    if (args.length !== 1) return formulaError('#VALUE!')
+    const argument = args[0]!
+    const input = argument.kind === 'reference' || argument.kind === 'range'
+      || argument.kind === 'binary' && argument.operator === ':' || argument.kind === 'function' && argument.name === 'INDEX'
+      ? evaluateReferenceOperand(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+      : evaluateArgument(argument)
+    if (isRangeValue(input) && (input.reference.start.row !== input.reference.end.row
+      || input.reference.start.column !== input.reference.end.column)) return formulaError('#VALUE!')
+    const value = isRangeValue(input) ? resolve(input.sheet, input.reference.start.row, input.reference.start.column) : input
+    if (name === 'ISBLANK' && isRangeValue(input)) {
+      const cell = input.sheet.cells[cellKey(input.reference.start.row, input.reference.start.column)]
+      return !isFormulaError(value) && (!cell || (cell.value === null || cell.value === '')
+        && !cell.formula && cell.richText === undefined && !cell.image)
+    }
+    if (name === 'ISBLANK') return value === null
+    if (name === 'ISERROR') return isFormulaError(value)
+    if (name === 'ISERR') return isFormulaError(value) && value.code !== '#N/A'
+    if (name === 'ISNA') return isFormulaError(value) && value.code === '#N/A'
+    if (name === 'ISLOGICAL') return typeof value === 'boolean'
+    if (name === 'ISNONTEXT') return typeof value !== 'string'
+    if (name === 'ISNUMBER') return typeof value === 'number'
+    return typeof value === 'string'
+  }
+
   const evaluated = args.map(evaluateArgument)
   if (name === 'COUNTBLANK' || name === 'COUNTA') return evaluateCountValue(name, evaluated, args, sheet, resolve)
   if (['COUNTIF', 'COUNTIFS', 'SUMIF', 'SUMIFS', 'AVERAGEIF', 'AVERAGEIFS'].includes(name)) {
@@ -763,20 +788,11 @@ function evaluateFunction(
     const lengthArg = args.length > 1 ? numericCoercion(evaluated[1]!) : 1
     if (isFormulaError(lengthArg) || !Number.isInteger(lengthArg) || lengthArg < 0) return formulaError('#VALUE!')
     if (name === 'LEFT') return Array.from(text).slice(0, lengthArg).join('')
-    if (name === 'RIGHT') return Array.from(text).slice(-lengthArg || undefined).join('')
+    if (name === 'RIGHT') return lengthArg === 0 ? '' : Array.from(text).slice(-lengthArg).join('')
     const start = numericCoercion(evaluated[1]!)
     const count = numericCoercion(evaluated[2]!)
     if (isFormulaError(start) || isFormulaError(count) || start < 1 || !Number.isInteger(start) || count < 0 || !Number.isInteger(count)) return formulaError('#VALUE!')
     return Array.from(text).slice(start - 1, start - 1 + count).join('')
-  }
-  if (name === 'ISNUMBER' || name === 'ISTEXT' || name === 'ISBLANK' || name === 'ISERROR') {
-    if (args.length !== 1) return formulaError('#VALUE!')
-    const value = evaluated[0]!
-    if (name === 'ISERROR') return isFormulaError(value)
-    if (isFormulaError(value)) return false
-    if (name === 'ISNUMBER') return typeof value === 'number'
-    if (name === 'ISTEXT') return typeof value === 'string'
-    return value === null || value === ''
   }
   if (name === 'NA' && args.length === 0) return formulaError('#N/A')
   return formulaError('#NAME?')

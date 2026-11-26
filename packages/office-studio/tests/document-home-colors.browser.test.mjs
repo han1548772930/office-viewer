@@ -396,7 +396,7 @@ test('reapplying the current color creates no content history and pending caret 
   await expect.poll(() => colors('color')).toEqual(['#414657'])
 })
 
-test('permission changes discard an open draft and block subsequent palette commands', async () => {
+test('permission changes discard an open draft, use disabled theme tokens and block subsequent palette commands', async () => {
   await selectAll()
   const panel = await openColor()
   const input = await openCustom(panel)
@@ -404,7 +404,17 @@ test('permission changes discard an open draft and block subsequent palette comm
   await page.evaluate(() => window.documentHomeFixture.denyEdit())
   await expect(page.locator('.document-color-panel')).toBeHidden()
   const main = ribbonItem('doc-text-color').locator('.document-color-main')
+  const arrow = ribbonItem('doc-text-color').locator('.document-color-arrow button')
   await expect(main).toBeDisabled()
+  await expect(arrow).toBeDisabled()
+  for (const dark of [false, true]) {
+    await page.evaluate(value => window.documentHomeFixture.appearance(value, 'zh-CN'), dark)
+    for (const button of [main, arrow]) {
+      await expect(button).toHaveCSS('border-width', '0px')
+      await expect.poll(() => button.evaluate(element => getComputedStyle(element).color === getComputedStyle(element).getPropertyValue('--ribbon-disabled').trim())).toBe(true)
+      await expect.poll(() => button.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
+    }
+  }
   await main.evaluate(element => element.dispatchEvent(new MouseEvent('click', { bubbles: true })))
   assert.deepEqual(await colors('color'), ['#414657'])
   assert.deepEqual(await history(), { undo: 0, redo: 0 })
@@ -413,6 +423,14 @@ test('permission changes discard an open draft and block subsequent palette comm
 test('a portaled palette updates theme and RTL direction while retaining its usable presets', async () => {
   await selectAll()
   const panel = await openColor()
+  const preset = panel.getByRole('button', { name: '#414657', exact: true })
+  assert.equal(await preset.getAttribute('title'), null)
+  await preset.focus()
+  await expect(page.getByRole('tooltip').getByText('#414657', { exact: true })).toBeVisible()
+  assert.deepEqual(await preset.evaluate(element => {
+    const bounds = element.getBoundingClientRect()
+    return [bounds.width, bounds.height]
+  }), [32, 32])
   const background = await panel.evaluate(element => getComputedStyle(element).getPropertyValue('--ribbon-background').trim())
   await page.evaluate(() => window.documentHomeFixture.appearance(true, 'ar-SA'))
   await expect(panel).toHaveAttribute('dir', 'rtl')
@@ -423,6 +441,47 @@ test('a portaled palette updates theme and RTL direction while retaining its usa
   await expect(bridge()).toBeFocused()
 })
 
+for (const variant of ['classic', 'grid']) test(`${variant} Docs color arrows stay centered in both directions and hover only within the button`, async () => {
+  await selectAll()
+  const before = await snapshot()
+  await page.evaluate(value => window.documentHomeFixture.variant(value), variant)
+  const controls = page.locator('.ribbon-visible-groups .document-color-control, .ribbon-grid-group:not(.is-hidden) .document-color-control')
+  await expect(controls).toHaveCount(2)
+  for (const appearance of [{ dark: false, locale: 'zh-CN' }, { dark: true, locale: 'ar-SA' }]) {
+    await page.evaluate(value => window.documentHomeFixture.appearance(value.dark, value.locale), appearance)
+    for (const control of await controls.all()) {
+      for (const button of [control.locator('.document-color-main'), control.locator('.document-color-arrow button')]) {
+        await expect(button).toHaveCSS('border-width', '0px')
+        await button.hover()
+        await expect(button).toHaveCSS('border-width', '0px')
+        await page.mouse.down()
+        assert.equal(await button.evaluate(element => element.matches(':active')), true)
+        await expect(button).toHaveCSS('border-width', '0px')
+        await page.mouse.move(1400, 800)
+        await page.mouse.up()
+      }
+      const arrow = control.locator('.document-color-arrow button')
+      const metrics = await arrow.evaluate(element => {
+        const button = element.getBoundingClientRect(), svg = element.querySelector('svg').getBoundingClientRect()
+        return { width: button.width, height: button.height, svgWidth: svg.width, svgHeight: svg.height,
+          offsetX: svg.x + svg.width / 2 - button.x - button.width / 2,
+          offsetY: svg.y + svg.height / 2 - button.y - button.height / 2 }
+      })
+      assert.equal(metrics.width, 16)
+      assert.equal(metrics.height, variant === 'classic' ? 28 : 24)
+      assert.deepEqual([metrics.svgWidth, metrics.svgHeight], [12, 12])
+      assert.ok(Math.abs(metrics.offsetX) <= 0.05 && Math.abs(metrics.offsetY) <= 0.05)
+      await arrow.hover()
+      await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor === getComputedStyle(element).getPropertyValue('--ribbon-hover-background').trim())).toBe(true)
+      await page.mouse.move(1400, 800)
+      assert.equal(await arrow.evaluate(element => element.matches(':hover')), false)
+      await expect.poll(() => arrow.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
+    }
+  }
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+})
+
 test('grid overflow retains custom color editing and applies a single document command', async () => {
   await selectAll()
   await page.evaluate(() => window.documentHomeFixture.variant('grid'))
@@ -431,7 +490,21 @@ test('grid overflow retains custom color editing and applies a single document c
   const overflow = page.locator('.ribbon-overflow-panel:visible')
   const color = overflow.locator('[data-ribbon-item="doc-text-color"]')
   await expect(color).toBeVisible()
-  await color.locator('.document-color-arrow button').click()
+  const arrow = color.locator('.document-color-arrow button')
+  const bounds = await arrow.evaluate(element => {
+    const button = element.getBoundingClientRect(), svg = element.querySelector('svg').getBoundingClientRect()
+    return { width: button.width, height: button.height, offsetX: svg.x + svg.width / 2 - button.x - button.width / 2,
+      offsetY: svg.y + svg.height / 2 - button.y - button.height / 2 }
+  })
+  assert.deepEqual([bounds.width, bounds.height], [16, 28])
+  assert.ok(Math.abs(bounds.offsetX) <= 0.05 && Math.abs(bounds.offsetY) <= 0.05)
+  await expect(arrow).toHaveCSS('border-width', '0px')
+  await arrow.hover()
+  await expect(arrow).toHaveCSS('border-width', '0px')
+  await page.mouse.down()
+  assert.equal(await arrow.evaluate(element => element.matches(':active')), true)
+  await expect(arrow).toHaveCSS('border-width', '0px')
+  await page.mouse.up()
   const panel = page.locator('.document-color-panel:visible')
   const input = await openCustom(panel)
   await input.fill('aabbcc'); await input.press('Enter')
@@ -468,6 +541,57 @@ test('restart at zero and continue numbering share the popup command path with e
   const saved = JSON.stringify(await snapshot())
   await page.evaluate(value => window.documentHomeFixture.reopen(value), saved)
   await expect.poll(markers).toEqual(['1.', '2.', '3.', '4.'])
+})
+
+test('an open numbering popup disables every preset and numbering action when edit permission changes', async () => {
+  await page.goto(baseURL + '?api=1')
+  await page.evaluate(() => window.documentHomeFixture.numbering())
+  await clickParagraph(3)
+  await ribbonItem('doc-numbered').locator('.ribbon-split-arrow').click()
+  const picker = page.locator('.doc-list-picker').filter({ has: page.locator('.doc-numbering-actions') })
+  await expect(picker).toBeVisible()
+  const cards = picker.locator('.doc-list-card')
+  await expect(cards).toHaveCount(6)
+  assert.deepEqual(await cards.evaluateAll(elements => elements.map(element => {
+    const bounds = element.getBoundingClientRect()
+    return [bounds.width, bounds.height, element.disabled]
+  })), Array.from({ length: 6 }, () => [72, 80, false]))
+  const compound = picker.locator('[data-list-preset="ORDER_LIST_2"]')
+  await expect(compound).toHaveAttribute('aria-label', /1\.1\.1\./)
+  await expect(compound.locator('.doc-list-row > span').nth(2)).toHaveText('1.1.1.')
+  const previewGeometry = () => compound.evaluate(element => {
+    const button = element.getBoundingClientRect()
+    const rows = [...element.querySelectorAll('.doc-list-row')].map(row => {
+      const marker = row.firstElementChild
+      const markerBounds = marker.getBoundingClientRect()
+      const line = row.lastElementChild.getBoundingClientRect()
+      return { markerWidth: markerBounds.width, markerRight: markerBounds.right,
+        clipped: marker.scrollWidth > marker.clientWidth, flexShrink: getComputedStyle(marker).flexShrink,
+        gap: parseFloat(getComputedStyle(row).columnGap), lineLeft: line.left, lineRight: line.right,
+        rowRight: row.getBoundingClientRect().right }
+    })
+    return { width: button.width, height: button.height, rows }
+  })
+  const beforeHover = await previewGeometry()
+  assert.equal(beforeHover.rows[2].clipped, true)
+  for (const row of beforeHover.rows) {
+    assert.equal(row.markerWidth, 12)
+    assert.equal(row.flexShrink, '0')
+    assert.ok(row.markerRight + row.gap <= row.lineLeft + 0.05)
+    assert.ok(row.lineRight <= row.rowRight + 0.05)
+  }
+  await compound.hover()
+  assert.deepEqual(await previewGeometry(), beforeHover)
+  await expect(picker.getByRole('button', { name: '继续前一编号', exact: true })).toBeEnabled()
+  await page.evaluate(() => window.documentHomeFixture.denyEdit())
+  await expect(picker).toBeHidden()
+  for (const button of await picker.locator('button').all()) await expect(button).toBeDisabled()
+  await expect(picker.locator('input')).toBeDisabled()
+  const before = await snapshot()
+  for (const card of await cards.all()) await card.evaluate(element => element.click())
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual(await page.evaluate(() => window.documentHomeFixture.apiCommands()), [])
 })
 
 test('replacing an imported cached label keeps comment and control anchors through public undo, redo and reopen', async () => {

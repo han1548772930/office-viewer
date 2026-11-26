@@ -82,6 +82,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
   const sourceDrawingIds = new Set([...documentArray(sourceBody.customBlocks), ...documentArray(sourceBody.docxRawCustomBlocks)]
     .map(raw => raw.blockId).filter((id): id is string => typeof id === 'string' && drawings[id] !== undefined))
   const maps = new Map<string, ParagraphMap>(), ranges: PendingRange[] = [], sections: UniverBodyRecord[] = [], chunks: string[] = []
+  let previousHyperlink: { sourceId?: string; target: string; range: PendingRange } | undefined
   const structures: DocumentBodyStructureIndex = { blocks: [], rows: [], cells: [] }
   const listInstanceIds = documentBodyListInstanceIds(content.blocks!)
   const sourceModeledRangeIds = new Set(Array.isArray(provenance.modeledRangeIds) ? provenance.modeledRangeIds.filter((id): id is string => typeof id === 'string') : [])
@@ -184,8 +185,7 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         if (block.type === 'pageBreak' && bodyRecord(block.metadata.univerBodyBreakSource).soft === true) renderedPageBreaks.push(offset)
         append(block.type === 'pageBreak' ? T.pageBreak : T.columnBreak); structures.blocks.push({ block, container: blocks, start, end: offset }); continue
       }
-      if (block.type === 'divider') { const start = offset; append(T.paragraph); paragraphs.push({ startIndex: offset - 1, paragraphId: block.id,
-        officeStudio: documentBodyBlockSource(block), paragraphStyle: { borderBottom: { width: 0.75, color: { rgb: 'auto' }, dashStyle: 1, padding: 0 } } })
+      if (block.type === 'divider') { const start = offset; append(T.paragraph); paragraphs.push(documentParagraphToBody(block, offset - 1))
         structures.blocks.push({ block, container: blocks, start, end: offset }); continue }
       const start = offset, spans: DocumentBodyTextSpan[] = [], source = bodyRecord(block.metadata.univerBodyParagraphSource)
       let local = 0
@@ -224,13 +224,24 @@ export function writeDocumentBody(input: DocumentStoryContent, defaults: Documen
         spans.push({ sourceStart: local, sourceEnd: local + run.text.length, targetStart: from, targetEnd: offset, ...(note ? { noteReference: true } : {}) })
         if (offset > from) textRuns.push({ ...publicRun, st: from, ed: offset, ts: documentRunStyleToBody(run), officeStudio: documentBodyRunSource(run) })
         const href = Reflect.get(run, 'href') ?? bodyRecord(run.metadata?.link).target
-        if (typeof href === 'string' && href) {
-          const raw = bodyRecord(run.metadata?.univerBodyHyperlinkSource), id = typeof raw.rangeId === 'string' ? raw.rangeId : `hyperlink:${run.id}`
-          const previous = ranges.find(range => range.type === 0 && range.id === id)
-          if (previous && previous.properties.url === href && (previous.endBlockId !== block.id || previous.end === local)) {
-            previous.endBlockId = block.id; previous.end = local + run.text.length
-          } else ranges.push({ id: previous ? `${id}:${run.id}` : id, type: 0, startBlockId: block.id, endBlockId: block.id, start: local, end: local + run.text.length, properties: { ...bodyRecord(raw.properties), url: href }, source: raw })
+        if (run.text.length && typeof href === 'string' && href) {
+          const raw = bodyRecord(run.metadata?.univerBodyHyperlinkSource), sourceId = typeof raw.rangeId === 'string' ? raw.rangeId : undefined
+          const id = sourceId ?? `hyperlink:${run.id}`
+          const properties = { ...bodyRecord(raw.properties), ...bodyRecord(run.metadata?.link) }
+          const headingId = href.startsWith('#') && properties.headingId === href.slice(1) ? href.slice(1) : undefined
+          for (const key of ['url', 'bookmarkId', 'headingId', 'anchor', 'target']) delete properties[key]
+          if (href.startsWith('#')) properties[headingId ? 'headingId' : 'bookmarkId'] = href.slice(1)
+          if (!href.startsWith('#')) properties.url = href
+          const previous = previousHyperlink && previousHyperlink.sourceId === sourceId && previousHyperlink.target === href ? previousHyperlink.range : undefined
+          const range = previous && (sourceId === undefined || JSON.stringify(previous.properties) === JSON.stringify(properties)) && (previous.endBlockId !== block.id || previous.end === local)
+            ? previous : { id: ranges.some(range => range.type === 0 && range.id === id) ? `${id}:${run.id}` : id, type: 0,
+            startBlockId: block.id, endBlockId: block.id, start: local, end: local + run.text.length, properties, source: raw }
+          range.endBlockId = block.id
+          range.end = local + run.text.length
+          if (range !== previous) ranges.push(range)
+          previousHyperlink = { sourceId, target: href, range }
         }
+        if (run.text.length && (typeof href !== 'string' || !href)) previousHyperlink = undefined
         local += run.text.length
       }
       const end = offset; maps.set(block.id, { block, start, end, spans })

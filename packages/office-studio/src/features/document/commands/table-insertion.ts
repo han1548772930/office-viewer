@@ -1,12 +1,14 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
 import {
-  createParagraph, createTable, findDocumentBlock, runText, tableForBlock, type DocumentTable,
+  createParagraph, createTable, documentBlockAncestry, findDocumentBlock, runText, tableForBlock, type DocumentPoint, type DocumentTable,
 } from '../model/document-model'
 import { documentTableGrid } from '../model/document-table-grid'
 import { assertDocumentTableColumnType, assertDocumentTableMargin } from '../model/document-table-style'
+import { documentEffectiveSectionSetup } from '../services/document-settings'
+import { sectionIdForBlock } from '../services/section-header-footer'
 import { applyDocumentTableStylePatch, assertDocumentTableStylePatch } from './table-mutations'
-import type { DocumentTableInsertCommand } from './table-command-types'
+import type { DocumentTableCreateCommand, DocumentTableInsertCommand } from './table-command-types'
 
 export const DOCUMENT_TABLE_INSERT_CELL_BUDGET = 250000
 
@@ -19,11 +21,20 @@ function size(value: number, label: string): number {
   return value
 }
 
-export function assertDocumentTableInsertion(model: DocumentModel, options: DocumentTableInsertCommand): { rows: number; columns: number } {
+export function assertDocumentTableInsertionSize(rows: number, columns: number) {
+  positive(rows, '行数')
+  positive(columns, '列数')
+  if (rows > 10000 || columns > 512) throw new RangeError('表格单次插入最多支持 10000 行、512 列')
+  if (rows * columns > DOCUMENT_TABLE_INSERT_CELL_BUDGET) throw new RangeError('表格单次插入超出 250000 个单元格的内存预算')
+  return { rows, columns }
+}
+
+export function assertDocumentTableInsertion(model: DocumentModel, options: DocumentTableInsertCommand | DocumentTableCreateCommand): { rows: number; columns: number } {
   if (options.values !== undefined && (!Array.isArray(options.values) || options.values.some(row => !Array.isArray(row) || row.some(value => typeof value !== 'string')))) throw new TypeError('表格初始数据必须是文本矩阵')
-  const rows = positive(options.rows ?? options.values?.length ?? 1, '行数')
-  const columns = positive(options.cols ?? (options.values ?? []).reduce((maximum, row) => Math.max(maximum, row.length), 1), '列数')
-  if (!Number.isSafeInteger(rows * columns) || rows * columns > DOCUMENT_TABLE_INSERT_CELL_BUDGET) throw new RangeError('表格单次插入超出 250000 个单元格的内存预算')
+  const { rows, columns } = assertDocumentTableInsertionSize(
+    options.id === 'doc.command.create-table' ? options.rowCount : options.rows ?? options.values?.length ?? 1,
+    options.id === 'doc.command.create-table' ? options.colCount : options.cols ?? (options.values ?? []).reduce((maximum, row) => Math.max(maximum, row.length), 1),
+  )
   if (options.values && (options.values.length > rows || options.values.some(row => row.length > columns))) throw new RangeError('表格尺寸不能丢弃提供的初始数据')
   if (options.tableId !== undefined && (typeof options.tableId !== 'string' || !options.tableId.trim() || findDocumentBlock(model, options.tableId))) throw new RangeError('表格标识无效或已存在')
   if (options.position !== undefined && !['selection', 'documentEnd', 'offset'].includes(options.position)) throw new TypeError('表格插入位置无效')
@@ -54,8 +65,21 @@ export function assertDocumentTableInsertion(model: DocumentModel, options: Docu
 }
 
 /** Values and metadata are built before insertion; no per-cell follow-up commands. */
-export function createDocumentTableBlock(model: DocumentModel, options: DocumentTableInsertCommand): DocumentBlock {
-  const { rows, columns } = assertDocumentTableInsertion(model, options)
+export function createDocumentTableBlock(
+  model: DocumentModel,
+  request: DocumentTableInsertCommand | DocumentTableCreateCommand,
+  point?: DocumentPoint,
+  sourceModel: DocumentModel = model,
+): DocumentBlock {
+  const { rows, columns } = assertDocumentTableInsertion(model, request)
+  const options = { ...request }
+  if (options.id === 'doc.command.create-table' && options.width === undefined) {
+    const ancestry = point ? documentBlockAncestry(model, point.cellBlockId ?? point.blockId) : undefined
+    const hostSectionId = model.metadata?.documentEditingSectionId
+    const sectionId = typeof hostSectionId === 'string' ? hostSectionId : sectionIdForBlock(model, ancestry?.[0]?.id ?? point?.blockId ?? '')
+    const page = documentEffectiveSectionSetup(sourceModel, sectionId).page
+    options.width = page.width - page.marginLeft - page.marginRight
+  }
   const table: DocumentTable = createTable(rows, columns)
   table.columnWidths = Array.from({ length: columns }, (_, column) => options.columnWidths?.[column] ?? (options.width === undefined ? 100 : options.width / columns))
   table.style = { width: table.columnWidths.reduce((sum, width) => sum + width, 0), layout: 'fixed',

@@ -2,13 +2,13 @@
 
 参考源码固定为 Univer `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地固定检出位于 `E:\rust_test\univer`。本清点只追踪 desktop Sheets preset 的 Ribbon、上下文菜单注册和本地 command dispatcher，不包含浏览器或像素验收。
 
-2026-11-22 使用 `scripts/audit-univer-oss-ribbon.mjs` 重新读取固定 v1.6.0 的 OSS 注册 schema：常规根声明为 `30/9/12/6/6`，共 63 项。2026-11-26 人工回读当前 `createSheetRibbon`，包含范围主题、图片与背景根，为 `30/7/11/17/6`，共 71 项；69/68 是此前清单快照。[局部移位](SHEET-02-cell-shift-transactions.md)、[九区段编辑](SHEET-04-range-theme-editor.md)、[图表面板 route](SHEET-22-chart-edit-panel-routing.md)、[P18 线型](SHEET-22-line-and-area-styles.md)与[共享绘图工作台](SHEET-21-drawing-workbench-affine.md)不新增常规根。factory、动态显隐与实际装配尚未执行，不作为完整运行态入口数或验收结论。
+2026-11-22 使用 `scripts/audit-univer-oss-ribbon.mjs` 重新读取固定 v1.6.0 的 OSS 注册 schema：常规根声明为 `30/9/12/6/6`，共 63 项。2026-11-27 静态解析当前 `createSheetRibbon` 的 tabs/groups/items、outlineItems 与 catalog 分类，按 START/INSERT/FORMULAS/DATA/VIEW 得到 `32/9/11/12/6`，共 70 项；HEAD 的同口径结果为 69 项，本批新增共享快捷键面板根。此前 71 项及分组快照与真实根数组不一致，现已纠正。[局部移位](SHEET-02-cell-shift-transactions.md)、[九区段编辑](SHEET-04-range-theme-editor.md)、[图表面板 route](SHEET-22-chart-edit-panel-routing.md)、[P18 线型](SHEET-22-line-and-area-styles.md)与[共享绘图工作台](SHEET-21-drawing-workbench-affine.md)不新增常规根。factory、动态显隐与实际装配尚未执行，不作为完整运行态入口数或验收结论。
 
 ## 口径
 
 - 一个“根入口”是合并菜单后位于 Ribbon Tab / Group 下的顶层菜单节点。Split、menu/select 的子项不重复计数；动态公式分类按实际生成的分类菜单计数。Context menu、浮动对象菜单和 Footer 菜单单列。
 - Univer 菜单由 `packages/ui/src/services/menu/menu-manager.service.ts` 提供 Tab/Group 顺序，再由 `examples/src/sheets/mount.ts` 装配 preset，以及 sheets-ui、numfmt、formula、filter、sort、table、drawing、hyperlink、thread-comment、data-validation、conditional-formatting 和共享 find-replace 插件合并注册。
-- 本地读取 `createSheetRibbon()` 的根数组，children 不重复计数；公式 8 个根分类由当前 117 项 catalog 的类别静态展开。常规 schema 为 `30/7/11/17/6`，包括条件项。日期时间已作为快速日期子项；插入函数作为常用函数菜单子项；透视表、切片器和时间线保留在 Data，图片/迷你图位于 Insert，背景图位于 View。
+- 本地读取 `createSheetRibbon()` 的根数组，children 不重复计数；公式 8 个根分类由当前 117 项 catalog 的类别静态展开。常规 schema 为 `32/9/11/12/6`，包括条件项。日期时间已作为快速日期子项；插入函数作为常用函数菜单子项；透视表、切片器和时间线保留在 Data，图片/迷你图位于 Insert，背景图位于 View。Data 的 organization 包含排序、筛选及 3 个 outlineItems 根，不把其子项另算根。
 - 固定 OSS 顶层父菜单声明为 `30/9/12/6/6`。View 的十字高亮由 `sheets-crosshair-highlight/src/menu/schema.ts` 注入，属于固定版入口；此前将其记为本地独有扩展不准确。
 - 根入口数只比较 schema 规模，不能说明功能完整。子菜单、上下文入口、权限隐藏、动态状态、溢出菜单、Pro 规格入口和实际命令效果分开核对。
 
@@ -16,10 +16,10 @@
 
 | 标签 | Univer 根入口与来源顺序 | 本地根入口与现状 | 主要差异 |
 | --- | --- | --- | --- |
-| START / 开始 | 30。HISTORY 5、FORMAT 11、LAYOUT 6、NUMBER 5、OTHERS 3。入口来自共享 ui、sheets-ui、sheets-numfmt-ui 的 `menu/schema.ts`，组顺序来自 `menu-manager.service.ts`。 | 30。clipboard 5、font 11、layout 6、number 5、tools 3。 | 水平/垂直对齐、换行、旋转、合并均已收为对应父菜单；数字五项、颜色/最近颜色/重置、字体/字号与边框已有共享命令切片，均待统一验证。Start tools 保留保护范围、本地清内容和范围主题；主题为第 3 根，grid r1c3 跨两行，快捷键/功能搜索仍需核对。 |
-| INSERT / 插入 | 9。MEDIA 4：图片、超链接、评论面板、添加评论；CELL 5：复选框、下拉、日期、快捷数据条/图标集。 | 7。media 4：图片、超链接、图表、迷你图；cells 3：复选框、下拉、日期父项。 | 图片根 order 0、r1c1 跨两行，有浮动/单元格图片两个子项；超链接 r1c2。日期时间归日期子项。线程评论及两类快捷条件格式仍缺完整入口闭环，图片/图表/迷你图所有真实行为与 Office 仍未验收。行列结构编辑由上下文承载。 |
+| START / 开始 | 30。HISTORY 5、FORMAT 11、LAYOUT 6、NUMBER 5、OTHERS 3。入口来自共享 ui、sheets-ui、sheets-numfmt-ui 的 `menu/schema.ts`，组顺序来自 `menu-manager.service.ts`。 | 32。clipboard 5、font 11、layout 6、number 5、tools 5。 | 格式与数字控件复用现有命令和选区状态。tools 包括保护范围、快捷键面板、功能搜索、本地清内容和范围主题；快捷键/搜索位于 r1c2/r2c2，范围主题在 r1c4 跨两行。上下文搜索及真实编辑器快捷键清单已接，运行验证后置。 |
+| INSERT / 插入 | 9。MEDIA 4：图片、超链接、评论面板、添加评论；CELL 5：复选框、下拉、日期、快捷数据条/图标集。 | 9。media 4：图片、超链接、图表、迷你图；cells 5：复选框、下拉、日期、数据条与图标集。 | 图片根 order 0、r1c1 跨两行，有浮动/单元格图片两个子项；超链接 r1c2。日期时间归日期子项。[快捷条件格式](SHEET-14-quick-formatting.md)沿用规则命令、选区与权限，不增加子项根计数；线程评论、全部 Pro/Office 与真实 UI 闭环仍未验收。行列结构编辑由上下文承载。 |
 | FORMULAS / 公式 | 12。BASIC 为常用加十类函数菜单，OTHERS 为计算选项；来源 `sheets-formula-ui/src/menu/schema.ts`。 | 11。formula-edit 8 个 catalog 分类，calculation-options 3 项：模式、编辑公式、重算。 | 插入函数已收进常用菜单；完整函数目录、分类、参数/返回类型和求值契约仍未齐。仅复制/粘贴公式已在本地选择性复制/粘贴菜单，仍须按固定命令与历史核对。 |
-| DATA / 数据 | 6。RULES 2、ORGANIZATION 3、OTHERS 1；来源 validation、conditional-formatting、sort、filter、table、find-replace 的 schema。 | 17。organization 2、rules 2、pivot 4、outline 8、data-tools 1。 | 排序父菜单、筛选 split、规则及查找已有入口；筛选复用切换/清条件/重应用命令。仍缺结构化表格选择器及全部 Pro 分组/分析语义。透视表、透视图、切片器与时间线不再重复于 Insert。 |
+| DATA / 数据 | 6。RULES 2、ORGANIZATION 3、OTHERS 1；来源 validation、conditional-formatting、sort、filter、table、find-replace 的 schema。 | 12。organization 5、rules 2、pivot 4、data-tools 1。organization 内含 3 个大纲根。 | 排序父菜单、筛选 split、规则及查找已有入口；筛选复用切换/清条件/重应用命令。条件格式菜单六类编辑及区域/整表清除已接既有面板与规则命令。结构化表格选择器及全部 Pro 分组/分析语义仍待闭环；透视表、透视图、切片器与时间线不重复于 Insert。 |
 | VIEW / 视图 | 6。DISPLAY 4：冻结、缩放、背景图、十字高亮；VISIBILITY 2：网格线、全屏。 | 6。display 4：冻结、背景图、缩放、十字高亮；visibility 2。 | 背景根 order 0.5、r1c2 跨两行，设置/删除两子项接图片资源与命令；缩放/十字高亮在 c3。背景历史/Office 未验收；十字高亮颜色、冻结/缩放与视图历史按 SHEET-20 继续验收。 |
 
 ### 本地 handler 核对

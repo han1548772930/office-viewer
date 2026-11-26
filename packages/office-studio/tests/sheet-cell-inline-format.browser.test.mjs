@@ -94,6 +94,28 @@ test('font-family and size popup inputs keep the cell session alive and apply to
   assert.equal(styled.map(run => run.text).join(''), 'ba'); assert.ok(styled.every(run => run.font.size === 18))
 })
 
+for (const variant of ['classic', 'grid']) test(`${variant} font step buttons preserve the editing range and commit one rich-text history entry`, async () => {
+  await page.evaluate(value => window.richInputFixture.appearance(false, value), variant)
+  await edit('E1'); const before = await snapshot()
+  const size = ribbon('sheet.command.set-font-size').locator('input')
+  await select(editor(), 3, 5); await expect(size).toHaveValue('18')
+  await button('sheet.command.increase-font-size').click(); await expect(size).toHaveValue('19')
+  await expect(editor()).toBeFocused(); assert.deepEqual(await selection(editor()), { start: 3, end: 5 })
+  await button('sheet.command.decrease-font-size').click(); await expect(size).toHaveValue('18')
+  await select(editor(), 0, 5)
+  await button('sheet.command.increase-font-size').click(); await expect(size).toHaveValue('11')
+  await button('sheet.command.decrease-font-size').click(); await expect(size).toHaveValue('11')
+  await expect(editor()).toBeFocused(); assert.deepEqual(await selection(editor()), { start: 0, end: 5 })
+  assert.equal((await history()).undo, 0); assert.deepEqual(await snapshot(), before)
+  await editor().press('Enter'); await expect(editor()).toHaveCount(0)
+  const cell = (await snapshot()).sheets[0].cells['0:4']
+  assert.equal(cell.value, 'A🙂BC'); assert.ok(cell.richText.every(run => run.font.size === 11))
+  assert.deepEqual(cell.style.font, before.sheets[0].cells['0:4'].style.font)
+  assert.equal((await history()).undo, 1)
+  await grid().press('Control+z'); assert.deepEqual((await snapshot()).sheets[0].cells['0:4'], before.sheets[0].cells['0:4'])
+  await grid().press('Control+y'); assert.deepEqual((await snapshot()).sheets[0].cells['0:4'], cell)
+})
+
 test('Canvas pointer drag selects rich text through the library-owned input and cancellation leaves source content intact', async () => {
   await edit('E1'); const bounds = await editor().boundingBox(), before = await snapshot()
   await page.mouse.move(bounds.x + 3, bounds.y + 8); await page.mouse.down()

@@ -58,6 +58,57 @@ test('cell hyperlink commands share model history, reject formulas, and retain l
   }
 })
 
+test('hyperlink label types share command history and survive reopening after replacement and removal', () => {
+  const studio = new apiModule.OfficeStudio()
+  const api = apiModule.FOffice.newAPI(studio)
+  try {
+    const workbook = api.createWorkbook({ sheets: [{ id: 'typed-links', name: 'Typed links' }] })
+    const params = { unitId: workbook.getId(), sheetId: 'typed-links', col: 0 }
+    studio.executeCommandSync('sheet.command.set-range-values', {
+      ...params, range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }, values: [[42.5], [false], [7]],
+    })
+    const cell = row => studio.getWorkbookModel(workbook.getId()).sheets[0].cells[`${row}:0`]
+    const samples = [
+      { display: '', expected: '42.5' },
+      { display: '', expected: 'false' },
+      { display: '=SUM(1,2)', expected: '=SUM(1,2)' },
+    ]
+    for (const [row, sample] of samples.entries()) {
+      const original = structuredClone(cell(row))
+      studio.executeCommandSync('sheet.command.set-cell-hyperlink', {
+        ...params, row, draft: { target: 'https://example.com/report', display: sample.display },
+      })
+      assert.equal(cell(row).value, sample.expected)
+      assert.equal(cell(row).dataType, 'text')
+      assert.equal(cell(row).cachedDataType, null)
+      assert.equal(cell(row).formula, null)
+      workbook.undo()
+      assert.deepEqual(cell(row), original)
+      workbook.redo()
+      assert.equal(cell(row).dataType, 'text')
+      studio.executeCommandSync('sheet.command.remove-cell-hyperlink', { ...params, row })
+      assert.equal(cell(row).hyperlink, null)
+      assert.equal(cell(row).value, sample.expected)
+      assert.equal(cell(row).dataType, 'text')
+      workbook.undo()
+      assert.equal(cell(row).hyperlink, 'https://example.com/report')
+    }
+
+    const snapshot = studio.getWorkbookModel(workbook.getId())
+    const reopened = api.createWorkbook({ ...snapshot, id: 'typed-links-reopened' })
+    for (const [row, sample] of samples.entries()) {
+      const restored = studio.getWorkbookModel(reopened.getId()).sheets[0].cells[`${row}:0`]
+      assert.equal(restored.value, sample.expected)
+      assert.equal(restored.dataType, 'text')
+      assert.equal(restored.cachedDataType, null)
+      assert.equal(restored.formula, null)
+      assert.equal(restored.hyperlink, 'https://example.com/report')
+    }
+  } finally {
+    studio.dispose()
+  }
+})
+
 test('workbook hyperlink navigation activates the target sheet and selects the linked range', () => {
   const studio = new apiModule.OfficeStudio()
   const api = apiModule.FOffice.newAPI(studio)

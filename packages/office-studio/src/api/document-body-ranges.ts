@@ -43,7 +43,10 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
       if (first !== last || endOffset - startOffset !== 1 || !runs.some(run => getLatexFormula(run) && latexFormulaRangeId(run) === id)) throw new RangeError('公式公开范围未映射到一个完整的模型实体。')
       modeledRangeIds.add(id)
     } else if (rangeType === 0) {
-      const url = typeof properties.url === 'string' ? properties.url : typeof properties.anchor === 'string' ? `#${properties.anchor}` : undefined
+      const url = typeof properties.url === 'string' ? properties.url
+        : typeof properties.bookmarkId === 'string' ? `#${properties.bookmarkId}`
+          : typeof properties.headingId === 'string' ? `#${properties.headingId}`
+            : typeof properties.anchor === 'string' ? `#${properties.anchor}` : undefined
       if (!url) { diagnostics.push(`超链接范围 ${id} 缺少可导航目标，定义已保留。`); continue }
       for (const position of affected) {
         const begin = documentBodyLocalOffset(position, Math.max(position.start, from)), end = documentBodyLocalOffset(position, Math.min(position.end, to), 'end')

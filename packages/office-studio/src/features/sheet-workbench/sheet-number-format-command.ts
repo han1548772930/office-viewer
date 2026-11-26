@@ -5,7 +5,7 @@ import { setSheetViewCellStyleProperties, sheetViewCellAt } from '../../services
 import { resolveSheetCellStyle, setSheetCellStyleProperties, type SheetStyleContext } from './sheet-style-inheritance.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { validateCustomNumberFormat } from './custom-number-format.ts'
-import { classifySheetNumberFormat, formatSheetValue, SHEET_NUMBER_FORMATS, sheetNumberFormatPattern, type SheetNumberFormat } from './sheet-number-format.ts'
+import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat, SHEET_NUMBER_FORMATS, sheetNumberFormatPattern, type SheetNumberFormat } from './sheet-number-format.ts'
 import { MAX_SHEET_DECIMALS, numberFormatDecimalPlaces, rawNumberDecimalPlaces, scientificPatternForValue, setNumberFormatDecimalPlaces } from './number-format-pattern.ts'
 import { sheetCurrencyPattern } from './sheet-currency.ts'
 import { sheetCellNumberValue } from './sheet-number-presentation.ts'
@@ -103,7 +103,7 @@ export function createSheetNumberFormatPlan(targets: readonly FormatTarget[], ac
     if (next === undefined || next === (cell.pattern || 'General')) return []
     // Fixed-version SetNumfmt preserves General scientific values when a lossy number/date format is requested.
     if (typeof cell.value === 'number' && scientificPatternForValue(cell.value)
-      && !['general', 'text', 'scientific'].includes(classifySheetNumberFormat(next))) return []
+      && next !== 'General' && !isSheetTextNumberFormat(next) && classifySheetNumberFormat(next) !== 'scientific') return []
     return [{ row: cell.row, col: cell.col, pattern: next }]
   })
 }

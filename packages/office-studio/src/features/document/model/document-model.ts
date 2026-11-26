@@ -1,5 +1,5 @@
 import { createDocumentDefaultStyle, type DocumentBlock, type DocumentModel, type DocumentParagraphStyle, type InlineRun } from '../../../domain/model'
-import { blockHasNumbering, blockNumberingLevelIndex } from './document-numbering'
+import { blockHasNumbering, blockNumberingDefinition, blockNumberingId, blockNumberingLevelIndex } from './document-numbering'
 import { documentTableTextMatrix, documentTableValuesToTsv } from './document-table-text'
 import { documentTableCellBlocks, documentTableCellContentContainers, documentTableContinuationEntries } from './document-table-continuations'
 import { documentTableGrid } from './document-table-grid'
@@ -139,13 +139,17 @@ export const DOCUMENT_NAMED_PARAGRAPH_STYLES: Record<DocumentNamedParagraphStyle
 export function applyNamedParagraphStyle(block: DocumentBlock, namedStyle: DocumentNamedParagraphStyle): void {
   const style = DOCUMENT_NAMED_PARAGRAPH_STYLES[namedStyle]
   const numberingLevel = blockHasNumbering(block) ? blockNumberingLevelIndex(block) : undefined
+  if ((block.type === 'bullet' || block.type === 'numbered') && !block.list && !blockNumberingDefinition(block)) {
+    block.list = { id: blockNumberingId(block) ?? documentId('list'), preset: block.type === 'bullet' ? 'BULLET_LIST' : 'ORDER_LIST' }
+  }
   block.metadata = { ...block.metadata, namedStyleType: namedStyle }
   if (numberingLevel !== undefined && block.type !== 'checklist') block.metadata.numberingLevel = numberingLevel
-  block.type = style.level > 0 ? 'heading' : 'paragraph'
-  block.level = style.level
+  if (block.type !== 'checklist') {
+    block.type = style.level > 0 ? 'heading' : 'paragraph'
+    block.level = style.level
+  }
   block.style = {
     ...block.style,
-    indent: 0,
     lineHeight: 1.5,
     spacingRule: 'auto',
     spaceBefore: style.spaceBefore,

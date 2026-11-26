@@ -31,13 +31,14 @@ export function registerSheetConditionalFormattingCommands(api: OfficeStudio): D
   })]
   for (const id of Object.values(QUICK_CONDITIONAL_FORMAT_COMMANDS)) {
     registrations.push(api.registerCommand<QuickConditionalFormatInput | undefined, boolean>(id, input => {
-      if (input === undefined) return false
+      if (input === undefined && id !== QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet) return false
       const target = resolveSheetRangeCommandTarget(api, input)
-      if (input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('条件格式目标工作表不一致。')
-      assertConditionalFormatExpectedRevision(input.expectedRevision)
-      assertRevision(target.unitId, input.expectedRevision)
-      if (!target.ranges.length || input.host === 'workbench' && !isCurrentHost(target)) return false
-      const rules = quickConditionalFormatRules(target.sheet.conditionalFormats ?? [], target.ranges, id, input)
+      if (input?.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('条件格式目标工作表不一致。')
+      assertConditionalFormatExpectedRevision(input?.expectedRevision)
+      assertRevision(target.unitId, input?.expectedRevision)
+      if (!target.ranges.length && id !== QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet
+        || input?.host === 'workbench' && !isCurrentHost(target)) return false
+      const rules = quickConditionalFormatRules(target.sheet.conditionalFormats ?? [], target.ranges, id, input ?? {})
       return commitRules(target, rules)
     }))
   }

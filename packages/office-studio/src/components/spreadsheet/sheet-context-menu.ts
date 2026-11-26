@@ -8,6 +8,8 @@ import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-co
 import type { ApiRange } from '../../api/events.ts'
 import { createSheetOutlineContextMenuItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
 import type { SheetOutlineCommandContext, SheetOutlineCommandInput } from '../../features/sheet-outline/sheet-outline-command.ts'
+import type { OfficeTranslator } from '../../i18n/office-i18n.ts'
+import type { RibbonGroup, RibbonItem } from '../../platform/ribbon/ribbon-schema.ts'
 
 export interface SheetContextMenuItem {
   id: string
@@ -51,6 +53,43 @@ export interface SheetContextMenuContext {
   canVisibilityColumns?: boolean
   sparkline?: { ranges: ApiRange[]; primary: string; canEdit: boolean; canDelete: boolean; expectedRevision?: number }
   outline?: { context: SheetOutlineCommandContext; owner: Pick<SheetOutlineCommandInput, 'expectedRevision' | 'expectedHistoryGeneration' | 'expectedUserId'> }
+}
+
+export function sheetContextMenuSelectionHit(primary: Extract<GridHit, { kind: 'cell' }>, selection: GridRange | undefined,
+  dimensions: { rowCount: number; columnCount: number }): GridHit {
+  const fullRows = selection?.startColumn === 0 && selection.endColumn === dimensions.columnCount - 1
+  const fullColumns = selection?.startRow === 0 && selection.endRow === dimensions.rowCount - 1
+  const rangeType = selection?.rangeType ?? (fullRows && fullColumns ? 3 : fullRows ? 1 : fullColumns ? 2 : 0)
+  if (rangeType === 3) return { kind: 'all' }
+  if (rangeType === 1) return { kind: 'row', row: primary.row }
+  if (rangeType === 2) return { kind: 'column', column: primary.column }
+  return primary
+}
+
+export function translateSheetContextMenuItems(source: readonly SheetContextMenuItem[], translate: OfficeTranslator): SheetContextMenuItem[] {
+  return source.flatMap(item => {
+    if (item.hidden) return []
+    const text = item.type === 'divider' ? '' : translate(item.translationKey ?? `sheet.context-menu.${item.id}`, item.label)
+    const label = item.count === undefined ? text : text.includes('{count}') ? text.replaceAll('{count}', String(item.count))
+      : item.count > 1 && text !== item.label ? `${text} (${item.count})` : text
+    const entry = { ...item, label, separatorBefore: false,
+      children: item.children ? translateSheetContextMenuItems(item.children, translate) : undefined }
+    return item.separatorBefore ? [{ id: `${item.id}-separator`, label: '', commandId: '', type: 'divider' as const }, entry] : [entry]
+  })
+}
+
+export function sheetContextMenuFeatureSearchContext(hit: GridHit, context: SheetContextMenuContext, translate: OfficeTranslator): RibbonGroup[] {
+  function toRibbonItems(source: readonly SheetContextMenuItem[]): RibbonItem[] {
+    return source.flatMap(item => {
+      if (item.type === 'divider') return []
+      const entry: RibbonItem = { id: item.id, type: item.children ? 'menu' : 'button', title: item.label,
+        commandId: item.commandId || undefined, params: item.params, disabled: item.disabled, disabledReason: item.disabledReason,
+        children: item.children ? toRibbonItems(item.children) : undefined }
+      return [entry]
+    })
+  }
+  const items = toRibbonItems(translateSheetContextMenuItems(createSheetContextMenuItems(hit, context), translate))
+  return items.length ? [{ id: 'sheet.context-menu', title: translate('sheet.context-menu.search-group', '右键菜单'), items }] : []
 }
 
 function targetParams(hit: GridHit, sheetId: string, axis: 'row' | 'column', offset = 0) {
@@ -159,7 +198,7 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
         disabledReason: options.sparkline.canEdit ? undefined : '没有查看迷你图完整数据来源的权限。',
         params: { sheetId: options.sheetId, ranges: options.sparkline.ranges, primary: options.sparkline.primary, expectedRevision: options.sparkline.expectedRevision } },
       { id: 'remove-sparkline', label: '删除迷你图', commandId: 'sheet.command.remove-sparkline', disabled: !options.sparkline.canDelete,
-        params: { sheetId: options.sheetId, ranges: options.sparkline.ranges, expectedRevision: options.sparkline.expectedRevision, isSingle: false } },
+        params: { sheetId: options.sheetId, ranges: options.sparkline.ranges, expectedRevision: options.sparkline.expectedRevision, isSingle: true } },
     ] }] : []
 
   if (hit.kind === 'row') return [

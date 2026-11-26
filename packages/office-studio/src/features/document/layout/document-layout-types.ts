@@ -52,7 +52,7 @@ export interface LayoutImage extends LayoutRect, Partial<LayoutFlowLocation> {
   anchor?: { target: TextTarget; startOffset: number; endOffset: number }
   objectImage?: boolean; angle?: number; flipX?: boolean; flipY?: boolean; crop?: DocumentImageCrop; paintWidth?: number; paintHeight?: number; wrappingStyle?: DocumentImageWrappingStyle; layer?: number
 }
-export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost; color?: string }
+export interface LayoutDivider extends LayoutRect, Partial<LayoutFlowLocation> { page: number; clip?: LayoutRect; host?: DocumentAuxiliaryBlockHost; color?: string; style?: 'solid' | 'dot' | 'dash' }
 export interface LayoutContainerDecoration extends LayoutRect, Partial<LayoutFlowLocation> {
   blockId: string; kind: 'quote' | 'callout' | 'code' | 'columns'; page: number; host?: DocumentAuxiliaryBlockHost; clip?: LayoutRect
   callout?: DocumentCalloutConfig; quoteLineColor?: string; first: boolean; last: boolean; tableDepth?: number

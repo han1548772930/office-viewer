@@ -10,7 +10,7 @@ import { documentParagraphPagination } from '../../features/document/model/docum
 import { DOCUMENT_PARAGRAPH_SETTING_FIELDS, documentParagraphSettingsStyle, type DocumentParagraphSettingField } from './document-paragraph-settings-state'
 import {
   DOCUMENT_NAMED_PARAGRAPH_STYLES, applyRunPatch, createRun, marksAtPoint, orderedSelection, runsForTarget, sameTarget, selectedPlainText,
-  selectionCollapsed, textTargets, type DocumentRun, type DocumentSelection, type RunPatch,
+  selectionCollapsed, textTargets, type DocumentNamedParagraphStyle, type DocumentRun, type DocumentSelection, type RunPatch,
 } from '../../features/document/model/document-model'
 
 const markKeys = ['bold', 'italic', 'underline', 'strike', 'verticalAlign', 'fontFamily', 'eastAsiaFontFamily', 'fontSize', 'color', 'highlight', 'href'] as const
@@ -21,6 +21,7 @@ export interface DocumentToolbarState {
   paragraph: Partial<DocumentParagraphStyle>
   mixedParagraph?: readonly DocumentParagraphSettingField[]
   blockStyle?: string
+  namedStyle?: DocumentNamedParagraphStyle
   listPreset?: ListPreset
   hasSelection: boolean
   table?: DocumentTableSelection
@@ -37,6 +38,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
   const marks: RunPatch[] = []
   const paragraphs: DocumentParagraphStyle[] = []
   const styles: string[] = []
+  const namedStyles: DocumentNamedParagraphStyle[] = []
   const presets: (ListPreset | undefined)[] = []
   for (const [index, target] of selected.entries()) {
     const runs = runsForTarget(model, target)
@@ -59,10 +61,18 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
       presets.push(blockListPreset(block))
       paragraphs.push(documentParagraphSettingsStyle({ ...block.style, ...documentParagraphPagination(block.style, model) }))
       const namedStyle = block.metadata.namedStyleType
-      if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) styles.push(namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
-      else if (block.type === 'heading' && block.level >= 1 && block.level <= 5) styles.push(`H${block.level}`)
-      else if (block.type === 'heading' && block.level === 6) styles.push('H6')
-      else styles.push(block.type === 'paragraph' ? 'normal' : block.type)
+      if (typeof namedStyle === 'string' && Object.hasOwn(DOCUMENT_NAMED_PARAGRAPH_STYLES, namedStyle)) {
+        styles.push(block.type === 'checklist' ? 'checklist' : namedStyle.startsWith('heading') ? `H${namedStyle.slice(-1)}` : namedStyle)
+        namedStyles.push(namedStyle as DocumentNamedParagraphStyle)
+        continue
+      }
+      if (block.type === 'heading' && block.level >= 1 && block.level <= 5) {
+        styles.push(`H${block.level}`)
+        namedStyles.push(`heading${block.level}` as DocumentNamedParagraphStyle)
+        continue
+      }
+      styles.push(block.type === 'heading' && block.level === 6 ? 'H6' : block.type === 'paragraph' ? 'normal' : block.type)
+      namedStyles.push('normal')
     }
   }
   if (collapsed || !marks.length && (!selection.tableSelection || selected.length)) {
@@ -83,7 +93,7 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     mixedParagraph.push('lineHeight')
     delete paragraph.lineHeight
   }
-  return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
+  return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, namedStyle: namedStyles[0], listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
 }
 
 function documentToolbarMarks(styles: readonly RunPatch[]): Pick<DocumentToolbarState, 'marks' | 'mixedMarks'> {
@@ -109,7 +119,7 @@ export function documentStoryToolbarState(model: DocumentModel, range: DocumentS
   if (mixedParagraph.includes('spacingRule') && !mixedParagraph.includes('lineHeight')) {
     mixedParagraph.push('lineHeight'); delete paragraph.lineHeight
   }
-  return { ...documentToolbarMarks(selected.styles), paragraph, mixedParagraph, hasSelection: selected.hasSelection }
+  return { ...documentToolbarMarks(selected.styles), paragraph, mixedParagraph, namedStyle: selected.namedStyle, hasSelection: selected.hasSelection }
 }
 
 /** Count displayed characters as grapheme clusters, including composed emoji only once. */

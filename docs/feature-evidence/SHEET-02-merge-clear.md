@@ -40,7 +40,7 @@
 | 重叠 | Facade 维持严格默认重叠拒绝；UI 可强制替换相交旧合并。重复同形 UI 合并是无操作。 |
 | 资源 | 普通链接三种清除均移除；clear-all 对条件格式裁减是本地产品选择，尚无上游 interceptor 证据。线程评论、Note、图表等其他资源删除语义仍须逐项核实，不据本切片宣称已覆盖。 |
 | 取消合并边框 | 本地保留非主格已有实际边和显式 null，并将主格外围边分配到原区域外围；不同于机械复制完整主格 border。Office 独立文件效果未验证。 |
-| 选择 | 本地确认复用捕获的原范围，普通命令不复制上游 selection interceptor 的内部实现；API 不暗中改当前选择。全部上游 redo selection 细节仍待核实。 |
+| 选择 | 合并保留实际主格并从真实模型推导合并形状；取消合并通过统一内容历史将活动范围 primary 移到起点，undo / redo 还原各自完整选择。显式 API 目标不与该表当前选区相交时保留其选择；本地非末活动范围及确认期间选择切换的差异见下文。 |
 
 ## 4. 用例与未运行的验收
 
@@ -53,3 +53,25 @@
 ## 5. 性能与继续工作
 
 矩形裁减、移除集合和稀疏划分不按所选面积逐格清除，但尚未做同数据集前后基准，不能声称优化或性能达标。非默认样式的取消合并仍可能展开整块区域生成样式空格；巨量水平/垂直合并仍生成大量矩形；导入的重叠合并在稀疏划分阶段仍拒绝，完整诊断/恢复需继续补齐。紧凑范围样式、Worker/Rust/WASM 路径、取消与内存预算及真实大样本均未验收。
+
+## 2026-11-27 布局组合并续核
+
+本次重新按固定 [merge.menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/merge.menu.ts)、[merge.menu.spec.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/__tests__/merge.menu.spec.ts)、add / remove command 和 [handle-merge-operation.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets/src/commands/utils/handle-merge-operation.ts) 追踪布局组的合并根与四个子项。grid r2c3、classic order 9，子项仍按全部、垂直、水平、取消排列；与另外五个根的分类计数见 [布局组续核](SHEET-04-text-rotation-shrink-to-fit.md#2026-11-27-布局组续核)。
+
+固定父菜单激活态只读末选区 `primary.actualRow / actualColumn` 在当前 worksheet 合并模型中的状态，不读可能过期的 selection merge 标志。上游测试明确覆盖：选区虽相交合并但主格普通时不激活、多选末段改变主格、合并主格及非主格、取消合并后的撤销重做、mutation、切表及无活动工作簿。本地原先用 `canUnmerge`（任一目标相交且可编辑）兼作 activated，本次主线复用 `use-sheet-range-editor.ts` 的 `merges` 与 `sheetRangeContainsCell` 增加 `primary()` / `mergeActive`，从 ExcelWorkbench 的 selectedKey 传入实际主格；`sheet-ribbon.ts` 仅将 activated 接到 mergeActive，保留 canMerge / canUnmerge 和真实命令协议。
+
+执行核对继续保留既有实现与第 3 节的显式差异，没有改合并领域算法。全部 / 水平 / 垂直按模式生成矩形，重叠选项、首项内容及清除非主格进入同一个 model / view 计划；取消命令移除全部相交合并并恢复样式，真实事务提供撤销、重做与内部保存重开。权限覆盖目标及受影响旧合并，不用 activated 代替执行权限。固定父菜单在绘图焦点时隐藏，本地没有同等 hidden 接线；本地子项按可合并 / 可取消状态单独禁用，固定子项没有相同逐项 disabled 声明。这些 UI 差异仍未对齐。
+
+选择契约已读到具体来源：固定 `AddMergeRedoSelectionsOperationFactory` 保留原选区与 actual 主格并重建末选区的合并 primary，undo 恢复此前 selections；固定取消命令把末选区的 redo primary 改为该选区左上单格，undo 恢复原 selections。本地现已补取消合并的选择编排，UI 继续从真实模型重算 mergeActive；实现与保留差异见下一节，运行验收仍后置。
+
+主线在 [sheet-ui-ribbon.contract.test.mjs](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs) 及 [sheet-cell-layout.browser.test.mjs](../../packages/office-studio/tests/sheet-cell-layout.browser.test.mjs) 补 activated / 真实工作台 primary 草稿。按既定安排未运行测试、类型、构建、Rust/WASM、浏览器或 Office 样本；主题、焦点、IME、完整资源联动与性能仍未验收。本轮包含工作台状态及取消合并选择历史接线，不能将其作为 SHEET-02 / SHEET-04 整体验收。
+
+### 合并选择与统一内容历史
+
+[office-studio.ts](../../packages/office-studio/src/api/office-studio.ts) 的 `commitWorkbook` 已持有完整 `selections.before / after`，统一历史执行时同步恢复模型与各自选择，并在内容事务结束后发布选择事件。本次复用该机制，没有增加选择历史、修改 selection store 或扩展公共输入。合并 Add 路径继续使用默认选择快照保留所有范围、activeRangeIndex 与 actual primary；[facade.ts](../../packages/office-studio/src/api/facade.ts) 的 `FWorksheet.getPrimaryCell` 从当时的 mergedRanges 推导合并形状及主格标志，撤销重做重新读取实际模型。
+
+[sheet-range-editor-commands.ts](../../packages/office-studio/src/api/sheet-range-editor-commands.ts) 仅在取消合并注册中增加选择编排：当前选区与实际移除的合并相交时，将活动范围起点作为 after.primary，before 保留原完整多选和 actual primary。成功取消与内容变更进入同一历史项；undo 恢复原 primary / 范围，redo 恢复起点 / 范围。确认待定、取消、版本失败、权限失败和没有实际移除的无操作都不发布该 after 选择。
+
+保留差异：固定版只在末选区持有 primary，本地允许非末 activeRangeIndex，取消后使用该活动范围起点并保留其他选区。固定取消命令即使显式目标不相交当前选择，也会重建当前末选区的 primary；本地仅编排与实际移除合并相交的选择，保留无关活动表及目标表的已保存选择。固定 Add helper 直接持有 selection 中的合并旗标，本地由模型推导真实形状，不保留过期旗标。确认请求仍捕获原目标范围与版本；接受时若仅选择发生变化，本地保存接受时的实际选择，不用捕获范围覆盖后来选择。隐藏 / 筛选轴继续遵循已有可见主格规则，未据此宣称所有上游选择细节或第三方 Office 行为都已验收。
+
+[sheet-range-editor.contract.test.mjs](../../packages/office-studio/tests/sheet-range-editor.contract.test.mjs) 新增 3 个真实 Studio / Facade 合同草稿，分别包含三种合并模式的实际主格与形状、末段 / 非末活动范围的取消及完整 undo / redo、无相交显式 API 与非活动表选择隔离；扩展既有确认用例覆盖待定 / 取消 / 版本失败的选择原子性，以及选择切换后接受捕获范围的历史。主线已在独立 view 的 `context.applyView(candidate)` 与 `context.changed(...)` 之间，仅成功取消时调用 `resetPrimary()`；ExcelWorkbench 以实际 activeSelectionIndex 设置 selectedKey / selectionAnchor 到起点，归入同一次宿主历史。真实独立工作台的成功 / Add / 失败浏览器草稿由主线补充，运行验证继续后置，本节为实现与静态源码证据。

@@ -440,6 +440,7 @@ const valueEvents = () => page.evaluate(() => window.painterFixture.valueChanges
 async function openConditionalPanel() {
   await page.getByRole('tab', { name: '数据', exact: true }).click()
   await command('sheet.operation.open-conditional-formatting')
+  await page.getByRole('menu', { name: '条件格式', exact: true }).getByRole('menuitem', { name: '管理条件格式', exact: true }).click()
   await expect(conditionalPanel()).toBeVisible()
 }
 async function editConditionalRule(range, formula, index = 0) {
@@ -454,6 +455,47 @@ async function expectConditionalClosed() {
   await expect(conditionalPanel()).toBeHidden()
   await expect(grid()).toBeFocused()
 }
+
+test('management menu opens all six editors and a new rule without publishing canceled drafts', async () => {
+  await select('A1:A2')
+  const before = await snapshot()
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  for (const [action, editor] of [
+    ['突出显示单元格规则', '突出显示单元格规则'], ['排名和平均值规则', '排名和平均值规则'],
+    ['公式规则', '公式规则'], ['色阶规则', '色阶规则'], ['数据条规则', '数据条规则'],
+    ['图标集规则', '图标集规则'], ['新建条件格式', '突出显示单元格规则'],
+  ]) {
+    await command('sheet.operation.open-conditional-formatting')
+    await page.getByRole('menu', { name: '条件格式', exact: true }).getByRole('menuitem', { name: action, exact: true }).click()
+    await expect(conditionalPanel()).toBeVisible()
+    await expect(conditionalPanel().getByRole('textbox', { name: '应用范围', exact: true })).toHaveValue('A1:A2')
+    await expect(conditionalPanel().getByText(editor, { exact: true })).toBeVisible()
+    await conditionalPanel().getByRole('button', { name: '取消', exact: true }).click()
+    await expectConditionalClosed()
+  }
+  assert.deepEqual(await snapshot(), before)
+  assert.equal((await history()).undo, 0)
+})
+
+test('management clear distinguishes selected coverage from the entire sheet and shares history', async () => {
+  await page.evaluate(() => window.painterFixture.seed('conditional-boundary'))
+  await select('A2')
+  const original = await conditionalRules(), before = contents(await snapshot())
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await command('sheet.operation.open-conditional-formatting')
+  await page.getByRole('menu', { name: '条件格式', exact: true }).getByRole('menuitem', { name: '清除所选区域的规则', exact: true }).click()
+  const partial = await conditionalRules()
+  assert.equal(covers(partial[0], 1, 0), false)
+  assert.equal(covers(partial[0], 2, 0), true)
+  assert.equal((await history()).undo, 1)
+  await command('sheet.operation.open-conditional-formatting')
+  await page.getByRole('menu', { name: '条件格式', exact: true }).getByRole('menuitem', { name: '清除工作表的规则', exact: true }).click()
+  assert.deepEqual(await conditionalRules(), [])
+  assert.equal((await history()).undo, 2)
+  await grid().press('Control+z'); assert.deepEqual(await conditionalRules(), partial)
+  await grid().press('Control+z'); assert.deepEqual(await conditionalRules(), original)
+  assert.deepEqual(contents(await snapshot()), before)
+})
 
 test('Insert quick visual rules render on Canvas, reflect model selection, and clear only one type in the selected part', async () => {
   await select('A1:A2')

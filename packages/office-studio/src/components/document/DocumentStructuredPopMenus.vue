@@ -151,12 +151,20 @@ defineExpose({ cancelInteraction, hasInteraction })
     <template v-if="active.code">
       <Popover v-if="!mobile" :open="code?.kind === 'font'" trigger="click" placement="bottomRight" destroy-on-hidden @open-change="open => openCode('font', open)">
         <template #content><DocumentCodeControls v-if="code?.kind === 'font'" kind="font" :config="code.config" :font-family="code.fontFamily" :disabled="disabled" @apply="applyCode" @cancel="closeCode(true)" /></template>
-        <Button size="small" :disabled="disabled" aria-label="代码块字体">{{ active.fontFamily ?? '等宽字体' }}</Button>
+        <Tooltip :title="active.fontFamily ?? '等宽字体'" :trigger="['hover', 'focus']">
+          <Button class="structured-code-control" :classes="{ content: 'structured-code-control__label' }" size="small" :disabled="disabled" aria-label="代码块字体">
+            {{ active.fontFamily ?? '等宽字体' }}
+          </Button>
+        </Tooltip>
       </Popover>
       <Button v-else size="small" :disabled="disabled" aria-label="代码块字体" @click="openCode('font', true)">字体</Button>
       <Popover v-if="!mobile" :open="code?.kind === 'language'" trigger="click" placement="bottomRight" destroy-on-hidden @open-change="open => openCode('language', open)">
         <template #content><DocumentCodeControls v-if="code?.kind === 'language'" kind="language" :config="code.config" :font-family="code.fontFamily" :disabled="disabled" @apply="applyCode" @cancel="closeCode(true)" /></template>
-        <Button size="small" :disabled="disabled" aria-label="代码块语言选择">{{ languageTitle }}</Button>
+        <Tooltip :title="languageTitle" :trigger="['hover', 'focus']">
+          <Button class="structured-code-control" :classes="{ content: 'structured-code-control__label' }" size="small" :disabled="disabled" aria-label="代码块语言选择">
+            {{ languageTitle }}
+          </Button>
+        </Tooltip>
       </Popover>
       <Button v-else size="small" :disabled="disabled" aria-label="代码块语言选择" @click="openCode('language', true)">语言</Button>
       <Popover v-if="!mobile" :open="code?.kind === 'settings'" trigger="click" placement="bottomRight" destroy-on-hidden @open-change="open => openCode('settings', open)">
@@ -208,6 +216,8 @@ defineExpose({ cancelInteraction, hasInteraction })
 .structured-quick-tools--mobile > .structured-latex-toolbar, .structured-quick-tools--mobile > .structured-toolbar, .structured-quick-tools--mobile > .structured-paragraph-control { position: static; max-width: 100%; }
 .structured-toolbar { position: absolute; display: flex; gap: 4px; padding: 3px; border: 1px solid var(--structured-border); border-radius: 6px; background: var(--structured-bg); box-shadow: var(--structured-shadow); pointer-events: auto; }
 .structured-toolbar--mobile { flex-wrap: wrap; }
+.structured-code-control { min-width: 0; max-width: 118px; }
+.structured-code-control :deep(.structured-code-control__label) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .structured-latex-toolbar { position: absolute; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--structured-border); border-radius: 6px; background: var(--structured-bg); box-shadow: var(--structured-shadow); pointer-events: auto; }
 .structured-latex-toolbar :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 4px; }
 .structured-paragraph-control, .structured-content-insert, .structured-table-insert { position: absolute; pointer-events: auto; }

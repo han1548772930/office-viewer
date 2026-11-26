@@ -1,7 +1,8 @@
 import { createCell, defaultCellStyle, type CellRange, type SpreadsheetSheet } from '../../domain/model.ts'
-import { setSheetViewCellStyleProperties, sheetViewCellAt, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
+import { cellKey, parseCellKey, setSheetViewCellStyleProperties, sheetViewCellAt, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import { resolveSheetCellStyle, setSheetCellStyleProperties, type SheetStyleContext } from './sheet-style-inheritance.ts'
-import { sheetStyleSelectionProbes } from './sheet-style-selection.ts'
+import { sheetCellContentKey } from './sheet-cell-edit.ts'
+import { sheetRangeContainsCell } from './sheet-range-command.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { sheetCellShrinkToFit, sheetCellTextRotation, sheetCellWrapStrategy, type SheetCellLayoutStyle, type SheetHorizontalAlignment,
   type SheetTextRotation, type SheetVerticalAlignment, type SheetWrapStrategy } from './sheet-cell-layout.ts'
@@ -26,12 +27,14 @@ const horizontalIds: readonly string[] = [SHEET_LAYOUT_FORMAT_COMMANDS.horizonta
 const verticalIds: readonly string[] = [SHEET_LAYOUT_FORMAT_COMMANDS.vertical, SHEET_LAYOUT_FORMAT_ALIASES.vertical, SHEET_LAYOUT_FORMAT_ALIASES.verticalAlignment]
 const defaults = defaultCellStyle()
 
+export interface SheetLayoutPrimaryPosition { row: number; col: number }
 export interface SheetLayoutFormatCommandInput {
   unitId?: string
   sheetId?: string
   subUnitId?: string
   ranges?: CellRange[]
   range?: CellRange | { startRow: number; startColumn: number; endRow: number; endColumn: number }
+  primary?: SheetLayoutPrimaryPosition
   value?: unknown
 }
 export type SheetLayoutFormatAction = { kind: 'horizontal'; value: SheetHorizontalAlignment }
@@ -117,15 +120,20 @@ function* positions(ranges: readonly CellRange[], filteredRows: ReadonlySet<numb
     }
   }
 }
-function resolvedAction(action: SheetLayoutFormatAction, ranges: readonly CellRange[], filteredRows: ReadonlySet<number>, read: (row: number, col: number) => LayoutStyle | undefined): Exclude<SheetLayoutFormatAction, { kind: 'toggle-wrap' }> {
+function resolvedAction(action: SheetLayoutFormatAction, ranges: readonly CellRange[], filteredRows: ReadonlySet<number>, read: (row: number, col: number) => LayoutStyle | undefined, suppliedPrimary?: SheetLayoutPrimaryPosition): Exclude<SheetLayoutFormatAction, { kind: 'toggle-wrap' }> {
   if (action.kind === 'toggle-wrap') {
     let allWrapped = true
     for (const { row, col } of positions(ranges, filteredRows)) if (sheetCellWrapStrategy(read(row, col)) !== 'wrap') { allWrapped = false; break }
     return { kind: 'wrap', value: allWrapped ? 'overflow' : 'wrap' }
   }
   if (action.kind === 'shrink' && action.value === undefined) {
-    const primary = ranges[0]!
-    return { kind: 'shrink', value: read(primary.startRow, primary.startCol)?.shrinkToFit !== true }
+    const last = ranges.at(-1)!
+    const primary = suppliedPrimary === undefined ? { row: last.startRow, col: last.startCol } : suppliedPrimary
+    assertSheetLayoutFormatRanges([{ startRow: primary.row, endRow: primary.row, startCol: primary.col, endCol: primary.col }])
+    if (!ranges.some(range => sheetRangeContainsCell(range, primary.row, primary.col))) {
+      throw new RangeError('缩小字体填充的主单元格必须位于选区内。')
+    }
+    return { kind: 'shrink', value: read(primary.row, primary.col)?.shrinkToFit !== true }
   }
   return action
 }
@@ -160,26 +168,23 @@ export interface SheetLayoutFormatState {
   rotationVertical?: boolean
 }
 
-export function getSheetViewLayoutFormatState(sheet: ExcelSheetView | undefined, ranges: readonly CellRange[]): SheetLayoutFormatState {
-  const probes = sheet ? sheetStyleSelectionProbes(sheet, ranges) : { cells: [], complete: true }
-  const cells: Array<ExcelCellView | undefined> = probes.cells.length ? probes.cells : [undefined]
-  function common<T>(read: (cell: ExcelCellView | undefined) => T): T | undefined {
-    if (!probes.complete) return undefined
-    const first = read(cells[0])
-    return cells.every(cell => Object.is(read(cell), first)) ? first : undefined
-  }
-  const rotation = common(sheetCellTextRotation)
-  return { align: common(cell => cell?.align ?? defaults.horizontal), vertical: common(cell => cell?.vertical ?? defaults.vertical),
-    wrapStrategy: common(sheetCellWrapStrategy), wrap: common(cell => sheetCellWrapStrategy(cell) === 'wrap'),
-    shrinkToFit: common(sheetCellShrinkToFit), rotation: rotation === 'v' ? 0 : rotation ?? null,
-    rotationVertical: rotation === undefined ? undefined : rotation === 'v' }
+export function getSheetViewLayoutFormatState(sheet: ExcelSheetView | undefined, ranges: readonly CellRange[], suppliedPrimary?: SheetLayoutPrimaryPosition): SheetLayoutFormatState {
+  const last = ranges.at(-1)
+  const primary = suppliedPrimary ?? (last ? { row: last.startRow, col: last.startCol } : undefined)
+  const position = sheet && primary ? parseCellKey(sheetCellContentKey(sheet, cellKey(primary.row, primary.col)))! : undefined
+  const cell = sheet && position ? sheetViewCellAt(sheet, position.row, position.col) : undefined
+  const rotation = sheetCellTextRotation(cell)
+  return { align: cell?.align ?? defaults.horizontal, vertical: cell?.vertical ?? defaults.vertical,
+    wrapStrategy: sheetCellWrapStrategy(cell), wrap: sheetCellWrapStrategy(cell) === 'wrap',
+    shrinkToFit: sheetCellShrinkToFit(cell), rotation: rotation === 'v' ? 0 : rotation,
+    rotationVertical: rotation === 'v' }
 }
 
-export function applySheetLayoutFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user', filteredRows = sheet.autoFilter?.filteredRows ?? [], styleContext: SheetStyleContext = {}): boolean {
+export function applySheetLayoutFormatCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user', filteredRows = sheet.autoFilter?.filteredRows ?? [], styleContext: SheetStyleContext = {}, primary?: SheetLayoutPrimaryPosition): boolean {
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   const filtered = new Set(filteredRows)
-  const resolved = resolvedAction(action, ranges, filtered, (row, col) => resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], styleContext))
+  const resolved = resolvedAction(action, ranges, filtered, (row, col) => resolveSheetCellStyle(sheet, row, col, sheet.cells[`${row}:${col}`], styleContext), primary)
   let changed = false
   for (const { row, col } of positions(ranges, filtered)) {
     const key = `${row}:${col}`, previous = sheet.cells[key], style = resolveSheetCellStyle(sheet, row, col, previous, styleContext), patch = layoutPatch(style, resolved)
@@ -192,11 +197,11 @@ export function applySheetLayoutFormatCommand(sheet: SpreadsheetSheet, ranges: r
   }
   return changed
 }
-export function applySheetViewLayoutFormatCommand(sheet: ExcelSheetView, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user'): boolean {
+export function applySheetViewLayoutFormatCommand(sheet: ExcelSheetView, ranges: readonly CellRange[], action: SheetLayoutFormatAction, userId = 'local-user', primary?: SheetLayoutPrimaryPosition): boolean {
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   const filtered = new Set(sheet.filteredRows ?? sheet.autoFilter?.filteredRows ?? [])
-  const resolved = resolvedAction(action, ranges, filtered, (row, col) => viewLayout(sheetViewCellAt(sheet, row, col)))
+  const resolved = resolvedAction(action, ranges, filtered, (row, col) => viewLayout(sheetViewCellAt(sheet, row, col)), primary)
   let changed = false
   for (const { row, col } of positions(ranges, filtered)) {
     const patch = layoutPatch(viewLayout(sheetViewCellAt(sheet, row, col)), resolved)

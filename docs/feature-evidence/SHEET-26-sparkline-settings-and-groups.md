@@ -78,3 +78,28 @@
 - 大样本解析/数据读取/组极值/渲染计算的 Worker/WASM 任务及性能/内存/取消指标仍缺；首屏、滚动、编辑、缩放、长任务和传输必须同数据集实测，当前没有达标结论。
 
 SHEET-26 保持“未验收”；本批是实现与草稿落盘，不缩减完整 Pro 目标。
+
+<a id="media-sparkline-entry-review-2026-11-27"></a>
+
+## 2026-11-27 插入/媒体入口与删除范围复核
+
+本轮静态读取同一固定版本的 Pro ES/类型、公开命令、分组 planner、Facade 和上下文能力判断。没有运行商业 SDK；测试、类型、构建、浏览器和性能检查继续统一后置。
+
+| 固定入口 | 本次核实 |
+| --- | --- |
+| INSERT / MEDIA，order 5 | `Ft` → `sheet.operation.open-sparkline-selector`（`Nt`），确认后执行 AddSheetSparklineCommand；`Bt` 没有声明 `gridLayout`，不能由本地网格位置反推上游行列 |
+| MAIN_AREA / DATA，order 5；COL_HEADER / LAYOUT；ROW_HEADER / LAYOUT | `It` 在三处挂载同一子菜单；编辑 `Rt`、删除 `Lt`，共 3 个上下文根挂载、6 个子项挂载、2 个唯一动作；移动浮层的 2 个动作另计 |
+| 上下文显隐 `zt` | 恰好一个选区且有 primary，读取 `primary.actualRow/actualColumn` 的迷你图，并检查选区触达组的全部成员编辑权限；全组权限判断是固定契约 |
+| 删除命令 `Me` | `sheet.command.remove-sparkline` 的 `isSingle` 默认 **true**；true 只删除选中成员，false 才删除触达的完整组；省略 ranges 时使用当前全部选区 |
+
+来源：[sheets-sparkline-ui ES](../../.research.local/univer-1.6.0/packages/sheets-sparkline-ui/lib/es/index.js) 的 `Nt`、`Mt`、`Ft`、`It`、`Rt`、`Lt`、`zt`、`Bt`、`Kt`；[sheets-sparkline ES](../../.research.local/univer-1.6.0/packages/sheets-sparkline/lib/es/index.js) 的 `je`、`Me`、`Ne`、`U`。使用 UTF-8 静态解码，打开 selector 和上下文根 ID 的字符偏移分别为 3812、3322，核心 remove ID 的字符偏移为 12059；这些是字符定位，不是源码行号。类型参数依据 [remove-sheet-sparkline.command.d.ts](../../.research.local/univer-1.6.0/packages/sheets-sparkline/lib/types/commands/commands/remove-sheet-sparkline.command.d.ts)、[set-sheet-sparkline.command.d.ts](../../.research.local/univer-1.6.0/packages/sheets-sparkline/lib/types/commands/commands/set-sheet-sparkline.command.d.ts) 和 [common/type.d.ts](../../.research.local/univer-1.6.0/packages/sheets-sparkline/lib/types/common/type.d.ts)。
+
+确定修复：[sparkline-public-commands.ts](../../packages/office-studio/src/api/sparkline-public-commands.ts) 原来将省略 `isSingle` 映射为 `scope: 'group'`，会删除选区外同组成员；现在仅显式 false 映射整组，其余映射 `scope: 'item'`。复用 [sparkline-model.ts](../../packages/office-studio/src/features/sparkline/sparkline-model.ts) 的真实 clear planner 和同一内容命令，不新增算法、模型或校验。面板与 [FSparklineGroup](../../packages/office-studio/src/api/sparklines.ts) 的显式整组删除保持原契约。
+
+根任务已同步 UI 接线：已静态复读 [sheet-context-menu.ts](../../packages/office-studio/src/components/spreadsheet/sheet-context-menu.ts) 的删除项显式传 true，以及 [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 的 `removeContextSparklines` 将省略值补为 true；显式 false 的整组路径继续保留。[sheet-context-menu.contract.test.mjs](../../packages/office-studio/tests/sheet-context-menu.contract.test.mjs) 同步参数预期；[sheet-sparkline-settings.browser.test.mjs](../../packages/office-studio/tests/sheet-sparkline-settings.browser.test.mjs) 新增一个 cell/row 参数化声明，展开两个真实 Canvas 右键删除场景，检查未选同组成员、其他组、源内容和撤销/重做/原生快照重开。两个共享生产文件及对应草稿由根任务修改，没有新增 UI 控件；草稿均未运行。
+
+[sparkline-public-facade.contract.test.mjs](../../packages/office-studio/tests/sparkline-public-facade.contract.test.mjs) 新增一个参数化声明，展开省略、显式 true、显式 false 三种真实命令场景：选中 G1、选区外同组成员 G2 保留或删除、独立 south 组保留、单次历史、撤销/重做、原生快照重开。草稿尚未运行；不据此声明 Office 文件、浏览器/真实 IME、移动浮层或多人协作通过。
+
+本轮保留差异：桌面侧栏由上游 330 宽侧栏改写为本地 Ant Modal 设置会话；本地编辑入口额外要求数据源可读；不冒充固定 UI 布局或完整 Pro 验收。Worker/Rust/WASM 大样本计算、外部/命名/3D 源、日期轴 Canvas、实际 Office 样本和真实多人仍按已有证据保留缺口。
+
+本轮静态检查：本证据的 25 条文件链接均存在；限定公开命令、对应合同和本证据三个修改文件的 `git diff --check` 通过。上述只核对链接与空白，不改变全部测试后置、SHEET-26 未验收的状态。

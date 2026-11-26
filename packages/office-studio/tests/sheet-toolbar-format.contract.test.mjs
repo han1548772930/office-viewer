@@ -173,19 +173,21 @@ test('selection perimeter and fill handle follow hidden range endpoints', () => 
   assert.deepEqual({ x: handle?.x, y: handle?.y, strokeWidth: handle?.strokeWidth }, { x: 305, y: 75, strokeWidth: 1 })
 })
 
-test('expanded Ribbon offers executable style/data intents and Pro insert aliases', () => {
+test('expanded Ribbon offers executable style/data intents and Pro analysis entries', () => {
   const state = { canUndo: true, canRedo: true, hasSheet: true, canMerge: true, canUnmerge: false, canDeleteRow: true, canDeleteColumn: true, chartAvailable: true, canSort: true,
-    fontFamily: 'Aptos', fontSize: 11, numberFormat: 'currency', strike: true, vertical: 'bottom', gridlines: true, frozen: false, zoom: 100 }
+    fontFamily: 'Aptos', fontSize: 11, numberFormat: 'currency', strike: true, vertical: 'bottom', gridlines: true, frozen: false, zoom: 100,
+    filterCanToggle: true, filterEnabled: true, filterHasCriteria: false }
   const tabs = createSheetRibbon(state)
   const items = tabs.flatMap(tab => tab.groups.flatMap(group => group.items.flatMap(item => [item, ...(item.children ?? [])])))
   assert.equal(new Set(items.map(item => item.id)).size, items.length)
   assert.equal(items.find(item => item.title === '删除线').activated, true)
   assert.equal(items.find(item => item.title === '底端对齐').activated, true)
   assert.ok(items.find(item => item.title === '数字格式').options.some(option => option.value === 'accounting'))
-  assert.deepEqual(ribbonInvocation(items.find(item => item.title === '筛选')), { commandId: 'sheet.operation.open-data-panel', params: 'filter' })
+  assert.deepEqual(ribbonInvocation(items.find(item => item.title === '筛选')), { commandId: 'sheet.command.toggle-auto-filter', params: undefined })
+  assert.deepEqual(ribbonInvocation(items.find(item => item.title === '筛选条件')), { commandId: 'sheet.operation.open-data-panel', params: 'filter' })
   assert.deepEqual(ribbonInvocation(items.find(item => item.title === '自定义排序')), { commandId: 'sheet.operation.open-data-panel', params: 'sort' })
   assert.deepEqual(ribbonInvocation(items.find(item => item.title === '所有边框')), { commandId: 'sheet.command.set-borders', params: 'all' })
-  assert.ok(tabs.find(tab => tab.id === 'insert').groups.flatMap(group => group.items).some(item => item.commandId === 'sheet.operation.open-slicer'))
+  assert.ok(tabs.find(tab => tab.id === 'data').groups.flatMap(group => group.items).some(item => item.commandId === 'sheet.operation.open-slicer'))
 })
 
 test('the function picker lists only formulas that the real engine can evaluate', () => {
@@ -210,6 +212,11 @@ test('the function picker lists only formulas that the real engine can evaluate'
     workbook.sheets[0].cells['0:6'] = cell
     const result = recalculateWorkbookFormulas(workbook)
     const value = result.workbook.sheets[0].cells['0:6'].value
+    if (entry.name === 'NA') {
+      assert.equal(value, '#N/A')
+      assert.equal(result.workbook.sheets[0].cells['0:6'].formula, '=NA()')
+      continue
+    }
     assert.ok(!String(value).startsWith('#'), `${entry.name} should evaluate, received ${String(value)}`)
   }
   assert.throws(() => buildSheetFunctionFormula('XLOOKUP', 'A1,B1:B2,C1:C2'), /当前函数目录/)

@@ -86,7 +86,7 @@ export function setSheetCellHyperlink(workbook: SheetHyperlinkWorkbook, sheet: S
   const hyperlink = normalizeSheetHyperlinkTarget(draft.target, workbook)
   if (!hyperlink) throw new Error('请输入有效的外部链接，或指向当前工作簿中有效工作表和单元格的内部链接。')
   const value = draft.display || cell.display || String(cell.value ?? '') || hyperlink
-  sheet.cells[`${row}:${col}`] = { ...cell, value, display: value, hyperlink }
+  sheet.cells[`${row}:${col}`] = { ...cell, value, display: value, dataType: 'text', cachedDataType: null, hyperlink }
 }
 
 function parseHyperlinkRange(value: string): CellRange | undefined {

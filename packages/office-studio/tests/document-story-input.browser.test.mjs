@@ -126,6 +126,12 @@ window.documentStoryFixture = {
     ], paragraphs: documentStoryParagraphs('aaa', next.defaultStyle.paragraph) }
     replace(next, true)
   },
+  namedStyles: () => {
+    const next = copy(model.value), paragraphs = next.sectionHeaderFooters.first.storyContent.header.paragraphs
+    paragraphs[0].metadata = { namedStyleType: 'title' }
+    paragraphs[1].metadata = { namedStyleType: 'heading4' }
+    replace(next, true)
+  },
   appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
   cancelEdits: value => { cancelEdits = value },
   cancelUndo: value => { cancelUndo = value },
@@ -190,11 +196,12 @@ const storyBridge = () => page.getByLabel('编辑页眉', { exact: true })
 const bodyBridge = () => page.getByLabel('文档文字输入', { exact: true })
 const buffer = 'A😀\uFFFC word\nTail'
 async function homeItem(id) {
-  const visible = page.locator('.ribbon-visible-groups [data-ribbon-item="' + id + '"]')
+  const selector = '[data-ribbon-item="' + id + '"]'
+  const visible = page.locator('.ribbon-visible-groups ' + selector + ', .ribbon-grid-group:not(.is-hidden) ' + selector)
   if (await visible.count()) return visible
   const panel = page.locator('.ribbon-overflow-panel:visible')
-  if (!await panel.isVisible()) await page.locator('.ribbon-more-button').click()
-  return panel.locator('[data-ribbon-item="' + id + '"]')
+  if (!await panel.isVisible()) await page.locator('.ribbon-more-button:visible, .ribbon-grid-more-button:visible').click()
+  return panel.locator(selector)
 }
 async function openHeader(expected = buffer) {
   await (await homeItem('doc-header-footer')).getByRole('button').click()
@@ -249,6 +256,80 @@ async function staleStoryEvents() {
     element.dispatchEvent(new FocusEvent('blur', { bubbles: false }))
   })
 }
+
+for (const variant of ['classic', 'grid']) test('legacy header named styles use the story selection, real history and saved reopen in ' + variant, async () => {
+  await page.evaluate(layout => { window.documentStoryFixture.namedStyles(); window.documentStoryFixture.appearance(false, layout) }, variant)
+  await openHeader()
+  await nativeSelection(11, 12)
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  const style = await homeItem('doc-block-style')
+  await expect(style.locator('.ant-select-selection-item')).toHaveText('标题 4')
+  await nativeSelection(1, 9)
+  await expect(style.locator('.ant-select-selection-item')).toHaveText('标题')
+  const before = await snapshot()
+  assert.equal((await inputState()).location.kind, 'story')
+  await style.getByRole('combobox').click()
+  await page.getByRole('option', { name: '标题 3', exact: true }).click()
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters.first.storyContent.header.paragraphs.map(paragraph => paragraph.metadata.namedStyleType))).toEqual(['heading3', 'heading4'])
+  await expect(bodyBridge()).toBeFocused()
+  const applied = await snapshot(), field = applied.sectionHeaderFooters.first.pageFields[0]
+  assert.deepEqual(applied.blocks, before.blocks)
+  assert.equal(applied.sectionHeaderFooters.first.header, before.sectionHeaderFooters.first.header)
+  assert.equal(applied.sectionHeaderFooters.first.footer, before.sectionHeaderFooters.first.footer)
+  assert.deepEqual([field.field, field.offset, field.cachedResult], ['PAGE', 3, before.sectionHeaderFooters.first.pageFields[0].cachedResult])
+  assert.deepEqual((await inputState()).location.host, { kind: 'story', sectionId: 'first', story: 'header' })
+  assert.deepEqual(await history(), { undo: 1, redo: 0, dirty: true })
+  assert.equal((await page.evaluate(() => window.documentStoryFixture.commands().filter(event => event.id === 'doc.command.set-paragraph-named-style'))).length, 1)
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters)).toEqual(before.sectionHeaderFooters)
+  await page.keyboard.press('Control+y')
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters)).toEqual(applied.sectionHeaderFooters)
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.sectionHeaderFooters, applied.sectionHeaderFooters)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, applied.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+for (const variant of ['classic', 'grid']) test('legacy header paragraph settings migrate the selected story and preserve body, history and saved reopen in ' + variant, async () => {
+  await page.evaluate(layout => window.documentStoryFixture.appearance(layout === 'grid', layout), variant)
+  await openHeader()
+  await nativeSelection(1, 9)
+  const before = await snapshot(), point = await page.evaluate(() => window.documentStoryFixture.point('header', 1))
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  await page.locator('.document-context-menu').getByRole('menuitem', { name: '段落设置', exact: true }).click()
+  const panel = page.locator('[data-document-paragraph-settings]')
+  await expect(panel.getByRole('button', { name: '居中', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(panel.getByRole('spinbutton', { name: '首行缩进 (px)', exact: true })).toBeEnabled()
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+  assert.deepEqual((await inputState()).location.host, { kind: 'story', sectionId: 'first', story: 'header' })
+  await panel.getByRole('spinbutton', { name: '段前 (px)', exact: true }).fill('6')
+  await panel.getByRole('spinbutton', { name: '段前 (px)', exact: true }).press('Tab')
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters.first.storyContent.header.paragraphs[0].style.spaceBefore)).toBe(6)
+  const applied = await snapshot()
+  assert.deepEqual(applied.blocks, before.blocks)
+  assert.equal(applied.sectionHeaderFooters.first.header, before.sectionHeaderFooters.first.header)
+  assert.equal(applied.sectionHeaderFooters.first.footer, before.sectionHeaderFooters.first.footer)
+  assert.deepEqual(await history(), { undo: 1, redo: 0, dirty: true })
+  await panel.getByRole('button', { name: '关闭段落设置', exact: true }).click()
+  await expect(bodyBridge()).toBeFocused()
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters)).toEqual(before.sectionHeaderFooters)
+  await page.keyboard.press('Control+y')
+  await expect.poll(() => snapshot().then(value => value.sectionHeaderFooters)).toEqual(applied.sectionHeaderFooters)
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.sectionHeaderFooters, applied.sectionHeaderFooters)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, applied.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+test('legacy header composition disables named paragraph styles without adding history', async () => {
+  await openHeader()
+  await startComposition()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await expect((await homeItem('doc-block-style')).locator('.ant-select')).toHaveClass(/ant-select-disabled/)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
 
 for (const variant of ['classic', 'grid']) test('Canvas drag, clear, focus and internal reopen with the real story TextArea in ' + variant, async () => {
   const before = await snapshot()

@@ -116,8 +116,18 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       commands.push({ kind: 'rect', ...rect(cell), fill: `rgba(${primary}, ${options.focused ? 0.16 : 0.10})`, stroke: `rgba(${primary}, 0.65)`, strokeWidth: Math.max(1, scale), clip })
     }
     for (const divider of content.dividers) {
-      if (visible(divider)) commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color: divider.color ?? '#b3bdca', width: Math.max(1, scale),
-        clip: divider.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(divider.clip)) : rect(layout.pages[pageIndex]!) })
+      if (!visible(divider) || divider.height <= 0) continue
+      const width = Math.max(1, divider.height * scale), color = documentTextColor(divider.color ?? '#b3bdca')
+      const clip = divider.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(divider.clip)) : rect(layout.pages[pageIndex]!)
+      if (!divider.style || divider.style === 'solid') {
+        commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color, width, clip })
+        continue
+      }
+      const segment = divider.style === 'dot' ? Math.max(1, width) : Math.max(4, width * 3), gap = Math.max(2, width * 2)
+      for (let from = 0; from < divider.width * scale; from += segment + gap) {
+        commands.push({ kind: 'line', x1: x(divider.x) + from, y1: y(divider.y), x2: x(divider.x) + Math.min(divider.width * scale, from + segment),
+          y2: y(divider.y), color, width, clip })
+      }
     }
     for (const separator of content.columnSeparators) {
       if (visible(separator)) commands.push({ kind: 'line', x1: x(separator.x), y1: y(separator.y), x2: x(separator.x), y2: y(separator.y + separator.height),
@@ -181,6 +191,9 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     }
     for (const glyph of line.glyphs) {
       const textColor = documentTextColor(glyph.run.color)
+      const hyperlink = glyph.run.metadata?.link as { textStyleMode?: string; textColorMode?: string } | undefined
+      const hyperlinkStyle = glyph.run.href && hyperlink?.textStyleMode !== 'text'
+      const hyperlinkColor = hyperlinkStyle && hyperlink?.textColorMode !== 'text' ? '#2563b6' : textColor
       const baselineOffset = glyph.run.verticalAlign === 'superscript' ? -glyph.run.fontSize * 0.4 : glyph.run.verticalAlign === 'subscript' ? glyph.run.fontSize * 0.2 : 0
       const baseline = line.baseline + baselineOffset
       if (glyph.run.highlight) commands.push({ kind: 'rect', ...rect(glyph), fill: glyph.run.highlight, clip })
@@ -197,7 +210,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
             commands.push({ kind: 'line', x1: x(glyph.x + primitive.x1), y1: y(baseline + primitive.y1), x2: x(glyph.x + primitive.x2), y2: y(baseline + primitive.y2), color: formulaColor, width: Math.max(0.8, primitive.width * scale), clip })
           }
         }
-        if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: formulaColor, width: Math.max(0.7, scale), clip })
+        if (glyph.run.underline || hyperlinkStyle) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: formulaColor, width: Math.max(0.7, scale), clip })
         if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: formulaColor, width: Math.max(0.7, scale), clip })
         continue
       }
@@ -206,9 +219,9 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
       const token = codeData && codeTokens.get(codeKey)?.find((candidate) => codeOffset >= candidate.start && codeOffset < candidate.end)
       if (glyph.imageAtom) continue
       const text = glyph.tab ? glyph.tab.leaderText : glyph.text === '\t' ? '    ' : glyph.text
-      if (text) commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : glyph.run.href ? '#2563b6' : textColor,
+      if (text) commands.push({ kind: 'text', x: x(glyph.x), y: y(baseline), text, font, color: token && glyph.run.metadata?.codeSyntaxHighlight !== false ? codeTokenColor(token.kind) : hyperlinkColor,
         ...(glyph.tab ? { maxWidth: glyph.width * scale } : {}), clip })
-      if (glyph.run.underline || glyph.run.href) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: textColor, width: Math.max(0.7, scale), clip })
+      if (glyph.run.underline || hyperlinkStyle) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline + 2), x2: x(glyph.x + glyph.width), y2: y(baseline + 2), color: hyperlinkColor, width: Math.max(0.7, scale), clip })
       if (glyph.run.strike) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(baseline - glyph.run.fontSize * 0.4), x2: x(glyph.x + glyph.width), y2: y(baseline - glyph.run.fontSize * 0.4), color: textColor, width: Math.max(0.7, scale), clip })
       if (options.composing && sameTarget(line.target, options.selection.focus) && glyph.end <= options.selection.focus.offset) commands.push({ kind: 'line', x1: x(glyph.x), y1: y(line.baseline + 3), x2: x(glyph.x + glyph.width), y2: y(line.baseline + 3), color: '#3478df', width: 1, clip })
     }

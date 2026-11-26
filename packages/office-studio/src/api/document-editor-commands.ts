@@ -14,6 +14,7 @@ import { documentContentControlCommandIsTextInput, documentContentControlCommand
 import { synchronizeDocumentContentControlBindings } from '../features/document/services/content-control-bindings.ts'
 import { resolveDocumentTableCommandTarget, type DocumentTableCommand } from '../features/document/commands/table-commands.ts'
 import { documentTableTextInputEdits } from '../features/document/commands/table-mutations.ts'
+import { documentHyperlinks } from '../features/document/services/document-hyperlinks.ts'
 
 export interface DocumentEditorCommandRequest {
   unitId: string
@@ -43,6 +44,9 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.insert-text': '输入文本',
   'doc.command.delete': '删除内容',
   'doc.command.format-text': '设置字符格式',
+  'docs.command.add-hyper-link': '插入链接',
+  'docs.command.update-hyper-link': '修改链接',
+  'docs.command.delete-hyper-link': '移除链接',
   'doc.command.apply-format-painter': '应用格式刷',
   'doc.command.clear-formatting': '清除格式',
   'doc.command.format-paragraph': '设置段落格式',
@@ -58,6 +62,7 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.insert-column-break': '插入分栏符',
   'doc.command.insert-section-break': '插入分节符',
   'doc.command.insert-table': '插入表格',
+  'doc.command.create-table': '插入表格',
   'doc.command.insert-image': '插入图片',
   'doc.command.update-image': '编辑图片',
   'doc.command.replace-image': '替换图片',
@@ -67,6 +72,8 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.arrange-images': '调整多张图片层级',
   'doc.command.batch-images': '批量编辑图片',
   'doc.command.insert-divider': '插入分隔线',
+  'doc.command.horizontal-line': '插入分隔线',
+  'doc.command.insert-horizontal-line-bellow': '在段落下方插入分隔线',
   'doc.command.insert-latex-formula': '插入公式',
   'doc.command.update-latex-formula': '编辑公式',
   'doc.command.remove-latex-formula': '删除公式',
@@ -188,13 +195,17 @@ function tableTextInputCommand(command: DocumentCommand, selection: DocumentSele
 
 /** Both UI and facade commands edit a transaction draft with the same logical selection. */
 export function applyDocumentEditorCommand(model: DocumentModel, request: DocumentEditorCommandRequest, permissionContext: DocumentPermissionContext): DocumentSelection {
+  const hyperlink = request.command.id === 'docs.command.update-hyper-link'
+    ? documentHyperlinks(request.command.host ? documentModelForBlockHost(model, request.command.host) : model)
+      .find(link => request.command.id === 'docs.command.update-hyper-link' && link.id === request.command.linkId) : undefined
   if (!documentContentControlCommandIsTextInput(request.command)
+    || request.command.id === 'docs.command.update-hyper-link' && request.command.label === hyperlink?.label
     || !model.contentControls?.length && request.command.activeContentControlId === undefined) {
     return applyDocumentEditorCommandMutation(model, request, permissionContext)
   }
   const before = cloneModel(model), candidate = cloneModel(model)
   const scoped = request.command.host ? documentModelForBlockHost(candidate, request.command.host, true) : candidate
-  const source = resolveDocumentEditorSelection(scoped, request.selection)
+  const source = resolveDocumentEditorSelection(scoped, hyperlink?.selection ?? request.selection)
   const tableCommand = tableTextInputCommand(request.command, source)
   if (tableCommand && request.command.activeContentControlId !== undefined) throw new RangeError('表格整格输入不能使用内容控件内部编辑身份。')
   const inputControlId = tableCommand ? undefined : resolveDocumentContentControlTextInputId(scoped, source, request.command.activeContentControlId)

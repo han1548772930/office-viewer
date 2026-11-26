@@ -47,6 +47,7 @@ export interface DocumentTableInsertOptions {
 }
 
 export type DocumentTableInsertCommand = DocumentTableInsertOptions & { id: 'doc.command.insert-table'; rows?: number; cols?: number }
+export type DocumentTableCreateCommand = DocumentTableInsertOptions & { id: 'doc.command.create-table'; rowCount: number; colCount: number }
 
 export const DOCUMENT_TABLE_COMMAND_IDS = [
   'doc.command.table-insert-row', 'doc.command.table-insert-column', 'doc.command.table-delete-rows', 'doc.command.table-delete-columns', 'doc.command.table-delete',

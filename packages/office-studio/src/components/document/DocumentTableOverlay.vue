@@ -361,13 +361,13 @@ function namedStyle(value: unknown) {
 <style scoped>
 .document-table-overlay { position: absolute; inset: 0; z-index: 4; pointer-events: none; color: var(--table-overlay-text); }
 .table-overlay-handle { position: absolute; z-index: 2; width: 20px; min-width: 20px; height: 20px; padding: 0; display: grid; place-items: center; pointer-events: auto; font-size: 10px; background: var(--table-overlay-background); border-color: var(--table-overlay-border); }
-.table-overlay-handle:hover { color: var(--table-overlay-primary); border-color: var(--table-overlay-primary); }
+.table-overlay-handle:not(:disabled):hover { color: var(--table-overlay-primary); border-color: var(--table-overlay-primary); }
 .table-move, .table-axis-move { cursor: grab; touch-action: none; }
 .table-insert-dot { width: 16px; min-width: 16px; height: 16px; z-index: 4; border-radius: 50%; }
 .table-overlay-resize { position: absolute; z-index: 1; min-width: 0; padding: 0; pointer-events: auto; border: 0; border-radius: 0; background: transparent; touch-action: none; }
 .table-row-resize { height: 6px; min-height: 6px; margin-top: -3px; cursor: row-resize; }
 .table-column-resize { width: 6px; height: auto; margin-left: -3px; cursor: col-resize; }
-.table-overlay-resize:hover, .table-overlay-resize:focus-visible { background: color-mix(in srgb, var(--table-overlay-primary) 24%, transparent); }
+.table-overlay-resize:not(:disabled):hover, .table-overlay-resize:not(:disabled):focus-visible { background: color-mix(in srgb, var(--table-overlay-primary) 24%, transparent); }
 .document-checklist-control { position: absolute; pointer-events: auto; transform-origin: top left; line-height: 16px; }
 .document-typed-cell-control { position: absolute; overflow: hidden; pointer-events: auto; background: var(--table-overlay-background); }
 .document-typed-cell-control :deep(.ant-select) { width: 100%; }

@@ -8,6 +8,7 @@ import { applySheetLayoutFormatCommand, applySheetViewLayoutFormatCommand, getSh
 import { clearSheetCellFormat, setSheetTextFit } from '../src/features/sheet-workbench/sheet-toolbar-format.ts'
 import { createSheetPastePlan } from '../src/features/sheet-workbench/sheet-paste.ts'
 import { createSheetFillPlan } from '../src/features/sheet-workbench/sheet-fill.ts'
+import { setSheetCellStyleProperties } from '../src/features/sheet-workbench/sheet-style-inheritance.ts'
 
 const range = (startCol, endCol = startCol, startRow = 0, endRow = startRow) => ({ startRow, endRow, startCol, endCol })
 const copy = value => structuredClone(value)
@@ -71,6 +72,54 @@ test('shrink disables wrapped targets while preserving overflow or clip and uses
   assert.deepEqual([0, 1, 2].map(col => sheetCellWrapStrategy(sheet.cells[`0:${col}`].style)), ['overflow', 'clip', 'overflow'])
 })
 
+test('shrink toggles from the supplied primary or the last range once across mixed targets', () => {
+  for (const [primary, targets, expected] of [
+    [{ row: 0, col: 2 }, [range(0, 2), range(1, 2)], [false, false, false]],
+    [undefined, [range(0), range(2)], [false, true, false]],
+  ]) {
+    const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+    for (const [col, shrinkToFit] of [false, true, true].entries()) {
+      sheet.cells[`0:${col}`] = createCell(0, col, `cell ${col}`)
+      sheet.cells[`0:${col}`].style.shrinkToFit = shrinkToFit
+    }
+    const view = toExcelWorkbookView(workbook).sheets[0]
+    assert.equal(applySheetLayoutFormatCommand(sheet, targets, { kind: 'shrink' }, 'local-user', [], workbook, primary), true)
+    assert.equal(applySheetViewLayoutFormatCommand(view, targets, { kind: 'shrink' }, 'local-user', primary), true)
+    assert.deepEqual([0, 1, 2].map(col => sheet.cells[`0:${col}`].style.shrinkToFit), expected)
+    assert.deepEqual(['A1', 'B1', 'C1'].map(key => view.cells[key].shrinkToFit), expected)
+    assert.deepEqual([0, 1, 2].map(col => sheet.cells[`0:${col}`].value), ['cell 0', 'cell 1', 'cell 2'])
+    assert.equal(applySheetLayoutFormatCommand(sheet, targets, { kind: 'shrink' }, 'local-user', [], workbook, primary), true)
+    assert.equal(applySheetViewLayoutFormatCommand(view, targets, { kind: 'shrink' }, 'local-user', primary), true)
+    assert.ok(Object.values(sheet.cells).every(cell => cell.style.shrinkToFit))
+    assert.ok(Object.values(view.cells).every(cell => cell.shrinkToFit))
+  }
+})
+
+test('shrink reads the composed primary style without populating unaffected empty cells', () => {
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+  sheet.columnStyles = { 2: { shrinkToFit: true } }
+  const view = toExcelWorkbookView(workbook).sheets[0], targets = [range(0), range(2)]
+  assert.equal(applySheetLayoutFormatCommand(sheet, targets, { kind: 'shrink' }, 'local-user', [], workbook), true)
+  assert.equal(applySheetViewLayoutFormatCommand(view, targets, { kind: 'shrink' }), true)
+  assert.deepEqual(Object.keys(sheet.cells), ['0:2'])
+  assert.deepEqual(Object.keys(view.cells), ['C1'])
+  assert.equal(sheet.cells['0:2'].style.shrinkToFit, false)
+  assert.equal(view.cells.C1.shrinkToFit, false)
+  assert.deepEqual(sheet.columnStyles, { 2: { shrinkToFit: true } })
+})
+
+test('invalid shrink primary positions reject both hosts before writing any target', () => {
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+  sheet.cells['0:0'] = createCell(0, 0, 'kept')
+  const view = toExcelWorkbookView(workbook).sheets[0], initialModel = copy(sheet), initialView = copy(view)
+  for (const primary of [{ row: 4, col: 4 }, { row: -.5, col: 0 }, { row: 0, col: 16_384 }, { row: NaN, col: 0 }, {}, null, 1]) {
+    assert.throws(() => applySheetLayoutFormatCommand(sheet, [range(0, 2)], { kind: 'shrink' }, 'local-user', [], workbook, primary))
+    assert.throws(() => applySheetViewLayoutFormatCommand(view, [range(0, 2)], { kind: 'shrink' }, 'local-user', primary))
+    assert.deepEqual(sheet, initialModel)
+    assert.deepEqual(view, initialView)
+  }
+})
+
 test('mixed selection toggles once across overlapping ranges and skips filtered rows without changing manual hiding', () => {
   const sheet = createBlankSheet()
   for (let row = 0; row < 3; row++) {
@@ -92,24 +141,44 @@ test('mixed selection toggles once across overlapping ranges and skips filtered 
   assert.deepEqual(sheet.cells['1:0'], filtered)
 })
 
-test('layout state combines rotation with vertical mode, handles legacy wrap and counts implicit cells in sparse ranges', () => {
+test('layout menus read the supplied primary or last range rather than combining mixed cell states', () => {
   const sheet = { id: 'state', name: 'State', rowCount: 1_048_576, columnCount: 16_384,
-    cells: { A1: { value: 'one', wrap: true, rotationVertical: true }, B1: { value: 'two', wrap: true, rotation: 0 } } }
-  let state = getSheetViewLayoutFormatState(sheet, [range(0, 1)])
-  assert.equal(state.wrapStrategy, 'wrap')
-  assert.equal(state.wrap, true)
-  assert.equal(state.rotation, null)
-  assert.equal(state.rotationVertical, undefined)
+    cells: {
+      A1: { value: 'one', align: 'right', vertical: 'top', wrap: true, shrinkToFit: true, rotationVertical: true },
+      B1: { value: 'two', align: 'center', vertical: 'bottom', wrapStrategy: 'clip', shrinkToFit: false, rotation: 45 },
+    } }
+  assert.deepEqual(getSheetViewLayoutFormatState(sheet, [range(0, 1)]), {
+    align: 'right', vertical: 'top', wrapStrategy: 'wrap', wrap: true, shrinkToFit: true, rotation: 0, rotationVertical: true,
+  })
+  const second = { align: 'center', vertical: 'bottom', wrapStrategy: 'clip', wrap: false, shrinkToFit: false, rotation: 45, rotationVertical: false }
+  assert.deepEqual(getSheetViewLayoutFormatState(sheet, [range(0, 1)], { row: 0, col: 1 }), second)
+  assert.deepEqual(getSheetViewLayoutFormatState(sheet, [range(0), range(1)]), second)
   sheet.filteredRows = [0]
-  state = getSheetViewLayoutFormatState(sheet, [range(0, 1, 0, 1)])
-  assert.equal(state.wrapStrategy, 'overflow')
-  delete sheet.filteredRows
-  state = getSheetViewLayoutFormatState(sheet, [range(0, 16_383, 0, 1_048_575)])
-  assert.equal(state.wrap, undefined)
-  assert.equal(state.wrapStrategy, undefined)
+  assert.deepEqual(getSheetViewLayoutFormatState(sheet, [range(0, 16_383, 0, 1_048_575)], { row: 0, col: 1 }), second)
   assert.deepEqual(Object.keys(sheet.cells), ['A1', 'B1'])
   assert.equal(sheetCellTextRotation({ rotation: 255 }), 'v')
   assert.equal(sheetCellWrapStrategy({ wrap: true, wrapStrategy: 'clip' }), 'clip')
+})
+
+test('layout menus resolve a merged primary to its content owner and retain composed sparse styles', () => {
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+  sheet.defaultStyle = { horizontal: 'right', vertical: 'bottom', wrapStrategy: 'clip' }
+  sheet.columnStyles = { 1: { horizontal: 'center', wrapStrategy: 'wrap', shrinkToFit: true, rotation: -45 } }
+  sheet.cells['0:0'] = createCell(0, 0, 'master')
+  setSheetCellStyleProperties(sheet.cells['0:0'], { vertical: 'top', rotationVertical: true })
+  sheet.mergedRanges = [range(0, 1, 0, 1)]
+  const view = toExcelWorkbookView(workbook).sheets[0], initial = copy(view)
+  const merged = getSheetViewLayoutFormatState(view, [range(0, 1, 0, 1)], { row: 1, col: 1 })
+  assert.equal(merged.vertical, 'top')
+  assert.equal(merged.rotationVertical, true)
+  assert.equal(merged.wrapStrategy, 'clip')
+  assert.deepEqual(getSheetViewLayoutFormatState(view, [range(1, 1, 4, 4)], { row: 4, col: 1 }), {
+    align: 'center', vertical: 'bottom', wrapStrategy: 'wrap', wrap: true, shrinkToFit: true, rotation: -45, rotationVertical: false,
+  })
+  assert.deepEqual(getSheetViewLayoutFormatState(view, [range(3, 3, 99, 99)]), {
+    align: 'right', vertical: 'bottom', wrapStrategy: 'clip', wrap: false, shrinkToFit: false, rotation: 0, rotationVertical: false,
+  })
+  assert.deepEqual(view, initial)
 })
 
 test('invalid or protected ranges reject all writes and default layout operations do not create empty cells', () => {
@@ -162,6 +231,10 @@ test('Facade, explicit upstream command ranges, cancellation, history and intern
     const { FOffice, OfficeStudio } = await vite.ssrLoadModule('/packages/office-studio/src/index.ts')
     const workbook = createBlankWorkbook(); workbook.id = 'layout-commands'; workbook.calculationMode = 'manual'
     workbook.sheets[0].cells['0:0'] = { ...createCell(0, 0, null), formula: '=UNSUPPORTED()', display: 'kept', dataType: 'formula', cachedDataType: null }
+    for (const [col, shrinkToFit] of [false, true, true].entries()) {
+      workbook.sheets[0].cells[`0:${col + 1}`] = createCell(0, col + 1, `primary ${col}`)
+      workbook.sheets[0].cells[`0:${col + 1}`].style.shrinkToFit = shrinkToFit
+    }
     const studio = new OfficeStudio({ workbook })
     try {
       const api = FOffice.newAPI(studio), book = api.getActiveWorkbook(), sheet = book.getActiveSheet(), target = sheet.getRange('A1')
@@ -196,6 +269,26 @@ test('Facade, explicit upstream command ranges, cancellation, history and intern
       target.setWrap(false)
       assert.equal(target.getWrapStrategy(), 'overflow')
       assert.equal(reopened.getWrapStrategy(), 'clip')
+      studio.setSelections(book.getId(), sheet.getSheetId(), [{ startRow: 0, endRow: 0, startColumn: 1, endColumn: 2 }],
+        { primary: { row: 0, column: 2 } })
+      assert.equal(studio.executeCommandSync(SHEET_LAYOUT_FORMAT_COMMANDS.shrink), true)
+      assert.deepEqual([1, 2, 3].map(col => studio.getWorkbookModel(book.getId()).sheets[0].cells[`0:${col}`].style.shrinkToFit), [false, false, true])
+      book.undo()
+      assert.deepEqual([1, 2, 3].map(col => studio.getWorkbookModel(book.getId()).sheets[0].cells[`0:${col}`].style.shrinkToFit), [false, true, true])
+      book.redo()
+      const scopes = [range(1), range(3)], input = { unitId: book.getId(), sheetId: sheet.getSheetId(), ranges: scopes }
+      assert.equal(studio.executeCommandSync(SHEET_LAYOUT_FORMAT_COMMANDS.shrink, input), true)
+      assert.deepEqual([1, 2, 3].map(col => studio.getWorkbookModel(book.getId()).sheets[0].cells[`0:${col}`].style.shrinkToFit), [false, false, false])
+      assert.equal(studio.executeCommandSync(SHEET_LAYOUT_FORMAT_COMMANDS.shrink, { ...input, primary: { row: 0, col: 1 } }), true)
+      assert.deepEqual([1, 2, 3].map(col => studio.getWorkbookModel(book.getId()).sheets[0].cells[`0:${col}`].style.shrinkToFit), [true, false, true])
+      const beforeInvalid = copy(studio.getWorkbookModel(book.getId())), beforeInvalidHistory = studio.editor.history.units[book.getId()].undo.length
+      for (const primary of [{ row: 4, col: 4 }, null]) {
+        assert.throws(() => studio.executeCommandSync(SHEET_LAYOUT_FORMAT_COMMANDS.shrink, { ...input, primary }))
+        assert.deepEqual(studio.getWorkbookModel(book.getId()), beforeInvalid)
+        assert.equal(studio.editor.history.units[book.getId()].undo.length, beforeInvalidHistory)
+      }
+      const primaryReopened = api.createWorkbook({ ...book.save(), id: 'layout-primary-reopened' })
+      assert.deepEqual([1, 2, 3].map(col => studio.getWorkbookModel(primaryReopened.getId()).sheets[0].cells[`0:${col}`].style.shrinkToFit), [true, false, true])
     } finally { studio.dispose() }
   } finally { await vite.close() }
 })

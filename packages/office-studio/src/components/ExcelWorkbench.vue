@@ -45,7 +45,7 @@ import { normalizeSheetSelection, type SheetSelectionState } from '../features/s
 import { planSheetSelectionShortcut, SheetSelectionDirections, type SheetSelectionShortcutKey } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import { recalculateSheetViewFormulas } from '../features/sheet-workbench/sheet-view-formulas'
 import { type SheetBorderOptions } from '../features/sheet-workbench/sheet-toolbar-format'
-import { classifySheetNumberFormat, SHEET_NUMBER_FORMATS } from '../features/sheet-workbench/sheet-number-format'
+import { classifySheetNumberFormat } from '../features/sheet-workbench/sheet-number-format'
 import { applySheetViewNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { applySheetViewFontFormatCommand, fontFormatActionForCommand, sheetFontFormatCommandForShortcut, SHEET_FONT_FORMAT_COMMAND_IDS, type SheetFontFormatCommandInput } from '../features/sheet-workbench/sheet-font-format-command.ts'
 import { sheetStyleSelectionProbes } from '../features/sheet-workbench/sheet-style-selection.ts'
@@ -113,8 +113,8 @@ import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts
 import { applySheetConditionalFormatsCommand, SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from '../features/conditional-formatting/conditional-format-command.ts'
 import {
-  QUICK_CONDITIONAL_FORMAT_COMMANDS, quickConditionalFormatRules, quickConditionalFormatSelection,
-  type QuickConditionalFormatCommandId, type QuickConditionalFormatInput, type QuickConditionalFormatType,
+  CONDITIONAL_FORMAT_EDITOR_TYPES, QUICK_CONDITIONAL_FORMAT_COMMANDS, quickConditionalFormatRules, quickConditionalFormatSelection,
+  type ConditionalFormatPanelInitialType, type QuickConditionalFormatCommandId, type QuickConditionalFormatInput,
 } from '../features/conditional-formatting/quick-conditional-formatting.ts'
 import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineHiddenSpans, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
 import { SHEET_OUTLINE_COMMAND_IDS, sheetOutlineCommandInput } from '../features/sheet-outline/sheet-outline-command.ts'
@@ -347,7 +347,7 @@ const workbenchActive = ref(true)
 const conditionalFormattingOpen = ref(false)
 const conditionalFormattingRange = ref('A1')
 const conditionalFormattingContext = shallowRef<{ studio?: OfficeStudio; unitId: string | undefined; sheetId: string; expectedRevision?: number;
-  standaloneSnapshot?: string; initialType?: QuickConditionalFormatType }>()
+  standaloneSnapshot?: string; initialType?: ConditionalFormatPanelInitialType }>()
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
 const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
   .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
@@ -388,7 +388,7 @@ const sheetViewportHeaders = computed(() => sheetOutlineHeaderExtents(activeRend
 const slicerCanvasData = useSlicerCanvasData({ studio: () => props.studio, unitId: () => workbook.value.id,
   sheetId: () => activeSheetId.value, sheet: () => activeRenderSheet.value, view: () => workbook.value,
   active: () => workbenchActive.value && (!props.studio || props.studio.activeWorkbookId === workbook.value.id && props.studio.editor.state.activeKind === 'workbook') })
-const slicerControls = computed(() => slicerCanvasData.controls.value.map(control => ({ ...control, styleOwner: workbook.value })))
+const slicerControls = computed(() => slicerCanvasData.controls.value.map(control => ({ ...control, styleOwner: toRaw(workbook.value) })))
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => {
@@ -397,7 +397,7 @@ const activeCell = computed(() => {
   return sheet && position ? sheetViewCellAt(sheet, position.row, position.col) : { value: '' }
 })
 const numberFormatSource = computed(() => {
-  const range = selectedRanges.value[activeSelectionIndex.value] ?? selectedRanges.value.at(-1)
+  const range = selectedRanges.value[0]
   const key = range ? `${columnName(range.startColumn)}${range.startRow + 1}` : selectedKey.value
   const position = parseCellKey(key), sheet = activeSheet.value
   const cell = sheet && position ? sheetViewCellAt(sheet, position.row, position.col) : undefined
@@ -480,10 +480,8 @@ const selectionFormat = computed(() => {
     if (!values.length) values.push(fallback)
     return values.every(value => value === values[0]) ? values[0] : undefined
   }
-  const formats = probes.cells.map(cell => cell.rawNumberFormat ?? SHEET_NUMBER_FORMATS[cell.numberFormat ?? 'general'])
-  if (!formats.length) formats.push('General')
-  const numberFormatPattern = probes.complete && formats.every(format => format === formats[0]) ? formats[0]! : null
-  const numberFormatKind = numberFormatPattern === null ? 'custom' : classifySheetNumberFormat(numberFormatPattern)
+  const numberFormatPattern = sheetCellNumberPattern(activeCell.value)
+  const numberFormatKind = classifySheetNumberFormat(numberFormatPattern)
   const borderColors = probes.cells.map(cell => sheetBorderColor(cell.border))
   if (!borderColors.length) borderColors.push(null)
   const borderColor = probes.complete && borderColors.every(color => color === borderColors[0]) ? borderColors[0] : undefined
@@ -493,7 +491,7 @@ const selectionFormat = computed(() => {
     numberFormat: numberFormatKind === 'custom' ? null : numberFormatKind,
     numberFormatPattern,
     bold: commonFont('bold', false), italic: commonFont('italic', false), underline: commonFont('underline', false), strike: commonFont('strike', false),
-    ...getSheetViewLayoutFormatState(activeSheet.value, selectedModelRanges()),
+    ...getSheetViewLayoutFormatState(activeSheet.value, selectedModelRanges(), parseCellKey(selectedKey.value)!),
     color: commonFont('color', null), background: common('background', null),
     borderColor,
   }
@@ -505,9 +503,18 @@ const validationOptions = computed(() => {
   const [column, row] = splitKey(editingKey.value ?? selectedKey.value)
   return FOffice.newAPI(props.studio).getWorkbook(workbookId)?.getSheetBySheetId(sheetId)?.getCellValidationOptions(row - 1, column) ?? []
 })
-const { canMerge, canUnmerge, mergeRequest, mergeError, runClear, runMerge, confirmMerge, cancelMerge, afterMergeClose } = useSheetRangeEditor({
+const { canMerge, canUnmerge, mergeActive, mergeRequest, mergeError, runClear, runMerge, confirmMerge, cancelMerge, afterMergeClose } = useSheetRangeEditor({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
   ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value,
+  primary: () => {
+    const [column, row] = splitKey(selectedKey.value)
+    return { row: row - 1, col: column }
+  },
+  resetPrimary: () => {
+    const range = selectedRanges.value[activeSelectionIndex.value] ?? selectedRanges.value.at(-1)!
+    selectedKey.value = `${columnName(range.startColumn)}${range.startRow + 1}`
+    selectionAnchor.value = selectedKey.value
+  },
   active: () => workbenchActive.value, applyView: value => { workbook.value = value },
   changed: recalculate => { if (recalculate) recalculateFormulas(); commitHistory() },
   focus: () => { if (!editingKey.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
@@ -766,7 +773,12 @@ watch(() => props.studio, (studio, _previous, onCleanup) => {
 const officeFonts = inject(OfficeFontListKey, undefined)
 const canFormatSelection = computed(() => !!activeSheet.value && !!selectedRanges.value.length
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value))
+const canInsertFormula = computed(() => workbenchActive.value && canFormatSelection.value
+  && !editComposing.value && selectedDrawingRefs.value.length === 0)
 const canQuickFormatSelection = computed(() => workbenchActive.value && canFormatSelection.value
+  && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
+const canQuickFormatWorksheet = computed(() => workbenchActive.value && !!activeSheet.value
+  && canEditWorksheetProtection(activeSheet.value, userId.value)
   && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
 const quickConditionalSelection = computed(() => {
   const sheet = activeSheet.value
@@ -807,7 +819,7 @@ const slicerRibbonControl = computed<SlicerRibbonControlState | undefined>(() =>
   if (!ref || (ref.kind !== 'slicer' && ref.kind !== 'timeline') || !studio || !unitId || !workbenchActive.value) return undefined
   const control = workbook.value.slicers?.find(control => control.id === ref.id && control.type === ref.kind && control.hostSheetId === sheetId)
   if (!control) return undefined
-  return { id: control.id, type: control.type, style: control.style, styleOwner: workbook.value, supportsConnections: !control.tableId,
+  return { id: control.id, type: control.type, style: control.style, styleOwner: toRaw(workbook.value), supportsConnections: !control.tableId,
     revision: studio.getWorkbookRevision(unitId), canConfigure: canConfigurePanelSlicer(studio, { workbookId: unitId, sheetId }, control.id) }
 })
 let previousSlicerRibbonTab = 'home'
@@ -816,10 +828,39 @@ watch(() => slicerRibbonControl.value?.id, (id, previous) => {
   if (!id && activeTab.value === 'slicer-format') activeTab.value = previousSlicerRibbonTab
 })
 watch(activeTab, id => { if (id !== 'slicer-format') previousSlicerRibbonTab = id })
+const shortcutPanelOpen = ref(false)
+const workbenchUiHost = computed(() => props.studio && workbook.value.id ? props.studio.workbenchUiHost(workbook.value.id) : undefined)
+const ribbonShortcuts = computed(() => [
+  { title: translate.value('items.sheet.command.redo', '重做'), shortcut: 'Ctrl+Shift+Z' },
+  { title: translate.value('sheet.context-menu.copy', '复制'), shortcut: 'Ctrl+C' },
+  { title: translate.value('sheet.context-menu.cut', '剪切'), shortcut: 'Ctrl+X' },
+  { title: translate.value('sheet.context-menu.paste-values', '仅粘贴值'), shortcut: 'Ctrl+Shift+V' },
+  { title: translate.value('shortcut-panel.fill-down', '向下填充'), shortcut: 'Ctrl+D' },
+  { title: translate.value('shortcut-panel.fill-right', '向右填充'), shortcut: 'Ctrl+R' },
+  { title: translate.value('shortcut-panel.group-selection', '组合选区'), shortcut: 'Alt+Shift+→' },
+  { title: translate.value('shortcut-panel.ungroup-selection', '取消选区组合'), shortcut: 'Alt+Shift+←' },
+  ...((typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform)) ? [
+    { title: translate.value('shortcut-panel.group-selection', '组合选区'), shortcut: 'Ctrl+K' },
+    { title: translate.value('shortcut-panel.ungroup-selection', '取消选区组合'), shortcut: 'Ctrl+J' },
+  ] : [{ title: translate.value('items.sheet.operation.insert-hyperlink', '插入超链接'), shortcut: 'Ctrl+K' }]),
+  { title: translate.value('shortcut-panel.edit-cell', '编辑单元格'), shortcut: 'F2' },
+  { title: translate.value('shortcut-panel.confirm-edit', '确认编辑'), shortcut: 'Ctrl+Enter' },
+  { title: translate.value('shortcut-panel.line-break', '插入换行'), shortcut: 'Alt+Enter' },
+  { title: translate.value('shortcut-panel.cancel-edit', '取消编辑'), shortcut: 'Escape' },
+  { title: translate.value('shortcut-panel.next-row', '移到下一行'), shortcut: 'Enter' },
+  { title: translate.value('shortcut-panel.previous-row', '移到上一行'), shortcut: 'Shift+Enter' },
+  { title: translate.value('shortcut-panel.next-cell', '移到下一个单元格'), shortcut: 'Tab' },
+  { title: translate.value('shortcut-panel.previous-cell', '移到上一个单元格'), shortcut: 'Shift+Tab' },
+  { title: translate.value('items.sheet.command.clear-content', '清除内容'), shortcut: 'Delete / Backspace' },
+  { title: translate.value('shortcut-panel.next-sheet', '切换到下一张工作表'), shortcut: 'Control+PageDown' },
+  { title: translate.value('items.sheet.operation.find-replace', '查找并替换'), shortcut: 'Ctrl+H' },
+  { title: translate.value('workspace.save', '保存'), shortcut: 'Ctrl+S' },
+])
 const ribbonTabs = computed(() => createSheetRibbon({
   clipboardCapabilities: clipboardCapabilities.value,
   region: officeRegion.value,
   fontList: officeFonts?.value, fontEditable: canFormatSelection.value && !editComposing.value,
+  formulaEditable: canInsertFormula.value,
   rangeThemeEditable: canFormatSelection.value && !editComposing.value && !rangeThemePending.value && !cellShiftPending.value,
   imageEditable: canFormatSelection.value && !editComposing.value && !imageUiOpen.value,
   backgroundImageEditable: Boolean(activeSheet.value && canEditWorksheetProtection(activeSheet.value, userId.value) && !editComposing.value && !imageUiOpen.value),
@@ -829,7 +870,8 @@ const ribbonTabs = computed(() => createSheetRibbon({
   lastTextColor: activeColorMemory.value.color, lastBackgroundColor: activeColorMemory.value.background,
   defaultTextColor: sheetOpaqueColorHex(sheetThemeToken.value.colorText), defaultBackgroundColor: sheetOpaqueColorHex(sheetThemeToken.value.colorPrimary),
   ...selectionFormat.value, canUndo: canUndo.value, canRedo: canRedo.value, hasSheet: Boolean(activeSheet.value),
-  canMerge: canMerge.value, canUnmerge: canUnmerge.value,
+  canMerge: canMerge.value, canUnmerge: canUnmerge.value, mergeActive: mergeActive.value,
+  drawingFocused: selectedDrawingRefs.value.length > 0,
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
   pivotChartAvailable: Boolean(props.studio && workbook.value.id && activeSheet.value),
@@ -838,9 +880,12 @@ const ribbonTabs = computed(() => createSheetRibbon({
   quickValidationEditable: canEditValidationSelection.value,
   quickConditional: quickConditionalSelection.value,
   quickConditionalEditable: canQuickFormatSelection.value,
+  quickConditionalWorksheetEditable: canQuickFormatWorksheet.value,
+  shortcutPanelOpen: shortcutPanelOpen.value,
   hyperlinkAvailable: canOpenHyperlinkDialog(),
   canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
   filterEnabled: Boolean(activeSheet.value?.autoFilter),
+  filterHasCriteria: Object.keys(activeSheet.value?.autoFilter?.columns ?? {}).length > 0,
   filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
   frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
   calculationMode: workbook.value.calculationMode ?? 'automatic',
@@ -848,7 +893,8 @@ const ribbonTabs = computed(() => createSheetRibbon({
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
   outlineContext: outlineContext.value,
-  outlineSettingsAvailable: Boolean(props.studio && workbook.value.id),
+  outlineSettingsAvailable: Boolean(props.studio && workbook.value.id && outlineContext.value
+    && canEditWorksheetProtection(outlineContext.value.sheet, outlineContext.value.userId)),
   slicerControl: slicerRibbonControl.value,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
 const formulaValue = computed(() => editingKey.value ? editValue.value : sheetCellInputText(activeCell.value, activeDate1904.value, officeRegion.value))
@@ -1876,35 +1922,41 @@ function runLayoutFormatCommand(commandId: string, params?: unknown): boolean {
   const action = layoutFormatActionForCommand(commandId, params)
   if (!action) return false
   const ranges = selectedModelRanges()
-  let changed = false
+  const [column, row] = splitKey(selectedKey.value)
+  const primary = { row: row - 1, col: column }
   if (props.studio && workbook.value.id) {
     const input: SheetLayoutFormatCommandInput = { unitId: workbook.value.id, sheetId: sheet.id, ranges,
+      ...(action.kind === 'shrink' ? { primary } : {}),
       ...('value' in action ? { value: commandId === 'sheet.command.set-wrap' && action.kind === 'wrap' ? action.value === 'wrap' : action.value } : {}) }
-    changed = props.studio.executeCommandSync<SheetLayoutFormatCommandInput, boolean>(commandId, input)
+    const changed = props.studio.executeCommandSync<SheetLayoutFormatCommandInput, boolean>(commandId, input)
     if (changed) {
       const model = props.studio.getWorkbookModel(workbook.value.id)
       if (model) workbook.value = toExcelWorkbookView(model)
     }
-  } else changed = applySheetViewLayoutFormatCommand(sheet, ranges, action, userId.value)
+    if (changed) commitHistory()
+    return true
+  }
+  const changed = applySheetViewLayoutFormatCommand(sheet, ranges, action, userId.value, primary)
   if (changed) commitHistory()
   return true
 }
-function runNumberFormatCommand(commandId: string, params?: unknown): boolean {
+function runNumberFormatCommand(commandId: string, params?: unknown, ranges = selectedModelRanges()): boolean {
   const sheet = activeSheet.value
   if (!sheet || !canFormatSelection.value || !checkDirectSelection()) return false
   const action = numberFormatActionForCommand(commandId, params, officeRegion.value)
   if (!action) return false
-  const ranges = selectedModelRanges()
-  let changed = false
   if (props.studio && workbook.value.id) {
     const input: SheetNumberFormatCommandInput = { unitId: workbook.value.id, sheetId: sheet.id, ranges,
       ...(action.kind === 'set' ? { pattern: action.pattern } : action.kind === 'cells' ? { values: action.values } : {}) }
-    changed = props.studio.executeCommandSync<SheetNumberFormatCommandInput, boolean>(commandId, input)
+    const changed = props.studio.executeCommandSync<SheetNumberFormatCommandInput, boolean>(commandId, input)
     if (changed) {
       const model = props.studio.getWorkbookModel(workbook.value.id)
       if (model) workbook.value = toExcelWorkbookView(model)
     }
-  } else changed = applySheetViewNumberFormatCommand(sheet, ranges, action, officeRegion.value, userId.value)
+    if (changed) commitHistory()
+    return true
+  }
+  const changed = applySheetViewNumberFormatCommand(sheet, ranges, action, officeRegion.value, userId.value)
   if (changed) commitHistory()
   return true
 }
@@ -2475,7 +2527,7 @@ function conditionalFormattingHostCurrent(studio: OfficeStudio | undefined, unit
     && (!studio || unitId !== undefined && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
       && studio.getWorkbookModel(unitId)?.activeSheetId === sheetId)
 }
-function openConditionalFormattingPanel(initialType?: QuickConditionalFormatType): void {
+function openConditionalFormattingPanel(initialType?: ConditionalFormatPanelInitialType): void {
   const sheet = activeSheet.value, studio = props.studio, unitId = workbook.value.id
   if (!sheet || conditionalFormattingOpen.value || !conditionalFormattingHostCurrent(studio, unitId, sheet.id)
     || initialType && !canQuickFormatSelection.value) return
@@ -2494,7 +2546,7 @@ function openConditionalFormattingPanel(initialType?: QuickConditionalFormatType
 }
 function runQuickConditionalFormatting(id: QuickConditionalFormatCommandId, params?: unknown): void {
   const sheet = activeSheet.value
-  if (!sheet || !canQuickFormatSelection.value) return
+  if (!sheet || !(id === QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet ? canQuickFormatWorksheet.value : canQuickFormatSelection.value)) return
   const studio = props.studio, unitId = workbook.value.id, sheetId = sheet.id, ranges = selectedModelRanges()
   const current = () => conditionalFormattingHostCurrent(studio, unitId, sheetId)
   if (!current()) return
@@ -2586,7 +2638,7 @@ function removeContextSparklines(params?: unknown): void {
   const input = params as { sheetId?: string; ranges?: import('../api/events.ts').ApiRange[]; expectedRevision?: number; isSingle?: boolean } | undefined
   if (input?.sheetId !== undefined && input.sheetId !== sheet.id) throw new Error('迷你图右键目标已更改。')
   const changed = studio.executeCommandSync(SPARKLINE_PUBLIC_COMMANDS.remove, { targetInfo: { unitId, subUnitId: sheet.id }, ranges: input?.ranges,
-    isSingle: input?.isSingle ?? false, expectedRevision: input?.expectedRevision ?? studio.getWorkbookRevision(unitId),
+    isSingle: input?.isSingle ?? true, expectedRevision: input?.expectedRevision ?? studio.getWorkbookRevision(unitId),
     historyGeneration: studio.editor.history.captureSavepoint(unitId).generation, expectedUserId: studio.currentUserId, host: 'workbench' })
   if (changed) { const model = studio.getWorkbookModel(unitId); if (model) { workbook.value = toExcelWorkbookView(model); commitHistory({ prepared: true, syncSelection: false }) } }
 }
@@ -2635,6 +2687,7 @@ function openFunctionPanel(category?: string): void {
   functionPanelOpen.value = true
 }
 function insertFunction(): void {
+  if (!canInsertFormula.value) return
   try {
     const formula = buildSheetFunctionFormula(functionName.value, functionArguments.value)
     functionPanelOpen.value = false
@@ -2650,7 +2703,7 @@ async function sortSelection(ascending: boolean, _extendSelection = false) {
   sortBusy.value = true
   sortProgress.value = '正在排序…'
   try {
-    await worksheet.sortRange(rangeNotation(bounds), [{ column: bounds.startColumn, direction: ascending ? 'ascending' : 'descending' }], {
+    await worksheet.sortRange(rangeNotation(bounds), [{ column: parseCellKey(selectedKey.value)!.col, direction: ascending ? 'ascending' : 'descending' }], {
       signal: sortController.signal,
       onProgress: progress => { sortProgress.value = progress.phase === 'initializing' ? '正在准备排序…' : `排序：${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}` },
     })
@@ -2692,6 +2745,8 @@ function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 's
 }
 
 async function executeRibbon(commandId: string, params?: unknown) {
+  if (['sheet.operation.open-function', 'sheet.operation.insert-function', 'sheet.operation.start-formula'].includes(commandId)
+    && !canInsertFormula.value) return
   if (SHEET_IMAGE_COMMAND_IDS.includes(commandId)) { await runImageCommand(commandId, params); return }
   if (resolveSheetClipboardCommand(commandId)) { await runClipboardCommand(commandId, params); return }
   if (SHEET_FILL_COMMAND_IDS.some(id => id === commandId)) { runFillCommand(commandId, params); return }
@@ -2712,7 +2767,10 @@ async function executeRibbon(commandId: string, params?: unknown) {
       if (model) workbook.value = toExcelWorkbookView(model)
       commitHistory()
     },
-    'sheet.command.set-number-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.set, params) },
+    'sheet.command.set-number-format': () => {
+      const ranges = selectedModelRanges()
+      runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.set, params, [ranges[activeSelectionIndex.value] ?? ranges.at(-1)!])
+    },
     'sheet.command.set-currency-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.currency) },
     'sheet.command.set-percent-format': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.percent) },
     'sheet.command.increase-decimals': () => { runNumberFormatCommand(SHEET_NUMBER_FORMAT_COMMANDS.increase) },
@@ -2742,10 +2800,11 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.open-data-validation': openDataValidationPanel,
     'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
     'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
-    'sheet.operation.open-conditional-formatting': () => openConditionalFormattingPanel(params === 'dataBar' || params === 'iconSet' ? params : undefined),
+    'sheet.operation.open-conditional-formatting': () => openConditionalFormattingPanel(params === 'create' ? 'create' : CONDITIONAL_FORMAT_EDITOR_TYPES.find(type => type === params)),
     [QUICK_CONDITIONAL_FORMAT_COMMANDS.dataBar]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.dataBar, params),
     [QUICK_CONDITIONAL_FORMAT_COMMANDS.iconSet]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.iconSet, params),
     [QUICK_CONDITIONAL_FORMAT_COMMANDS.clear]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.clear, params),
+    [QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet]: () => runQuickConditionalFormatting(QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet, params),
     'sheet.operation.open-sparkline': () => openSparklinePanel(params),
     'sheet.operation.open-sparkline-selector': () => openSparklinePanel(params),
     'sheet.operation.open-sparkline-panel': () => openSparklinePanel(params),
@@ -2797,12 +2856,15 @@ async function executeRibbon(commandId: string, params?: unknown) {
     },
     'sheet.operation.open-function': () => openFunctionPanel(typeof params === 'string' ? params : undefined),
     'sheet.operation.insert-function': () => {
-      if (typeof params !== 'string' || !SHEET_FUNCTION_CATALOG.some(entry => entry.name === params)) return
-      try {
-        beginEdit(selectedKey.value, buildSheetFunctionFormula(params, ''), 'formula')
-      } catch (error) {
-        functionError.value = error instanceof Error ? error.message : '无法插入函数。'
+      if (typeof params !== 'string') return
+      const entry = SHEET_FUNCTION_CATALOG.find(entry => entry.name === params)
+      if (!entry) return
+      if (entry.example) {
+        functionName.value = entry.name
+        openFunctionPanel(entry.category)
+        return
       }
+      beginEdit(selectedKey.value, buildSheetFunctionFormula(entry.name, ''), 'formula')
     },
     'sheet.command.sort-ascending': () => sortSelection(true, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
     'sheet.command.sort-descending': () => sortSelection(false, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
@@ -2969,7 +3031,8 @@ onActivated(() => { workbenchActive.value = true })
     </header>
 
     <WorkbenchRibbon v-if="chrome.toolbar" v-model="activeTab" :data-ribbon-editor-owner="ribbonEditorOwner" :tabs="ribbonTabs" :variant="props.ribbonVariant"
-      :feature-search-scope="workbenchRef" @execute="executeRibbon" />
+      :feature-search-scope="workbenchRef" :feature-search-context="() => spreadsheetCanvas?.featureSearchContext() ?? []" :ui-host="workbenchUiHost" :shortcuts="ribbonShortcuts"
+      @context-command="(_key, commandId, params) => executeSheetContextCommand(commandId, params)" @shortcut-panel="value => { shortcutPanelOpen = value }" @execute="executeRibbon" />
     <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @format-command="executeRibbon" @format-keydown="handleInlineFormatHistoryKey" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
     <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
@@ -2997,7 +3060,7 @@ onActivated(() => { workbenchActive.value = true })
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
     <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :keep-edit-focus="keepCellEditFocus" :prepare-fill="prepareCanvasFillGesture"
       :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
-      :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :sparkline-metadata="workbook.metadata" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
+      :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :sparkline-metadata="workbook.metadata" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :active-range-index="activeSelectionIndex"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :workbook-id="workbook.id"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :workbook-history-generation="studio && workbook.id ? studio.editor.history.captureSavepoint(workbook.id).generation : undefined"
@@ -3056,8 +3119,8 @@ onActivated(() => { workbenchActive.value = true })
         </FormItem>
       </Form>
     </Modal>
-    <Modal v-model:open="functionPanelOpen" title="插入函数" ok-text="插入到公式栏" cancel-text="取消" :width="480" @ok="insertFunction">
-      <Form layout="vertical" class="chart-insert-form" @submit.prevent>
+    <Modal v-model:open="functionPanelOpen" title="插入函数" ok-text="插入到公式栏" cancel-text="取消" :width="480" :ok-button-props="{ disabled: !canInsertFormula }" @ok="insertFunction">
+      <Form layout="vertical" class="chart-insert-form" :disabled="!canInsertFormula" @submit.prevent>
         <FormItem label="函数"><Select v-model:value="functionName" :options="functionOptions" aria-label="函数名称" show-search option-filter-prop="label" /></FormItem>
         <p>{{ functionEntry?.category }} · {{ functionEntry?.label }}</p>
         <FormItem label="参数或区域"><Input v-model:value="functionArguments" aria-label="函数参数" :placeholder="functionEntry?.example" @press-enter="insertFunction" /></FormItem>

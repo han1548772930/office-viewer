@@ -151,8 +151,10 @@ export function sheetInlineFontChangeForAction(action: SheetFontFormatAction, ce
   const field = action.kind === 'mark' ? action.field : 'size'
   const caretValue = selection.start === selection.end && typing?.position === selection.start ? typing.font[field] : undefined
   const values = caretValue === undefined ? sheetCellFontValues(cell, field, selection) : [caretValue]
-  return action.kind === 'mark' ? { field, value: action.value === null ? null : action.value ?? !values.every(value => value === true) }
-    : { field: 'size', value: nextSheetFontFormatSize(typeof values[0] === 'number' ? values[0] : cell?.fontSize ?? 11, action.direction) }
+  if (action.kind === 'mark') return { field, value: action.value === null ? null : action.value ?? !values.every(value => value === true) }
+  // Fixed Range steppers apply the default when no single run contains the selected interval.
+  if (values.length > 1) return { field: 'size', value: 11 }
+  return { field: 'size', value: nextSheetFontFormatSize(typeof values[0] === 'number' ? values[0] : cell?.fontSize ?? 11, action.direction) }
 }
 
 interface AnchoredFormat { edit: SheetCellInlineFormatEdit; prefix: SheetCellTextEditOperation[] }

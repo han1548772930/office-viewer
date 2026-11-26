@@ -10,9 +10,12 @@ export const QUICK_CONDITIONAL_FORMAT_COMMANDS = {
   dataBar: 'sheet.command.add-data-bar-conditional-rule',
   iconSet: 'sheet.command.add-icon-set-conditional-rule',
   clear: 'sheet.command.clear-range-conditional-rule',
+  clearWorksheet: 'sheet.command.clear-worksheet-conditional-rule',
 } as const
 export type QuickConditionalFormatCommandId = typeof QUICK_CONDITIONAL_FORMAT_COMMANDS[keyof typeof QUICK_CONDITIONAL_FORMAT_COMMANDS]
 export type QuickConditionalFormatType = 'dataBar' | 'iconSet'
+export const CONDITIONAL_FORMAT_EDITOR_TYPES = ['highlightCell', 'top10', 'expression', 'colorScale', 'dataBar', 'iconSet'] as const
+export type ConditionalFormatPanelInitialType = typeof CONDITIONAL_FORMAT_EDITOR_TYPES[number] | 'create'
 export const QUICK_CONDITIONAL_ICON_SETS = ['3Stars', '3TrafficLights1', '3Arrows'] as const
 type QuickConditionalIconSet = typeof QUICK_CONDITIONAL_ICON_SETS[number]
 export interface QuickConditionalFormatSelection {
@@ -21,6 +24,8 @@ export interface QuickConditionalFormatSelection {
   activeIconSet?: QuickConditionalIconSet
   canClearDataBar: boolean
   canClearIconSet: boolean
+  canClearRange: boolean
+  canClearWorksheet: boolean
 }
 
 export const QUICK_CONDITIONAL_DATA_BAR = {
@@ -39,6 +44,7 @@ export interface QuickConditionalFormatInput extends SheetRangeCommandInput,
 
 export function quickConditionalFormatRules(rules: readonly SheetConditionalFormatRule[], ranges: readonly CellRange[],
   id: QuickConditionalFormatCommandId, input: QuickConditionalFormatInput): readonly SheetConditionalFormatRule[] {
+  if (id === QUICK_CONDITIONAL_FORMAT_COMMANDS.clearWorksheet) return rules.length ? [] : rules
   if (!ranges.length) return rules
   if (id === QUICK_CONDITIONAL_FORMAT_COMMANDS.clear) {
     const types = input.types
@@ -96,8 +102,8 @@ function quickIconSetConfig(input: QuickConditionalFormatInput): SheetConditiona
 
 export function quickConditionalFormatSelection(rules: readonly SheetConditionalFormatRule[], ranges: readonly CellRange[],
   primary?: { row: number; col: number }, canEditRule?: (ranges: readonly CellRange[]) => boolean): QuickConditionalFormatSelection {
-  const relevant = rules.filter(rule => (rule.type === 'dataBar' || rule.type === 'iconSet')
-    && rule.ranges.some(scope => ranges.some(range => sheetRangesIntersect(scope, range))))
+  const matching = rules.filter(rule => rule.ranges.some(scope => ranges.some(range => sheetRangesIntersect(scope, range))))
+  const relevant = matching.filter(rule => rule.type === 'dataBar' || rule.type === 'iconSet')
   const active = relevant.filter(rule => primary && rule.ranges.some(scope => sheetRangeContainsCell(scope, primary.row, primary.col)))
     .sort((left, right) => left.priority - right.priority)
   const activeIconRule = active.find(rule => rule.type === 'iconSet')
@@ -105,12 +111,12 @@ export function quickConditionalFormatSelection(rules: readonly SheetConditional
   const icons = config?.icons
   const activeIconSet = !config?.reverse && icons?.length === 3
     ? QUICK_CONDITIONAL_ICON_SETS.find(preset => icons.every((icon, index) => icon.iconType === preset && icon.iconId === String(index))) : undefined
-  const canClear = (type: QuickConditionalFormatType) => {
-    const matched = relevant.filter(rule => rule.type === type)
-    return matched.length > 0 && (!canEditRule || matched.every(rule => canEditRule(rule.ranges)))
-  }
+  const canClear = (candidates: readonly SheetConditionalFormatRule[]) => candidates.length > 0
+    && (!canEditRule || candidates.every(rule => canEditRule(rule.ranges)))
   return {
     hasDataBar: active.some(rule => rule.type === 'dataBar'), hasIconSet: activeIconRule !== undefined, activeIconSet,
-    canClearDataBar: canClear('dataBar'), canClearIconSet: canClear('iconSet'),
+    canClearDataBar: canClear(relevant.filter(rule => rule.type === 'dataBar')),
+    canClearIconSet: canClear(relevant.filter(rule => rule.type === 'iconSet')),
+    canClearRange: canClear(matching), canClearWorksheet: canClear(rules),
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Checkbox, Form, FormItem, Input, Modal, Segmented, Select, Switch } from 'antdv-next'
+import { Button, Checkbox, Form, FormItem, Input, Modal, Segmented, Select, Switch, theme } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{
 }>(), { initialMode: 'filter' })
 const emit = defineEmits<{ 'update:open': [open: boolean]; changed: [] }>()
 const formId = useId()
+const { token } = theme.useToken()
 const mode = ref<'filter' | 'sort'>('filter')
 const address = ref(''), error = ref(''), status = ref(''), busy = ref(false)
 const range = ref<CellRange>(), fields = ref<DataPanelField[]>([]), values = ref<DataPanelValue[]>([])
@@ -105,7 +106,7 @@ function runFilter(action: 'apply' | 'clear-column' | 'clear-all' | 'remove'): v
     let next = { ...columns.value }
     if (action === 'apply') {
       let criterion: SheetFilterCriteria
-      if (kind.value === 'values') criterion = { kind: 'values', selectedItems: values.value.filter(item => selectedKeys.value.includes(item.key)).map(item => item.value) }
+      if (kind.value === 'values') criterion = { kind: 'values', selectedItems: matched.value.filter(item => selectedKeys.value.includes(item.key)).map(item => item.value) }
       else criterion = { kind: 'condition', operator: operator.value, ...(needsValue.value ? { value: parseDataPanelScalar(expected.value, valueType.value) } : {}), ...(needsSecond.value ? { secondValue: parseDataPanelScalar(second.value, valueType.value) } : {}), caseSensitive: caseSensitive.value }
       next[column.value] = criterion
     } else if (action === 'clear-column') delete next[column.value]
@@ -139,7 +140,7 @@ async function applySort(): Promise<void> {
 
 <template>
   <Modal :open="open" title="排序与筛选" :footer="null" :width="700" @cancel="emit('update:open', false)">
-    <Form layout="vertical" class="sheet-data-panel" :aria-busy="busy" @submit.prevent>
+    <Form layout="vertical" class="sheet-data-panel" :style="{ '--data-border': token.colorBorderSecondary, '--data-error': token.colorError }" :aria-busy="busy" @submit.prevent>
       <Segmented v-model:value="mode" :options="[{ label: '筛选设置', value: 'filter' }, { label: '排序设置', value: 'sort' }]" :disabled="busy" aria-label="筛选或排序设置" />
       <FormItem label="数据区域"><Input v-model:value="address" aria-label="排序筛选数据区域" :disabled="busy" placeholder="A1:C20" @press-enter="loadFields" /></FormItem>
       <Button :disabled="busy" @click="loadFields">读取字段</Button>
@@ -149,7 +150,7 @@ async function applySort(): Promise<void> {
         <FormItem label="筛选方式"><Select v-model:value="kind" aria-label="筛选方式" :options="[{ label: '按值选择', value: 'values' }, { label: '按条件筛选', value: 'condition' }]" /></FormItem>
         <template v-if="kind === 'values'">
           <FormItem label="搜索筛选值"><Input v-model:value="search" aria-label="搜索筛选值" placeholder="搜索字段值" /></FormItem>
-          <div class="data-actions"><Button size="small" @click="selectedKeys = values.map(item => item.key)">全选</Button><Button size="small" @click="selectedKeys = []">全不选</Button><span>{{ selectedKeys.length }} / {{ values.length }} 个值</span></div>
+          <div class="data-actions"><Button size="small" @click="selectedKeys = matched.map(item => item.key)">全选</Button><Button size="small" @click="selectedKeys = []">全不选</Button><span>{{ matched.filter(item => selectedKeys.includes(item.key)).length }} / {{ matched.length }} 个值</span></div>
           <div class="data-values"><Checkbox v-for="item in visibleValues" :key="item.key" :checked="selectedKeys.includes(item.key)" @change="toggle(item.key)">{{ item.label }}</Checkbox></div>
           <div class="data-actions"><Button size="small" :disabled="page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pageCount }}</span><Button size="small" :disabled="page + 1 >= pageCount" @click="page++">下一页</Button></div>
         </template>
@@ -183,10 +184,10 @@ async function applySort(): Promise<void> {
 .sheet-data-panel > :deep(.ant-form-item .ant-form-item-label) { padding: 0; text-align: start; }
 .sheet-data-panel > :deep(.ant-form-item .ant-form-item-control) { min-width: 0; }
 .data-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.data-values { display: grid; gap: 6px; max-height: 220px; padding: 10px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 4px; }
+.data-values { display: grid; gap: 6px; max-height: 220px; padding: 10px; overflow: auto; border: 1px solid var(--data-border); border-radius: 4px; }
 .data-sort-key { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 8px; }
 .data-sort-item :deep(.ant-form-item-label) { position: absolute; width: 1px; height: 1px; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
-.data-error { margin: 0; color: #b42318; }
+.data-error { margin: 0; color: var(--data-error); }
 .sheet-data-panel p { margin: 0; font-size: 12px; line-height: 1.6; }
 @media (max-width: 600px) { .sheet-data-panel > :deep(.ant-form-item) { grid-template-columns: 1fr; } .data-sort-key { grid-template-columns: 1fr 100px; } }
 </style>

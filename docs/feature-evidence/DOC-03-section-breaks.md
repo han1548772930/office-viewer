@@ -18,7 +18,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 | 入口 | 固定上游来源与布局 | 本项目静态接线、状态与差异 |
 | --- | --- | --- |
-| 分隔符 / 分节符 | [schema][section-schema] `RibbonInsertGroup.MEDIA / doc.menu.breaks`，classic `order:4`，grid `row:1,column:1,rowSpan:2,showLabel:true`；分栏符 `order:0`，`next-page / continuous / next-column / even-page / odd-page` 为 1–5。[factory][section-menu] 的 `disableMenuWhenNoDocRange` 合并无范围、相交代码块和文档 Edit 权限；非传统文档隐藏。[operation][section-operation] 要求传统模式、折叠正文范围与整数偏移。 | [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) `doc-breaks` 在插入 / 媒体组 `order:4`，grid 位置一致；modern 隐藏，正文不可编辑或处于 story 时禁用。叶项分派 `doc.command.insert-page-break / insert-column-break / insert-section-break`，五种分节参数是 `{ type }`。本项目会替换非折叠正文范围；分栏/分节的 `insertBreakBlock` 在 mutation 前拒绝表格范围，但根菜单未以表格范围单独禁用；普通分页符命令在表格中仅产生文本换行，不应记为完整表格分页符实现。 |
+| 分隔符 / 分节符 | [schema][section-schema] `RibbonInsertGroup.MEDIA / doc.menu.breaks`，classic `order:4`，grid `row:1,column:1,rowSpan:2,showLabel:true`；分栏符 `order:0`，`next-page / continuous / next-column / even-page / odd-page` 为 1–5。[factory][section-menu] 的 `disableMenuWhenNoDocRange` 合并无范围、相交代码块和文档 Edit 权限；非传统文档隐藏。[operation][section-operation] 要求传统模式、折叠正文范围与整数偏移。 | [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) `doc-breaks` 在插入 / 媒体组 `order:4`，grid 位置一致；modern 隐藏。2026-11-27 续修将已传入的 editingHeaderFooter / editingAuxiliaryContent 和活动结构 Code 纳入根禁用态；表格单独禁用分栏/分节，不统一禁用普通分页符，详见[范围续核](#doc-view-break-scope)。叶项仍分派 `doc.command.insert-page-break / insert-column-break / insert-section-break`，五种分节参数是 `{ type }`。本项目会替换非折叠正文范围；分栏/分节的 `insertBreakBlock` 在 mutation 前拒绝表格范围，普通分页符 API 在表格中仍只产生文本换行，完整表格分页符尚未实现。 |
 | 页眉和页脚常驻入口 | [schema][section-schema] `RibbonStartGroup.LAYOUT / OpenHeaderFooterPanelCommand`，classic `order:10`，grid `row:1,column:3,rowSpan:2,showLabel:true`；[factory][section-menu] 在传统 Docs 隐藏条件满足时显示，未单独注册 `disabled$`。 | `doc-header-footer` 在开始 / 段落与列表组，grid 位置一致；local 未显式填写 `order`，由稳定数组顺序排在列表入口之后，不能把上游 `order:10` 当作本地声明。`doc.operation.open-header-footer` 经 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) `openStory` 打开对应页的 header；Canvas 命中也走此 story。modern 或无匹配布局页时返回；正文选区独立保留。 |
 | 页眉页脚上下文 / 插入 | [header/footer schema][section-header-footer-schema] `docs-ui.ribbon.header-footer` 为 contextual、`order:90`；insertion 组 `order:0`，control 根 `order:0`，grid `row:1,column:1,rowSpan:2`。 | `header-footer` 仅在传统模式且有活动 story 时生成；四组独立保留。插入组含页码菜单 PAGE / NUMPAGES / 更新字段，以及日期时间弹窗的 short / long / time 与自动更新。它们是 control 内部入口，不另计 Ribbon 根。[control](../../packages/office-studio/src/components/document/DocumentHeaderFooterRibbonControl.vue) 以 section/story 权限禁用，关联前节时禁用内容编辑。 |
 | 页眉页脚上下文 / 导航 | 同 schema navigation 组 `order:1`，control grid 位置同上；[upstream control][section-header-footer-control] 将当前区域对应的导航按钮禁用，第一节不能关联前节。 | 转到页眉 / 转到页脚走 `openStory`；链接开关走 `doc.command.set-section-header-footer`。当前区域的导航按钮与第一节链接开关禁用。本项目 `linkToPrevious` 是六类 story 共用的节级布尔值；上游 [SetSectionHeaderFooterLinkCommand][section-link-command] 按 `kind + variant` 独立关联，二者不等价。 |
@@ -31,8 +31,8 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 ### 模型、命令、输入和持久化边界
 
 - [document-commands.ts](../../packages/office-studio/src/features/document/commands/document-commands.ts) `executeDocumentCommand / insertBreakBlock` 将分栏、分节保存为 first-class `columnBreak / sectionBreak`，五种分节类型单独保存。命令权限在服务入口再次检查；当前公共命令与快照历史接线见 [COMMON-03](COMMON-03-input-selection-axis-history.md)。历史、保存/重开草稿存在，未在本轮执行。
-- [DocumentSectionSetup](../../packages/office-studio/src/domain/model.ts)、[document-settings.ts](../../packages/office-studio/src/features/document/services/document-settings.ts) 和 [DocumentSectionSettingsPanel.vue](../../packages/office-studio/src/components/document/DocumentSectionSettingsPanel.vue) 已有节尺寸/方向、页边距、栏数 1–12、栏间距、分隔线、节起始类型和 `pageNumberStart` 的可保存字段与命令。当前 `layoutDocument` 仍在开头只解析全篇 `model.page`，未使用这些字段实现节多栏、节尺寸、页码重启；不能再概括为“没有设置模型”，也不能把模型字段或 Drawer 控件记为排版实现。
-- 当前 `pageBreak / columnBreak / nextPage / nextColumn` 均前进到下一页；`continuous` 留当前页；`evenPage / oddPage` 按物理页索引补页。连续节还会改写当前页的单一 `sectionId`，无法表达同页多节边界和各自内容范围。这些是待修复的布局差异。
+- [DocumentSectionSetup](../../packages/office-studio/src/domain/model.ts)、[document-settings.ts](../../packages/office-studio/src/features/document/services/document-settings.ts) 和 [DocumentSectionSettingsPanel.vue](../../packages/office-studio/src/components/document/DocumentSectionSettingsPanel.vue) 已有节尺寸/方向、页边距、栏数 1–12、栏间距、分隔线、节起始类型和 `pageNumberStart` 的可保存字段与命令。2026-11-27 本轮复查确认，当前 `layoutDocument` 已转到 [layoutDocumentWithNotes](../../packages/office-studio/src/features/document/layout/document-note-layout.ts)，由 [DocumentSectionFlow](../../packages/office-studio/src/features/document/layout/document-section-flow.ts) 读取 `documentEffectiveSectionSetup` 并生成实际页、节片段和栏，包含逻辑页码重启。此前“只读取全篇 page、未实现节多栏”的描述已经过时；本轮仅更正静态调用链，完整节布局与文件互操作仍未验收。
+- 当前 [appendDocumentBlocks](../../packages/office-studio/src/features/document/layout/document-block-layout.ts) 将 `pageBreak` 分派到 `flow.pageBreak()`，将 `columnBreak` 分派到 `flow.nextColumn(true)`，分节标记进入 `flow.startSection`。`nextColumn` 在兼容页面且存在下一栏时保留物理页；`continuous` 在页面兼容、栏宽有效且有剩余空间时创建同页节片段；`evenPage / oddPage` 按逻辑页码补空页。页内节片段保存在 `page.sections`，不再只有单一节边界。这些是当前真实实现路径，所有模式、兼容条件、页码与 Office 样本仍需运行验证。
 - [section-header-footer.ts](../../packages/office-studio/src/features/document/services/section-header-footer.ts) 保存六类页眉页脚 story 字符串、`storyContent` 富运行/段落与 `pageFields`；[story-rendering.ts](../../packages/office-studio/src/features/document/services/story-rendering.ts) 与 Canvas 布局现已按实际运行样式绘制多行文字、字段 cache 和链接样式。输入缓冲里的 `\uFFFC` 只占一个逻辑对象范围，显示侧使用真实字段结果宽度，不能继续概括为“没有 rich field rendering”。这仍不证明复杂字段和完整 Office story 保真。
 - PAGE / NUMPAGES 由当前布局计算；DATE / TIME 保留 instruction 与 cachedResult。`handleStoryAction('refresh-fields')` 仅按能识别的 locale 日期模板更改选中节的 cachedResult；混合 cache 运行刷新后的范围/样式迁移、任意字段开关、页码格式及节级继续/重启均未完成。本轮未改 Rust/parser/writer；DOCX 混合 cache 两次本项目 native writer/parser 草稿见 [DOC-02](DOC-02-clear-formatting.md)，未运行，不能代替 WASM 和独立 Office 重开。
 - [DocumentCanvasViewport.vue](../../packages/office-studio/src/components/document/DocumentCanvasViewport.vue) 的正文与 story 输入均为 antdv-next `Input.TextArea`。公共会话捕获检查活动 facade、模型身份/快照、范围、revision 与 generation；clear / history / 内部重开后的真正输入可重建空 marks 会话，旧模型或旧 TextArea 的 composition / input / history / keyboard 事件被拒绝。展开字符格式、混合工具值和输入继承的实现/差异见 [DOC-02](DOC-02-clear-formatting.md)；这与 Toolbar/Canvas 的真实 Windows IME 验收分开。
@@ -49,6 +49,57 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 [section-header-footer-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/header-footer-ribbon.ts
 [section-header-footer-control]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/header-footer/panel/DocHeaderFooterRibbonControl.tsx
 [section-link-command]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/commands/commands/set-section-header-footer-link.command.ts
+
+<a id="doc-view-break-scope"></a>
+
+## VIEW 与分隔符菜单范围续核（2026-11-27）
+
+本批按固定 v1.6.0 [schema][section-schema] 从左到右核对 VIEW 的三个常驻根：页面设置 `order:0 / r1c1 / rowSpan:2`、缩放 `order:1 / r1c2`、全屏 `order:2 / r2c2`；扩展、溢出专用和上下文根各零。另核对 INSERT 的一个分隔符根及其六个上游可执行叶项。本地对应四根均已声明，分隔符另保留一个普通分页符叶项；本批根及叶项增量均为零，计数不表示验收完成。
+
+| VIEW 来源与实际接线 | 当前结论 |
+| --- | --- |
+| [display.menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/display.menu.ts)、[doc-zoom.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-zoom.ts) | 本地三根 grid 位置一致；缩放沿现有 `doc.operation.set-zoom`、`clampDocumentZoom` 和 Canvas zoom，八个预设为 50/80/100/130/150/170/200/400，状态栏和 Ribbon 同值。全屏沿 `doc.operation.toggle-fullscreen` 与真实 `fullscreenchange` 更新活动态。两项不修改内容历史；本地缩放尚未成为文档级持久设置，不能据此验收上游每文档 zoomRatio 保存行为 |
+| [PageSettingMenuItemFactory][section-menu]、[open-page-setting.operation.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/open-page-setting.operation.ts) | 上游页面设置按文档 Edit 权限禁用，确认进入 DocPageSetupCommand 并仅在成功时关闭。本地 `doc.operation.open-page-settings` 打开现有 Ant 对话框，`applyPageSetup` 校验后写 page/documentFlavor 并调用 publish；未接文档级 disabled，父层拒绝权限后子组件仍关闭草稿。API 命令/历史、文档切换时草稿失效与实际保存重开尚待主线修复或验收，本批没有修改该通路 |
+
+分隔符根原先只取 `editingDisabled`。Workbench 已传入活动页眉页脚/辅助宿主标志，而 [documentCommandSupportsBlockHost](../../packages/office-studio/src/features/document/commands/document-commands.ts) 明确排除三个 break 命令；Workbench 只给支持辅助宿主的命令补 host，旧菜单因而可能把辅助选区继续提交到根正文模型。此次在根菜单合并辅助/页眉页脚及活动结构 Code 的能力条件；Code 依据为固定 `menu.ts:331–369` 的 `disableMenuWhenNoDocRange`，明确排除与 CODE blockRange 相交的范围。主线已在 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 execute 开头合入三个 break 的辅助/legacy story 守卫，本批已静态重读；正文仍沿既有命令、权限与历史链路执行，modern 继续隐藏。
+
+表格语义单独处理。固定 [update-document-section.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/commands/commands/update-document-section.command.ts) 的 `isValidTopLevelInsertionOffset`（288–294）排除 table、columnGroup 和 blockRange 内部；分栏命令（223）及分节命令（174）都调用它。因此本地用真实 `state.table` 禁用分栏叶项、分节容器和五个分节叶项，保留根菜单及普通分页符叶项。固定 schema 没有普通分页符入口；本地现有 page-break 表格分支只执行文本换行，没有建立页内 PAGE_BREAK 标记。该行为不等同于完整分页符，不从上游菜单缺项推断 Office/原始数据不支持表格分页符；其公开行为与文件模型保真仍待实现/验收。此次没有删掉这条既有路径。
+
+[document-toolbar-state.contract.test.mjs](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) 新增一个计划用例、七个范围场景，直接调用真实 Ribbon 和命令/工具栏状态；表格场景使用真实 create-table 返回的首单元格选区，区分仍可打开的根/普通分页符与禁用的分栏/分节，并核对隐藏、原分隔符参数和仍可用的缩放/全屏。[document-toolbar.browser.test.mjs](../../packages/office-studio/tests/document-toolbar.browser.test.mjs) 纠正已有两个视图草稿：大纲/专注沿实际“开始”扩展入口及必要的 More，全屏沿“视图”；页面设置后重开对话框检查宽度/上边距，移除已不存在的 doc-paper-size 断言。该浏览器夹具只使用外部 snapshot 历史，不覆盖 DocumentApi 页面设置事务。
+
+本批改动限于 Ribbon 能力与既有草稿/证据；`document-toolbar-state.ts` 未确认新错态。没有新增组件、原生输入桥、命令、模型字段、Worker/WASM 或计算引擎。静态检查通过四段脚本（含一段夹具）、42 处本地导入/模块引用、本文 21 条本地链接与一处锚点，以及四个文件尾空白/冲突标记和限定 diff。测试、类型、构建、dev、浏览器、Rust/WASM、服务和基准均未运行；真实菜单禁用、Code 相交范围、跨表格的正文范围、辅助宿主保护、主题/箭头/hover、焦点和 IME、撤销重做与文件重开仍未验收；正文中嵌入 break 的模型保真和完整表格分页符继续保留缺口。
+
+<a id="doc-table-page-break-review"></a>
+
+## 表格分页符链路与页眉页脚控件续核（2026-11-27）
+
+本轮继续 DOC-03，并核对 DOC-06 / DOC-22 的既有表格布局和 DOCX 读写边界。固定仓库 HEAD 与上述 v1.6.0 提交一致，所读分隔符和页眉页脚来源没有在途修改。常驻、扩展、上下文、溢出根及菜单叶项均无增量；没有修改命令、领域模型、历史、Worker/WASM 或保存协议。
+
+| 当前真实调用链 | 结论与可复用边界 |
+| --- | --- |
+| [insert-page-break](../../packages/office-studio/src/features/document/commands/document-commands.ts) `replaceSelectionText → blockContainer` | 先拆分选区文本，真实 cell/嵌套容器已能定位；`split.focus.row == null` 仍阻止向表格插入 `pageBreak`。表格分支只换行，不能记作分页功能 |
+| [块测量](../../packages/office-studio/src/features/document/layout/document-block-measurement.ts) → [表格测量](../../packages/office-studio/src/features/document/layout/document-table-measurement.ts) → [表格分页](../../packages/office-studio/src/features/document/layout/document-table-layout.ts) | 块测量跳过三种 break，两个 measurement DTO 均没有强制分页位置。`tableCut` 只消费行、文字和图片的不可分割区间；跨页/栏沿 `nextColumn`。既有 `insertDocumentTablePageGap` 能平移派生几何，但尚无手工分页输入。仅放开 cell 标记仍不会实际分页 |
+| [docx_table.rs](../../crates/office-writer/src/docx_table.rs) `cell_blocks / continuation_blocks → context.blocks` → [docx.rs](../../crates/office-writer/src/docx.rs) `block` | 普通单元格和续格都复用同一块写出器，已有 `pageBreak → w:p/w:r/w:br type=page`，嵌套表格也递归使用此入口。本轮未改 writer，未执行真实文件重开 |
+| [parser.rs](../../crates/office-parser/src/parser.rs) `insert_paragraph_breaks / body_block_position` | 仅遍历根 `DocModel.nodes` 的 Paragraph；当前没有遍历 TableCellContentNode 提取 cell 分页符。根正文中的可见文字混合分页符也保留为换行并发出警告 |
+| [空段落抽取](../../crates/office-parser/src/document_block_extraction.rs)、[表格来源](../../crates/office-parser/src/document_table_sidecar.rs)、[cellBlocks](../../packages/office-studio/src/parser/documentTables.ts) | 空 cell 段落可保留身份，表格来源可恢复属性/拓扑，cell children 共用正常块归一化；这些通路未恢复 `w:br` 的 page 类型。已读本地 `duke-pages 0.6.0/src/parse/paragraph.rs:156`，其文本 token 将 `w:br / w:cr` 转为 `\n`，`lastRenderedPageBreak` 单独忽略。不能据此宣称 cell 分页符往返完整 |
+
+固定 [insert-break.operation.ts][section-operation] 和 [update-document-section.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/commands/commands/update-document-section.command.ts) 的分栏/分节仍要求传统模式和顶层插入位置，排除表格、栏组和结构块内部。本地普通分页符另有入口，继续保留。固定 [doc-skeleton.spec.ts:6150](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/engine-render/src/components/docs/layout/__tests__/doc-skeleton.spec.ts#L6150) 的 fitting-table 用例将 PAGE_BREAK 登记在 `renderedPageBreaks` 中并保持一页；这是缓存分页场景，不能作为手工分页符的实现规格或验收证据。标准 Office 中 cell 内手工分页、不可拆行、嵌套表格和重复表头的行为仍需文件样本核实。
+
+表格分页符属于较大改动，尚待确认；不在本轮修改生产链路。可复用现有 `pageBreak` 模型、真实 cell 定位、内容历史、节流布局和块写出器，预计范围如下：
+
+| 文件 | 预计改动 | 具体内容 |
+| --- | --- | --- |
+| `features/document/commands/document-commands.ts` | 15–25 行 | 将标记插入真实 cell 容器，保留拆分后的地址、光标和原内容事务 |
+| `features/document/layout/document-block-measurement.ts` | 35–60 行 | 输出带逻辑地址的强制分页位置，递归保持结构块和嵌套表格偏移 |
+| `features/document/layout/document-table-measurement.ts` | 35–65 行 | 将 cell/续格分页位置投影到表格坐标，随现有派生 gap 平移，明确 padding、垂直对齐和 exact row/clip 行为 |
+| `features/document/layout/document-table-layout.ts` | 65–100 行 | 在自动切片前消费手工分页，使用已有物理页切换；处理多栏、连续/首尾标记、重复表头和跨行对象，保证分页持续推进 |
+| `crates/office-parser/src/parser.rs` | 100–160 行 | 复用 story/source 地址遍历 cell 和嵌套段落，恢复 standalone/混合分页符并保留运行、字段、对象和来源；不能把混合段落整体替换为空 marker |
+
+上表前端路径均相对于 `packages/office-studio/src`；生产预计 250–410 行，writer 和领域枚举直接复用。验证草稿预计另需 260–405 行，追加到既有 [section-breaks 契约](../../packages/office-studio/tests/document-section-breaks.contract.test.mjs)、[table-layout 契约](../../packages/office-studio/tests/document-table-layout.contract.test.mjs)、[table-workbench 浏览器夹具](../../packages/office-studio/tests/document-table-workbench.browser.test.mjs) 和 [Rust 表格往返草稿](../../crates/office-parser/src/document_table_roundtrip_tests.rs)。覆盖真实 cell/续格/嵌套选择、普通与不可拆行、多栏中的物理分页、重复表头、首尾/连续分页、撤销重做、内部保存及 DOCX 导出重开；主线测试未在本轮修改或执行。
+
+本轮实际小修仅为 [DocumentHeaderFooterRibbonControl.vue](../../packages/office-studio/src/components/document/DocumentHeaderFooterRibbonControl.vue) 的两处既有模板行：页码按钮以真实 `pageOpen` 声明 `aria-expanded`；日期和时间 Modal 显式使用 360px 宽度，来源为固定 [DocHeaderFooterFields.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/header-footer/panel/DocHeaderFooterFields.tsx) 的 `Dialog width={360}`。页码与紧凑组仍共用 caption，SVG 不收缩；text 按钮保持零边框、实际 hover 边界和主题 token，按下仍保留输入焦点。没有新增 UI，既有 Modal/Form/Select/Checkbox/Button 继续使用 `antdv-next`。
+
+日期对话框的 locale 实际预览、命令拒绝后保留草稿与失败反馈，以及真正关闭弹层后的焦点恢复，仍与上游存在待核实/待实现差异。本轮没有更改这些事务。页眉页脚 Modal 的独立打开路径仍未接入，完整符号选择器和页面设置事务也未实施。静态检查通过脚本、模板、样式各一份，三处本地导入与三处包引用，本文 39 条本地链接、一处链接锚点、13 条固定源码路径与 11 处引用式链接；限定 diff、尾部空白和冲突标记检查通过。测试、类型、构建、Rust/WASM、dev、浏览器、服务和基准均后置。实际尺寸、展开状态、主题/RTL、hover、焦点、IME、分页、历史与文件闭环继续未验收。
 
 ## Earlier reference and implementation records
 

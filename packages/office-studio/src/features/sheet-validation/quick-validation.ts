@@ -1,5 +1,5 @@
 import type { CellRange, SheetDataValidationRule } from '../../domain/model.ts'
-import { createSheetDataValidationRule } from './validation-engine.ts'
+import { createSheetDataValidationRule, serializeValidationListItems } from './validation-engine.ts'
 
 export type QuickSheetDataValidationPreset = 'checkbox' | 'dropdown' | 'date' | 'date-time'
 
@@ -49,6 +49,5 @@ export function createQuickSheetDataValidationRule(
 
   const values = options.dropdownValues?.map(value => value.trim()).filter(Boolean) ?? []
   if (values.length === 0) throw new RangeError('下拉列表至少需要一个选项。')
-  const formula1 = `"${values.map(value => value.replaceAll('"', '""')).join(',')}"`
-  return createSheetDataValidationRule({ type: 'list', formula1, renderMode: 'custom' }, ranges)
+  return createSheetDataValidationRule({ type: 'list', formula1: serializeValidationListItems(values), renderMode: 'custom' }, ranges)
 }
