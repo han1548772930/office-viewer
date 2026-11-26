@@ -63,6 +63,7 @@ function select(id, start = 0, end = start, host) {
 }
 window.documentLatexFixture = {
   noteId, notices, select, dark: value => dark.value = value,
+  setLocale(value) { locale.value = value; i18n.global.locale.value = value },
   openPopup: (request = {}, local = false) => studio?.executeCommandSync(local ? DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen : DOCUMENT_LATEX_POPUP_OPERATIONS.open,
     { unitId: api.value.id, ...request }) ?? false,
   closePopup: (local = false) => studio?.executeCommandSync(local ? DOCUMENT_LATEX_POPUP_OPERATIONS.localClose : DOCUMENT_LATEX_POPUP_OPERATIONS.close,

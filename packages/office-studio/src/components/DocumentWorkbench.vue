@@ -129,6 +129,8 @@ const documentSplitterStyles: { root: CSSProperties; panel: CSSProperties } = {
 
 const props = withDefaults(defineProps<{ modelValue?: DocumentModel | string; fileName?: string; canUndo?: boolean; canRedo?: boolean; documentApi?: FDocument; fieldCacheAdapter?: DocumentFieldCacheAdapter; showHeader?: boolean; showOutline?: boolean; permissionUserId?: string; permissionAdminUserId?: string; permissionDefaultAllow?: boolean; ribbonVariant?: RibbonVariant }>(), { showHeader: false, showOutline: undefined, permissionUserId: 'local-user', permissionDefaultAllow: true, ribbonVariant: 'classic' })
 const { locale: officeLocale, direction: officeDirection } = provideWorkbenchRegionalSettings(() => props.documentApi?.regionalSettings)
+const documentTranslator = computed(() => createRibbonTranslator(officeLocale.value, 'doc'))
+function t(key: string, fallback = key): string { return documentTranslator.value(key, fallback) }
 const emit = defineEmits<{
   'update:modelValue': [value: DocumentModel]
   'update:fileName': [value: string]

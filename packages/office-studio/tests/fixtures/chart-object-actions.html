@@ -63,7 +63,7 @@ FChart.prototype.update = async function(patch) {
 }
 function readonlyProtection() { return { id: 'readonly-object', permissionId: 'readonly-object-permission', unitType: 'worksheet',
   ownerUserId: 'other-user', allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' } }
-function seed({ readonly = false, primary = false, multiSeries = false, nativeType = 'line', rows: suppliedRows, nativeOptions = {}, nativeConfig = {} } = {}) {
+function seed({ readonly = false, primary = false, empty = false, multiSeries = false, nativeType = 'line', rows: suppliedRows, nativeOptions = {}, nativeConfig = {} } = {}) {
   const model = createBlankWorkbook(), sheet = model.sheets[0]
   model.id = 'chart-object-fixture'; model.name = '图表对象'; model.calculationMode = 'manual'; sheet.id = 'source'; sheet.name = 'Source'; model.activeSheetId = sheet.id
   sheet.rowCount = 80; sheet.columnCount = 16; sheet.defaultRowHeight = 28; sheet.defaultColumnWidth = 100
@@ -78,7 +78,7 @@ function seed({ readonly = false, primary = false, multiSeries = false, nativeTy
   const native = createChart(model, sheet.id, config, 'native-object')
   const shared = createChart(model, sheet.id, { ...config, type: 'waterfall', title: 'Shared object', position: { x: 584, y: 48 },
     options: { appearance: { font: { family: 'Georgia' } }, allSeriesStyle: { label: { visible: true } } } }, 'shared-object')
-  model.charts = [native, shared]
+  model.charts = empty ? [] : [native, shared]
   if (readonly) sheet.worksheetProtection = readonlyProtection()
   if (primary) sheet.metadata = { [CHART_SHEET_METADATA_KEY]: { version: 1, primaryChartId: native.id } }
   return model
@@ -161,6 +161,12 @@ window.chartObjectFixture = { mount, state, encoding: () => encodings.at(-1),
   },
   async scene(id = 'native-object') { return json(await book().getActiveSheet().getChartById(id).getComputedRenderCommands()) },
   async data(id = 'native-object') { return json(await book().getActiveSheet().getChartById(id).getComputedData()) },
+  async insert(type = 'column', title = 'First inserted chart') {
+    const sheet = book().getActiveSheet()
+    await sheet.insertChart(sheet.newChart(type).setSource('A1:B3').setValueFields([1]).setAbsolutePosition(64, 48)
+      .setSize(420, 300).setTitle(title).build())
+    await settled(); return state().charts.find(chart => chart.title === title).id
+  },
   async shape(value, id = 'native-object') { const chart = book().getActiveSheet().getChartById(id)
     await (value === undefined ? chart.clearAreaLineStyle() : chart.setAreaLineStyle(value)); await settled(); return state() },
   async invalidValues(value, id = 'native-object') { const chart = book().getActiveSheet().getChartById(id)

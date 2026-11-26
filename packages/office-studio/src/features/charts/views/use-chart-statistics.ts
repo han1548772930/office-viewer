@@ -69,10 +69,11 @@ export function useChartStatistics(host: ChartStatisticsViewHost) {
     statistics.value = {}; snapshots.value = {}; errors.value = {}; diagnostics.value = {}
     if (!workbook?.id) return
     const documentId = workbook.id, charts = (workbook.charts ?? []).filter(chart => chart.sheetId === sheetId)
-    if (!charts.length) return
     let service: ChartStatisticsService
     try { service = connectService(studio) }
     catch (error) { errors.value = { host: normalizeComputeError(error).message }; return }
+    // Empty sheets still need revision notifications when their first chart is inserted.
+    if (!charts.length) return
     const modelRevision = studio ? studio.getWorkbookRevision(documentId) : standaloneRevisions.get(documentId) ?? 0
     if (!studio) service.setDocumentRevision(documentId, modelRevision)
     const external = host.externalStatistics()

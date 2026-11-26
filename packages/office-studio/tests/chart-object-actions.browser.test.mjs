@@ -40,6 +40,26 @@ async function openMenu(id = 'native-object', keyboard = false) {
 async function action(label) { await menu().getByRole('menuitem', { name: new RegExp(label) }).click() }
 async function waitCharts(count) { await page.waitForFunction(count => window.chartObjectFixture.state().charts.length === count, count); return state() }
 
+test('first insertion into a mounted empty workbook paints content, and undo plus a different chart type still paints', async () => {
+  await page.evaluate(() => window.chartObjectFixture.mount({ empty: true }))
+  await expect(page.locator('.chart-hitbox')).toHaveCount(0)
+  const before = await state(), id = await page.evaluate(() => window.chartObjectFixture.insert())
+  await expect(hitbox(id)).toHaveAttribute('data-rendered', 'true')
+  assert.equal((await state()).history.undo, before.history.undo + 1)
+  const option = await page.evaluate(id => window.chartObjectFixture.renderOption(id), id)
+  assert.equal(option.series[0].type, 'bar'); assert.equal(option.series[0].data.length, 2)
+  await openMenu(id); const downloadPromise = page.waitForEvent('download')
+  await action('导出图片'); await downloadPromise
+  const encoded = await page.evaluate(() => window.chartObjectFixture.encoding())
+  assert.ok(encoded.pixels.some((_, index, pixels) => index % 4 === 3 && pixels[index] > 0
+    && (pixels[index - 3] < 220 || pixels[index - 2] < 220 || pixels[index - 1] < 220)), 'The chart bitmap must contain painted content')
+  await page.evaluate(() => window.chartObjectFixture.undo()); await expect(page.locator('.chart-hitbox')).toHaveCount(0)
+  const replacement = await page.evaluate(() => window.chartObjectFixture.insert('line', 'Reinserted line'))
+  await expect(hitbox(replacement)).toHaveAttribute('data-rendered', 'true')
+  const line = await page.evaluate(id => window.chartObjectFixture.renderOption(id), replacement)
+  assert.equal(line.series[0].type, 'line'); await expect(page.locator('.chart-render-error')).toHaveCount(0)
+})
+
 test('single click selects and the fixed edit command opens the real Drawer; an authored title uses one history entry and reopens', async () => {
   const before = await state(); await select(); await expect(drawer()).toHaveCount(0)
   await openMenu('native-object', true)

@@ -42,6 +42,16 @@ async function clickFormula(id = 'p', fraction = 0.5, options = {}, host) {
 }
 async function editFormula(id = 'p', host) { await clickFormula(id, 0.5, { clickCount: 2 }, host); await expect(source()).toBeFocused() }
 
+test('Docs initializes its Ribbon and translates a stale formula error after changing the active locale', async () => {
+  await expect(page.locator('.document-ribbon')).toBeVisible()
+  await editFormula(); await page.evaluate(() => window.documentLatexFixture.select('tail', 1))
+  await expect(apply()).toBeDisabled(); await expect(panel().getByRole('alert')).toContainText('文档或公式选区已变化')
+  await page.evaluate(() => window.documentLatexFixture.setLocale('en-US'))
+  await expect(panel().getByRole('alert')).toContainText('The document or formula selection has changed')
+  await expect(apply()).toBeDisabled(); await cancel().click(); await expect(panel()).toBeHidden()
+  assert.equal((await page.evaluate(() => window.documentLatexFixture.history())).undo, 0)
+})
+
 test('both Canvas halves select the entire formula and double-click editing has one undo and a stable saved ID', async () => {
   const original = (await formulas())[0]
   for (const fraction of [0.1, 0.9]) {
