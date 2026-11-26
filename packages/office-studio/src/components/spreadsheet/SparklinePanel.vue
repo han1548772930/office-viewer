@@ -8,8 +8,10 @@ import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { resolveSparklineSettings, type SparklineMutationRequest, type SparklineSettingsInput } from '../../features/sparkline/sparkline-model.ts'
 import { assertSparklinePanelMutation, buildSparklinePanelRequest, canEditSparklinePanelRanges, captureSparklinePanelOwner,
   createSparklinePanelDraft, editSparklineSettingsDraft, readSparklinePanelState, sparklinePanelDraftDirty,
-  sparklinePanelOwnerContext, sparklinePanelOwnerCurrent, type SparklinePanelDraft, type SparklinePanelOwner, type SparklinePanelSnapshot } from '../../features/sparkline/sparkline-panel-state.ts'
+  sparklinePanelOwnerContext, sparklinePanelOwnerCurrent, sparklinePanelRepairsRetainedSource, readSparklinePanelSourceStatus,
+  type SparklinePanelDraft, type SparklinePanelOwner, type SparklinePanelSnapshot } from '../../features/sparkline/sparkline-panel-state.ts'
 import { parseSparklineRangeList } from '../../features/sparkline/sparkline-reference.ts'
+import { parseSparklineSourceList } from '../../features/sparkline/sparkline-source.ts'
 import SparklineSettingsFields from '../../features/sparkline/SparklineSettingsFields.vue'
 
 const props = defineProps<{ open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; targetRange: string; targetRanges?: readonly string[] }>()
@@ -29,7 +31,8 @@ const ranges = computed(() => props.targetRanges?.length ? [...props.targetRange
 const existing = computed(() => (snapshot.value?.selectedGroups.length ?? 0) > 0)
 const selectedGroups = computed(() => scope.value === '*' ? snapshot.value?.selectedGroups ?? [] : snapshot.value?.selectedGroups.filter(group => group.groupId === scope.value) ?? [])
 const settingRanges = computed(() => scope.value === '*' ? snapshot.value?.ranges ?? [] : selectedGroups.value.flatMap(group => group.targetRanges))
-const dirty = computed(() => Boolean(draft.value && original.value && sparklinePanelDraftDirty(draft.value, original.value)))
+const dirty = computed(() => Boolean(draft.value && original.value && (sparklinePanelDraftDirty(draft.value, original.value)
+  || owner.value && sparklinePanelRepairsRetainedSource(owner.value, draft.value))))
 const stale = computed(() => { void observation.value; return Boolean(owner.value && (!sparklinePanelOwnerCurrent(owner.value) || owner.value.studio !== props.studio
   || owner.value.target.workbookId !== props.workbookId || owner.value.target.sheetId !== props.sheetId)) })
 const canConfigure = computed(() => {
@@ -43,7 +46,16 @@ const disabled = computed(() => busy.value || composing.value || stale.value || 
 const textDisabled = computed(() => busy.value || (stale.value || !canConfigure.value) && !composing.value)
 const validationError = computed(() => {
   if (!draft.value) return ''
-  try { resolveSparklineSettings(draft.value.settings); return '' } catch (failure) { return failure instanceof Error ? failure.message : String(failure) }
+  try {
+    resolveSparklineSettings(draft.value.settings)
+    if (!existing.value || draft.value.dataOperation !== 'settings') { parseSparklineSourceList(draft.value.sourceText); parseSparklineRangeList(draft.value.targetText) }
+    return ''
+  } catch (failure) { return failure instanceof Error ? failure.message : String(failure) }
+})
+const sourceStatus = computed(() => {
+  void observation.value
+  if (!owner.value || !draft.value || stale.value || validationError.value) return undefined
+  try { return readSparklinePanelSourceStatus(owner.value, draft.value, settingRanges.value) } catch { return undefined }
 })
 const scopeOptions = computed(() => [{ label: '选区中的全部组', value: '*' }, ...(snapshot.value?.selectedGroups ?? []).map(group =>
   ({ label: `${group.targetRanges.slice(0, 3).join('、')}${group.members.length > 3 ? '…' : ''}（${group.members.length} 项）`, value: group.groupId }))])
@@ -232,6 +244,9 @@ onBeforeUnmount(() => { disposed = true; generation.value += 1; closingOwner = u
         <template #action><Button size="small" :disabled="busy || composing" @click="bindings.reload">重新读取</Button></template>
       </Alert>
       <Alert v-else-if="!canConfigure" type="info" title="当前用户没有修改目标区域或整组迷你图的权限。" show-icon />
+      <Alert v-if="sourceStatus" :type="sourceStatus.type" :title="sourceStatus.title" show-icon data-testid="sparkline-source-status">
+        <template v-if="existing && draft.dataOperation === 'settings'" #action><Button size="small" :disabled="disabled || dirty" @click="bindings.chooseOperation('item')">修改数据来源</Button></template>
+      </Alert>
       <template v-if="existing">
         <FormItem name="scope" label="编辑范围"><Select :value="scope" :options="scopeOptions" :disabled="busy || composing || dirty || stale" aria-label="迷你图编辑范围" @update:value="bindings.chooseScope" /></FormItem>
         <FormItem name="primary" label="当前迷你图"><Select :value="draft.primary" :options="primaryOptions" :disabled="busy || composing || dirty || stale" aria-label="当前迷你图单元格" @update:value="bindings.choosePrimary" /></FormItem>
@@ -239,7 +254,7 @@ onBeforeUnmount(() => { disposed = true; generation.value += 1; closingOwner = u
         <Alert v-if="scope === '*' && selectedGroups.length > 1 && draft.dataOperation === 'settings'" type="info" title="只将修改过的设置应用到选区中的全部组；未修改的设置继续分别保留。" show-icon />
       </template>
       <div v-if="!existing || draft.dataOperation !== 'settings'" class="sparkline-data-grid">
-        <FormItem name="sourceText" :label="t('sheet.sparkline.source-range', '源数据区域')"><Input :value="draft.sourceText" :disabled="textDisabled" aria-label="迷你图源数据区域" placeholder="B1:E1; '数据表'!B2:E2" @update:value="bindings.source" /></FormItem>
+        <FormItem name="sourceText" :label="t('sheet.sparkline.source-range', '源数据区域')"><Input :value="draft.sourceText" :disabled="textDisabled" aria-label="迷你图源数据区域" placeholder="B1:E1; 销售趋势; '数据表'!局部名称" @update:value="bindings.source" /></FormItem>
         <FormItem name="targetText" :label="t('sheet.sparkline.target-range', '放置区域')"><Input :value="draft.targetText" :disabled="textDisabled" aria-label="迷你图放置区域" placeholder="F1:F2 或 F1; H3" @update:value="bindings.target" /></FormItem>
         <div class="sparkline-range-help">{{ t('sheet.sparkline.multiple-ranges-help', '多个区域用分号分隔；单项数据修改只接受一个源区域和一个目标格。') }}</div>
       </div>

@@ -51,7 +51,7 @@ export function useSheetCellShift(context: SheetCellShiftUiContext) {
   }, { flush: 'sync' })
   watch(context.studio, (studio, _previous, onCleanup) => {
     if (!studio) return
-    const listener = studio.events.on('SheetCellShiftConfirmationRequested', event => {
+    const listener = studio.events.addEvent('SheetCellShiftConfirmationRequested', event => {
       if (!context.active() || event.workbookId !== context.workbook().id || event.sheetId !== context.sheetId()
         || studio.getWorkbookRevision(event.workbookId) !== event.baseRevision) return
       const host = captureSheetAxisCommandHost(context)

@@ -138,7 +138,7 @@ test('replacing a Studio model under the same ID invalidates a captured custom-t
 }))
 
 test('a newer edit from a Studio command observer is preserved without publishing the previous revision view', () => withStudio((state, studio, book) => {
-  const listener = studio.events.on('CommandExecuted', event => {
+  const listener = studio.events.addEvent('CommandExecuted', event => {
     if (event.id === SHEET_RANGE_THEME_COMMANDS.set) book.getActiveSheet().getRange('F1').setValue('newer observer')
   })
   try {

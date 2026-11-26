@@ -49,7 +49,8 @@ export function normalizeSheetOutlineImport(rawValue: unknown, initialExtent: Sh
   const axisSource = object(raw.sourceAxisDimensions) ? raw.sourceAxisDimensions : undefined
   const axisGuard = axisSource && object(axisSource.projectAxisExtension) ? axisSource.projectAxisExtension : undefined
   const nativeSource = native !== undefined
-  const hiddenReasonsExact = !nativeSource || guard?.hiddenReasonsExact === true || axisGuard?.restored === true
+  const hiddenReasonsExact = !nativeSource || guard?.hiddenReasonsExact === true
+    || guard?.hiddenReasonsExact !== false && axisGuard?.restored === true
   const manualVisibilityNormalized = officeSource?.manualVisibilityNormalized === true
   const diagnostics = native && Array.isArray(native.diagnostics) ? native.diagnostics.filter((value): value is string => typeof value === 'string') : []
   let outline: SheetOutlineState | undefined

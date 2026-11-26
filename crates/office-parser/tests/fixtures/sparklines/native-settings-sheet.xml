@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<s:worksheet xmlns:s="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">
+  <s:sheetData>
+    <s:row r="1"><s:c r="B1"><s:v>1</s:v></s:c><s:c r="C1"><s:v>-2</s:v></s:c><s:c r="D1"><s:v>3</s:v></s:c><s:c r="E1"><s:v>4</s:v></s:c></s:row>
+    <s:row r="2"><s:c r="B2"><s:v>5</s:v></s:c><s:c r="C2"><s:v>6</s:v></s:c><s:c r="D2"><s:v>-7</s:v></s:c><s:c r="E2"><s:v>8</s:v></s:c></s:row>
+  </s:sheetData>
+  <s:extLst>
+    <s:ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}">
+      <x14:sparklineGroups>
+        <x14:sparklineGroup type="line" lineWeight="0.5" displayEmptyCellsAs="span" minAxisType="group" maxAxisType="custom" manualMin="-99.25" manualMax="9.123456789123456" markers="1" high="true" low="0" first="1" last="false" negative="0" displayXAxis="1" rightToLeft="true" displayHidden="1" dateAxis="1">
+          <x14:colorSeries theme="4" tint="0.5"/>
+          <x14:colorNegative rgb="800000FF"/>
+          <x14:colorAxis indexed="2"/>
+          <x14:colorMarkers rgb="FF102030"/>
+          <x14:colorFirst rgb="FF223344"/>
+          <x14:colorLast rgb="FF334455"/>
+          <x14:colorHigh rgb="FF445566"/>
+          <x14:colorLow rgb="FF556677"/>
+          <xm:f>'O''Brien 数据!2026'!$A$1:$D$1</xm:f>
+          <x14:sparklines>
+            <x14:sparkline><xm:f>'O''Brien 数据!2026'!$B$1:E$1</xm:f><xm:sqref>G1</xm:sqref></x14:sparkline>
+            <x14:sparkline><xm:f>'O''Brien 数据!2026'!$B$2:$E2</xm:f><xm:sqref>G2</xm:sqref></x14:sparkline>
+          </x14:sparklines>
+        </x14:sparklineGroup>
+        <x14:sparklineGroup type="column">
+          <x14:colorSeries rgb="400000FF"/>
+          <x14:sparklines><x14:sparkline><xm:f>Trend!B1:E1</xm:f><xm:sqref>K1</xm:sqref></x14:sparkline></x14:sparklines>
+        </x14:sparklineGroup>
+        <x14:sparklineGroup type="stacked" displayEmptyCellsAs="gap" minAxisType="custom" maxAxisType="group" manualMin="-1" manualMax="4" negative="1">
+          <x14:colorSeries rgb="FF123456"/>
+          <x14:colorNegative rgb="FF000000"/>
+          <x14:sparklines><x14:sparkline><xm:f>Trend!B2:E2</xm:f><xm:sqref>K2</xm:sqref></x14:sparkline></x14:sparklines>
+        </x14:sparklineGroup>
+      </x14:sparklineGroups>
+    </s:ext>
+  </s:extLst>
+</s:worksheet>

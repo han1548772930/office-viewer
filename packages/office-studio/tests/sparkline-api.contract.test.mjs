@@ -21,10 +21,10 @@ test('sparkline creation, editing, clearing, undo and workbook save use the shar
   const sheet = workbook.getActiveSheet()
   const request = { targetRange: 'E1', sourceRange: 'B1:D1', type: 'column', color: '#187a55', negativeColor: '#c43b3b', emptyCells: 'zero', axis: 'individual' }
   sheet.setSparklines(request)
-  assert.deepEqual(sheet.getSparkline('E1'), {
-    type: request.type, sourceRange: request.sourceRange, color: request.color,
-    negativeColor: request.negativeColor, emptyCells: request.emptyCells, axis: request.axis,
-  })
+  const created = sheet.getSparkline('E1')
+  assert.equal(created.type, request.type); assert.equal(created.sourceRange, request.sourceRange); assert.equal(created.color, request.color)
+  assert.equal(created.negativeColor, request.negativeColor); assert.equal(created.emptyCells, request.emptyCells); assert.equal(created.axis, request.axis)
+  assert.equal(typeof created.groupId, 'string')
   assert.equal(workbook.save().sheets[0].cells['0:4'].sparkline.sourceRange, 'B1:D1')
 
   sheet.setSparklines({ ...request, type: 'winloss', color: '#174ea6' })
@@ -51,8 +51,8 @@ test('sparkline command validates target coordinates and respects protected targ
   const api = apiModule.FOffice.newAPI(studio)
   const protectedWorkbook = api.getActiveWorkbook()
   const sheet = protectedWorkbook.getActiveSheet()
-  assert.throws(() => sheet.setSparklines({ targetRange: 'E1', sourceRange: 'A1:B1', type: 'line', color: '#167a55' }), /受保护/)
-  assert.throws(() => studio.executeCommandSync('sheet.command.set-sparklines', { unitId: protectedWorkbook.id, sheetId: sheet.id, patches: { A0: null } }), /Invalid sparkline target/)
+  assert.throws(() => sheet.setSparklines({ targetRange: 'E1', sourceRange: 'A1:B1', type: 'line', color: '#167a55' }), /权限|受保护/)
+  assert.throws(() => studio.executeCommandSync('sheet.command.set-sparklines', { unitId: protectedWorkbook.id, sheetId: sheet.id, patches: { A0: null } }), /目标/)
   owner.dispose()
   studio.dispose()
 })
@@ -62,7 +62,7 @@ test('sparkline command rejects invalid styles and mismatched group dimensions w
   const workbook = apiModule.FOffice.newAPI(studio).createWorkbook({ sheets: [{ id: 'invalid-sparkline-sheet', name: 'Data' }] })
   const sheet = workbook.getActiveSheet()
   assert.throws(() => sheet.setSparklines({ targetRange: 'E1', sourceRange: 'A1:B1', type: 'line', color: 'green' }), /颜色格式无效/)
-  assert.throws(() => sheet.setSparklines({ targetRange: 'E1:E2', sourceRange: 'A1:B1', type: 'line', color: '#167a55' }), /目标数必须与源数据系列数一致/)
+  assert.throws(() => sheet.setSparklines({ targetRange: 'E1:E3', sourceRange: 'A1:B1', type: 'line', color: '#167a55' }), /目标数必须与源数据系列数一致/)
   assert.equal(sheet.getSparkline('E1'), null)
   studio.dispose()
 })

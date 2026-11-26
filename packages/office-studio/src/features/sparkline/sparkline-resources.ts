@@ -1,13 +1,15 @@
-import type { ApiRange } from '../../api/events.ts'
 import type { SparklineSpec, WorkbookModel } from '../../domain/model.ts'
 import { createCell } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
+import type { OfficeSparklineSource } from '../../domain/sparkline-office-source.ts'
+import { normalizeOfficeSparklineSource } from './sparkline-office-source.ts'
 import { createSparklineSpec, readSparklineGroups, sparklineSettingsInput, resolveSparklineSettings, assertSparklineGroupConsistency } from './sparkline-model.ts'
 import { sparklineConfigFromPublic, sparklineConfigToPublic, type ISparklineGroupConfig } from './sparkline-api-types.ts'
-import { parseSparklineReference, sparklineCellAddress, sparklineRangeString } from './sparkline-reference.ts'
+import { parseSparklineReference, sparklineCellAddress, sparklineRangeString, sparklineSheetQualifier } from './sparkline-reference.ts'
+import { normalizeSparklineSourceReference, parseSparklineSource, sparklineSourceToPublicRange, type SparklinePublicSourceRange } from './sparkline-source.ts'
 
 export const SHEET_SPARKLINE_PLUGIN = 'SHEET_SPARKLINE_PLUGIN'
-type SparklineResourceRange = ApiRange & { officeStudioSourceReference?: string }
+export type SparklineResourceRange = SparklinePublicSourceRange & { officeStudioOfficeSource?: OfficeSparklineSource }
 export interface SparklineResourceGroup { config: ISparklineGroupConfig; sparklines: Record<number, Record<number, SparklineResourceRange>> }
 export type SparklineResource = Record<string, Record<string, Record<string, SparklineResourceGroup>>>
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -17,16 +19,15 @@ export function serializeWorkbookSparklineResource(workbook: WorkbookModel): Spa
   const sheets: SparklineResource[string] = {}
   for (const sheet of workbook.sheets) {
     const groups: Record<string, SparklineResourceGroup> = {}
+    const specs = new Map(Object.values(sheet.cells).filter(cell => cell.sparkline).map(cell => [sparklineCellAddress(cell.row, cell.col), cell.sparkline!]))
     for (const group of readSparklineGroups(sheet)) {
       const sparklines: SparklineResourceGroup['sparklines'] = {}
       for (const member of group.members) {
-        const target = parseSparklineReference(member.address), source = parseSparklineReference(member.sourceRange)
-        if (!target || !source) throw new TypeError('迷你图资源包含失效引用。')
+        const target = parseSparklineReference(member.address), spec = specs.get(member.address)
+        if (!target || !spec) throw new TypeError('迷你图资源包含失效目标引用。')
         const row = target.range.startRow, col = target.range.startCol
-        ;(sparklines[row] ??= {})[col] = { startRow: source.range.startRow, endRow: source.range.endRow, startColumn: source.range.startCol, endColumn: source.range.endCol,
-          ...(source.sheetName === undefined ? {} : { sheetId: workbook.sheets.find(sheet => sheet.id === source.sheetName || sheet.name.toLocaleLowerCase() === source.sheetName!.toLocaleLowerCase())?.id ?? source.sheetName }),
-          // Public IRange cannot retain absolute flags or deleted source spelling.
-          officeStudioSourceReference: member.sourceRange }
+        ;(sparklines[row] ??= {})[col] = { ...sparklineSourceToPublicRange(spec, sheet, workbook),
+          ...(spec.officeSource === undefined ? {} : { officeStudioOfficeSource: cloneModel(spec.officeSource) }) }
       }
       groups[group.groupId] = { config: sparklineConfigToPublic(group.settings), sparklines }
     }
@@ -77,19 +78,46 @@ export function deserializeWorkbookSparklineResource(workbook: WorkbookModel, in
           const row = Number(rowKey), col = Number(colKey), address = sparklineCellAddress(row, col)
           if (Object.hasOwn(targets, address)) throw new TypeError('多个迷你图组使用了同一目标单元格。')
           const coordinates = [rawRange.startRow, rawRange.endRow, rawRange.startColumn, rawRange.endColumn]
+          const sentinel = coordinates.every(value => value === -9999)
           if (!coordinates.every(value => typeof value === 'number' && Number.isSafeInteger(value))
             || typeof rawRange.startRow !== 'number' || typeof rawRange.endRow !== 'number' || typeof rawRange.startColumn !== 'number' || typeof rawRange.endColumn !== 'number'
-            || rawRange.startRow < 0 || rawRange.startColumn < 0 || rawRange.endRow < rawRange.startRow || rawRange.endColumn < rawRange.startColumn
-            || rawRange.endRow > 1_048_575 || rawRange.endColumn > 16_383) throw new TypeError('迷你图资源源范围无效。')
+            || !sentinel && (rawRange.startRow < 0 || rawRange.startColumn < 0 || rawRange.endRow < rawRange.startRow || rawRange.endColumn < rawRange.startColumn
+              || rawRange.endRow > 1_048_575 || rawRange.endColumn > 16_383)) throw new TypeError('迷你图资源源范围无效。')
+          for (const key of ['sheetId', 'unitId'] as const) {
+            const identity = rawRange[key]
+            if (identity !== undefined && (typeof identity !== 'string' || !identity.trim() || identity.length > 4096 || /[\u0000-\u001f\u007f]/.test(identity))) throw new TypeError('迷你图资源来源标识无效。')
+          }
+          if (rawRange.rangeType !== undefined && rawRange.rangeType !== 0 && rawRange.rangeType !== 1 && rawRange.rangeType !== 2 && rawRange.rangeType !== 3) throw new TypeError('迷你图资源来源类型无效。')
           const qualifier = rawRange.sheetId === undefined ? undefined : typeof rawRange.sheetId === 'string'
             ? workbook.sheets.find(sheet => sheet.id === rawRange.sheetId || sheet.name === rawRange.sheetId)?.name ?? rawRange.sheetId : undefined
           if (rawRange.sheetId !== undefined && qualifier === undefined) throw new TypeError('迷你图资源源工作表无效。')
           const reference = rawRange.officeStudioSourceReference
-          const sourceRange = typeof reference === 'string' ? reference : sparklineRangeString({ startRow: rawRange.startRow, endRow: rawRange.endRow, startCol: rawRange.startColumn, endCol: rawRange.endColumn }, qualifier)
-          const parsed = parseSparklineReference(sourceRange)
-          if (!parsed || parsed.range.startRow !== rawRange.startRow || parsed.range.endRow !== rawRange.endRow
-            || parsed.range.startCol !== rawRange.startColumn || parsed.range.endCol !== rawRange.endColumn) throw new TypeError('迷你图资源保留引用与源范围不一致。')
+          if (reference !== undefined && typeof reference !== 'string') throw new TypeError('迷你图资源来源原文无效。')
+          const foreignUnit = typeof rawRange.unitId === 'string' && rawRange.unitId !== workbook.id && rawRange.unitId !== sourceUnit
+          if (foreignUnit && reference === undefined && !sentinel && qualifier === undefined) throw new TypeError('迷你图外部来源缺少工作表或原文。')
+          const sourceRange = typeof reference === 'string' ? reference : sentinel ? '#REF!'
+            : foreignUnit ? `${sparklineSheetQualifier(`[${rawRange.unitId}]${qualifier}`)}${sparklineRangeString({ startRow: rawRange.startRow, endRow: rawRange.endRow, startCol: rawRange.startColumn, endCol: rawRange.endColumn })}`
+              : sparklineRangeString({ startRow: rawRange.startRow, endRow: rawRange.endRow, startCol: rawRange.startColumn, endCol: rawRange.endColumn }, qualifier)
+          const parsed = parseSparklineSource(sourceRange)
+          const preserved = normalizeSparklineSourceReference(rawRange.officeStudioSourceMetadata)
+          if (preserved && (!sentinel || preserved.invalidRange.sheetId !== rawRange.sheetId || preserved.invalidRange.unitId !== rawRange.unitId
+            || preserved.invalidRange.rangeType !== rawRange.rangeType)) throw new TypeError('迷你图断开来源的保留数据与公共范围不一致。')
+          const sourceReference = preserved ?? (sentinel && (reference === undefined || parsed.kind === 'a1'
+            || parsed.kind === 'broken' && (rawRange.sheetId !== undefined || rawRange.unitId !== undefined || rawRange.rangeType !== 0))
+            ? normalizeSparklineSourceReference({ version: 1, invalidRange: { startRow: -9999, endRow: -9999, startColumn: -9999, endColumn: -9999,
+              ...(rawRange.sheetId === undefined ? {} : { sheetId: rawRange.sheetId }), ...(rawRange.unitId === undefined ? {} : { unitId: rawRange.unitId }),
+              ...(rawRange.rangeType === undefined ? {} : { rangeType: rawRange.rangeType }) } }) : undefined)
+          const parsedRange = parsed.kind === 'a1' ? parsed.reference : (parsed.kind === 'external' || parsed.kind === 'three-dimensional') && parsed.addressText ? parseSparklineReference(parsed.addressText) : undefined
+          if (!sentinel && parsedRange && (parsedRange.range.startRow !== rawRange.startRow || parsedRange.range.endRow !== rawRange.endRow
+            || parsedRange.range.startCol !== rawRange.startColumn || parsedRange.range.endCol !== rawRange.endColumn)) throw new TypeError('迷你图资源保留引用与源范围不一致。')
+          if (!sentinel && parsed.kind === 'a1') {
+            const sourceSheet = parsed.reference.sheetName === undefined ? sheet : workbook.sheets.find(candidate => candidate.id === parsed.reference.sheetName || candidate.name.toLocaleLowerCase() === parsed.reference.sheetName!.toLocaleLowerCase())
+            if (foreignUnit || rawRange.sheetId !== undefined && sourceSheet?.id !== rawRange.sheetId && sourceSheet?.name !== rawRange.sheetId
+              && parsed.reference.sheetName !== rawRange.sheetId) throw new TypeError('迷你图资源来源工作表与保留原文不一致。')
+          }
           targets[address] = createSparklineSpec({ ...sparklineSettingsInput(settings), type: settings.type, color: settings.color, targetRange: address, sourceRange,
+            ...(sourceReference === undefined ? {} : { sourceReference }),
+            ...(rawRange.officeStudioOfficeSource === undefined ? {} : { officeSource: normalizeOfficeSparklineSource(rawRange.officeStudioOfficeSource) }),
             ...(groupId === `ungrouped:${address}` ? {} : { groupId }) })
         }
       }

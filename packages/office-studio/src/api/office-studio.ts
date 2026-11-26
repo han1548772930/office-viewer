@@ -335,11 +335,14 @@ export class OfficeStudio {
   /** Feature observations report subscriber failures without turning a completed edit into a failed command. */
   publishObserverEvent<K extends keyof ApiEventMap>(eventName: K, payload: () => ApiEventMap[K], shouldContinue?: () => boolean): void {
     const failures = this.events.emitSettled(eventName, payload, shouldContinue)
-    for (const failure of failures) {
-      this.eventListenerErrors.push(failure)
-      const reportingFailures = this.events.emitSettled('EventListenerError', () => ({ ...failure }))
-      this.eventListenerErrors.push(...reportingFailures)
-    }
+    for (const failure of failures) this.reportObserverError(failure.eventName, failure.error)
+  }
+
+  /** Feature payload preparation has the same failure isolation as listeners. */
+  reportObserverError<K extends keyof ApiEventMap>(eventName: K, error: unknown): void {
+    const failure: ApiEventMap['EventListenerError'] = { eventName, error }
+    this.eventListenerErrors.push(failure)
+    this.eventListenerErrors.push(...this.events.emitSettled('EventListenerError', () => ({ ...failure })))
     if (this.eventListenerErrors.length > 50) this.eventListenerErrors.splice(0, this.eventListenerErrors.length - 50)
   }
 

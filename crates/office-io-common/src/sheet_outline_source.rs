@@ -302,7 +302,7 @@ fn append_run(runs: &mut Vec<NativeOutlineRun>, run: NativeOutlineRun, source_by
     runs.push(run); Ok(())
 }
 
-fn native_run(mut attrs: BTreeMap<String, String>, bindings: &BTreeMap<String, String>, start: u32, end: u32, warnings: &mut Vec<String>) -> Result<Option<NativeOutlineRun>, String> {
+fn native_run(mut attrs: BTreeMap<String, String>, bindings: &BTreeMap<String, String>, is_row: bool, start: u32, end: u32, warnings: &mut Vec<String>) -> Result<Option<NativeOutlineRun>, String> {
     let raw_level = attrs.get("outlineLevel").map(|value| value.parse::<u32>()).transpose().map_err(|_| "invalid native outline level")?.unwrap_or(0);
     if raw_level > u32::from(MAX_MODEL_OUTLINE_DEPTH) { return Err("native outline level exceeds the complete eight-layer model; cannot restore without dropping groups".into()); }
     let level = raw_level as u8;
@@ -311,7 +311,9 @@ fn native_run(mut attrs: BTreeMap<String, String>, bindings: &BTreeMap<String, S
     }
     let collapsed = flag(attrs.get("collapsed"), false)?;
     let hidden = attrs.get("hidden").map(|value| flag(Some(value), false)).transpose()?;
-    for name in ["r", "min", "max", "ht", "width", "customWidth", "customHeight", "s", "style", "customFormat", "spans", "thickTop", "thickBot", "ph", "bestFit"] { attrs.remove(name); }
+    let managed: &[&str] = if is_row { &["r", "ht", "customHeight", "s", "customFormat", "spans", "thickTop", "thickBot", "ph"] }
+        else { &["min", "max", "width", "customWidth", "style", "bestFit", "phonetic"] };
+    for name in managed { attrs.remove(*name); }
     if level == 0 && !collapsed && hidden.is_none() && attrs.is_empty() { return Ok(None); }
     let namespaces = if attrs.keys().any(|name| !matches!(name.as_str(), "outlineLevel" | "collapsed" | "hidden")) { bindings.clone() } else { BTreeMap::new() };
     Ok(Some(NativeOutlineRun { start, end, level, collapsed, hidden, attributes: attrs, namespaces }))
@@ -336,6 +338,23 @@ fn source_node(tag: &BytesStart<'_>, decoder: Decoder, namespaces: &XmlNamespace
 }
 
 struct JsonCapture { depth: usize, text: String, invalid: bool }
+
+fn parse_snapshot(text: &str) -> Result<OutlineExtension, String> {
+    let raw: Value = serde_json::from_str(text).map_err(|error| format!("invalid outline JSON: {error}"))?;
+    let state = raw.get("state").and_then(Value::as_object).ok_or_else(|| "outline snapshot is missing its complete state".to_owned())?;
+    let groups = state.get("groups").and_then(Value::as_array).ok_or_else(|| "outline snapshot is missing its groups array".to_owned())?;
+    if !state.get("summaryAbove").is_some_and(Value::is_boolean) || !state.get("summaryLeft").is_some_and(Value::is_boolean)
+        || groups.iter().any(|group| !group.get("collapsed").is_some_and(Value::is_boolean)) {
+        return Err("outline snapshot is missing authored summary or collapse flags".into());
+    }
+    let manual = raw.get("manualVisibility").and_then(Value::as_object).ok_or_else(|| "outline snapshot is missing manual visibility".to_owned())?;
+    if ["hiddenRows", "hiddenColumns", "rowHiddenSpans", "columnHiddenSpans"].iter().any(|key| !manual.get(*key).is_some_and(Value::is_array)) {
+        return Err("outline snapshot is missing authored manual hidden arrays or spans".into());
+    }
+    let extension: OutlineExtension = serde_json::from_value(raw).map_err(|error| format!("invalid outline JSON: {error}"))?;
+    validate_extension(&extension)?;
+    Ok(extension)
+}
 
 /// `allow_prefix` is exclusively for the writer after sheetData and before
 /// extLst. The importer requires one closed standard worksheet document.
@@ -410,14 +429,14 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
                         .map(|value| value.checked_sub(1).ok_or_else(|| "outline row number is zero".to_owned())).transpose()?.unwrap_or(next_row);
                     if row > MAX_ROW_INDEX || previous_row.is_some_and(|previous| row <= previous) { return Err("outline row numbers are invalid or out of order".into()); }
                     previous_row = Some(row); next_row = row + 1;
-                    if let Some(run) = native_run(attrs.clone(), &bindings, row, row, &mut source.diagnostics)? { append_run(&mut source.row_runs, run, &mut source_bytes)?; }
+                    if let Some(run) = native_run(attrs.clone(), &bindings, true, row, row, &mut source.diagnostics)? { append_run(&mut source.row_runs, run, &mut source_bytes)?; }
                 }
                 if main && name == "col" && standard_parent(&["worksheet", "cols"]) {
                     let index = |key: &str| attrs.get(key).ok_or_else(|| format!("outline column lacks {key}"))?.parse::<u32>()
                         .map_err(|_| "invalid outline column number".to_owned())?.checked_sub(1).ok_or_else(|| "outline column number is zero".to_owned());
                     let (start, end) = (index("min")?, index("max")?);
                     if start > end || end > MAX_COLUMN_INDEX { return Err("outline columns exceed the XLSX limits".into()); }
-                    if let Some(run) = native_run(attrs.clone(), &bindings, start, end, &mut source.diagnostics)? { append_run(&mut source.column_runs, run, &mut source_bytes)?; }
+                    if let Some(run) = native_run(attrs.clone(), &bindings, false, start, end, &mut source.diagnostics)? { append_run(&mut source.column_runs, run, &mut source_bytes)?; }
                 }
                 if main && name == "ext" && standard_parent(&["worksheet", "extLst"]) && attrs.get("uri").map(String::as_str) == Some(SHEET_OUTLINE_EXTENSION_URI) {
                     extension_containers += 1;
@@ -435,8 +454,7 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
                 if capture.as_ref().is_some_and(|capture| capture.depth == path.len()) {
                     let completed = capture.take().unwrap();
                     let parsed = if completed.invalid { Err("invalid nested outline snapshot markup or version".into()) } else {
-                        serde_json::from_str::<OutlineExtension>(&completed.text).map_err(|error| format!("invalid outline JSON: {error}"))
-                            .and_then(|state| { validate_extension(&state)?; Ok(state) })
+                        parse_snapshot(&completed.text)
                     };
                     match parsed { Ok(state) => candidate = Some(state), Err(warning) => return Err(warning) }
                 }
@@ -597,15 +615,13 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_or_nested_snapshot_markup_falls_back_to_native_source() {
+    fn duplicate_or_nested_snapshot_markup_fails_without_returning_partial_state() {
         let xml = native_fixture();
         let extension = snapshot(&xml);
-        assert!(read(&with_snapshot(&xml, &extension, 2)).extension.is_none());
-        let nested = with_snapshot(&xml, &extension, 1).replace(">", "><bad/>");
-        assert!(read_worksheet_outline(std::io::Cursor::new(nested.as_bytes()), false).is_err());
+        let duplicate = with_snapshot(&xml, &extension, 2);
+        assert!(read_worksheet_outline(std::io::Cursor::new(duplicate.as_bytes()), false).is_err());
         let invalid = with_snapshot(&xml, &extension, 1).replace("</oo:outline>", "<oo:bad/></oo:outline>");
-        let result = read(&invalid);
-        assert!(result.extension.is_none()); assert!(!infer_native_state(&result.source).groups.is_empty());
+        assert!(read_worksheet_outline(std::io::Cursor::new(invalid.as_bytes()), false).is_err());
     }
 
     #[test]
@@ -667,10 +683,26 @@ mod tests {
     }
 
     #[test]
-    fn invalid_manual_visibility_snapshot_cannot_replace_valid_native_hidden_bits() {
+    fn invalid_manual_visibility_snapshot_fails_instead_of_returning_a_lossy_native_fallback() {
         let xml = native_fixture(); let mut extension = snapshot(&xml);
         extension.manual_visibility.row_hidden_spans = vec![HiddenSpan { start: 2, end: 5, value: true }, HiddenSpan { start: 4, end: 7, value: false }];
-        let result = read(&with_snapshot(&xml, &extension, 1));
-        assert!(result.extension.is_none()); assert!(infer_native_state(&result.source).groups[0].collapsed);
+        let invalid = with_snapshot(&xml, &extension, 1);
+        assert!(read_worksheet_outline(std::io::Cursor::new(invalid.as_bytes()), false).is_err());
+        let mut missing = serde_json::to_value(snapshot(&xml)).unwrap();
+        missing["state"].as_object_mut().unwrap().remove("groups");
+        assert!(parse_snapshot(&missing.to_string()).is_err());
+        let mut missing = serde_json::to_value(snapshot(&xml)).unwrap();
+        missing["manualVisibility"].as_object_mut().unwrap().remove("hiddenRows");
+        assert!(parse_snapshot(&missing.to_string()).is_err());
+    }
+
+    #[test]
+    fn native_level_eight_keeps_eight_model_groups_and_level_nine_cannot_succeed() {
+        let xml = worksheet("<sheetData><row r=\"2\" outlineLevel=\"8\"/></sheetData>");
+        let source = read(&xml).source;
+        assert_eq!(infer_native_state(&source).groups.len(), 8);
+        assert!(source.diagnostics[0].starts_with("NATIVE_LEVEL_OUTSIDE_OFFICE"));
+        let invalid = xml.replace("outlineLevel=\"8\"", "outlineLevel=\"9\"");
+        assert!(read_worksheet_outline(std::io::Cursor::new(invalid.as_bytes()), false).is_err());
     }
 }

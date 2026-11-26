@@ -5,6 +5,8 @@ import { cloneModel } from '../../domain/serialization.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSparklineGroupConsistency, normalizeSparklineSpec, planSparklineMutation, type SparklineMutationRequest } from './sparkline-model.ts'
 import { parseSparklineReference, sparklineCellAddress } from './sparkline-reference.ts'
+import { resolveSparklineSource } from './sparkline-source.ts'
+import { equivalentModelData } from '../../platform/commands/model-equivalence.ts'
 
 export const SET_SPARKLINES_COMMAND = 'sheet.command.set-sparklines'
 export interface SparklineMutationContext {
@@ -51,15 +53,13 @@ export function assertSparklineReadPermission(sheet: SpreadsheetSheet, addresses
 }
 
 function assertSourceRead(workbook: WorkbookModel, host: SpreadsheetSheet, spec: SparklineSpec, userId: string, retained: boolean): void {
-  const reference = parseSparklineReference(spec.sourceRange)
-  const source = reference && (reference.sheetName === undefined ? host : workbook.sheets.find(sheet => sheet.id === reference.sheetName
-    || sheet.name.toLocaleLowerCase() === reference.sheetName!.toLocaleLowerCase()))
+  const source = resolveSparklineSource(spec, host, workbook)
   // A broken retained reference may be repaired or deleted. New authoring must name a real source.
-  if (!reference || !source) {
+  if (source.status !== 'resolved') {
     if (retained) return
     throw new Error('迷你图数据来源工作表或范围已不存在。')
   }
-  assertViewRange(source, [reference.range], userId)
+  assertViewRange(source.sheet, [source.range], userId)
 }
 
 export function assertSparklineMutationPermission(workbook: WorkbookModel, sheet: SpreadsheetSheet,
@@ -71,7 +71,9 @@ export function assertSparklineMutationPermission(workbook: WorkbookModel, sheet
     if (!spec) continue
     const range = targetRange(sheet, address), previous = sheet.cells[`${range.startRow}:${range.startCol}`]?.sparkline
     if (previous) assertSourceRead(workbook, sheet, previous, userId, true)
-    assertSourceRead(workbook, sheet, spec, userId, false)
+    const retained = spec.sourceReference !== undefined || spec.officeSource !== undefined
+      || previous !== undefined && previous.sourceRange === spec.sourceRange && equivalentModelData(previous.sourceReference, spec.sourceReference)
+    assertSourceRead(workbook, sheet, spec, userId, retained)
   }
 }
 
@@ -112,7 +114,7 @@ export function registerSparklineCommands(studio: OfficeStudio): void {
     }
     assertCurrent()
     const patches = normalizeSparklinePatches(sheet, input.request === undefined ? input.patches!
-      : planSparklineMutation(sheet, input.request, { sheets: workbook.sheets }).patches)
+      : planSparklineMutation(sheet, input.request, { sheets: workbook.sheets, workbook }).patches)
     assertSparklineMutationPermission(workbook, sheet, patches, userId)
     return studio.commitWorkbook(input.unitId, '编辑迷你图', candidate => {
       assertCurrent()

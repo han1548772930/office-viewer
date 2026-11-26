@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use crate::conditional_format_xml::{self as xml, Element};
 use super::{OfficeSparklineSource, SparklineAxis, SparklineExtremum, SparklinePoint, SparklineSpec,
-    COLOR_NAMES, MAX_GROUP_SOURCE_BYTES, MAX_MEMBERS, argb, css_argb, normalize_source_reference, normalize_target};
+    COLOR_NAMES, MAX_GROUP_SOURCE_BYTES, MAX_MEMBERS, SparklineSourceKind, source_kind, argb, css_argb, normalize_source_reference, normalize_target};
 
 pub struct NativeSparklineGroup {
     pub group: Element,
@@ -28,6 +28,7 @@ fn unique_child<'a>(group: &'a Element, namespace: &str, name: &str) -> Result<O
     Ok(first)
 }
 fn color_css(node: &Element, theme: Option<&Element>, palette: Option<&[String]>) -> Result<String, String> {
+    if node.attribute_ns("", "auto").is_some() { return Err("SPARKLINE_NATIVE_INVALID: x14 sparkline colors must not contain auto".into()); }
     let mut resolved = node.clone();
     if let Some(index) = node.attribute_ns("", "indexed") {
         let index = index.parse::<usize>().map_err(|_| "SPARKLINE_NATIVE_INVALID: invalid indexed color")?;
@@ -35,9 +36,6 @@ fn color_css(node: &Element, theme: Option<&Element>, palette: Option<&[String]>
             let color = palette.get(index).ok_or("SPARKLINE_COLOR_UNRESOLVED: custom palette index is unavailable")?;
             resolved.remove_attr("indexed"); resolved.set_attr("rgb", color);
         }
-    }
-    if flag(node, "auto", false)? && !["rgb", "theme", "indexed"].iter().any(|key| node.attribute_ns("", key).is_some()) {
-        resolved.set_attr("rgb", "FF000000");
     }
     let color = crate::conditional_format_color::color_value(&resolved, theme)
         .ok_or("SPARKLINE_COLOR_UNRESOLVED: native color/theme/tint cannot resolve")?;
@@ -55,7 +53,7 @@ pub fn decode_native_group(
     let kind = match group.attribute_ns("", "type").unwrap_or("line") {
         "line" => "line", "column" => "column", "stacked" => "winloss", _ => return Err("SPARKLINE_NATIVE_INVALID: unknown native type".into()),
     };
-    let empty = match group.attribute_ns("", "displayEmptyCellsAs").unwrap_or("gap") {
+    let empty = match group.attribute_ns("", "displayEmptyCellsAs").unwrap_or("zero") {
         "gap" => "gap", "zero" => "zero", "span" => "connect", _ => return Err("SPARKLINE_NATIVE_INVALID: unknown displayEmptyCellsAs".into()),
     };
     let extremum = |maximum: bool| -> Result<SparklineExtremum, String> {
@@ -72,7 +70,6 @@ pub fn decode_native_group(
     for name in COLOR_NAMES {
         let color = match unique_child(group, xml::X14_NAMESPACE, name)? {
             Some(color) => {
-                if flag(color, "auto", false)? { warnings.push("SPARKLINE_AUTO_COLOR_RETAINED: automatic Office color is retained; editor theme behavior remains unverified".into()); }
                 color_css(color, theme, indexed_colors)?
             }
             None => if name == "colorAxis" { "#000000".into() } else if name == "colorNegative" || name == "colorLow" { "#D00000".into() } else { "#4472C4".into() },
@@ -96,7 +93,14 @@ pub fn decode_native_group(
             || member.children.iter().any(|child| !child.is(xml::XM_NAMESPACE, "f") && !child.is(xml::XM_NAMESPACE, "sqref")) {
             return Err("SPARKLINE_NATIVE_MEMBER_UNRESOLVED: unsupported member metadata cannot be silently discarded".into());
         }
-        members.push((target, normalize_source_reference(&formula.text)?));
+        let source = normalize_source_reference(&formula.text)?;
+        match source_kind(&source)? {
+            SparklineSourceKind::Broken => warnings.push(format!("SPARKLINE_SOURCE_BROKEN: source at {target} is retained for repair")),
+            SparklineSourceKind::Named => warnings.push(format!("SPARKLINE_SOURCE_NAMED: source at {target} retains its name and is resolved from workbook name definitions")),
+            SparklineSourceKind::External | SparklineSourceKind::ThreeDimensional => warnings.push(format!("SPARKLINE_SOURCE_UNRESOLVED: foreign/three-dimensional source at {target} is retained without fabricated samples")),
+            SparklineSourceKind::A1 => {},
+        }
+        members.push((target, source));
         if members.len() > MAX_MEMBERS { return Err("SPARKLINE_MODEL_LIMIT: native member count exceeds admission budget".into()); }
     }
     if members.is_empty() { return Err("SPARKLINE_NATIVE_INVALID: empty native group".into()); }
@@ -128,6 +132,7 @@ pub fn decode_native_group(
         office_source: Some(OfficeSparklineSource { version: 1, group_xml: template.render(), resolved_colors: colors,
             theme_xml: if uses_theme || unknown { theme_xml.map(str::to_owned) } else { None },
             indexed_colors: if uses_palette || unknown { indexed_colors.map(<[String]>::to_vec) } else { None } }),
+        source_reference: None,
     };
     settings.validate()?;
     Ok(NativeSparklineGroup { group: group.clone(), settings, members })
@@ -185,7 +190,7 @@ pub fn native_group_for_spec(spec: &SparklineSpec) -> Result<Option<Element>, St
 pub fn normalize_native_group(group: &Element) -> Result<Element, String> {
     if !group.is(xml::X14_NAMESPACE, "sparklineGroup") { return Err("SPARKLINE_NATIVE_INVALID: wrong fingerprint group namespace".into()); }
     let mut normalized = group.clone();
-    for (name, default) in [("type", "line"), ("displayEmptyCellsAs", "gap"), ("minAxisType", "individual"), ("maxAxisType", "individual")] {
+    for (name, default) in [("type", "line"), ("displayEmptyCellsAs", "zero"), ("minAxisType", "individual"), ("maxAxisType", "individual")] {
         if normalized.attribute_ns("", name).is_none() { normalized.set_attr(name, default); }
     }
     for name in ["dateAxis", "markers", "high", "low", "first", "last", "negative", "displayXAxis", "displayHidden", "rightToLeft"] {

@@ -2,6 +2,7 @@ import type { SparklineSpec } from '../domain/model.ts'
 import { createSparklineSpec, SPARKLINE_POINT_ORDER, type SparklineSettingsInput } from '../features/sparkline/sparkline-model.ts'
 import { sparklineCellAddress } from '../features/sparkline/sparkline-reference.ts'
 import { normalizeOfficeSparklineSource } from '../features/sparkline/sparkline-office-source.ts'
+import { normalizeSparklineSourceReference } from '../features/sparkline/sparkline-source.ts'
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`迷你图${label}数据无效。`)
@@ -69,5 +70,6 @@ export function normalizeWorkbookSparkline(value: unknown, row: number, column: 
   }
   return createSparklineSpec({ ...settings, type, sourceRange, color: settings.color ?? '#364ef4', axis, emptyCells: settings.emptyCells ?? 'gap',
     targetRange: sparklineCellAddress(row, column), ...(raw.groupId === undefined ? {} : { groupId: string(raw.groupId) }),
-    ...(raw.officeSource === undefined ? {} : { officeSource: normalizeOfficeSparklineSource(raw.officeSource) }) })
+    ...(raw.officeSource === undefined ? {} : { officeSource: normalizeOfficeSparklineSource(raw.officeSource) }),
+    ...(raw.sourceReference === undefined ? {} : { sourceReference: normalizeSparklineSourceReference(raw.sourceReference) }) })
 }

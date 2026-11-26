@@ -1,7 +1,9 @@
 import type { ApiRange } from '../../api/events.ts'
 import type { SparklineEmptyCells, SparklineType } from '../../domain/model.ts'
+import type { OfficeSparklineSource } from '../../domain/sparkline-office-source.ts'
+import type { SparklineSourceReference } from '../../domain/sparkline-source.ts'
 import type { ResolvedSparklineSettings, SparklineSettingsInput } from './sparkline-model.ts'
-import { SPARKLINE_POINT_ORDER } from './sparkline-model.ts'
+import { resolveSparklineSettings, SPARKLINE_POINT_ORDER } from './sparkline-model.ts'
 import type { SparklineRangeMatrix } from './sparkline-range-matrix.ts'
 
 export const SparklineTypeEnum = Object.freeze({ LINE_CHART: 1, BAR_CHART: 2, PROFIT_AND_LOSS_CHART: 3, PIE_CHART: 4 } as const)
@@ -31,17 +33,21 @@ export interface ISparklineGroupConfig {
   showGradient?: boolean
   showRadius?: boolean
 }
-export interface ISparklineGroup { config: ISparklineGroupConfig; sparklines: SparklineRangeMatrix<ApiRange> }
-export interface ISparklineSerializedGroup { config: ISparklineGroupConfig; sparklines: Record<number, Record<number, ApiRange>> }
+export interface ISparklineSourceRange extends ApiRange {
+  officeStudioSourceReference?: string
+  officeStudioSourceMetadata?: SparklineSourceReference
+  officeStudioOfficeSource?: OfficeSparklineSource
+}
+export interface ISparklineGroup { config: ISparklineGroupConfig; sparklines: SparklineRangeMatrix<ISparklineSourceRange> }
+export interface ISparklineSerializedGroup { config: ISparklineGroupConfig; sparklines: Record<number, Record<number, ISparklineSourceRange>> }
 
 const publicTypes: Readonly<Record<SparklineTypeEnum, SparklineType>> = { 1: 'line', 2: 'column', 3: 'winloss', 4: 'pie' }
 const publicEmpty: Readonly<Record<SpacialShowAsEnum, SparklineEmptyCells>> = { spacing: 'gap', zero_value: 'zero', connect_with_line: 'connect' }
 const publicExtremum = { 1: 'individual', 2: 'group', 3: 'custom' } as const
 
 export function sparklineTypeFromPublic(type: SparklineTypeEnum): SparklineType {
-  const value = publicTypes[type]
-  if (!value) throw new TypeError('迷你图类型枚举无效。')
-  return value
+  if (typeof type !== 'number' || !Object.hasOwn(publicTypes, type)) throw new TypeError('迷你图类型枚举无效。')
+  return publicTypes[type]
 }
 /** Public partial configurations stay partial so unspecified group settings survive. */
 export function sparklineConfigFromPublic(config: ISparklineGroupConfig): SparklineSettingsInput {
@@ -50,27 +56,36 @@ export function sparklineConfigFromPublic(config: ISparklineGroupConfig): Sparkl
   if (config.type !== undefined) settings.type = sparklineTypeFromPublic(config.type)
   if (config.axis !== undefined) {
     if (!config.axis || typeof config.axis !== 'object' || Array.isArray(config.axis)) throw new TypeError('迷你图轴配置无效。')
-    settings.axisOptions = { ...config.axis }
+    assertOptionalBoolean(config.axis.visible); assertOptionalBoolean(config.axis.reverse); assertOptionalColor(config.axis.color)
+    settings.axisOptions = {
+      ...(config.axis.visible === undefined ? {} : { visible: config.axis.visible }),
+      ...(config.axis.reverse === undefined ? {} : { reverse: config.axis.reverse }),
+      ...(config.axis.color === undefined ? {} : { color: config.axis.color }),
+    }
   }
   for (const key of ['extremumMin', 'extremumMax'] as const) {
     const extremum = config[key]
     if (extremum === undefined) continue
     if (!extremum || typeof extremum !== 'object' || Array.isArray(extremum)) throw new TypeError('迷你图极值配置无效。')
+    if (extremum.type !== undefined && (typeof extremum.type !== 'number' || !Object.hasOwn(publicExtremum, extremum.type))) throw new TypeError('迷你图极值类型枚举无效。')
     const type = extremum.type === undefined ? undefined : publicExtremum[extremum.type]
-    if (extremum.type !== undefined && !type) throw new TypeError('迷你图极值类型枚举无效。')
+    if (extremum.value !== undefined && (typeof extremum.value !== 'number' || !Number.isFinite(extremum.value))) throw new TypeError('迷你图极值必须为有限数值。')
     // A value-only patch retains the current extremum mode in mergeSparklineSettings.
     settings[key] = { ...(type === undefined ? {} : { type }), ...(extremum.value === undefined ? {} : { value: extremum.value }) }
   }
-  if (config.themeType !== undefined) settings.themeType = config.themeType
-  if (config.seriesColor !== undefined) settings.color = config.seriesColor
+  if (config.themeType !== undefined) {
+    if (typeof config.themeType !== 'string' || !Object.values(SparklineThemeTypeEnum).includes(config.themeType)) throw new TypeError('迷你图主题枚举无效。')
+    settings.themeType = config.themeType
+  }
+  if (config.seriesColor !== undefined) { assertOptionalColor(config.seriesColor); settings.color = config.seriesColor }
   for (const [publicKey, key] of [['emptyShowAs', 'emptyCells'], ['nonNumShowAs', 'nonNumericCells']] as const) {
     const value = config[publicKey]
     if (value === undefined) continue
-    const mode = publicEmpty[value]
-    if (!mode) throw new TypeError('迷你图空白或非数字枚举无效。')
-    settings[key] = mode
+    if (typeof value !== 'string' || !Object.hasOwn(publicEmpty, value)) throw new TypeError('迷你图空白或非数字枚举无效。')
+    settings[key] = publicEmpty[value]
   }
   for (const key of ['containHiddenCells', 'lineWidth', 'showGradient', 'showRadius'] as const) {
+    if (key === 'lineWidth' && config.lineWidth !== undefined && (typeof config.lineWidth !== 'number' || !Number.isFinite(config.lineWidth))) throw new TypeError('迷你图线宽必须为有限数值。')
     if (config[key] !== undefined) Object.assign(settings, { [key]: config[key] })
   }
   if (config.points !== undefined) {
@@ -80,10 +95,24 @@ export function sparklineConfigFromPublic(config: ISparklineGroupConfig): Sparkl
       const point = config.points[name]
       if (point === undefined) continue
       if (!point || typeof point !== 'object' || Array.isArray(point)) throw new TypeError('迷你图标记配置无效。')
-      settings.points[name] = { ...point }
+      assertOptionalBoolean(point.visible); assertOptionalColor(point.color)
+      settings.points[name] = {
+        ...(point.visible === undefined ? {} : { visible: point.visible }),
+        ...(point.color === undefined ? {} : { color: point.color }),
+      }
     }
   }
+  // Validate present scalar/nested fields with the authoritative model. Extremum
+  // patches are validated independently; their final mode/value pair needs the
+  // current group and is checked by mergeSparklineSettings in the command.
+  resolveSparklineSettings({ ...settings, extremumMin: undefined, extremumMax: undefined })
   return settings
+}
+function assertOptionalBoolean(value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean') throw new TypeError('迷你图显隐配置必须为布尔值。')
+}
+function assertOptionalColor(value: unknown): void {
+  if (value !== undefined && typeof value !== 'string') throw new TypeError('迷你图颜色必须为颜色字符串。')
 }
 export function sparklineConfigToPublic(settings: ResolvedSparklineSettings): ISparklineGroupConfig {
   const types: Record<SparklineType, SparklineTypeEnum> = { line: 1, column: 2, winloss: 3, pie: 4 }

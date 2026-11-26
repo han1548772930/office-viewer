@@ -23,6 +23,7 @@ const pointLabels = computed<Record<SparklinePointName, string>>(() => ({ highPo
 const axes = computed<Array<{ label: string; value: SparklineExtremumMode }>>(() => [{ label: t('sheet.sparkline.axis-individual', '每个迷你图单独计算'), value: 'individual' },
   { label: t('sheet.sparkline.axis-group', '整组统一计算'), value: 'group' }, { label: t('sheet.sparkline.axis-custom', '自定义'), value: 'custom' }])
 const extremumFields = computed(() => [{ key: 'extremumMin' as const, label: t('sheet.sparkline.minimum', '下限') }, { key: 'extremumMax' as const, label: t('sheet.sparkline.maximum', '上限') }])
+const lineWidths = computed(() => [...new Set([1, 2, 3, 4, props.settings.lineWidth])].sort((a, b) => a - b).map(value => ({ label: `${value} px`, value })))
 function pointVisible(name: SparklinePointName, value: boolean): void { emit('change', { points: { [name]: { visible: value } } }) }
 function pointColor(name: SparklinePointName, value: unknown): void { if (typeof value === 'string') emit('change', { points: { [name]: { color: value } }, themeType: 'custom' }) }
 function changeType(value: unknown): void { if (value === 'line' || value === 'column' || value === 'winloss' || value === 'pie') emit('change', { type: value }) }
@@ -47,7 +48,7 @@ function changeAxisColor(value: unknown): void { if (typeof value === 'string') 
       <Divider>{{ t('sheet.sparkline.adjust-style', '调整样式') }}</Divider>
       <div class="sparkline-style-grid">
         <FormItem :name="['settings', 'color']" :label="t('sheet.sparkline.series-color', '系列颜色')"><ColorPicker :value="settings.color" value-format="hex" show-text :disabled="disabled" aria-label="迷你图系列颜色" @update:value="changeColor" /></FormItem>
-        <FormItem v-if="settings.type === 'line'" :name="['settings', 'lineWidth']" :label="t('sheet.sparkline.line-width', '线宽')"><Select :value="settings.lineWidth" :options="[1, 2, 3, 4].map(value => ({ label: `${value} px`, value }))" :disabled="disabled" aria-label="迷你图线宽" @update:value="changeLineWidth" /></FormItem>
+        <FormItem v-if="settings.type === 'line'" :name="['settings', 'lineWidth']" :label="t('sheet.sparkline.line-width', '线宽')"><Select :value="settings.lineWidth" :options="lineWidths" :disabled="disabled" aria-label="迷你图线宽" @update:value="changeLineWidth" /></FormItem>
         <FormItem v-if="settings.type === 'line'" :name="['settings', 'showGradient']"><Checkbox :checked="settings.showGradient" :disabled="disabled" aria-label="迷你图渐变" @update:checked="value => emit('change', { showGradient: value })">{{ t('sheet.sparkline.gradient', '渐变填充') }}</Checkbox></FormItem>
         <FormItem v-else :name="['settings', 'showRadius']"><Checkbox :checked="settings.showRadius" :disabled="disabled" aria-label="迷你图圆角" @update:checked="value => emit('change', { showRadius: value })">{{ t('sheet.sparkline.radius', '圆角') }}</Checkbox></FormItem>
       </div>

@@ -4,9 +4,10 @@ import type { CellRange, SpreadsheetSheet } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { equivalentModelData } from '../../platform/commands/model-equivalence.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
-import { planSparklineMutation, resolveSparklineSettings, sparklineSettingsInput, SPARKLINE_POINT_ORDER, SPARKLINE_THEMES,
+import { planSparklineMutation, readSparklineGroups, resolveSparklineSettings, sparklineSettingsInput, SPARKLINE_POINT_ORDER, SPARKLINE_THEMES,
   type ResolvedSparklineSettings, type SparklineGroupInfo, type SparklineMutationRequest, type SparklineSettingsInput } from './sparkline-model.ts'
 import { parseSparklineRangeList, parseSparklineReference } from './sparkline-reference.ts'
+import { parseSparklineSourceList, resolveSparklineSource } from './sparkline-source.ts'
 
 export interface SparklinePanelTarget { workbookId: string; sheetId: string }
 export interface SparklinePanelOwner {
@@ -113,10 +114,30 @@ export function sparklinePanelDraftDirty(current: SparklinePanelDraft, original:
 }
 export function buildSparklinePanelRequest(draft: SparklinePanelDraft, original: SparklinePanelDraft, ranges: readonly string[], existing: boolean): SparklineMutationRequest {
   const settings = buildSparklineSettingsPatch(draft.settings, original.settings)
-  if (!existing) return { kind: 'insert', sourceRanges: parseSparklineRangeList(draft.sourceText), targetRanges: parseSparklineRangeList(draft.targetText), settings: sparklineSettingsInput(draft.settings) }
+  if (!existing) return { kind: 'insert', sourceRanges: parseSparklineSourceList(draft.sourceText), targetRanges: parseSparklineRangeList(draft.targetText), settings: sparklineSettingsInput(draft.settings) }
   if (draft.dataOperation === 'settings') return { kind: 'settings', ranges, settings }
   return { kind: 'change-source', ranges: [draft.primary], resetType: draft.dataOperation, primary: draft.primary,
-    sourceRanges: parseSparklineRangeList(draft.sourceText), targetRanges: parseSparklineRangeList(draft.targetText), ...(Object.keys(settings).length ? { settings } : {}) }
+    sourceRanges: parseSparklineSourceList(draft.sourceText), targetRanges: parseSparklineRangeList(draft.targetText), ...(Object.keys(settings).length ? { settings } : {}) }
+}
+
+export function sparklinePanelRepairsRetainedSource(owner: SparklinePanelOwner, draft: SparklinePanelDraft): boolean {
+  if (draft.dataOperation === 'settings' || !draft.primary) return false
+  const target = parseSparklineReference(draft.primary), sheet = owner.studio.getWorkbookModel(owner.target.workbookId)?.sheets.find(sheet => sheet.id === owner.target.sheetId)
+  return Boolean(target && sheet?.cells[`${target.range.startRow}:${target.range.startCol}`]?.sparkline?.sourceReference)
+}
+
+export function readSparklinePanelSourceStatus(owner: SparklinePanelOwner, draft: SparklinePanelDraft, ranges: readonly string[]): { type: 'warning' | 'info'; title: string } | undefined {
+  const workbook = owner.studio.getWorkbookModel(owner.target.workbookId), sheet = currentSheet(owner)
+  if (!workbook) return undefined
+  const groups = draft.dataOperation === 'settings' ? readSparklineGroups(sheet, ranges) : []
+  const sources = groups.length ? groups.flatMap(group => group.members) : parseSparklineSourceList(draft.sourceText)
+  const unavailable = sources.map(source => resolveSparklineSource(source, sheet, workbook)).filter(source => source.status !== 'resolved')
+  if (unavailable.length) {
+    const broken = unavailable.some(source => source.status === 'broken')
+    return { type: 'warning', title: broken ? '部分迷你图来源已断开，现有设置和原文仍保留。可选择“修改数据来源”后填写有效范围或名称并应用。'
+      : '部分名称、外部或三维来源暂时无法取数，来源原文与设置仍保留。名称指向有效范围后会重新读取；也可修改数据来源。' }
+  }
+  return sparklinePanelRepairsRetainedSource(owner, draft) ? { type: 'info', title: '应用后将移除断开标记，并按当前数据来源恢复迷你图。' } : undefined
 }
 
 export function canEditSparklinePanelRanges(owner: SparklinePanelOwner, ranges: readonly string[]): boolean {
@@ -134,16 +155,16 @@ export function canEditSparklinePanelRanges(owner: SparklinePanelOwner, ranges: 
 export function assertSparklinePanelMutation(owner: SparklinePanelOwner, request: SparklineMutationRequest): void {
   sparklinePanelOwnerContext(owner)
   const workbook = owner.studio.getWorkbookModel(owner.target.workbookId)!, sheet = currentSheet(owner)
-  const plan = planSparklineMutation(sheet, request, { sheets: workbook.sheets })
+  const plan = planSparklineMutation(sheet, request, { workbook })
   if (!canViewWorksheetProtection(sheet, owner.userId) || !canEditWorksheetProtection(sheet, owner.userId)
     || !canViewProtectedRanges(sheet, plan.affectedRanges, owner.userId) || !canEditProtectedRanges(sheet, plan.affectedRanges, owner.userId)) {
     throw new Error('迷你图操作涉及受保护的目标或整组成员。')
   }
   for (const spec of Object.values(plan.patches)) {
     if (!spec) continue
-    const reference = parseSparklineReference(spec.sourceRange)!
-    const source = reference.sheetName === undefined ? sheet : workbook.sheets.find(candidate => candidate.id === reference.sheetName || candidate.name.toLocaleLowerCase() === reference.sheetName!.toLocaleLowerCase())
-    if (!source || !canViewWorksheetProtection(source, owner.userId) || !canViewProtectedRanges(source, [reference.range], owner.userId)) throw new Error('迷你图源数据已关闭或当前用户无权查看。')
+    const resolved = resolveSparklineSource(spec, sheet, workbook)
+    if (resolved.status !== 'resolved') continue
+    if (!canViewWorksheetProtection(resolved.sheet, owner.userId) || !canViewProtectedRanges(resolved.sheet, [resolved.range], owner.userId)) throw new Error('当前用户无权查看迷你图源数据。')
   }
   sparklinePanelOwnerContext(owner)
 }

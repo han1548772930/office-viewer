@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Outline Office IO deferred fixture</title></head>
+<body><script type="module">
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { FOffice } from '/packages/office-studio/src/api/facade.ts'
+import { createBlankWorkbook } from '/packages/office-studio/src/domain/model.ts'
+import { exportOfficeModel, resetOfficeWriter } from '/packages/office-studio/src/services/exportService.ts'
+import { parseOfficeFile, resetParser } from '/packages/office-studio/src/services/wasmAdapter.ts'
+
+// A real API -> Worker/WASM -> XLSX -> parser/domain -> API fixture. It adds
+// no product controls and does not substitute a fake writer or parser.
+const json = value => JSON.parse(JSON.stringify(value))
+const groups = sheet => sheet.getDimensionOutlines().map(({ unitId, subUnitId, ...group }) => group)
+window.outlineOfficeIo = {
+  async roundtrip(options = {}) {
+    const model = createBlankWorkbook(); model.id = 'outline-io-book'; model.name = 'Outline IO'
+    const seed = model.sheets[0]; seed.id = 'outline-io-sheet'; seed.name = 'Outline & Data'
+    model.activeSheetId = seed.id; seed.rowCount = 32; seed.columnCount = 12
+    seed.hiddenRows = [4, 15]; seed.hiddenColumns = [3, 10]
+    seed.rowHiddenSpans = [{ start: 17, end: 19, value: true }]
+    seed.columnHiddenSpans = [{ start: 7, end: 8, value: true }]
+    const studio = new OfficeStudio({ workbook: model }); let reopened
+    try {
+      const book = FOffice.newAPI(studio).getActiveWorkbook(), sheet = book.getActiveSheet()
+      if (options.boundaryEight) for (let level = 0; level < 8; level++) sheet.addRowOutline(0, 32)
+      else sheet.addRowOutline(1, 8).addRowOutline(3, 3)
+      sheet.addColumnOutline(2, 3)
+      sheet.setDimensionOutlineCollapsed(sheet.getDimensionOutlines('row')[0].id, true)
+      sheet.setDimensionOutlineCollapsed(sheet.getDimensionOutlines('column')[0].id, true)
+      studio.executeCommandSync('sheet.command.set-outline-summary-settings', { unitId: book.getId(), subUnitId: sheet.getSheetId(),
+        summaryAbove: options.boundaryEight === true, summaryLeft: true })
+      const authored = studio.getWorkbookModel(book.getId())
+      authored.sheets[0].outline.futureState = { tag: [1, 2] }
+      authored.sheets[0].outline.groups[0].futureGroup = { text: 'A & B' }
+      const before = json(book.save()), expectedGroups = groups(sheet)
+      const write = await exportOfficeModel('workbook', before, { modelRevision: studio.getWorkbookRevision(book.getId()) })
+      const parsed = await parseOfficeFile(new File([write.bytes], 'outline-io.xlsx'), { unitId: 'outline-io-reopened' })
+      if (parsed.kind !== 'workbook') throw new Error('The real parser did not return a workbook')
+      reopened = new OfficeStudio({ workbook: parsed.model })
+      const newBook = FOffice.newAPI(reopened).getActiveWorkbook(), newSheet = newBook.getActiveSheet()
+      const first = json(newBook.save()), actualGroups = groups(newSheet), publicSnapshot = json(newBook.getSnapshot())
+      const groupId = newSheet.getDimensionOutlines('row')[0].id
+      newSheet.setDimensionOutlineCollapsed(groupId, false)
+      const expanded = json(newBook.save()), expandedGroups = groups(newSheet)
+      newBook.undo(); const undoneGroups = groups(newSheet)
+      newBook.redo(); const redoneGroups = groups(newSheet)
+      const writeAgain = await exportOfficeModel('workbook', newBook.save(), { modelRevision: reopened.getWorkbookRevision(newBook.getId()) })
+      const parsedAgain = await parseOfficeFile(new File([writeAgain.bytes], 'outline-expanded.xlsx'), { unitId: 'outline-io-final' })
+      if (parsedAgain.kind !== 'workbook') throw new Error('The second real parser did not return a workbook')
+      return { before, first, after: json(parsedAgain.model), expanded, expectedGroups, actualGroups, expandedGroups, undoneGroups, redoneGroups,
+        publicSnapshot, bytes: Array.from(write.bytes), bytesAgain: Array.from(writeAgain.bytes),
+        write: { warnings: write.warnings, context: write.context, metrics: write.metrics },
+        parse: { diagnostics: parsed.diagnostics, task: parsed.task },
+        writeAgain: { warnings: writeAgain.warnings, context: writeAgain.context, metrics: writeAgain.metrics } }
+    } finally { reopened?.dispose(); studio.dispose(); resetParser(); resetOfficeWriter() }
+  },
+}
+</script></body></html>

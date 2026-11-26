@@ -5,6 +5,7 @@ import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdap
 import type { DrawCommand, RenderRect } from '../../rendering/contracts.ts'
 import { resolveSparklineSettings, type ResolvedSparklineSettings, type SparklinePointName } from './sparkline-model.ts'
 import { parseSparklineReference, sparklineCellAddress } from './sparkline-reference.ts'
+import { resolveSparklineSource } from './sparkline-source.ts'
 
 interface SparklineRange { startRow: number; endRow: number; startColumn: number; endColumn: number }
 interface SparklinePoint { x: number; y: number; value: number; sourceIndex: number }
@@ -12,6 +13,8 @@ export type SparklineSample = number | 'gap' | 'connect'
 export interface SparklineExtrema { min: number; max: number }
 export interface SparklineRenderContext {
   sheets?: readonly ExcelSheetView[]
+  /** Existing workbook name definitions; no second name or formula engine is maintained here. */
+  metadata?: Record<string, unknown>
   /** Frame-scoped caches: rebuilding the scene or changing source permissions requires a fresh context. */
   groupCache?: Map<string, SparklineExtrema>
   sampleCache?: Map<SparklineSpec, SparklineSample[]>
@@ -49,16 +52,14 @@ function hiddenSource(sheet: ExcelSheetView, row: number, column: number): boole
 }
 
 export function readSparklineSamples(spec: SparklineSpec, sheet: ExcelSheetView, context: SparklineRenderContext = {}): SparklineSample[] {
-  const reference = parseSparklineReference(spec.sourceRange)
-  if (!reference) return []
-  const source = reference.sheetName === undefined || reference.sheetName === sheet.id || reference.sheetName.toLocaleLowerCase() === sheet.name.toLocaleLowerCase()
-    ? sheet : context.sheets?.find(candidate => candidate.id === reference.sheetName || candidate.name.toLocaleLowerCase() === reference.sheetName!.toLocaleLowerCase())
-  if (!source || context.canReadSource?.(source, reference.range) === false) return []
+  const resolved = resolveSparklineSource(spec, sheet, { sheets: context.sheets ?? [sheet], metadata: context.metadata })
+  if (resolved.status !== 'resolved' || context.canReadSource?.(resolved.sheet, resolved.range) === false) return []
+  const source = resolved.sheet, range = resolved.range
   const cached = context.sampleCache?.get(spec)
   if (cached) return cached
   const settings = resolveSparklineSettings(spec), values: SparklineSample[] = []
-  for (let row = reference.range.startRow; row <= reference.range.endRow; row += 1) {
-    for (let column = reference.range.startCol; column <= reference.range.endCol; column += 1) {
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startCol; column <= range.endCol; column += 1) {
       if (!settings.containHiddenCells && hiddenSource(source, row, column)) continue
       values.push(readSample(source.cells[sparklineCellAddress(row, column)], settings))
     }
@@ -83,11 +84,8 @@ function groupExtrema(spec: SparklineSpec, sheet: ExcelSheetView, context: Spark
   if (!spec.groupId) return undefined
   const members = Object.values(sheet.cells).flatMap(cell => cell.sparkline?.groupId === spec.groupId ? [cell.sparkline] : [])
   const permissionMask = members.map(member => {
-    const reference = parseSparklineReference(member.sourceRange)
-    if (!reference) return '0'
-    const source = reference.sheetName === undefined || reference.sheetName === sheet.id || reference.sheetName.toLocaleLowerCase() === sheet.name.toLocaleLowerCase()
-      ? sheet : context.sheets?.find(candidate => candidate.id === reference.sheetName || candidate.name.toLocaleLowerCase() === reference.sheetName!.toLocaleLowerCase())
-    return source && context.canReadSource?.(source, reference.range) !== false ? '1' : '0'
+    const resolved = resolveSparklineSource(member, sheet, { sheets: context.sheets ?? [sheet], metadata: context.metadata })
+    return resolved.status === 'resolved' && context.canReadSource?.(resolved.sheet, resolved.range) !== false ? '1' : '0'
   }).join('')
   const key = `${sheet.id}:${spec.groupId}:${permissionMask}`, cached = context.groupCache?.get(key)
   if (cached) return cached

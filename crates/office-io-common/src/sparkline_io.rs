@@ -6,7 +6,10 @@ use crate::conditional_format_xml as source_xml;
 
 #[path = "sparkline_native.rs"]
 mod native;
+#[path = "sparkline_source.rs"]
+mod source;
 pub use native::{NativeSparklineGroup, decode_native_group, native_group_for_spec, native_group_fingerprint, native_group_signature, native_projection_signature, normalize_native_group};
+pub use source::{SparklineSourceKind, SparklineSourceReference, SparklineBrokenSourceRange, source_kind};
 
 pub const NATIVE_EXTENSION_URI: &str = "{05C60535-1F16-4fd2-B633-F4F36F0B64E0}";
 pub const MODEL_EXTENSION_URI: &str = "{0D86756A-1E63-4A9B-9FDB-0F5A91DD1E77}";
@@ -68,6 +71,8 @@ pub struct SparklineSpec {
     pub show_radius: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub office_source: Option<OfficeSparklineSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_reference: Option<SparklineSourceReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -163,6 +168,7 @@ impl SparklineSpec {
             return Err("SPARKLINE_EXTREMUM_INVALID: non-finite retained extrema".into());
         }
         if let Some(source) = &self.office_source { source.validate()?; }
+        if let Some(source) = &self.source_reference { source.validate()?; }
         Ok(())
     }
 
@@ -243,7 +249,7 @@ pub struct SourceReference { pub sheet: Option<String>, pub first: String, pub l
 
 /// Preserve relative/absolute anchors and quoted worksheet names. Never strip a foreign qualifier.
 pub fn parse_source_reference(input: &str) -> Result<SourceReference, String> {
-    let text = input.trim().strip_prefix('=').unwrap_or(input.trim());
+    let text = input.trim().strip_prefix('=').unwrap_or(input.trim()).trim();
     if text.len() > 4096 { return Err("SPARKLINE_REFERENCE_INVALID: source exceeds the reference budget".into()); }
     let mut quoted = false;
     let mut qualifier = None;
@@ -282,11 +288,13 @@ pub fn parse_source_reference(input: &str) -> Result<SourceReference, String> {
 
 fn quote_sheet(name: &str) -> String { format!("'{}'!", name.replace('\'', "''")) }
 pub fn normalize_source_reference(input: &str) -> Result<String, String> {
+    if source_kind(input)? != SparklineSourceKind::A1 { return Ok(input.to_owned()); }
     let source = parse_source_reference(input)?;
     Ok(format!("{}{}{}", source.sheet.as_deref().map(quote_sheet).unwrap_or_default(), source.first,
         source.last.map(|last| format!(":{last}")).unwrap_or_default()))
 }
 pub fn source_formula(sheet_name: &str, input: &str) -> Result<String, String> {
+    if source_kind(input)? != SparklineSourceKind::A1 { return Ok(input.trim().strip_prefix('=').unwrap_or(input.trim()).trim().to_owned()); }
     let mut source = parse_source_reference(input)?;
     if source.sheet.is_none() { source.sheet = Some(sheet_name.into()); }
     normalize_source_reference(&format!("{}{}{}", quote_sheet(source.sheet.as_deref().unwrap()), source.first,

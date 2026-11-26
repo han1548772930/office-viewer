@@ -158,6 +158,33 @@ function studioHost(t, merged = false) {
   return { ...state, studio, api: FOffice.newAPI(studio) }
 }
 
+test('confirmation subscriptions initialize with the real event hub and release the previous studio and disposed host', t => {
+  const state = studioHost(t, true), eventName = 'SheetCellShiftConfirmationRequested'
+  const replacement = new OfficeStudio({ workbook: sample(), sheetTextMeasure: text => [...text].length * 8 })
+  t.onTestFinished(() => replacement.dispose())
+  assert.equal(state.studio.events.hasListeners(eventName), true)
+  assert.equal(state.controller.runCellShiftCommand(SHEET_CELL_SHIFT_COMMANDS.down), false)
+  assert.ok(state.controller.request.value)
+
+  state.studioRef.value = replacement
+  assert.equal(state.controller.request.value, null)
+  assert.equal(state.studio.events.hasListeners(eventName), false)
+  assert.equal(replacement.events.hasListeners(eventName), true)
+  assert.equal(state.studio.executeCommandSync(SHEET_CELL_SHIFT_COMMANDS.down, {
+    unitId: state.view.value.id, sheetId: 'data', range: range(),
+  }), false)
+  assert.equal(state.controller.request.value, null)
+  assert.equal(state.controller.runCellShiftCommand(SHEET_CELL_SHIFT_COMMANDS.down), false)
+  assert.ok(state.controller.request.value)
+
+  state.controller.cancelCellShift(); state.dispose()
+  assert.equal(replacement.events.hasListeners(eventName), false)
+  assert.equal(replacement.executeCommandSync(SHEET_CELL_SHIFT_COMMANDS.down, {
+    unitId: state.view.value.id, sheetId: 'data', range: range(),
+  }), false)
+  assert.equal(state.controller.request.value, null)
+})
+
 test('studio UI dispatch uses the active non-last range and relies on registered content history and selection publication', t => {
   const state = studioHost(t), id = state.view.value.id
   state.studio.setSelections(id, 'data', [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
@@ -170,7 +197,7 @@ test('studio UI dispatch uses the active non-last range and relies on registered
 
 test('a studio structure observer that edits again does not receive an obsolete view or extra parent history update', t => {
   const state = studioHost(t); let reentered = false
-  state.studio.events.on('SheetStructureChanged', () => {
+  state.studio.events.addEvent('SheetStructureChanged', () => {
     if (reentered) return; reentered = true; state.api.getActiveWorkbook().getActiveSheet().getRange('A10').setValue('observer')
   })
   assert.equal(state.controller.runCellShiftCommand(SHEET_CELL_SHIFT_COMMANDS.down), true)

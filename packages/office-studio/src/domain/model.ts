@@ -6,11 +6,13 @@ import type { PivotRecordValue } from './record-value.ts'
 import type { ISlicerStylesDefinition, ITimelineStylesDefinition } from './slicer-styles.ts'
 import type { ITimelineRange, ITimelineDateCondition } from './timeline-filters.ts'
 import type { OfficeSparklineSource } from './sparkline-office-source.ts'
+import type { SparklineSourceReference } from './sparkline-source.ts'
 export type { SheetImageResource, SheetCellImage, SheetFloatingImage, SheetBackgroundImage } from './sheet-images.ts'
 export type { RecordValue, RecordSelection, PivotRecordValue } from './record-value.ts'
 export type { ISlicerStylesDefinition, ITimelineStylesDefinition } from './slicer-styles.ts'
 export type { ITimelineRange, ITimelineDateCondition } from './timeline-filters.ts'
 export type { OfficeSparklineSource } from './sparkline-office-source.ts'
+export type { SparklineBrokenSourceRange, SparklineSourceReference } from './sparkline-source.ts'
 
 export type OfficeKind = 'workbook' | 'document'
 
@@ -99,6 +101,7 @@ export interface SparklineSpec {
   showGradient?: boolean
   showRadius?: boolean
   officeSource?: OfficeSparklineSource
+  sourceReference?: SparklineSourceReference
 }
 
 export type OutlineAxis = 'row' | 'column'

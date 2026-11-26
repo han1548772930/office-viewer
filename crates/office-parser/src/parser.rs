@@ -682,6 +682,9 @@ fn parse_workbook(
     } else {
         crate::sheet_outline_sidecar::SheetOutlineSidecar::default()
     };
+    if let Some(details) = outline_sidecar.failure.as_deref() {
+        return Err(outline_import_failure(details));
+    }
     let mut sheets = workbook
         .sheets
         .iter()
@@ -692,6 +695,9 @@ fn parse_workbook(
         validation_sidecar.restore(sheet);
         dimension_sidecar.restore(sheet);
         outline_sidecar.restore(sheet);
+        if let Some(details) = outline_sidecar.failure.as_deref() {
+            return Err(outline_import_failure(details));
+        }
         if let Some(mut native_charts) = pivot_sidecar.native_charts.remove(&sheet.name) {
             let mut previous = std::mem::take(&mut sheet.charts);
             for native in &mut native_charts {
@@ -782,6 +788,15 @@ fn parse_workbook(
         payload: DocumentModel::Spreadsheet(payload),
         diagnostics,
     })
+}
+
+fn outline_import_failure(details: &str) -> ParseFailure {
+    let resource_limit = details.to_ascii_lowercase().contains("budget");
+    ParseFailure::new(
+        if resource_limit { crate::model::ParseErrorCode::ParserFailure } else { crate::model::ParseErrorCode::InvalidOfficeFile },
+        if resource_limit { "Worksheet outlines exceed the parser resource limit" } else { "Could not preserve worksheet outlines from the XLSX file" },
+        Some(details.to_owned()),
+    )
 }
 
 fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut ValidationSidecar, sparkline_sidecar: &mut SparklineSidecar, conditional_format_sidecar: &mut ConditionalFormatSidecar) -> SheetPayload {

@@ -149,7 +149,8 @@ export class EventHub<TEvents extends object> {
     const listeners = this.listeners.get(event)
     if (!listeners) return errors
     for (const listener of [...listeners]) {
-      if (shouldContinue && !shouldContinue()) break
+      try { if (shouldContinue && !shouldContinue()) break }
+      catch (error) { errors.push({ eventName: event, error }); break }
       try { (listener as Listener<TEvents[K]>)(createPayload()) }
       catch (error) { errors.push({ eventName: event, error }) }
     }

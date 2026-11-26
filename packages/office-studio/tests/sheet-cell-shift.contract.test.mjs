@@ -367,8 +367,8 @@ test('implicit command dispatch follows the active non-last selection and record
 test('merge confirmation captures content/history versions and creates no history until the complete request is accepted', t => {
   const model = sample(); model.sheets[0].mergedRanges = [range(1, 2, 0, 2)]; model.sheets[0].cells['1:0'] = cell(1, 0, 'master')
   const { studio, book } = runtime(t, model), requests = [], structures = [], count = depth(studio)
-  studio.events.on('SheetCellShiftConfirmationRequested', event => requests.push(cloneModel(event)))
-  studio.events.on('SheetStructureChanged', event => structures.push(cloneModel(event)))
+  studio.events.addEvent('SheetCellShiftConfirmationRequested', event => requests.push(cloneModel(event)))
+  studio.events.addEvent('SheetStructureChanged', event => structures.push(cloneModel(event)))
   assert.equal(studio.executeCommandSync(SHEET_CELL_SHIFT_CONFIRM_COMMANDS.down, { range: range(1) }), false)
   const request = requests[0]; assert.equal(depth(studio), count); assert.deepEqual(request.mergeRanges, [range(1, 2, 0, 2)])
   assert.equal(request.input.expectedRevision, studio.getWorkbookRevision(book.getId()))
@@ -381,7 +381,7 @@ test('merge confirmation captures content/history versions and creates no histor
 test('stale revisions or history generations reject confirmation without publishing or replacing newer content', t => {
   const model = sample(); model.sheets[0].mergedRanges = [range(1, 2, 0, 2)]
   const { studio, book } = runtime(t, model), requests = []
-  studio.events.on('SheetCellShiftConfirmationRequested', event => requests.push(cloneModel(event)))
+  studio.events.addEvent('SheetCellShiftConfirmationRequested', event => requests.push(cloneModel(event)))
   studio.executeCommandSync(SHEET_CELL_SHIFT_COMMANDS.down, { range: range(1) }); const request = requests[0]
   book.getActiveSheet().getRange('A10').setValue('newer'); const before = cloneModel(book.save()), count = depth(studio)
   assert.throws(() => studio.executeCommandSync(request.commandId, { ...request.input, dismantlePartialMerges: true }), /已更改/)
@@ -403,7 +403,7 @@ test('registered vertical confirm commands reject filtered tails before merge ev
   const model = sample(); model.sheets[0].autoFilter = { range: range(0, 6, 0, 3), columns: {}, filteredRows: [5] }
   model.sheets[0].cells['1:1'] = cell(1, 1, 'move')
   const { studio, book } = runtime(t, model), requests = [], before = cloneModel(book.save()), count = depth(studio)
-  studio.events.on('SheetCellShiftConfirmationRequested', event => requests.push(event))
+  studio.events.addEvent('SheetCellShiftConfirmationRequested', event => requests.push(event))
   for (const id of [SHEET_CELL_SHIFT_CONFIRM_COMMANDS.down, SHEET_CELL_SHIFT_CONFIRM_COMMANDS.up]) {
     assert.throws(() => studio.executeCommandSync(id, { range: range(1, 1, 0, 3) }), /筛选隐藏行/)
     assert.deepEqual(book.save(), before); assert.equal(depth(studio), count)
@@ -416,7 +416,7 @@ test('registered vertical confirm commands reject filtered tails before merge ev
 test('observer reentry retains the committed shift and its later edit as two separate content records', t => {
   const model = sample(); model.sheets[0].cells['1:1'] = cell(1, 1, 'move')
   const { studio, book } = runtime(t, model); let reentered = false
-  studio.events.on('SheetStructureChanged', () => {
+  studio.events.addEvent('SheetStructureChanged', () => {
     if (reentered) return; reentered = true; book.getActiveSheet().getRange('D10').setValue('observer')
   })
   studio.executeCommandSync(SHEET_CELL_SHIFT_COMMANDS.down, { range: range(1) })

@@ -47,19 +47,21 @@ API 在准备及提交前检查 unit/model identity、baseRevision、历史 gene
 
 [use-sheet-cell-shift.ts](../../packages/office-studio/src/components/spreadsheet/use-sheet-cell-shift.ts) 与 [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 接 API 或 standalone 共享 planner。standalone 先准备公式/自动行高视图再发布，同 ID 的宿主替换也检查原 identity/signature。Studio 在事件后再核对准确的 baseRevision+1；applyView 重入修改了未提交 view 时不回传该 view；选择、父回调和迟到回焦都检查 generation/当前发布。离开再返回相同 ID 不能授权旧候选。确认失败保留弹窗与可修复错误。
 
+2026-11-26 用户报告工作台初始化时 `studio.events.on is not a function`。移位 controller 的订阅已改为现有 `EventHub.addEvent()`，保留 watcher 清理时的 `dispose()`；四个契约草稿文件中的八处同类旧调用也已迁移。补充真实 OfficeStudio 事件中心的初始化、替换 Studio 解绑与宿主销毁草稿。此次只做源码搜索和差异审阅，未执行测试或浏览器验证；其他控制台警告没有具体文本，尚未定位。
+
 [SheetCellShiftConfirmationDialog.vue](../../packages/office-studio/src/components/spreadsheet/SheetCellShiftConfirmationDialog.vue) 使用 `antdv-next` Modal/Alert，复用统一 ConfigProvider/token。旧工作台的 cell-range pending、独立合并 Modal 和独立移位算法已移除；图表回焦、范围主题及 Canvas/Ant 输入的竞争弹层门禁保留。[sheet-cell-range-move.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-cell-range-move.ts) 现在仅是旧 view 接口到共享 planner 的兼容适配，旧 move→reference helper 顺序仍只变换公式一次。
 
 ## 未运行草稿与静态核对
 
-本批三个新文件共有 **56 条顶层 test 声明**，只按入口文本计数，循环子场景不另计。原范围主题基础 46、局部结构 32 是其他批次，不并入本批。
+本批三个新文件共有 **57 条顶层 test 声明**，只按入口文本计数，循环子场景不另计。原范围主题基础 46、局部结构 32 是其他批次，不并入本批。
 
 | 文件 | 草稿数 | 计划验证 |
 | --- | ---: | --- |
 | [sheet-cell-shift.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-shift.contract.test.mjs) | 33（24 纯契约 + 9 API/Facade） | 四方向、范围优先、稀疏作者/公式/规则、容量/Office 边界、资源/筛选确认、权限/stop 验证、历史、内部重开与 observer 重入。 |
-| [sheet-cell-shift-host.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-shift-host.contract.test.mjs) | 15（11 standalone + 4 Studio） | 确认捕获、相同 ID/JSON 替换、切表/用户/激活 generation、prepare/apply/selection/observer 重入、过滤尾部及迟到回焦。 |
+| [sheet-cell-shift-host.contract.test.mjs](../../packages/office-studio/tests/sheet-cell-shift-host.contract.test.mjs) | 16（11 standalone + 5 Studio） | 确认捕获、真实事件中心初始化/解绑、相同 ID/JSON 替换、切表/用户/激活 generation、prepare/apply/selection/observer 重入、过滤尾部及迟到回焦。 |
 | [sheet-cell-shift.browser.test.mjs](../../packages/office-studio/tests/sheet-cell-shift.browser.test.mjs) + [fixture](../../packages/office-studio/tests/fixtures/sheet-cell-shift.html) | 8 | 真右键/活动非最后选区、取消/接受、较新内容/切表、受保护项禁用、筛选确认拒绝、暗色/grid 与 Ant 合成 composition。 |
 
-同时静态修正既有 [cell-range move 草稿](../../packages/office-studio/tests/sheet-cell-range-move.contract.test.mjs)、[editor-store 历史草稿](../../packages/office-studio/tests/editor-store.contract.test.mjs) 的来源/公式兼容预期及 [右键草稿](../../packages/office-studio/tests/sheet-context-menu.contract.test.mjs) 的确认 ID/次序与轴 range 参数。这些原有 test 入口不计入新增 56。
+同时静态修正既有 [cell-range move 草稿](../../packages/office-studio/tests/sheet-cell-range-move.contract.test.mjs)、[editor-store 历史草稿](../../packages/office-studio/tests/editor-store.contract.test.mjs) 的来源/公式兼容预期及 [右键草稿](../../packages/office-studio/tests/sheet-context-menu.contract.test.mjs) 的确认 ID/次序与轴 range 参数。这些原有 test 入口不计入新增 57。
 
 已做只读源码/在途文件审阅、入口和声明计数、补实现与文档；**没有运行任何测试或类型/构建/Rust/WASM/浏览器/性能检查**。浏览器草稿强制 Canvas2D；合成 composition 不证明真实系统 IME。草稿里的内部保存重开也不证明 Office 文件保真。
 

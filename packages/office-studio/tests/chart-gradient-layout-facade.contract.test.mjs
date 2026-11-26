@@ -129,7 +129,7 @@ test('one plot drag result uses one existing author command and history entry wi
     const chart = await sheet.insertChart(sheet.newChart('column').setSource('A1:C4').setValueFields([1, 2]).setSize(500, 320)
       .setTitle({ text: 'Main', rotate: 20 }).setSubtitle({ text: 'Sub', color: '#123456' }).setOptions({ plotArea: manual }).build())
     const before = chart.getInfo(), beforeLayout = chart.getLayout(), revision = studio.getWorkbookRevision(workbook.getId()), commands = []
-    subscription = studio.events.on('CommandExecuted', event => { if (event.id === 'sheet.command.update-chart') commands.push(event.params) })
+    subscription = studio.events.addEvent('CommandExecuted', event => { if (event.id === 'sheet.command.update-chart') commands.push(event.params) })
     const target = plotInteraction.createChartPlotAreaTarget('column', beforeLayout.frame, beforeLayout.plot, beforeLayout.plot, true)
     const resized = plotInteraction.chartPlotAreaDragLayout(target, before.size, { x: 40, y: 20 }, 'se')
     assert.equal(await chart.setOptions({ plotArea: resized }), chart)

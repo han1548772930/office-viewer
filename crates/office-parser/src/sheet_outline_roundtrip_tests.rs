@@ -181,18 +181,18 @@ fn outline_and_filter_share_one_sheet_pr_and_retain_independent_hidden_causes() 
 }
 
 #[test]
-fn duplicate_and_foreign_project_extensions_cannot_replace_native_outline_state() {
+fn duplicate_and_foreign_project_extensions_fail_without_returning_incomplete_state() {
     let bytes = export(source()); let duplicate = edit_sheet(&bytes, |sheet| {
         let extensions = sheet.child_mut("extLst").unwrap();
         let candidate = extensions.children.iter().find(|node| node.attrs.get("uri").map(String::as_str) == Some(SHEET_OUTLINE_EXTENSION_URI)).unwrap().clone();
         extensions.push(candidate);
     });
-    assert_eq!(reopened(&duplicate)["sourceOutline"]["projectOutlineExtension"]["restored"], false);
+    assert!(parse_office_bytes(&duplicate, "duplicate-outline.xlsx").is_err());
     let foreign = edit_sheet(&bytes, |sheet| {
         let extension = sheet.child_mut("extLst").unwrap().children.iter_mut().find(|node| node.attrs.get("uri").map(String::as_str) == Some(SHEET_OUTLINE_EXTENSION_URI)).unwrap();
         extension.children[0].namespace = "urn:foreign:outline".into(); extension.children[0].set_attr("xmlns:oo", "urn:foreign:outline");
     });
-    assert_eq!(reopened(&foreign)["sourceOutline"]["projectOutlineExtension"]["restored"], false);
+    assert!(parse_office_bytes(&foreign, "foreign-outline.xlsx").is_err());
 }
 
 #[test]

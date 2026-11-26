@@ -624,7 +624,7 @@ const { runDrawingCommand, error: drawingError } = useSheetDrawings({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
   selection: () => selectedDrawingRefs.value, select: refs => drawingSelection.set(refs), userId: () => userId.value,
   active: () => workbenchActive.value, finishEdit,
-  blocked: () => Boolean(editComposing.value || imageUiOpen.value || rangeThemePending.value || cellShiftPending.value || axisSizePending.value || mergeRequest.value || painterRequest.value),
+  blocked: () => Boolean(editComposing.value || imageUiOpen.value || outlineUiOpen.value || rangeThemePending.value || cellShiftPending.value || axisSizePending.value || mergeRequest.value || painterRequest.value),
   prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
   changed: options => { if (options?.current && !options.current()) return; clearPainterSession(); if (!options?.current || options.current()) commitHistory({ ...options, prepared: true }) },
   notify: message => emit('notify', { type: 'error', message }), focus: () => spreadsheetCanvas.value?.focus(),
@@ -2949,7 +2949,7 @@ onActivated(() => { workbenchActive.value = true })
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
     <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :keep-edit-focus="keepCellEditFocus" :prepare-fill="prepareCanvasFillGesture"
       :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
-      :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
+      :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :sparkline-metadata="workbook.metadata" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :workbook-id="workbook.id"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :workbook-history-generation="studio && workbook.id ? studio.editor.history.captureSavepoint(workbook.id).generation : undefined"

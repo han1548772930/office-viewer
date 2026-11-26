@@ -476,10 +476,46 @@ export type { SparklineGroupRequest, SparklineSettingsInput, ResolvedSparklineSe
 export { SET_SPARKLINES_COMMAND, normalizeSparklinePatches, assertSparklineReadPermission, assertSparklineMutationPermission,
   applySparklinePatches } from './features/sparkline/sparkline-command.ts'
 export type { SparklineMutationContext, SparklineCommandParams } from './features/sparkline/sparkline-command.ts'
+export { FSparkline, FSparklineGroup } from './api/sparklines.ts'
+export { SparklineTypeEnum, SparklineThemeTypeEnum, SpacialShowAsEnum, SparklineExtremumTypeEnum,
+  sparklineTypeFromPublic, sparklineConfigFromPublic, sparklineConfigToPublic } from './features/sparkline/sparkline-api-types.ts'
+export type { ISparklinePointConfig, ISparklineAxisConfig, ISparklineExtremumConfig, ISparklinePoints,
+  ISparklineGroupConfig, ISparklineSourceRange, ISparklineGroup, ISparklineSerializedGroup } from './features/sparkline/sparkline-api-types.ts'
+export { SparklineRangeMatrix } from './features/sparkline/sparkline-range-matrix.ts'
+export type { SparklineMatrixRange, SparklineMatrixData } from './features/sparkline/sparkline-range-matrix.ts'
+export { SPARKLINE_PUBLIC_COMMANDS } from './api/sparkline-public-commands.ts'
+export type { AddSheetSparklineCommandInput, RemoveSheetSparklineCommandInput, SetSheetSparklineCommandInput } from './api/sparkline-public-commands.ts'
+export { SHEET_SPARKLINE_PLUGIN, serializeWorkbookSparklineResource, deserializeWorkbookSparklineResource,
+  importWorkbookSparklineResources } from './features/sparkline/sparkline-resources.ts'
+export type { SparklineResource, SparklineResourceGroup } from './features/sparkline/sparkline-resources.ts'
+export { createSparklineSourceChangeDetector } from './features/sparkline/sparkline-source-changes.ts'
 export { createSparklineCommands, parseSparklineRange, readSparklineValues, readSparklineSamples, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
 export type { SparklineRenderContext, SparklineExtrema, SparklineSample } from './features/sparkline/sparkline-render.ts'
 export { parseSparklineReference, parseSparklineRangeList, sparklineCellAddress, sparklineRangeString,
   sparklineSheetQualifier, shiftSparklineReference } from './features/sparkline/sparkline-reference.ts'
 export type { SparklineAddress, SparklineReference } from './features/sparkline/sparkline-reference.ts'
+export { normalizeSparklineSourceReference, parseSparklineSource, normalizeSparklineSourceText, resolveSparklineSource,
+  sparklineSourceToPublicRange, shiftSparklineSource } from './features/sparkline/sparkline-source.ts'
+export type { SparklineSourceSheet, SparklineSourceWorkbook, SparklineSource, SparklineSourceInput,
+  SparklineSourceResolution, SparklinePublicSourceRange } from './features/sparkline/sparkline-source.ts'
 export { default as SparklinePanel } from './components/spreadsheet/SparklinePanel.vue'
+
+export { DimensionOutlineAxis, DimensionOutlineErrorReason, SheetOutlineError, MAX_SHEET_OUTLINE_DEPTH,
+  SHEET_OUTLINE_PLUGIN, sheetOutlineErrorMessage } from './features/sheet-outline/sheet-outline-types.ts'
+export type { IDimensionOutline, SheetOutlineExtent, SheetOutlineScope, SheetOutlineHiddenRange, SheetOutlineTreeNode,
+  SheetDimensionOutlineResource, SheetsOutlineResource } from './features/sheet-outline/sheet-outline-types.ts'
+export { CHANGE_SHEET_OUTLINE_COMMAND, createSheetOutlineState, addSheetOutlineGroup, removeSheetOutlineGroup,
+  setSheetOutlineCollapsed, setSheetOutlineSummaryPosition, setSheetOutlineLevel, getSheetOutlineUpdate,
+  getSheetOutlineHiddenSpans, validateSheetOutlineState, buildSheetOutlineTree } from './features/sheet-outline/sheet-outline.ts'
+export type { OutlineAxisState, SheetOutlineOperation, OutlineRange, SheetOutlineAction, ChangeSheetOutlineInput,
+  OutlineWorksheet } from './features/sheet-outline/sheet-outline.ts'
+export { getSheetDimensionOutlines, serializeSheetOutlineResource, deserializeSheetOutlineResource,
+  serializeWorkbookOutlineResource, deserializeWorkbookOutlineResource } from './features/sheet-outline/sheet-outline-resources.ts'
+export { transformSheetOutlineForAxisEdit } from './features/sheet-outline/sheet-outline-structure.ts'
+export { getSheetOutlineViewModels, getSheetOutlineLevelControls } from './features/sheet-outline/sheet-outline-view.ts'
+export type { SheetOutlineViewModel } from './features/sheet-outline/sheet-outline-view.ts'
+export { SHEET_OUTLINE_CORE_COMMAND_IDS, SHEET_OUTLINE_UI_COMMAND_IDS, SHEET_OUTLINE_LOCAL_COMMAND_IDS,
+  SHEET_OUTLINE_COMMAND_IDS, resolveSheetOutlineCommand, getSheetOutlinePromptChoices } from './features/sheet-outline/sheet-outline-command.ts'
+export type { SheetOutlineCommandInput, SheetOutlineCommandContext, SheetOutlinePromptChoice,
+  SheetOutlineCommandResolution } from './features/sheet-outline/sheet-outline-command.ts'
 

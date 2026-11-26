@@ -56,7 +56,7 @@ fn source_from_metadata(metadata: Option<&Value>) -> Result<(Option<NativeOutlin
     let Some(raw) = metadata.and_then(|value| value.get("outlineOfficeSource").or_else(|| value.pointer("/source/sourceOutline")).or_else(|| value.get("sourceOutline")))
         .filter(|value| !value.is_null()) else { return Ok((None, BTreeMap::new())); };
     let candidate = raw.get("native").or_else(|| raw.get("authored")).unwrap_or(raw);
-    let source = if candidate.is_null() { None } else {
+    let mut source = if candidate.is_null() { None } else {
         let source: NativeOutlineSource = serde_json::from_value(candidate.clone()).map_err(|error| ExportError::invalid(format!("invalid outline Office source: {error}")))?;
         validate_source(&source).map_err(ExportError::invalid)?;
         Some(source)
@@ -65,6 +65,20 @@ fn source_from_metadata(metadata: Option<&Value>) -> Result<(Option<NativeOutlin
         let snapshot: OutlineExtension = serde_json::from_value(snapshot.clone()).map_err(|error| ExportError::invalid(format!("invalid retained outline snapshot: {error}")))?;
         snapshot.extra
     } else { BTreeMap::new() };
+    if let Some(current) = &mut source {
+        if let Some(authored) = raw.get("authored").or_else(|| raw.pointer("/projectSnapshot/source")).filter(|value| !value.is_null()) {
+            let authored: NativeOutlineSource = serde_json::from_value(authored.clone()).map_err(|error| ExportError::invalid(format!("invalid authored outline source: {error}")))?;
+            validate_source(&authored).map_err(ExportError::invalid)?;
+            for (key, value) in authored.extra { current.extra.entry(key).or_insert(value); }
+        }
+        if raw.get("native").is_some() {
+            let unknown = raw.as_object().unwrap().iter().filter(|(key, _)| !matches!(key.as_str(),
+                "version" | "native" | "authored" | "projectSnapshot" | "projectOutlineExtension" | "manualVisibilityNormalized"))
+                .map(|(key, value)| (key.clone(), value.clone())).collect::<serde_json::Map<String, Value>>();
+            if !unknown.is_empty() { current.extra.insert("retainedImportMetadata".into(), Value::Object(unknown)); }
+        }
+        validate_source(current).map_err(ExportError::invalid)?;
+    }
     Ok((source, extra))
 }
 
@@ -211,6 +225,10 @@ impl WorksheetOutlinePlan {
             let projection = projection_at(&self.columns, pair[0]);
             if base.is_none() && projection.is_none() { continue; }
             let mut col = base.map(|(_, _, node)| node.clone()).unwrap_or_else(|| Element::new(MAIN_NAMESPACE, "col"));
+            // xlsx_dimensions supplies an unqualified standalone fragment.
+            // Its columns belong to the containing worksheet main namespace.
+            col.namespace = MAIN_NAMESPACE.into();
+            if col.attrs.get("xmlns").is_some_and(String::is_empty) { col.remove_attr("xmlns"); }
             col.set_attr("min", (pair[0] + 1).to_string()); col.set_attr("max", pair[1].to_string());
             if let Some(run) = projection {
                 if run.level > 0 { col.set_attr("outlineLevel", run.level.to_string()); }
@@ -253,5 +271,105 @@ impl WorksheetOutlinePlan {
         let state = serde_json::to_string(&extension).map_err(|error| ExportError::invalid(error.to_string()))?;
         if state.len() > MAX_OUTLINE_JSON_BYTES { return Err(ExportError::invalid("outline snapshot exceeds the parser's 32 MiB budget")); }
         Ok(format!("<ext uri=\"{SHEET_OUTLINE_EXTENSION_URI}\"><oo:outline xmlns:oo=\"{SHEET_OUTLINE_NAMESPACE}\" version=\"1\">{}</oo:outline></ext>", esc(&state)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use office_io_common::sheet_outline_source::{read_worksheet_outline, infer_native_state};
+    use std::io::Cursor;
+
+    // Meaningful draft checks for the deferred shared Rust verification pass.
+    fn input(value: Value) -> SheetInput { serde_json::from_value(value).unwrap() }
+    fn fixture() -> SheetInput { input(json!({ "rowCount": 20, "columnCount": 10, "outline": {
+        "summaryAbove": false, "summaryLeft": false, "futureState": { "tag": "state" }, "groups": [
+            { "id": "outer", "axis": "row", "start": 1, "end": 8, "collapsed": false },
+            { "id": "inner", "axis": "row", "start": 3, "end": 5, "collapsed": true, "futureGroup": { "tag": [1, 2] } },
+            { "id": "col", "axis": "column", "start": 2, "end": 4, "collapsed": true } ] } })) }
+
+    #[test]
+    fn nested_detail_and_summary_rows_are_sorted_unique_and_keep_independent_hidden_state() {
+        let plan = prepare(&fixture()).unwrap();
+        assert_eq!(plan.row_indices().collect::<Vec<_>>(), (1..=8).collect::<Vec<_>>());
+        assert!(!plan.row_hidden(2)); assert!(plan.row_hidden(3)); assert!(!plan.row_hidden(6));
+        assert!(plan.row_attributes(3).contains("outlineLevel=\"2\""));
+        assert!(plan.row_attributes(6).contains("collapsed=\"1\""));
+        assert!(!plan.row_attributes(8).contains("collapsed="));
+    }
+
+    #[test]
+    fn column_projection_splits_geometry_runs_and_keeps_main_namespace_widths_and_manual_hidden() {
+        let plan = prepare(&fixture()).unwrap();
+        let xml = plan.columns_xml("<cols><col min=\"1\" max=\"6\" width=\"20\" customWidth=\"1\" hidden=\"1\"/></cols>").unwrap();
+        let columns = parse(&xml).unwrap();
+        assert!(columns.children.iter().all(|column| column.namespace == MAIN_NAMESPACE));
+        assert!(columns.children.iter().all(|column| column.attrs.get("width").map(String::as_str) == Some("20")));
+        assert!(columns.children.iter().all(|column| column.attrs.get("hidden").map(String::as_str) == Some("1")));
+        assert!(columns.children.iter().any(|column| column.attrs.get("min").map(String::as_str) == Some("3")
+            && column.attrs.get("max").map(String::as_str) == Some("5") && column.attrs.get("outlineLevel").map(String::as_str) == Some("1")));
+        let worksheet = format!("<worksheet xmlns=\"{MAIN_NAMESPACE}\">{xml}<sheetData/></worksheet>");
+        let native = read_worksheet_outline(Cursor::new(worksheet.as_bytes()), false).unwrap();
+        assert_eq!(infer_native_state(&native.source).groups.iter().filter(|group| group.axis == "column").count(), 1);
+    }
+
+    #[test]
+    fn outline_properties_combine_with_filter_mode_in_one_native_container() {
+        let mut sheet = fixture(); sheet.outline.as_mut().unwrap().summary_above = true;
+        let properties = parse(&prepare(&sheet).unwrap().sheet_properties_xml(true).unwrap()).unwrap();
+        assert_eq!(properties.name, "sheetPr"); assert_eq!(properties.children.len(), 1);
+        assert_eq!(properties.attrs.get("filterMode").map(String::as_str), Some("1"));
+        assert_eq!(properties.children[0].attrs.get("summaryBelow").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn eight_equal_layers_are_native_clipped_but_the_snapshot_keeps_every_id_and_unknown_field() {
+        let mut sheet = fixture();
+        let state = sheet.outline.as_mut().unwrap(); state.groups = (0..8).map(|index| office_io_common::sheet_outline_source::SheetOutlineGroup {
+            id: format!("layer-{index}"), axis: "row".into(), start: 1, end: 8, collapsed: true, extra: BTreeMap::new() }).collect();
+        let plan = prepare(&sheet).unwrap();
+        assert!(plan.warnings.iter().any(|warning| warning.starts_with("OUTLINE_DEPTH_SNAPSHOT")));
+        assert!(plan.row_attributes(2).contains("outlineLevel=\"7\""));
+        let format = plan.format_xml("<sheetFormatPr defaultRowHeight=\"20\"/>").unwrap();
+        let mut prefix = format!("<worksheet xmlns=\"{MAIN_NAMESPACE}\">{}{}<sheetData>", plan.sheet_properties_xml(false).unwrap(), format);
+        for row in plan.row_indices() { prefix.push_str(&format!("<row r=\"{}\"{} hidden=\"1\"/>", row + 1, plan.row_attributes(row))); }
+        prefix.push_str("</sheetData>");
+        let extension = plan.extension_xml(&sheet, &prefix).unwrap();
+        let xml = format!("{prefix}<extLst>{extension}</extLst></worksheet>");
+        let read = read_worksheet_outline(Cursor::new(xml.as_bytes()), false).unwrap();
+        assert_eq!(read.extension.unwrap().state, sheet.outline.unwrap());
+    }
+
+    #[test]
+    fn a_full_declared_axis_boundary_keeps_extent_without_creating_an_extra_summary_dimension() {
+        let mut sheet = fixture(); let state = sheet.outline.as_mut().unwrap(); state.groups.truncate(1);
+        state.groups[0].start = 0; state.groups[0].end = 19; state.groups[0].collapsed = true;
+        let plan = prepare(&sheet).unwrap();
+        assert_eq!(plan.row_indices().collect::<Vec<_>>(), (0..20).collect::<Vec<_>>());
+        assert!(plan.warnings.iter().any(|warning| warning.starts_with("OUTLINE_BOUNDARY_SNAPSHOT")));
+        assert!(plan.row_hidden(19)); assert_eq!(plan.row_attributes(20), "");
+    }
+
+    #[test]
+    fn future_source_state_and_namespace_attributes_survive_prepare_and_export() {
+        let source = json!({ "summaryAbove": false, "summaryLeft": false, "zeroHeight": false,
+            "rowRuns": [{ "start": 1, "end": 1, "level": 1, "collapsed": false, "hidden": null,
+                "attributes": { "{urn:future}flag": "f:value" }, "namespaces": { "f": "urn:future" } }], "columnRuns": [], "futureOfficeSource": { "tag": [1, 2] } });
+        let mut sheet = fixture(); sheet.metadata = Some(json!({ "outlineOfficeSource": { "native": source, "futureImport": { "kept": true } } }));
+        let plan = prepare(&sheet).unwrap();
+        let row = parse(&format!("<row{}/>", plan.row_attributes(1))).unwrap();
+        assert_eq!(row.attribute_ns("urn:future", "flag"), Some("f:value"));
+        assert_eq!(plan.source.as_ref().unwrap().extra["futureOfficeSource"], json!({ "tag": [1, 2] }));
+        assert_eq!(plan.source.as_ref().unwrap().extra["retainedImportMetadata"]["futureImport"], json!({ "kept": true }));
+    }
+
+    #[test]
+    fn crossing_invalid_counts_and_oversized_depth_reject_before_any_projection() {
+        let mut sheet = fixture(); sheet.outline.as_mut().unwrap().groups[1].end = 11;
+        assert!(prepare(&sheet).is_err());
+        let sheet = input(json!({ "rowCount": 0 })); assert!(prepare(&sheet).is_err());
+        let mut sheet = fixture(); sheet.outline.as_mut().unwrap().groups = (0..9).map(|index| office_io_common::sheet_outline_source::SheetOutlineGroup {
+            id: format!("layer-{index}"), axis: "row".into(), start: 1, end: 8, ..Default::default() }).collect();
+        assert!(prepare(&sheet).is_err());
     }
 }

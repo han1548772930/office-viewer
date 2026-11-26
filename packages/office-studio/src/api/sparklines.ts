@@ -1,11 +1,16 @@
 import type { ApiRange } from './events.ts'
 import type { FWorksheet } from './facade.ts'
 import type { OfficeStudio } from './office-studio.ts'
+import type { SpreadsheetSheet, WorkbookModel } from '../domain/model.ts'
+import { cloneModel } from '../domain/serialization.ts'
 import type { SparklineGroupInfo } from '../features/sparkline/sparkline-model.ts'
 import { readSparklineGroups } from '../features/sparkline/sparkline-model.ts'
-import { sparklineConfigFromPublic, sparklineConfigToPublic, type ISparklineGroup, type ISparklineGroupConfig } from '../features/sparkline/sparkline-api-types.ts'
+import { sparklineConfigFromPublic, sparklineConfigToPublic, type ISparklineGroup, type ISparklineGroupConfig, type ISparklineSourceRange } from '../features/sparkline/sparkline-api-types.ts'
 import { SparklineRangeMatrix } from '../features/sparkline/sparkline-range-matrix.ts'
 import { parseSparklineReference, sparklineCellAddress, sparklineRangeString } from '../features/sparkline/sparkline-reference.ts'
+import { sparklineSourceToPublicRange } from '../features/sparkline/sparkline-source.ts'
+
+interface SparklineHandleMutationContext { expectedRevision: number; historyGeneration: number; expectedUserId: string }
 
 export function sparklineApiRangeReference(studio: OfficeStudio, unitId: string, sheetId: string, range: ApiRange, target = false): string {
   if (!range || typeof range !== 'object' || Array.isArray(range)
@@ -21,31 +26,55 @@ export function sparklineApiRangeReference(studio: OfficeStudio, unitId: string,
 }
 
 /** Group snapshots are detached; editing the matrix never bypasses the command transaction. */
-export function sparklineGroupToPublic(group: SparklineGroupInfo, resolveSheetId?: (name: string) => string | undefined): ISparklineGroup {
-  const sparklines = new SparklineRangeMatrix<ApiRange>()
+export function sparklineGroupToPublic(group: SparklineGroupInfo, resolveSheetId?: (name: string) => string | undefined,
+  context?: { host: SpreadsheetSheet; workbook: WorkbookModel }): ISparklineGroup {
+  const sparklines = new SparklineRangeMatrix<ISparklineSourceRange>()
   for (const member of group.members) {
-    const target = parseSparklineReference(member.address), source = parseSparklineReference(member.sourceRange)
-    if (!target || !source) throw new TypeError('迷你图组包含失效的区域引用。')
-    sparklines.setValue(target.range.startRow, target.range.startCol, {
-      startRow: source.range.startRow, startColumn: source.range.startCol, endRow: source.range.endRow, endColumn: source.range.endCol,
-      ...(source.sheetName === undefined ? {} : { sheetId: resolveSheetId?.(source.sheetName) ?? source.sheetName }),
-    })
+    const target = parseSparklineReference(member.address)
+    if (!target) throw new TypeError('迷你图组包含失效的目标区域。')
+    const spec = context?.host.cells[`${target.range.startRow}:${target.range.startCol}`]?.sparkline
+    const input = { sourceRange: member.sourceRange, sourceReference: spec?.sourceReference }
+    const fallbackHost = { id: 'sparkline-host', name: 'sparkline-host' }
+    const range = context ? sparklineSourceToPublicRange(input, context.host, context.workbook)
+      : sparklineSourceToPublicRange(input, fallbackHost, { sheets: [fallbackHost] })
+    if (!context && range.sheetId !== undefined) range.sheetId = resolveSheetId?.(range.sheetId) ?? range.sheetId
+    sparklines.setValue(target.range.startRow, target.range.startCol, { ...range,
+      ...(spec?.officeSource === undefined ? {} : { officeStudioOfficeSource: cloneModel(spec.officeSource) }) })
   }
   return { config: sparklineConfigToPublic(group.settings), sparklines }
 }
 
 class SparklineHandleOwner {
   private readonly generation: number
-  constructor(protected readonly studio: OfficeStudio, protected readonly worksheet: FWorksheet, protected readonly groupId: string) {
+  constructor(protected readonly studio: OfficeStudio, protected readonly worksheet: FWorksheet, protected groupId: string) {
     this.generation = studio.editor.history.captureSavepoint(worksheet.unitId).generation
   }
-  protected currentGroup(): SparklineGroupInfo {
+  protected assertOwner(): void {
     if (this.studio.isDisposed || !this.studio.getWorkbookModel(this.worksheet.unitId)
       || this.studio.editor.history.captureSavepoint(this.worksheet.unitId).generation !== this.generation) throw new Error('迷你图 API 所属工作簿已关闭或被替换。')
+  }
+  protected currentGroup(): SparklineGroupInfo {
+    this.assertOwner()
     const sheet = this.studio.getWorkbookModel(this.worksheet.unitId)?.sheets.find(sheet => sheet.id === this.worksheet.id)
     const found = sheet && readSparklineGroups(sheet).find(group => group.groupId === this.groupId)
     const group = found && this.worksheet.getSparklineGroups(found.targetRanges).find(group => group.groupId === this.groupId)
     if (!group) throw new Error('迷你图组已删除或重新组合，请重新获取。')
+    return group
+  }
+  protected mutationContext(): SparklineHandleMutationContext {
+    this.assertOwner()
+    return { expectedRevision: this.studio.getWorkbookRevision(this.worksheet.unitId), historyGeneration: this.generation, expectedUserId: this.studio.currentUserId }
+  }
+  protected followCommittedGroup(changed: boolean, context: SparklineHandleMutationContext, targets: readonly string[]): SparklineGroupInfo | undefined {
+    this.assertOwner()
+    if (this.studio.currentUserId !== context.expectedUserId) throw new Error('迷你图 API 的当前用户已改变。')
+    // Observers may synchronously edit or undo the workbook before the command
+    // returns. Do not bind this handle to a later operation's replacement.
+    if (!changed || this.studio.getWorkbookRevision(this.worksheet.unitId) !== context.expectedRevision + 1) return undefined
+    const groups = this.worksheet.getSparklineGroups(targets)
+    const group = this.groupId.startsWith('ungrouped:') ? groups.length === 1 ? groups[0] : undefined
+      : groups.find(group => group.groupId === this.groupId)
+    if (group) this.groupId = group.groupId
     return group
   }
   protected sourceReferences(ranges: readonly ApiRange[], target = false): string[] {
@@ -62,9 +91,12 @@ export class FSparkline extends SparklineHandleOwner {
     const sources = this.sourceReferences([sourceRange]), targets = this.sourceReferences([targetRange], true)
     const target = parseSparklineReference(targets[0]!)!
     if (target.range.startRow !== target.range.endRow || target.range.startCol !== target.range.endCol) throw new RangeError('单个迷你图必须放置在一个单元格中。')
-    this.worksheet.applySparklineMutation({ kind: 'change-source', resetType: 'item', ranges: [address], primary: address, sourceRanges: sources, targetRanges: targets })
+    const context = this.mutationContext()
+    const changed = this.worksheet.applySparklineMutation({ kind: 'change-source', resetType: 'item', ranges: [address], primary: address, sourceRanges: sources, targetRanges: targets }, context)
+    const replacement = this.followCommittedGroup(changed, context, targets)
+    if (!replacement?.members.some(member => member.address === targets[0])) return undefined
     this.row = target.range.startRow; this.column = target.range.startCol
-    return this.currentGroup().members.some(member => member.address === targets[0]) ? this : undefined
+    return this
   }
   removeSparkline(): void {
     const group = this.currentGroup(), address = sparklineCellAddress(this.row, this.column)
@@ -75,10 +107,10 @@ export class FSparkline extends SparklineHandleOwner {
 
 export class FSparklineGroup extends SparklineHandleOwner {
   changeDataSource(sourceRanges: ApiRange[], targetRanges: ApiRange[]): this | undefined {
-    const group = this.currentGroup()
-    this.worksheet.applySparklineMutation({ kind: 'change-source', resetType: 'group', ranges: group.targetRanges,
-      sourceRanges: this.sourceReferences(sourceRanges), targetRanges: this.sourceReferences(targetRanges, true) })
-    return this.currentGroup().members.length ? this : undefined
+    const group = this.currentGroup(), sources = this.sourceReferences(sourceRanges), targets = this.sourceReferences(targetRanges, true), context = this.mutationContext()
+    const changed = this.worksheet.applySparklineMutation({ kind: 'change-source', resetType: 'group', ranges: group.targetRanges,
+      sourceRanges: sources, targetRanges: targets }, context)
+    return this.followCommittedGroup(changed, context, targets)?.members.length ? this : undefined
   }
   removeSparklineGroup(): void { this.worksheet.applySparklineMutation({ kind: 'clear', scope: 'group', ranges: this.currentGroup().targetRanges }) }
   setConfig(config: ISparklineGroupConfig): this {

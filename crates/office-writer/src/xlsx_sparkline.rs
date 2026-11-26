@@ -35,7 +35,12 @@ pub(crate) fn write_xml(
         local_features |= spec.show_gradient == Some(true) || spec.show_radius == Some(true)
             || spec.non_numeric_cells.as_deref().is_some_and(|value| value != "gap");
         if let Some(template) = io::native_group_for_spec(&spec).map_err(invalid)? {
-            let source = io::source_formula(sheet_name, &spec.source_range).map_err(invalid)?;
+            let source = if spec.source_reference.is_some() { "#REF!".to_owned() } else { io::source_formula(sheet_name, &spec.source_range).map_err(invalid)? };
+            match io::source_kind(&source).map_err(invalid)? {
+                io::SparklineSourceKind::Broken => warnings.push(ExportWarning::new("SPARKLINE_SOURCE_BROKEN", format!("Sparkline source at {target} remains broken; author source text and settings are retained for repair"))),
+                io::SparklineSourceKind::External | io::SparklineSourceKind::ThreeDimensional => warnings.push(ExportWarning::new("SPARKLINE_SOURCE_UNRESOLVED", format!("Sparkline source at {target} retains its foreign/three-dimensional formula; external dependency resolution remains unverified"))),
+                _ => {},
+            }
             let theme = spec.office_source.as_ref().and_then(|source| source.theme_xml.as_deref()).map(source_xml::parse).transpose().map_err(invalid)?;
             let palette = spec.office_source.as_ref().and_then(|source| source.indexed_colors.clone());
             let style = io::native_group_fingerprint(&template, theme.as_ref(), palette.as_deref()).map_err(invalid)?;

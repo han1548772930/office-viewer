@@ -35,7 +35,8 @@ impl SheetOutlineSidecar {
         };
         let model_matched = supplement.extension.as_ref().is_some_and(|state| state.outline_fingerprint.eq_ignore_ascii_case(&outline_fingerprint));
         let visibility_matched = model_matched && supplement.extension.as_ref().is_some_and(|state| state.visibility_fingerprint.eq_ignore_ascii_case(&visibility_fingerprint));
-        let axis_exact = sheet.source_axis_dimensions.pointer("/projectAxisExtension/restored").and_then(serde_json::Value::as_bool) == Some(true);
+        let axis_exact = sheet.source_axis_dimensions.pointer("/projectAxisExtension/restored").and_then(serde_json::Value::as_bool) == Some(true)
+            && !(sheet.source_auto_filter.is_some() && sheet.auto_filter.is_none());
         let state = if model_matched { supplement.extension.as_ref().unwrap().state.clone() } else { infer_native_state(&supplement.source) };
         if let Err(warning) = validate_state(&state, MAX_ROW_INDEX + 1, MAX_COLUMN_INDEX + 1) {
             self.failure = Some(format!("{}: native outline model could not be normalized: {warning}", sheet.name));

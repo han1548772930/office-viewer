@@ -900,7 +900,9 @@ export class FWorksheet {
   getAllSubSparkline(): Map<string, ISparklineGroup> | undefined {
     const groups = this.getSparklineGroups(), workbook = this.workbook()
     if (!groups.length) return undefined
-    return new Map(groups.map(group => [group.groupId, sparklineGroupToPublic(group, name => workbook.sheets.find(sheet => sheet.id === name || sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.id)]))
+    return new Map(groups.map(group => [group.groupId, sparklineGroupToPublic(group,
+      name => workbook.sheets.find(sheet => sheet.id === name || sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.id,
+      { host: this.sheet(), workbook })]))
   }
   composeSparkline(ranges: ApiRange[]): void {
     if (!Array.isArray(ranges)) throw new TypeError('迷你图组合 API 须提供区域数组。')
@@ -2792,7 +2794,9 @@ export class FPivotTable {
   }
 
   private async execute(commandId: string, params: Record<string, unknown>): Promise<this> {
-    if (!await this.api.executeCommand(commandId, { ...params, unitId: this.unitId, pivotTableId: this.id })) throw new Error('透视表命令未能提交。')
+    // A successful command can leave identical content and return false. The
+    // command itself still rejects cancellation, permissions and stale owners.
+    await this.api.executeCommand(commandId, { ...params, unitId: this.unitId, pivotTableId: this.id })
     return this
   }
   private model(): PivotTableModel {

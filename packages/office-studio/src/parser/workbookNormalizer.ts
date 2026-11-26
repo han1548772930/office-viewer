@@ -241,7 +241,7 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     // Standard XLSX has one hidden bit for multiple causes. Criteria identify
     // failed rows; exact project geometry retains manual overlaps separately.
     const filteredRows = new Set(refreshAutoFilter(normalized))
-    if (axesExtension.restored !== true && !outlineImport.hiddenReasonsExact) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
+    if (axesExtension.restored !== true && !(outlineImport.nativeSource && outlineImport.hiddenReasonsExact)) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
     reconcileSheetOutlineImportedVisibility(normalized, outlineImport, [...filteredRows])
   }
   return normalized

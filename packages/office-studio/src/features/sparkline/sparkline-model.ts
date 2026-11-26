@@ -1,8 +1,10 @@
 ﻿import type { CellRange, SparklineEmptyCells, SparklineSpec, SparklineType, SpreadsheetSheet } from '../../domain/model.ts'
 import { equivalentModelData } from '../../platform/commands/model-equivalence.ts'
 import type { OfficeSparklineSource } from '../../domain/sparkline-office-source.ts'
+import type { SparklineSourceReference } from '../../domain/sparkline-source.ts'
 import { normalizeOfficeSparklineSource } from './sparkline-office-source.ts'
-import { parseSparklineReference, sparklineCellAddress, sparklineRangeString, shiftSparklineReference, type SparklineReference } from './sparkline-reference.ts'
+import { parseSparklineReference, sparklineCellAddress, sparklineRangeString, type SparklineReference } from './sparkline-reference.ts'
+import { normalizeSparklineSourceReference, normalizeSparklineSourceText, parseSparklineSource, resolveSparklineSource, shiftSparklineSource, type SparklineSourceWorkbook } from './sparkline-source.ts'
 
 export const SPARKLINE_POINT_ORDER = ['highPoint', 'firstPoint', 'lowPoint', 'lastPoint', 'negativePoint', 'markersPoint'] as const
 export type SparklinePointName = typeof SPARKLINE_POINT_ORDER[number]
@@ -12,7 +14,7 @@ export const SPARKLINE_THEMES: Readonly<Record<Exclude<SparklineTheme, 'custom'>
   standard: ['#364ef4', '#ec64a9'], specialty: ['#316af6', '#1eb1bd'], distinctive: ['#7c4293', '#fc753c'],
   soft: ['#5066f8', '#f468f9'], fresh: ['#2ebb7a', '#f8be15'],
 }
-export type SparklineSettingsInput = Partial<Omit<SparklineSpec, 'sourceRange' | 'groupId' | 'officeSource' | 'extremumMin' | 'extremumMax'>> & {
+export type SparklineSettingsInput = Partial<Omit<SparklineSpec, 'sourceRange' | 'sourceReference' | 'groupId' | 'officeSource' | 'extremumMin' | 'extremumMax'>> & {
   extremumMin?: Partial<NonNullable<SparklineSpec['extremumMin']>>
   extremumMax?: Partial<NonNullable<SparklineSpec['extremumMax']>>
 }
@@ -38,6 +40,7 @@ export interface SparklineGroupRequest extends SparklineSettingsInput {
   color: string
   groupId?: string
   officeSource?: OfficeSparklineSource
+  sourceReference?: SparklineSourceReference
 }
 export interface SparklinePlacementRequest {
   sourceRanges: readonly string[]
@@ -47,7 +50,7 @@ export interface SparklinePlacementRequest {
 }
 export interface SparklineGroupInfo {
   groupId: string
-  members: Array<{ address: string; sourceRange: string }>
+  members: Array<{ address: string; sourceRange: string; sourceReference?: SparklineSourceReference }>
   sourceRanges: string[]
   targetRanges: string[]
   selectedAddresses: string[]
@@ -69,6 +72,7 @@ export interface SparklineMutationPlan {
 }
 export interface SparklineMutationOptions {
   sheets?: readonly SpreadsheetSheet[]
+  workbook?: SparklineSourceWorkbook<SpreadsheetSheet>
   createGroupId?: () => string
 }
 
@@ -179,15 +183,15 @@ export function createSparklineGroupId(): string { return `sparkline-${globalThi
 
 /** Retained imports may contain rectangular sources; the placement planner validates new series counts. */
 export function createSparklineSpec(request: SparklineGroupRequest): SparklineSpec {
-  const source = parseSparklineReference(request.sourceRange), target = parseSparklineReference(request.targetRange)
-  if (!source || !target) throw new Error('迷你图源区域和目标区域必须是有效单元格范围。')
+  const sourceRange = normalizeSparklineSourceText(request.sourceRange), target = parseSparklineReference(request.targetRange)
+  if (!target) throw new Error('迷你图目标区域必须是有效单元格范围。')
   const settings = resolveSparklineSettings(request)
   const custom = settings.extremumMin.type === 'custom' && settings.extremumMax.type === 'custom'
   const advanced = request.points !== undefined || request.extremumMin !== undefined || request.extremumMax !== undefined
     || request.axisOptions !== undefined || request.themeType !== undefined || request.nonNumericCells !== undefined
     || request.containHiddenCells !== undefined || request.lineWidth !== undefined || request.showGradient !== undefined || request.showRadius !== undefined
   return {
-    type: settings.type, sourceRange: source.normalized, color: settings.color, emptyCells: settings.emptyCells, axis: custom ? 'custom' : 'individual',
+    type: settings.type, sourceRange, color: settings.color, emptyCells: settings.emptyCells, axis: custom ? 'custom' : 'individual',
     ...(settings.points.negativePoint.visible ? { negativeColor: settings.points.negativePoint.color } : {}),
     ...(settings.points.highPoint.visible ? { highPointColor: settings.points.highPoint.color } : {}),
     ...(settings.points.lowPoint.visible ? { lowPointColor: settings.points.lowPoint.color } : {}),
@@ -195,6 +199,7 @@ export function createSparklineSpec(request: SparklineGroupRequest): SparklineSp
     ...(request.groupId === undefined ? {} : { groupId: normalizeGroupId(request.groupId) }),
     ...(advanced ? settings : {}),
     ...(request.officeSource === undefined ? {} : { officeSource: normalizeOfficeSparklineSource(request.officeSource) }),
+    ...(request.sourceReference === undefined ? {} : { sourceReference: normalizeSparklineSourceReference(request.sourceReference) }),
   }
 }
 export function normalizeSparklineSpec(spec: SparklineSpec, targetAddress: string): SparklineSpec {
@@ -225,14 +230,22 @@ function canonicalTargets(references: readonly SparklineReference[], host?: Pick
 }
 
 /** v1.6.0 N / Se: source rows win an ambiguous square; target orientation does not choose series direction. */
-export function createSparklinePlacementPatches(request: SparklinePlacementRequest, host?: Pick<SpreadsheetSheet, 'name' | 'id'>): Record<string, SparklineSpec> {
-  const sources = requiredReferences(request.sourceRanges, '源数据'), targets = canonicalTargets(requiredReferences(request.targetRanges, '放置'), host)
+export function createSparklinePlacementPatches(request: SparklinePlacementRequest, host?: Pick<SpreadsheetSheet, 'name' | 'id'>,
+  workbook?: SparklineSourceWorkbook): Record<string, SparklineSpec> {
+  if (!Array.isArray(request.sourceRanges) || !request.sourceRanges.length) throw new Error('请指定迷你图源数据区域。')
+  const sources = request.sourceRanges.map(value => {
+    const expression = parseSparklineSource(value)
+    if (expression.kind === 'broken') throw new Error('请先修复迷你图断开的来源再放置。')
+    const resolved = host && workbook ? resolveSparklineSource(value, host, workbook) : undefined
+    return { expression, reference: expression.kind === 'a1' ? expression.reference : resolved?.status === 'resolved' ? resolved.reference : undefined }
+  }), targets = canonicalTargets(requiredReferences(request.targetRanges, '放置'), host)
   if (targets.length > 1 && targets.some(reference => targetCount([reference]) !== 1) || targets.length === 1 && !vector(targets[0]!)) {
     throw new Error('迷你图目标区域必须为单行或单列；多个目标区域必须各为单格。')
   }
-  const count = targetCount(targets), source = sources[0]!
-  const rows = source.range.endRow - source.range.startRow + 1, columns = source.range.endCol - source.range.startCol + 1
-  if (sources.length > 1 ? sources.length !== count || sources.some(reference => !vector(reference)) : count !== rows && count !== columns) {
+  const count = targetCount(targets), source = sources[0]!, reference = source.reference
+  const rows = reference ? reference.range.endRow - reference.range.startRow + 1 : 1, columns = reference ? reference.range.endCol - reference.range.startCol + 1 : 1
+  if (sources.length > 1 ? sources.length !== count || sources.some(source => source.reference && !vector(source.reference))
+    : source.expression.kind === 'a1' ? count !== rows && count !== columns : count !== 1) {
     throw new Error('迷你图目标数必须与源数据系列数一致。')
   }
   const groupId = normalizeGroupId(request.groupId), settings = resolveSparklineSettings(request.settings), patches: Record<string, SparklineSpec> = {}
@@ -240,8 +253,8 @@ export function createSparklinePlacementPatches(request: SparklinePlacementReque
   for (const { range } of targets) for (let row = range.startRow; row <= range.endRow; row += 1) for (let col = range.startCol; col <= range.endCol; col += 1) {
     const address = sparklineCellAddress(row, col)
     if (patches[address]) throw new Error('迷你图放置区域不能包含重复单元格。')
-    const itemSource = sources.length > 1 ? sources[offset]!.normalized : count === 1 ? source.normalized
-      : slicedSource(source, count === rows ? 'row' : 'column', offset)
+    const itemSource = sources.length > 1 ? normalizeSparklineSourceText(sources[offset]!.expression.text) : count === 1 ? normalizeSparklineSourceText(source.expression.text)
+      : slicedSource(reference!, count === rows ? 'row' : 'column', offset)
     patches[address] = createSparklineSpec({ ...sparklineSettingsInput(settings), type: settings.type, color: settings.color, sourceRange: itemSource, targetRange: address, groupId })
     offset += 1
   }
@@ -263,7 +276,7 @@ export function createSparklineGroupPatches(request: SparklineGroupRequest): Rec
   return createSparklinePlacementPatches({ sourceRanges: [request.sourceRange], targetRanges: [request.targetRange], settings: request, groupId: request.groupId ?? createSparklineGroupId() })
 }
 export function translateSparklineForMove(spec: SparklineSpec, rowDelta: number, columnDelta: number): SparklineSpec {
-  return { ...spec, sourceRange: shiftSparklineReference(spec.sourceRange, rowDelta, columnDelta) }
+  return { ...spec, sourceRange: spec.sourceReference ? spec.sourceRange : shiftSparklineSource(spec.sourceRange, rowDelta, columnDelta) }
 }
 
 function groupKey(address: string, spec: SparklineSpec): string { return spec.groupId ?? `ungrouped:${address}` }
@@ -284,7 +297,7 @@ export function readSparklineGroups(sheet: SpreadsheetSheet, ranges?: readonly s
     const key = groupKey(address, spec), settings = resolveSparklineSettings(spec)
     let group = grouped.get(key)
     if (!group) { group = { groupId: key, settings, members: [], sourceRanges: [], targetRanges: [], selectedAddresses: [], consistent: true }; grouped.set(key, group) }
-    group.members.push({ address, sourceRange: spec.sourceRange }); group.sourceRanges.push(spec.sourceRange); group.targetRanges.push(address)
+    group.members.push({ address, sourceRange: spec.sourceRange, ...(spec.sourceReference === undefined ? {} : { sourceReference: normalizeSparklineSourceReference(spec.sourceReference) }) }); group.sourceRanges.push(spec.sourceRange); group.targetRanges.push(address)
     if (!selectedRanges || addressInRanges(address, selectedRanges)) group.selectedAddresses.push(address)
     if (!equivalentModelData(settings, group.settings)) group.consistent = false
   }
@@ -304,16 +317,20 @@ export function assertSparklineGroupConsistency(sheet: SpreadsheetSheet, patches
   }
 }
 
-function checkSources(patches: Readonly<Record<string, SparklineSpec | null>>, sheet: SpreadsheetSheet, sheets: readonly SpreadsheetSheet[]): string[] {
+function checkSources(patches: Readonly<Record<string, SparklineSpec | null>>, sheet: SpreadsheetSheet, workbook: SparklineSourceWorkbook<SpreadsheetSheet>): string[] {
   const sources = new Set<string>()
-  for (const spec of Object.values(patches)) {
+  for (const [address, spec] of Object.entries(patches)) {
     if (!spec) continue
-    const reference = parseSparklineReference(spec.sourceRange)
-    if (!reference) throw new Error('迷你图源数据区域无效。')
-    if (reference.sheetName !== undefined && !sheets.some(source => source.id === reference.sheetName || source.name.toLocaleLowerCase() === reference.sheetName!.toLocaleLowerCase())) {
-      throw new Error(`迷你图源工作表 ${reference.sheetName} 已不存在。`)
+    const resolved = resolveSparklineSource(spec, sheet, workbook)
+    if (resolved.status !== 'resolved') {
+      const target = parseSparklineReference(address)!.range, previous = sheet.cells[`${target.startRow}:${target.startCol}`]?.sparkline
+      const retained = previous !== undefined && previous.sourceRange === spec.sourceRange && equivalentModelData(previous.sourceReference, spec.sourceReference)
+      if (resolved.status === 'broken' && (resolved.source.kind === 'a1' || resolved.source.kind === 'broken' || spec.sourceReference) && !retained) {
+        throw new Error('迷你图来源已断开，请通过修改数据来源修复。')
+      }
+      continue
     }
-    sources.add(reference.sheetName === undefined ? `${sheet.id}!${reference.normalized}` : reference.normalized)
+    sources.add(`${resolved.sheet.id}!${sparklineRangeString(resolved.range)}`)
   }
   return [...sources]
 }
@@ -321,6 +338,7 @@ function checkSources(patches: Readonly<Record<string, SparklineSpec | null>>, s
 /** Read-only planner. Permission/version acceptance and one history commit belong to the shared command. */
 export function planSparklineMutation(sheet: SpreadsheetSheet, request: SparklineMutationRequest, options: SparklineMutationOptions = {}): SparklineMutationPlan {
   const patches: Record<string, SparklineSpec | null> = {}, entries = sheetEntries(sheet), existingIds = new Set(entries.flatMap(entry => entry.spec.groupId ? [entry.spec.groupId] : []))
+  const workbook = options.workbook ?? { sheets: options.sheets ?? [sheet] }
   const groupSizes = new Map<string, number>()
   for (const entry of entries) { const key = groupKey(entry.address, entry.spec); groupSizes.set(key, (groupSizes.get(key) ?? 0) + 1) }
   const newId = (requested?: string): string => {
@@ -329,7 +347,7 @@ export function planSparklineMutation(sheet: SpreadsheetSheet, request: Sparklin
     existingIds.add(id); return id
   }
   if (request.kind === 'insert') {
-    Object.assign(patches, createSparklinePlacementPatches({ ...request, groupId: newId(request.groupId) }, sheet))
+    Object.assign(patches, createSparklinePlacementPatches({ ...request, groupId: newId(request.groupId) }, sheet, workbook))
   } else {
     const ranges = canonicalTargets(requiredReferences(request.ranges, '选择'), sheet), selected = entries.filter(entry => addressInRanges(entry.address, ranges))
     if (!selected.length) throw new Error('所选区域没有迷你图。')
@@ -338,13 +356,13 @@ export function planSparklineMutation(sheet: SpreadsheetSheet, request: Sparklin
       for (const entry of reached) {
         const settings = mergeSparklineSettings(entry.spec, request.settings)
         patches[entry.address] = createSparklineSpec({ ...sparklineSettingsInput(settings), type: settings.type, color: settings.color,
-          targetRange: entry.address, sourceRange: entry.spec.sourceRange, ...(entry.spec.groupId ? { groupId: entry.spec.groupId } : {}) })
+          targetRange: entry.address, sourceRange: entry.spec.sourceRange, officeSource: entry.spec.officeSource, sourceReference: entry.spec.sourceReference, ...(entry.spec.groupId ? { groupId: entry.spec.groupId } : {}) })
       }
     } else if (request.kind === 'combine') {
       if (selected.length < 2) throw new Error('请至少选择两个迷你图后合并组。')
       const groupId = newId(request.groupId), base = selected[0]!.spec, settings = request.settings ? mergeSparklineSettings(base, request.settings) : resolveSparklineSettings(base)
       for (const entry of selected) patches[entry.address] = createSparklineSpec({ ...sparklineSettingsInput(settings), type: settings.type, color: settings.color,
-        sourceRange: entry.spec.sourceRange, targetRange: entry.address, groupId })
+        sourceRange: entry.spec.sourceRange, targetRange: entry.address, groupId, officeSource: entry.spec.officeSource, sourceReference: entry.spec.sourceReference })
     } else if (request.kind === 'uncombine') {
       for (const entry of selected) {
         if ((groupSizes.get(groupKey(entry.address, entry.spec)) ?? 0) < 2) continue
@@ -361,10 +379,11 @@ export function planSparklineMutation(sheet: SpreadsheetSheet, request: Sparklin
       const primaryAddress = primaryReference ? sparklineCellAddress(primaryReference.range.startRow, primaryReference.range.startCol) : selected[0]!.address
       const primary = selected.find(entry => entry.address === primaryAddress)
       if (!primary) throw new Error('迷你图主单元格必须属于当前选择。')
-      const sourceReferences = requiredReferences(request.sourceRanges, '源数据'), targetReferences = canonicalTargets(requiredReferences(request.targetRanges, '放置'), sheet)
+      if (!Array.isArray(request.sourceRanges) || !request.sourceRanges.length) throw new Error('请指定迷你图源数据区域。')
+      const sourceReferences = request.sourceRanges.map(parseSparklineSource), targetReferences = canonicalTargets(requiredReferences(request.targetRanges, '放置'), sheet)
       if (request.resetType === 'item' && (sourceReferences.length !== 1 || targetCount(targetReferences) !== 1)) throw new Error('单项迷你图修改需要一个源区域和一个放置单元格。')
       const groupId = primary.spec.groupId ?? newId(), settings = request.settings ? mergeSparklineSettings(primary.spec, request.settings) : resolveSparklineSettings(primary.spec)
-      const replacement = createSparklinePlacementPatches({ sourceRanges: request.sourceRanges, targetRanges: request.targetRanges, groupId, settings: sparklineSettingsInput(settings) }, sheet)
+      const replacement = createSparklinePlacementPatches({ sourceRanges: request.sourceRanges, targetRanges: request.targetRanges, groupId, settings: sparklineSettingsInput(settings) }, sheet, workbook)
       const moving = request.resetType === 'group' ? reached : [primary], movingAddresses = new Set(moving.map(entry => entry.address))
       for (const address of Object.keys(replacement)) {
         if (entries.some(entry => entry.address === address) && !movingAddresses.has(address)) throw new Error('迷你图新放置区域与其他现有迷你图冲突。')
@@ -374,15 +393,18 @@ export function planSparklineMutation(sheet: SpreadsheetSheet, request: Sparklin
         for (const entry of entries.filter(candidate => groupKey(candidate.address, candidate.spec) === groupKey(primary.address, primary.spec))) {
           if (movingAddresses.has(entry.address)) continue
           patches[entry.address] = createSparklineSpec({ ...sparklineSettingsInput(settings), type: settings.type, color: settings.color,
-            sourceRange: entry.spec.sourceRange, targetRange: entry.address, ...(entry.spec.groupId ? { groupId: entry.spec.groupId } : {}) })
+            sourceRange: entry.spec.sourceRange, targetRange: entry.address, officeSource: entry.spec.officeSource, sourceReference: entry.spec.sourceReference, ...(entry.spec.groupId ? { groupId: entry.spec.groupId } : {}) })
         }
       }
-      Object.assign(patches, replacement)
+      for (const [index, [address, spec]] of Object.entries(replacement).entries()) {
+        const officeSource = (request.resetType === 'item' ? primary : moving[index])?.spec.officeSource ?? primary.spec.officeSource
+        patches[address] = officeSource === undefined ? spec : { ...spec, officeSource: normalizeOfficeSparklineSource(officeSource) }
+      }
     } else throw new Error('不支持的迷你图操作。')
   }
   const before = new Map(entries.map(entry => [entry.address, entry.spec]))
   for (const [address, spec] of Object.entries(patches)) if (equivalentModelData(before.get(address) ?? null, spec)) delete patches[address]
-  const sourceReferences = checkSources(patches, sheet, options.sheets ?? [sheet])
+  const sourceReferences = checkSources(patches, sheet, workbook)
   assertSparklineGroupConsistency(sheet, patches)
   return { patches, sourceReferences, affectedRanges: Object.keys(patches).map(address => parseSparklineReference(address)!.range), changed: Object.keys(patches).length > 0 }
 }
