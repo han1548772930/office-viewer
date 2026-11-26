@@ -4,7 +4,7 @@ import { drawingAffineBounds, drawingAffinePoint, invertDrawingAffine, multiplyD
 import { drawingGeometryContains, drawingGraph, drawingHitOrder, drawingPickTarget, drawingRefKey, type SheetDrawingSceneInput } from '../drawing-groups/index.ts'
 import type { RenderRect } from '../../rendering/contracts.ts'
 import { intersectRect } from '../../rendering/geometry.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
+import { gridViewportHeaders, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
 
 export const SHEET_DRAWING_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const
 export type SheetDrawingHandle = typeof SHEET_DRAWING_HANDLES[number] | 'rotate'
@@ -19,10 +19,10 @@ export interface SheetDrawingPaneLayout {
 export function sheetDrawingPaneLayouts(geometry: SpreadsheetGeometry, viewport: GridViewport, frame: SheetDrawingAffineGeometry): SheetDrawingPaneLayout[] {
   return geometry.panes(viewport).flatMap(pane => {
     if (!pane.clip.width || !pane.clip.height) return []
-    const frozenX = geometry.frozenColumns > 0 && pane.clip.x === GRID_HEADER_WIDTH,
-      frozenY = geometry.frozenRows > 0 && pane.clip.y === GRID_HEADER_HEIGHT,
+    const frozenX = geometry.frozenColumns > 0 && pane.clip.x === geometry.headerWidth,
+      frozenY = geometry.frozenRows > 0 && pane.clip.y === geometry.headerHeight,
       matrix = multiplyDrawingAffine({ a: viewport.zoom, b: 0, c: 0, d: viewport.zoom,
-        e: GRID_HEADER_WIDTH - (frozenX ? 0 : viewport.scrollLeft), f: GRID_HEADER_HEIGHT - (frozenY ? 0 : viewport.scrollTop) }, frame.matrix),
+        e: geometry.headerWidth - (frozenX ? 0 : viewport.scrollLeft), f: geometry.headerHeight - (frozenY ? 0 : viewport.scrollTop) }, frame.matrix),
       projected = { ...frame, matrix }, bounds = drawingAffineBounds(projected),
       rect = { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height }, visible = intersectRect(rect, pane.clip)
     // Rotation handles can lie just outside the content's visible bounds.
@@ -37,8 +37,9 @@ export function sheetDrawingPaneLayouts(geometry: SpreadsheetGeometry, viewport:
   })
 }
 export function sheetDrawingWorldPoint(viewport: GridViewport, position: { x: number; y: number }, pane: Pick<SheetDrawingPaneLayout, 'frozenX' | 'frozenY'>): { x: number; y: number } {
-  return { x: (position.x - GRID_HEADER_WIDTH + (pane.frozenX ? 0 : viewport.scrollLeft)) / viewport.zoom,
-    y: (position.y - GRID_HEADER_HEIGHT + (pane.frozenY ? 0 : viewport.scrollTop)) / viewport.zoom }
+  const headers = gridViewportHeaders(viewport)
+  return { x: (position.x - headers.width + (pane.frozenX ? 0 : viewport.scrollLeft)) / viewport.zoom,
+    y: (position.y - headers.height + (pane.frozenY ? 0 : viewport.scrollTop)) / viewport.zoom }
 }
 export function sheetDrawingGeometryRange(geometry: SpreadsheetGeometry, frame: SheetDrawingAffineGeometry): CellRange {
   const bounds = drawingAffineBounds(frame)

@@ -14,6 +14,8 @@ import { dragSheetImageCrop, sheetImageUncroppedFrame, sheetImageUncroppedDrawin
 import { sheetImageFrame, sheetImageWithFrame, sheetImageWithDrawingGeometry } from '../../features/sheet-images/sheet-image-placement.ts'
 import type { SheetImageCommandInput } from '../../features/sheet-images/sheet-image-commands.ts'
 import { sheetImageSelectionBounds, transformSheetImageSelection } from '../../features/sheet-images/sheet-image-selection.ts'
+import type { SheetDrawingMoveDirection } from '../../domain/sheet-drawings.ts'
+import { sheetDrawingMoveDirectionForKey } from '../../features/drawing-groups/drawing-group-move.ts'
 
 interface ImageCanvasContext {
   geometry(): SpreadsheetGeometry
@@ -36,6 +38,7 @@ interface ImageCanvasContext {
   edit(id: string, row?: number, column?: number): void
   update(id: string, image: SheetFloatingImage, expectedRevision?: number): void
   updateBatch(images: SheetFloatingImage[], expectedRevision?: number): void
+  nudge?(ids: readonly string[], direction: SheetDrawingMoveDirection, step: 1 | 10, expectedRevision?: number): boolean
   remove(id: string): void
   removeMany(ids: string[]): void
   crop(id: SheetImageCropOperation, input: SheetImageCommandInput): void
@@ -291,7 +294,7 @@ export function useSheetImageCanvas(context: ImageCanvasContext) {
     return transformSheetImageSelection(state.images, context.geometry(), (position.x - state.start.x) / state.zoom, (position.y - state.start.y) / state.zoom, state.handle)
   }
   function keydown(event: KeyboardEvent): boolean {
-    if (!active || disposed || context.editing() || context.composing() || event.isComposing || event.keyCode === 229 ||
+    if (!active || disposed || event.defaultPrevented || context.editing() || context.composing() || event.isComposing || event.keyCode === 229 ||
       event.target instanceof Element && event.target.closest('input,textarea,button,[contenteditable="true"]')) return false
     const id = context.selectedId(), image = context.sheet().images?.find(item => item.id === id)
     if (!id || !image) return false
@@ -315,7 +318,11 @@ export function useSheetImageCanvas(context: ImageCanvasContext) {
     else if (event.key === 'Enter') { if (selectedEditable.value && selectedImages.value.length === 1) context.edit(id) }
     else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) {
       if (!selectedEditable.value) { event.preventDefault(); return true }
-      const step = event.shiftKey ? 10 : 1
+      if (gesture.value) { event.preventDefault(); event.stopPropagation(); return true }
+      const step = event.shiftKey ? 10 : 1, direction = sheetDrawingMoveDirectionForKey(event.key)
+      if (direction !== undefined && context.nudge?.(selectedIds.value, direction, step, context.revision())) {
+        event.preventDefault(); event.stopPropagation(); return true
+      }
       const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
       if (selectedImages.value.length > 1) context.updateBatch(transformSheetImageSelection(selectedImages.value, context.geometry(), dx, dy), context.revision())
       else context.update(id, moveSheetImage(context.geometry(), image, dx, dy), context.revision())

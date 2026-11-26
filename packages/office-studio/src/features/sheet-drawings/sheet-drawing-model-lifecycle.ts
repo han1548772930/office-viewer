@@ -2,6 +2,8 @@ import type { WorkbookModel } from '../../domain/model.ts'
 import type { SheetDrawingRef } from '../../domain/sheet-drawings.ts'
 import { drawingDescendants, drawingGeometryEqual, drawingGraph, drawingGroupFrame, drawingRefKey } from '../drawing-groups/index.ts'
 import { createSheetDrawingScene, reconcileSheetDrawingState } from './sheet-drawing-host.ts'
+import { reconcileWorkbookImageGeometryChanges } from './sheet-drawing-image-geometry.ts'
+import { reconcileWorkbookSlicerGeometryChanges } from './sheet-drawing-slicer-geometry.ts'
 
 const hasDrawings = (workbook: WorkbookModel, sheetId: string) => {
   const sheet = workbook.sheets.find(sheet => sheet.id === sheetId)
@@ -22,6 +24,8 @@ export function initializeWorkbookDrawingStates(workbook: WorkbookModel): void {
 
 /** A content candidate knows which native owners were actually removed; missing media alone is never a deletion. */
 export function reconcileWorkbookDrawingStates(before: WorkbookModel, after: WorkbookModel): void {
+  reconcileWorkbookImageGeometryChanges(before, after)
+  reconcileWorkbookSlicerGeometryChanges(before, after)
   for (const sheet of after.sheets) {
     if (!hasDrawings(before, sheet.id) && !hasDrawings(after, sheet.id)) continue
     const previousSheet = before.sheets.find(candidate => candidate.id === sheet.id)

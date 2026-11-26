@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred PivotChart authoring workbench</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}</style></head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FWorksheet, FSheetPivotChart } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { getSheetDrawingSelection, setSheetDrawingSelection } from '/packages/office-studio/src/api/sheet-drawing-selection.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { pivotChartUIIds as ids, pivotChartUIRange as sourceRange, pivotChartUIWorkbook } from './pivot-chart-ui-fixture.mjs'
+
+// Deferred real Ant/Canvas/Facade/history fixture. Delays always release into the real API.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const commands = [], notices = [], pendingMembers = [], pendingMutations = []
+const originals = { members: FSheetPivotChart.prototype.getFieldItems, configure: FSheetPivotChart.prototype.configure,
+  refresh: FSheetPivotChart.prototype.refresh, remove: FSheetPivotChart.prototype.remove, insert: FWorksheet.prototype.insertPivotChart }
+let app, stopView
+const json = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+const studio = () => slot.value, facade = () => FOffice.newAPI(studio()), book = () => facade().getActiveWorkbook()
+const unitId = () => book().getId(), model = () => studio().getWorkbookModel(unitId())
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id]
+  return { model: json(value), revision: studio().getWorkbookRevision(value.id), userId: studio().currentUserId,
+    generation: studio().editor.history.captureSavepoint(value.id).generation,
+    selection: json(getSheetDrawingSelection(studio(), value.id, value.activeSheetId)),
+    history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0, dirty: studio().editor.history.isDirty(value.id) },
+    commands: json(commands), notices: json(notices) }
+}
+function restoreMethods() {
+  FSheetPivotChart.prototype.getFieldItems = originals.members
+  for (const kind of ['configure', 'refresh', 'remove']) FSheetPivotChart.prototype[kind] = originals[kind]
+  FWorksheet.prototype.insertPivotChart = originals.insert
+}
+async function release() {
+  restoreMethods(); pendingMembers.splice(0).forEach(value => value.resolve()); pendingMutations.splice(0).forEach(value => value.resolve())
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'
+  slot.value = new OfficeStudio({ workbook: options.model ?? pivotChartUIWorkbook(options), currentUserId: options.currentUserId })
+  view.value = toExcelWorkbookView(model())
+  stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)),
+    }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+window.pivotChartUIFixture = { ids, sourceRange, mount, state,
+  async open(chartId = ids.owned, extra = {}) {
+    const result = await facade().executeCommand('sheet.operation.open-pivot-chart-panel',
+      { unitId: unitId(), subUnitId: model().activeSheetId, ...(chartId ? { pivotChartId: chartId } : {}), ...extra })
+    await settled(); return { result, ...state() }
+  },
+  async selectSourceRange() {
+    book().setActiveSheet(ids.source); book().getSheetBySheetId(ids.source).getRange('D3:H7').activate()
+    view.value = toExcelWorkbookView(model()); await settled(); return state()
+  },
+  async selectChart(id = ids.owned) {
+    const chart = book().getPivotChartById(id).getInfo(); book().setActiveSheet(chart.sheetId)
+    setSheetDrawingSelection(studio(), unitId(), chart.sheetId, [{ kind: 'chart', id }]); await settled(); return state()
+  },
+  async changeSource(value = 11) { book().getSheetBySheetId(ids.source).getRange('E4').setValue(value); await settled(); return state() },
+  async changeTitle(id = ids.owned, title = 'Changed externally') { await book().getPivotChartById(id).update({ title }); await settled(); return state() },
+  async configure(id, input, context) { const result = await book().getPivotChartById(id).configure(input, context); await settled(); return { result, ...state() } },
+  async switchSheet(id = ids.other) { book().setActiveSheet(id); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async changeUserWhilePending(userId = 'peer') { Object.defineProperty(studio(), 'currentUserId', { value: userId, configurable: true }); await settled(); return state() },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId, dark: dark.value, variant: variant.value }) },
+  async markSaved() { studio().editor.history.markSaved(unitId()); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(unitId()); await settled(); return state() },
+  delayMembers() {
+    FSheetPivotChart.prototype.getFieldItems = async function(...args) {
+      await new Promise(resolve => pendingMembers.push({ chartId: this.getChartId(), resolve })); return originals.members.apply(this, args)
+    }
+  },
+  pendingMembers() { return pendingMembers.map(({ chartId }) => chartId) },
+  async releaseMember(index = 0, restore = true) {
+    if (restore) FSheetPivotChart.prototype.getFieldItems = originals.members
+    pendingMembers.splice(index, 1)[0]?.resolve(); await settled(); return state()
+  },
+  delayMutation(kind = 'configure') {
+    const prototype = kind === 'insert' ? FWorksheet.prototype : FSheetPivotChart.prototype, method = kind === 'insert' ? 'insertPivotChart' : kind
+    prototype[method] = async function(...args) {
+      await new Promise(resolve => pendingMutations.push({ kind, resolve })); return originals[kind].apply(this, args)
+    }
+  },
+  pendingMutations(kind = 'configure') { return pendingMutations.filter(value => value.kind === kind).length },
+  async releaseMutation(kind = 'configure', restore = true) {
+    if (restore) {
+      if (kind === 'insert') FWorksheet.prototype.insertPivotChart = originals.insert
+      else FSheetPivotChart.prototype[kind] = originals[kind]
+    }
+    const index = pendingMutations.findIndex(value => value.kind === kind)
+    if (index >= 0) pendingMutations.splice(index, 1)[0].resolve()
+    await settled(); return state()
+  },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

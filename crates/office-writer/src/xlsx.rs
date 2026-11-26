@@ -23,6 +23,8 @@ mod pivot;
 mod table;
 #[path = "xlsx_dimensions.rs"]
 mod dimensions;
+#[path = "xlsx_outline.rs"]
+mod outline;
 #[path = "xlsx_conditional_formula.rs"]
 mod conditional_formula;
 #[path = "xlsx_conditional_source.rs"]
@@ -119,7 +121,7 @@ struct SheetInput {
     #[serde(default)]
     column_hidden_spans: Vec<dimensions::AxisSpanInput<bool>>,
     #[serde(default)]
-    outline: Option<dimensions::OutlineInput>,
+    outline: Option<outline::OutlineInput>,
     #[serde(default)]
     auto_filter: Option<auto_filter::AutoFilterInput>,
     #[serde(default)]
@@ -942,6 +944,8 @@ fn worksheet_xml(
     warnings: &mut Vec<ExportWarning>,
     drawing_rel_id: Option<&str>,
 ) -> Result<(String, Vec<(String, String)>), ExportError> {
+    let outline = outline::prepare(sheet)?;
+    warnings.extend(outline.warnings.iter().map(|warning| ExportWarning::new("OUTLINE_PROJECTION", format!("{}: {warning}", sheet.name))));
     let mut cells = Vec::<CellInput>::new();
     for (key, value) in &sheet.cells {
         if let Some(cell) = cell_from_entry(key, value) {
@@ -991,13 +995,11 @@ fn worksheet_xml(
     out.push_str(&format!(
         "<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{REL_NS}\">"
     ));
-    if sheet
+    let filter_mode = sheet
         .auto_filter
         .as_ref()
-        .is_some_and(|filter| !filter.columns.is_empty())
-    {
-        out.push_str("<sheetPr filterMode=\"1\"/>");
-    }
+        .is_some_and(|filter| !filter.columns.is_empty());
+    out.push_str(&outline.sheet_properties_xml(filter_mode)?);
     out.push_str(&format!(
         "<dimension ref=\"{}:{}\"/>",
         cell_ref(0, 0),
@@ -1027,8 +1029,8 @@ fn worksheet_xml(
     }
     out.push_str("</sheetView></sheetViews>");
     let axis = dimensions::prepare(sheet)?;
-    out.push_str(&axis.format_xml());
-    out.push_str(&axis.columns_xml());
+    out.push_str(&outline.format_xml(&axis.format_xml())?);
+    out.push_str(&outline.columns_xml(&axis.columns_xml())?);
     out.push_str("<sheetData>");
     let mut by_row = BTreeMap::<u32, Vec<CellInput>>::new();
     for cell in cells {
@@ -1043,15 +1045,18 @@ fn worksheet_xml(
     // Standard SpreadsheetML needs a row element for each manually hidden row;
     // stream spans into the XML without constructing a million-row lookup map.
     let mut manual_hidden_rows = axis.manual_hidden_row_indices().peekable();
-    while let Some(row) = [cell_rows.peek().map(|(row, _)| *row), dimension_rows.peek().copied(), manual_hidden_rows.peek().copied()]
+    let mut outline_rows = outline.row_indices().peekable();
+    while let Some(row) = [cell_rows.peek().map(|(row, _)| *row), dimension_rows.peek().copied(), manual_hidden_rows.peek().copied(), outline_rows.peek().copied()]
         .into_iter().flatten().min() {
         let mut row_cells = if cell_rows.peek().is_some_and(|(index, _)| *index == row) { cell_rows.next().unwrap().1 } else { Vec::new() };
         if dimension_rows.peek() == Some(&row) { dimension_rows.next(); }
         if manual_hidden_rows.peek() == Some(&row) { manual_hidden_rows.next(); }
+        if outline_rows.peek() == Some(&row) { outline_rows.next(); }
         row_cells.sort_by_key(|cell| cell.col.unwrap_or(0));
-        let hidden = hidden_rows.contains(&row) || axis.manual_row_hidden(row) || axis.row_size(row).height == 0.0;
+        let hidden = hidden_rows.contains(&row) || axis.manual_row_hidden(row) || outline.row_hidden(row) || axis.row_size(row).height == 0.0;
         let mut attrs = format!(" r=\"{}\"", row + 1);
         attrs.push_str(&axis.row_attributes(row));
+        attrs.push_str(&outline.row_attributes(row));
         if hidden {
             attrs.push_str(" hidden=\"1\"");
         } else if axis.default_row_height == 0.0 {
@@ -1106,9 +1111,10 @@ fn worksheet_xml(
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
     let axis_extension = axis.extension_xml(sheet, &out)?;
+    let outline_extension = outline.extension_xml(sheet, &out)?;
     let validation_extension = data_validation::extension_xml(sheet, &validation)?;
     let mut extensions = sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?;
-    let additions = format!("{}{axis_extension}{validation_extension}", conditional.extension);
+    let additions = format!("{}{axis_extension}{outline_extension}{validation_extension}", conditional.extension);
     if extensions.is_empty() { extensions = format!("<extLst>{additions}</extLst>"); }
     else if let Some(position) = extensions.rfind("</extLst>") { extensions.insert_str(position, &additions); }
     else { return Err(ExportError::invalid("worksheet extensions have no closing container")); }
@@ -1946,7 +1952,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         auto_filter::validate(sheet)?;
         data_validation::validate_with_budget(sheet, &mut validation_budget)?;
     }
-    let conditional_theme = conditional_source::theme_for_workbook(&workbook)?;
+    let conditional_theme = sparkline::merge_theme(&workbook, conditional_source::theme_for_workbook(&workbook)?)?;
     let mut warnings = Vec::new();
     chart::prepare_native_bindings(&mut workbook, &mut warnings)?;
     add_unsupported_warnings(&workbook, &mut warnings);
@@ -2120,7 +2126,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     package.add_xml(
         "xl/styles.xml",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
-        style_xml(&registry),
+        sparkline::apply_indexed_colors(&workbook, style_xml(&registry))?,
     )?;
     package.add_xml(
         "xl/workbook.xml",

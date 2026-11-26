@@ -7,7 +7,7 @@ import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { normalizeSheetCommandRange, sheetRangesEqual, type SheetCommandRange } from '../features/sheet-workbench/sheet-range-command.ts'
 import { copySheetImageObjects, pasteSheetImageObjects } from './sheet-image-object-clipboard.ts'
-import { SHEET_IMAGE_OBJECT_COMMANDS, sheetImageObjectClipboardIdFromHtml } from '../features/sheet-images/sheet-image-object-clipboard.ts'
+import { SHEET_IMAGE_OBJECT_COMMANDS, sheetImageObjectClipboardFromHtml, sheetImageObjectClipboardIdFromHtml } from '../features/sheet-images/sheet-image-object-clipboard.ts'
 import { applySheetClipboardPastePlan, assertSheetClipboardWorkbookChangesEditable, captureSheetClipboard, createSheetClipboardPastePlan,
   cloneSheetClipboardWorkbookResources, parseSheetClipboardHtml, parseSheetClipboardText,
   resolveSheetClipboardCommand, SHEET_CLIPBOARD_COMMAND_IDS, sheetClipboardContent, sheetClipboardIdFromHtml, sheetClipboardPasteMode,
@@ -114,7 +114,7 @@ function restoreRecentOriginals(current: WorkbookModel, recent: SheetClipboardRe
     if (recent.originalMetadata === undefined) delete workbook.metadata
     else workbook.metadata = cloneModel(recent.originalMetadata)
   }
-  if (recent.originalResources) for (const key of ['tables', 'pivotTables', 'charts', 'slicers'] as const) {
+  if (recent.originalResources) for (const key of ['tables', 'pivotTables', 'pivotCaches', 'charts', 'slicers', 'slicerCaches'] as const) {
     const value = recent.originalResources[key]
     if (value === undefined) delete workbook[key]
     else Object.assign(workbook, { [key]: cloneModel(value) })
@@ -164,7 +164,8 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
       && (input.sheetId ?? input.subUnitId) !== target.sheetId)) return failure('stale-paste')
     const supplied = input.text !== undefined || input.html !== undefined, objectToken = input.html ? sheetImageObjectClipboardIdFromHtml(input.html) : undefined
     const imageClipboard = action.action === 'paste' && (!supplied || objectToken && (input.clipboardId === undefined || input.clipboardId === objectToken))
-      ? api.sheetClipboard.getImageClipboard(supplied ? objectToken : input.clipboardId) : undefined
+      ? api.sheetClipboard.getImageClipboard(supplied ? objectToken : input.clipboardId)
+        ?? (input.html ? sheetImageObjectClipboardFromHtml(input.html) : undefined) : undefined
     if (imageClipboard) {
       const mode = sheetClipboardPasteMode(input.mode, input.value, action.mode, input.type)
       return mode === 'all' || mode === 'exceptBorders' ? pasteSheetImageObjects(api, input, target, imageClipboard) : failure('empty-clipboard')
@@ -192,7 +193,7 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
     let committed: HistorySavepoint | undefined
     const selection = pasteSelection(api, input, target, plan.result.ranges)
     const changed = api.commitWorkbook(target.unitId, '粘贴', draft => {
-      for (const key of ['metadata', 'tables', 'pivotTables', 'charts', 'slicers'] as const) if (!Object.hasOwn(candidate, key)) delete draft[key]
+      for (const key of ['metadata', 'tables', 'pivotTables', 'pivotCaches', 'charts', 'slicers', 'slicerCaches'] as const) if (!Object.hasOwn(candidate, key)) delete draft[key]
       Object.assign(draft, cloneModel(candidate))
     }, {
       expectedRevision: baseRevision, expectedHistoryGeneration: baseSavepoint.generation, amend: recent?.savepoint,

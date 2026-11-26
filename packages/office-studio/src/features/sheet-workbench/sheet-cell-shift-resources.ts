@@ -7,12 +7,15 @@ import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from 
 import { readFormulaReferenceArea, transformFormulaReferenceAreasForCellShift, translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
 import { compactSheetClipboardRanges } from './sheet-clipboard-changes.ts'
 import { sheetClipboardObjectAxes } from './sheet-clipboard-object-geometry.ts'
-import { resolveSlicerBounds } from '../slicer/slicer-drawing.ts'
+import { resolveSlicerAnchorBounds } from '../slicer/slicer-drawing.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
 import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { sheetRangesIntersect } from './sheet-range-command.ts'
 import { transformSheetImagesForCellShift } from '../sheet-images/sheet-image-structure.ts'
 import { transformSheetAutoFilterForAxisEdit, transformSheetChartForAxisEdit, transformSheetTableForAxisEdit } from './sheet-axis-structure-resources.ts'
+import { reconcileSlicerConnectionResources } from '../slicer/slicer-connections-lifecycle.ts'
+import { refreshPivotSourceWorksheetOutputs, transformWorkbookPivotSourceReports } from '../pivot/services/pivot-source-lifecycle.ts'
+import { synchronizeLinkedPivotChartReports } from '../pivot/services/pivot-chart-report-lifecycle.ts'
 
 const MAX_RULE_FRAGMENTS = 100_000
 function assertBudget(length: number): void {
@@ -131,7 +134,7 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
     return sheetCellShiftContainsBand(table.range, edit) ? transformSheetTableForAxisEdit(table, edit) : [{ ...cloneModel(table), range }]
   })
   if (original.charts) workbook.charts = original.charts.flatMap(chart => {
-    if ((chart.source.sheetId ?? chart.sheetId) !== targetId || chart.pivotTableId) return [cloneModel(chart)]
+    if ((chart.source.sheetId ?? chart.sheetId) !== targetId || chart.pivotTableId || chart.ownedPivot) return [cloneModel(chart)]
     if (!sheetRangesIntersect(chart.source.range, affected)) return [cloneModel(chart)]
     const range = referenceRange(chart.source.range, edit, target.name)
     if (!range) throw new RangeError('移位会删除图表的完整数据源，请先调整图表数据绑定。')
@@ -142,46 +145,21 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
     return [{ ...cloneModel(chart), source: { ...cloneModel(chart.source), range },
       revision: chart.revision + (sheetRangesIntersect(chart.source.range, affected) ? 1 : 0) }]
   })
-  if (original.pivotTables) workbook.pivotTables = original.pivotTables.map(pivot => {
-    const next = cloneModel(pivot)
-    let dirty = false
-    if (pivot.source.subUnitId === targetId && (!original.id || pivot.source.unitId === original.id)) {
-      const range = referenceRange(pivot.source.range, edit, target.name)
-      if (!range || range.endRow <= range.startRow) throw new RangeError('透视数据源需要保留表头和数据。')
-      next.source.range = range; dirty = sheetRangesIntersect(pivot.source.range, affected)
-      if (edit.axis === 'column' && sheetCellShiftContainsBand(pivot.source.range, edit)) {
-        next.fields = next.fields.flatMap(field => {
-          const mapped = mapSheetCellShiftPosition(pivot.source.range.startRow, field.sourceColumn, edit)
-          return mapped ? [{ ...field, sourceColumn: mapped.col }] : []
-        })
-        const ids = new Set(next.fields.map(field => field.id))
-        if (next.fields.some(field => field.valueFilter && !ids.has(field.valueFilter.valueFieldId))) throw new RangeError('移位会移除透视筛选所依赖的值字段。')
-      }
-    }
-    if (pivot.anchor.subUnitId === targetId && (!original.id || pivot.anchor.unitId === original.id)) {
-      const mapped = mapSheetCellShiftPosition(pivot.anchor.row, pivot.anchor.col, edit)
-      if (!mapped) throw new RangeError('移位会删除透视输出起点，请先移动或删除透视对象。')
-      Object.assign(next.anchor, mapped)
-      if (pivot.outputRange) {
-        const range = oneRange(pivot.outputRange, edit, '透视输出')
-        if (!range) throw new RangeError('局部移位不能删除透视输出。')
-        next.outputRange = range
-      }
-      if (pivot.generatedCellKeys) next.generatedCellKeys = pivot.generatedCellKeys.map(key => {
-        const matched = /^(\d+):(\d+)$/.exec(key)
-        if (!matched) throw new TypeError('透视输出坐标无效。')
-        const point = mapSheetCellShiftPosition(Number(matched[1]), Number(matched[2]), edit)
-        if (!point) throw new RangeError('局部移位不能删除透视生成格。')
-        return `${point.row}:${point.col}`
-      })
-    }
-    if (dirty || JSON.stringify(next) !== JSON.stringify(pivot)) { next.revision++; next.drillDownMap = {} }
-    return next
-  })
+  const pivotTransform = {
+    sheetId: targetId,
+    range: (range: CellRange) => referenceRange(range, edit, target.name),
+    outputRange: (range: CellRange) => oneRange(range, edit, '透视输出'),
+    point: (row: number, col: number) => mapSheetCellShiftPosition(row, col, edit),
+    preserveGeneratedCells: true,
+    sourceDirty: (range: CellRange) => sheetRangesIntersect(range, affected),
+    ...(edit.axis === 'column' ? { column: (column: number, sourceRange: CellRange) => sheetCellShiftContainsBand(sourceRange, edit)
+      ? mapSheetCellShiftPosition(sourceRange.startRow, column, edit)?.col : column } : {}),
+  }
+  transformWorkbookPivotSourceReports(original, workbook, pivotTransform)
   const tableIds = new Set((workbook.tables ?? []).map(table => table.id))
   let slicerAxes: ReturnType<typeof sheetClipboardObjectAxes> | undefined
   if (original.slicers) workbook.slicers = original.slicers.flatMap(slicer => {
-    if (slicer.tableId && !tableIds.has(slicer.tableId)) return []
+    if (slicer.tableId && original.tables?.some(table => table.id === slicer.tableId) && !tableIds.has(slicer.tableId)) return []
     const next = cloneModel(slicer)
     if (slicer.hostSheetId === targetId && (!original.id || slicer.unitId === original.id) && slicer.drawing?.anchorType !== 'none') {
       const mapped = mapSheetCellShiftPosition(slicer.position.row, slicer.position.column, edit)
@@ -193,7 +171,11 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
         else if (edit.axis === 'row') point.row = edit.start; else point.column = edit.start
       }
       slicerAxes ??= sheetClipboardObjectAxes(workbook, workbook.sheets.find(sheet => sheet.id === targetId)!)
-      if (next.drawing) next.layout = resolveSlicerBounds(next, slicerAxes)
+      if (next.drawing) {
+        const bounds = resolveSlicerAnchorBounds(next, slicerAxes)
+        // Hidden/deleted Both markers may collapse; retain positive author layout for restoration and settings.
+        if (bounds.width > 0 && bounds.height > 0) next.layout = bounds
+      }
       else if (next.layout) {
         next.layout.left += slicerAxes.columns.offset(next.position.column) - slicerAxes.columns.offset(slicer.position.column)
         next.layout.top += slicerAxes.rows.offset(next.position.row) - slicerAxes.rows.offset(slicer.position.row)
@@ -202,10 +184,6 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
     if (next.tableId) {
       const table = workbook.tables?.find(table => table.id === next.tableId)
       if (table && !table.columns.some(column => column.id === next.sourceFieldId)) return []
-    }
-    if (next.pivotTableId) {
-      const pivot = workbook.pivotTables?.find(pivot => pivot.id === next.pivotTableId)
-      if (pivot && !pivot.fields.some(field => field.id === next.sourceFieldId)) return []
     }
     if (JSON.stringify(next) !== JSON.stringify(slicer)) next.revision++
     return [next]
@@ -217,6 +195,9 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
   const after = workbook.sheets.find(sheet => sheet.id === targetId)!
   if (target.images) after.images = transformSheetImagesForCellShift(target.images, edit, after,
     { before: sheetClipboardObjectAxes(original, target), after: sheetClipboardObjectAxes(workbook, after) })
+  reconcileSlicerConnectionResources(original, workbook, pivotTransform)
+  refreshPivotSourceWorksheetOutputs(original, workbook)
+  synchronizeLinkedPivotChartReports(original, workbook)
   let overlapWork = 0
   const budget = () => { if (++overlapWork > 5_000_000) throw new RangeError('单元格移位对象重叠检查超出当前同步计算预算。') }
   const tables = workbook.tables ?? [], pivots = workbook.pivotTables ?? []

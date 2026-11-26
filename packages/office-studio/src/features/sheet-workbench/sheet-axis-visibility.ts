@@ -5,6 +5,7 @@ import { mergeSheetAxisIntervals, type SheetAxis, type SheetAxisInterval } from 
 import type { SheetAxisDimensionChanges } from '../../domain/sheet-axis-transform.ts'
 import { assertSheetCommandRanges, assertSheetRangesEditable, sheetRangeCommandInputRanges, type SheetRangeCommandInput } from './sheet-range-command.ts'
 import { sheetAxisDimensionTargetRanges } from './sheet-axis-dimensions.ts'
+import { sheetOutlineHiddenSpans, type SheetOutlineVisibility } from './sheet-row-visibility.ts'
 
 export const SHEET_AXIS_VISIBILITY_COMMANDS = {
   hideRows: 'sheet.command.set-rows-hidden', hideColumns: 'sheet.command.set-col-hidden',
@@ -16,7 +17,7 @@ export const SHEET_AXIS_VISIBILITY_COMMAND_IDS = [...Object.values(SHEET_AXIS_VI
   'sheet.command.hide-row', 'sheet.command.hide-column', 'sheet.command.show-hidden-rows', 'sheet.command.show-hidden-columns'] as const
 export interface SheetAxisVisibilityCommandInput extends SheetRangeCommandInput { index?: number; count?: number; all?: boolean; expectedRevision?: number }
 export interface SheetAxisVisibilityAction { axis: SheetAxis; visible: boolean; selectedOnly: boolean }
-export interface SheetAxisVisibilityState extends SheetAxisDimensions {
+export interface SheetAxisVisibilityState extends SheetAxisDimensions, SheetOutlineVisibility {
   rowCount?: number; columnCount?: number; hiddenRows?: readonly number[]; hiddenColumns?: readonly number[]
   filteredRows?: readonly number[]; outlineHiddenRows?: readonly number[]; outlineHiddenColumns?: readonly number[]
   autoFilter?: { filteredRows: readonly number[] }; outline?: SheetOutlineState
@@ -93,7 +94,7 @@ function sizeState(sheet: SheetAxisVisibilityState, axis: SheetAxis) {
 }
 function axisIndex(sheet: SheetAxisVisibilityState, axis: SheetAxis, hidden: readonly SheetAxisSpan<boolean>[], filteredRows: readonly number[]) {
   const { rows, columns } = counts(sheet), size = sizeState(sheet, axis)
-  const collapsed = sheet.outline?.groups.filter(group => group.axis === axis && group.collapsed).map(group => ({ start: group.start, end: group.end, value: true })) ?? []
+  const collapsed = sheetOutlineHiddenSpans(sheet, axis)
   return new SparseAxisIndex(axis === 'row' ? rows : columns, size.defaultSize, size.sizes,
     axis === 'row' ? [...(sheet.filteredRows ?? []), ...(sheet.autoFilter?.filteredRows ?? []), ...(sheet.outlineHiddenRows ?? []), ...filteredRows] : sheet.outlineHiddenColumns,
     size.spans, canonicalSheetAxisSpans([...hidden, ...collapsed]))

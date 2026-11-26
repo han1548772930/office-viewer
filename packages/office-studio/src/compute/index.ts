@@ -6,6 +6,8 @@ export type { AggregateTask, ChartStatisticsFit, ChartStatisticsJob, ChartStatis
   ChartStatisticsSeries, ChartStatisticsTask, ComputeContext, ComputeErrorCode, ComputeMetrics, ComputeOutput, ComputeProgress, ComputeResult,
   ComputeTask, FilterTask, NumericColumn, NumericStatistics, SortTask } from './protocol.ts'
 export { CHART_COMPUTE_LIMITS } from './chart-protocol.ts'
+export { SLICER_MEMBER_TYPE, SLICER_NO_TEXT } from './slicer-member-protocol.ts'
+export type { SlicerMembersOutput, SlicerMembersParams, SlicerMembersTask } from './slicer-member-protocol.ts'
 export { packNumericColumn } from './adapters.ts'
 export type { NumericInputValue } from './adapters.ts'
 export { estimateTaskMemory } from './tasks.ts'

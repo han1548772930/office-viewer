@@ -32,7 +32,7 @@ import { isDocumentImageCommand } from '../features/document/commands/document-i
 import { documentImageFromResource, prepareDocumentImageSource } from '../api/document-images'
 import { trackDocumentImageTask } from '../api/document-image-editors'
 import type { DocumentImage } from '../features/document/model/document-model'
-import { documentImageCanvasTargetCurrent, type DocumentImageCanvasTarget, type DocumentImageCanvasCommandRequest, type DocumentImageCanvasOperationRequest } from '../features/document/controllers/document-image-canvas'
+import { documentImageCanvasTargetCurrent, documentImageCanvasCommandMatchesTarget, type DocumentImageCanvasTarget, type DocumentImageCanvasCommandRequest, type DocumentImageCanvasOperationRequest } from '../features/document/controllers/document-image-canvas'
 import DocumentNotesPanel from './document/DocumentNotesPanel.vue'
 import DocumentNoteSettingsDialog from './document/DocumentNoteSettingsDialog.vue'
 import DocumentPermissionPanel from './document/DocumentPermissionPanel.vue'
@@ -1975,24 +1975,27 @@ function onWorkbenchKeydown(event: KeyboardEvent) {
 }
 const imageEditor = useDocumentImageEditor({ source: () => model.value, model: () => editingModel.value, host: () => editingHost.value, selection: () => selection.value,
   api: () => props.documentApi, session: () => captureInputSession(), permission: () => permissionContext.value,
-  inactive: () => !inputStateActive || documentInputComposing.value || legacyStoryActive.value, execute, focus: () => canvasRef.value?.focus(), notify })
-const { selectedId: selectedImageId, open: imagePanelOpen, mode: imagePanelMode, image: imagePanelImage, editorKey: imagePanelKey,
+  inactive: () => !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
+  layout: () => editingLayoutSource.value === model.value ? editingLayout.value : undefined, execute, focus: () => canvasRef.value?.focus(), notify })
+const { selectedId: selectedImageId, selectedIds: selectedImageIds, open: imagePanelOpen, mode: imagePanelMode, image: imagePanelImage, editorKey: imagePanelKey,
   busy: imagePanelBusy, error: imagePanelError, readOnly: imagePanelReadOnly, composing: imagePanelComposing } = imageEditor
 watch(imagePanelOpen, open => { imageOverlayActive.value = open; if (open) inputStateEpoch++ }, { flush: 'sync' })
-function imageCanvasCurrent(target: DocumentImageCanvasTarget): boolean {
+function imageCanvasCurrent(target: DocumentImageCanvasTarget, requireImageSelection = false): boolean {
   return documentImageCanvasTargetCurrent(target, { source: model.value, model: editingModel.value, selection: selection.value, host: editingHost.value,
+    ...(requireImageSelection ? { imageIds: selectedImageIds.value } : {}),
     session: captureInputSession(), requireSession: !!props.documentApi, disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value })
 }
 function onImageSelection(target?: DocumentImageCanvasTarget) {
   if (!target) { selectedImageId.value = undefined; return }
-  if (imageCanvasCurrent(target)) { selectedImageId.value = target.imageId; documentContextMenu.value = undefined }
+  if (imageCanvasCurrent(target)) { imageEditor.selectImages(target.imageIds ?? [target.imageId]); documentContextMenu.value = undefined }
 }
 function onImageCommand(request: DocumentImageCanvasCommandRequest) {
-  if (!imageCanvasCurrent(request.target) || request.command.imageId !== request.target.imageId || !imageEditor.editable(request.target.imageId)) return
+  if (!imageCanvasCurrent(request.target, true) || !documentImageCanvasCommandMatchesTarget(request)
+    || (request.target.imageIds ?? [request.target.imageId]).some(id => !imageEditor.editable(id))) return
   execute({ ...request.command, ...(request.target.host ? { host: request.target.host } : {}) })
 }
 function onImageOperation(request: DocumentImageCanvasOperationRequest) {
-  if (imageCanvasCurrent(request.target)) imageEditor.show(request.mode, request.target.imageId)
+  if (selectedImageIds.value.length === 1 && imageCanvasCurrent(request.target, true)) imageEditor.show(request.mode, request.target.imageId)
 }
 function insertImage(paragraphMenuPlacement?: 'below') { imageEditor.show('insert', undefined, paragraphMenuPlacement) }
 function insertLink() { abortPictureImageRead(); pictureReplacementRequest.value = undefined; pendingPictureFocus = undefined; modalKind.value = 'link'; modalValue.value = currentMarks.value.href || ''; modalError.value = ''; modalOpen.value = true }
@@ -2734,9 +2737,9 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.open-table': tableInsertOpen.value = true; break
     case 'doc.operation.open-image':
     case 'doc.command.insert-float-image': insertImage(params && typeof params === 'object' && Reflect.get(params, 'paragraphMenuPlacement') === 'below' ? 'below' : undefined); break
-    case 'doc.operation.edit-doc-image': imageEditor.show('edit', selectedImageId.value); break
-    case 'doc.operation.crop-image': imageEditor.show('crop', selectedImageId.value); break
-    case 'doc.operation.replace-image': imageEditor.show('replace', selectedImageId.value); break
+    case 'doc.operation.edit-doc-image': if (selectedImageIds.value.length === 1) imageEditor.show('edit', selectedImageId.value); break
+    case 'doc.operation.crop-image': if (selectedImageIds.value.length === 1) imageEditor.show('crop', selectedImageId.value); break
+    case 'doc.operation.replace-image': if (selectedImageIds.value.length === 1) imageEditor.show('replace', selectedImageId.value); break
     case 'doc.operation.open-link': insertLink(); break
     case 'doc.operation.insert-content-control':
       if (typeof params === 'string' && ['text', 'richText', 'checkbox', 'date', 'dropDownList', 'comboBox', 'picture', 'group', 'repeatingSection', 'repeatingSectionItem', 'docPartObj'].includes(params)) insertContentControl(params as DocumentContentControlType)
@@ -2908,7 +2911,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :inspection-host="blockHostInspection?.host" :selection="selection" :zoom="zoom" :search-matches="searchMatches"
-            :selected-image-id="selectedImageId" @image-selection="onImageSelection" @image-command="onImageCommand" @image-operation="onImageOperation"
+            :selected-image-id="selectedImageId" :selected-image-ids="selectedImageIds" @image-selection="onImageSelection" @image-command="onImageCommand" @image-operation="onImageOperation"
             :active-content-control-id="activeContentControlId" :active-content-control-popup-mode="activeContentControlPopupMode" @content-control-selection="onContentControlSelection" @content-control-command="onContentControlCommand"
             @note-navigation="onNoteCanvasNavigation"
             @structured-command="onStructuredCanvasCommand" @structured-operation="onStructuredCanvasOperation" @latex-edit="onLatexCanvasEdit"

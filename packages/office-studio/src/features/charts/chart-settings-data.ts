@@ -42,7 +42,7 @@ export function chartSettingsBindingKey(draft: ChartSettingsDraft, hostSheetId?:
     scaleType: config.xAxis?.scaleType ?? 'linear', min: config.xAxis?.min, max: config.xAxis?.max,
     baseTimeUnit: config.xAxis?.baseTimeUnit, majorTimeUnit: config.xAxis?.majorTimeUnit, majorUnit: config.xAxis?.majorUnit,
   } : undefined
-  return JSON.stringify([config.type, hostSheetId, config.source.sheetId ?? hostSheetId, range, config.source.orientation, config.pivotTableId,
+  return JSON.stringify([config.type, hostSheetId, config.source.sheetId ?? hostSheetId, range, config.source.orientation, config.pivotTableId, config.ownedPivot,
     config.categoryField ?? 0, config.valueFields ?? [], config.seriesToCategory ?? {}, date1904,
     options?.mapping, options?.plotVisibleOnly !== false, options?.invalidValueStrategy, options?.aggregation,
     options?.trendlines?.map(item => item.seriesIndex),

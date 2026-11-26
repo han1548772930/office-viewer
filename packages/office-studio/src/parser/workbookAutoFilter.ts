@@ -1,4 +1,6 @@
 import type { CellRange, CellScalar, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator } from '../domain/model.ts'
+import { normalizePivotRecordSelection } from '../features/pivot/services/pivot-filter-predicate.ts'
+import type { PivotRecordSelection } from '../domain/model.ts'
 
 const operators = new Set<SheetFilterConditionOperator>([
   'equals', 'doesNotEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual',
@@ -24,7 +26,11 @@ function criterion(value: unknown): SheetFilterCriteria {
   const raw = object(value, '筛选条件')
   if (raw.kind === 'values') {
     if (!Array.isArray(raw.selectedItems)) throw new TypeError('值筛选缺少成员数组。')
-    return { kind: 'values', selectedItems: raw.selectedItems.map(scalar) }
+    if (raw.selectionMode !== undefined && raw.selectionMode !== 'include' && raw.selectionMode !== 'exclude') throw new TypeError('值筛选选择模式无效。')
+    if (raw.recordDate1904 !== undefined && typeof raw.recordDate1904 !== 'boolean') throw new TypeError('原始成员日期系统无效。')
+    return { kind: 'values', selectedItems: raw.selectedItems.map(scalar), ...(raw.selectionMode === 'exclude' ? { selectionMode: 'exclude' as const } : {}),
+      ...(raw.recordSelection !== undefined ? { recordSelection: normalizePivotRecordSelection(raw.recordSelection as PivotRecordSelection) } : {}),
+      ...(raw.recordDate1904 !== undefined ? { recordDate1904: raw.recordDate1904 } : {}) }
   }
   if (raw.kind !== 'condition' || typeof raw.operator !== 'string' || !operators.has(raw.operator as SheetFilterConditionOperator)) throw new TypeError('筛选条件运算符无效。')
   const operator = raw.operator as SheetFilterConditionOperator

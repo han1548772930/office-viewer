@@ -1,7 +1,7 @@
-import type { CellScalar, CellStyle, ChartModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerModel } from '../domain/model.ts'
+import type { CellScalar, CellStyle, ChartModel, PivotCacheModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerCacheModel, SlicerModel } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
-import { getCollapsedOutlineIndexes } from '../features/sheet-outline/sheet-outline.ts'
+import { getSheetOutlineHiddenSpans } from '../features/sheet-outline/sheet-outline.ts'
 import { inferSheetCellValueType, normalizeSheetCellValueType, parseSheetCellText } from '../domain/sheet-cell-value.ts'
 import type { SheetAxisSpan } from '../domain/sheet-axis.ts'
 import { cloneModel } from '../domain/serialization.ts'
@@ -9,6 +9,7 @@ import type { SheetCellStylePatch, SheetCellStyleProperty, SheetStyleSource } fr
 import type { SheetRangeThemeRule, SheetRangeThemeStyle } from '../domain/model.ts'
 import type { SheetBackgroundImage, SheetCellImage, SheetFloatingImage } from '../domain/sheet-images.ts'
 import type { SheetDrawingShapeDTO, SheetDrawingState } from '../domain/sheet-drawings.ts'
+import type { ISlicerStylesDefinition, ITimelineStylesDefinition } from '../domain/slicer-styles.ts'
 import { composeSheetCellStyles, mergeSheetCellStylePatch, refreshWorkbookCellStyles, resolveSheetCellStyle, sheetStyleResetsAfterPatch,
   type SheetStyleContext } from '../features/sheet-workbench/sheet-style-inheritance.ts'
 
@@ -91,6 +92,9 @@ export interface ExcelSheetView {
   outlineHiddenRows?: number[]
   /** Derived collapsed columns. The domain outline is the persisted source of truth. */
   outlineHiddenColumns?: number[]
+  /** Compact derived visibility; production views do not enumerate each collapsed index. */
+  outlineHiddenRowSpans?: readonly SheetAxisSpan<boolean>[]
+  outlineHiddenColumnSpans?: readonly SheetAxisSpan<boolean>[]
   /** Derived view visibility. This must never be written back as manually hidden rows. */
   filteredRows?: number[]
   autoFilter?: SheetAutoFilter
@@ -106,7 +110,7 @@ export interface ExcelSheetView {
   worksheetProtection?: SheetWorksheetProtectionRule
   conditionalFormats?: SheetConditionalFormatRule[]
 }
-export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; slicers?: SlicerModel[]; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown>; defaultStyle?: SheetStyleSource; styles?: Record<string, SheetCellStylePatch>; rangeThemes?: Record<string, SheetRangeThemeStyle> }
+export interface ExcelWorkbookView { id?: string; name: string; sheets: ExcelSheetView[]; activeSheetId?: string; charts?: ChartModel[]; pivotTables?: PivotTableModel[]; pivotCaches?: PivotCacheModel[]; slicers?: SlicerModel[]; slicerCaches?: SlicerCacheModel[]; slicerStyles?: ISlicerStylesDefinition; timelineStyles?: ITimelineStylesDefinition; tables?: SheetTableModel[]; date1904?: boolean; calculationMode?: 'automatic' | 'manual'; metadata?: Record<string, unknown>; defaultStyle?: SheetStyleSource; styles?: Record<string, SheetCellStylePatch>; rangeThemes?: Record<string, SheetRangeThemeStyle> }
 export const cellKey = (row: number, col: number): string => {
   let result = ''
   for (let index = col; index >= 0; index = Math.floor(index/26)-1) result = String.fromCharCode(index%26+65)+result
@@ -152,7 +156,11 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
     metadata: workbook.metadata ? structuredClone(workbook.metadata) : undefined,
     charts: workbook.charts?.map(cloneChartModel),
     pivotTables: workbook.pivotTables?.map(clonePivotTableModel),
-    slicers: workbook.slicers?.map((slicer) => ({ ...slicer, position: { ...slicer.position }, size: { ...slicer.size }, layout: slicer.layout ? { ...slicer.layout } : undefined, selectedItems: slicer.selectedItems ? [...slicer.selectedItems] : undefined, timelineRange: slicer.timelineRange ? { ...slicer.timelineRange } : undefined })),
+    pivotCaches: workbook.pivotCaches?.map(cache => cloneModel(cache)),
+    slicers: workbook.slicers?.map(slicer => cloneModel(slicer)),
+    slicerCaches: workbook.slicerCaches?.map(cache => cloneModel(cache)),
+    slicerStyles: workbook.slicerStyles === undefined ? undefined : cloneModel(workbook.slicerStyles),
+    timelineStyles: workbook.timelineStyles === undefined ? undefined : cloneModel(workbook.timelineStyles),
     tables: workbook.tables?.map(cloneSheetTable),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
@@ -188,8 +196,8 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         hiddenRows: [...(sheet.hiddenRows ?? [])], hiddenColumns: [...(sheet.hiddenColumns ?? [])],
         rowHiddenSpans: sheet.rowHiddenSpans?.map(span => ({ ...span })), columnHiddenSpans: sheet.columnHiddenSpans?.map(span => ({ ...span })),
         outline: sheet.outline ? { ...sheet.outline, groups: sheet.outline.groups.map(group => ({ ...group })) } : undefined,
-        outlineHiddenRows: sheet.outline ? [...getCollapsedOutlineIndexes({ count: rowCount, groups: sheet.outline.groups.filter(group => group.axis === 'row') })] : [],
-        outlineHiddenColumns: sheet.outline ? [...getCollapsedOutlineIndexes({ count: columnCount, groups: sheet.outline.groups.filter(group => group.axis === 'column') })] : [],
+        outlineHiddenRowSpans: sheet.outline ? getSheetOutlineHiddenSpans(sheet.outline, 'row', rowCount) : [],
+        outlineHiddenColumnSpans: sheet.outline ? getSheetOutlineHiddenSpans(sheet.outline, 'column', columnCount) : [],
         filteredRows: [...new Set([...(sheet.autoFilter?.filteredRows ?? []), ...(workbook.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => {
           if (!table.autoFilter) return []
           return refreshAutoFilter({ ...sheet, autoFilter: structuredClone(table.autoFilter) })
@@ -296,7 +304,11 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
     rangeThemes: view.rangeThemes === undefined ? workbook.rangeThemes : cloneModel(view.rangeThemes),
     charts: view.charts?.map(cloneChartModel) ?? workbook.charts,
     pivotTables: view.pivotTables?.map(clonePivotTableModel) ?? workbook.pivotTables,
-    slicers: view.slicers?.map((slicer) => ({ ...slicer, position: { ...slicer.position }, size: { ...slicer.size }, layout: slicer.layout ? { ...slicer.layout } : undefined, selectedItems: slicer.selectedItems ? [...slicer.selectedItems] : undefined, timelineRange: slicer.timelineRange ? { ...slicer.timelineRange } : undefined })) ?? workbook.slicers,
+    pivotCaches: view.pivotCaches?.map(cache => cloneModel(cache)) ?? workbook.pivotCaches,
+    slicers: view.slicers?.map(slicer => cloneModel(slicer)) ?? workbook.slicers,
+    slicerCaches: view.slicerCaches?.map(cache => cloneModel(cache)) ?? workbook.slicerCaches,
+    slicerStyles: Object.hasOwn(view, 'slicerStyles') ? view.slicerStyles === undefined ? undefined : cloneModel(view.slicerStyles) : workbook.slicerStyles,
+    timelineStyles: Object.hasOwn(view, 'timelineStyles') ? view.timelineStyles === undefined ? undefined : cloneModel(view.timelineStyles) : workbook.timelineStyles,
     tables: view.tables?.map(cloneSheetTable) ?? workbook.tables,
     calculationMode: view.calculationMode === 'manual' ? 'manual' : 'automatic',
     sheets: view.sheets.map((source) => {
@@ -423,17 +435,7 @@ function cloneSheetTable(table: SheetTableModel): SheetTableModel {
 }
 
 function cloneChartModel(chart: ChartModel): ChartModel {
-  return {
-    ...chart,
-    source: { ...chart.source, range: { ...chart.source.range } },
-    position: { ...chart.position },
-    size: { ...chart.size },
-    legend: { ...chart.legend },
-    xAxis: { ...chart.xAxis },
-    yAxis: { ...chart.yAxis },
-    valueFields: [...chart.valueFields],
-    seriesToCategory: chart.seriesToCategory ? Object.fromEntries(Object.entries(chart.seriesToCategory).map(([field, categories]) => [field, [...categories]])) : undefined,
-  }
+  return cloneModel(chart)
 }
 
 function clonePivotTableModel(pivot: PivotTableModel): PivotTableModel {

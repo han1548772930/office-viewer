@@ -1,146 +1,164 @@
-//! XLSX x14 sparkline groups mapped from the canonical per-cell model.
+//! XLSX x14 groups and editable local sparkline metadata from the canonical cell model.
+use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
+use office_io_common::conditional_format_xml::{self as source_xml, Element};
+use office_io_common::sparkline_io::{self as io, SparklineModelBudget, SparklineModelRecord, SparklineSpec};
 
-use crate::{ExportError, ExportWarning, xml};
-use std::borrow::Cow;
+use crate::{ExportError, ExportWarning};
 
-#[derive(Debug)]
-struct Sparkline {
-    target: String,
-    source: String,
-    kind: String,
-    color: String,
-    negative: Option<String>,
-    high: Option<String>,
-    low: Option<String>,
-    empty: String,
-    axis: String,
-    min: Option<f64>,
-    max: Option<f64>,
+struct Group {
+    template: Element,
+    members: Vec<(String, String)>,
+    theme: Option<Element>,
+    palette: Option<Vec<String>>,
+}
+
+fn invalid(message: impl Into<String>) -> ExportError { ExportError::invalid(message) }
+fn parsed_spec(value: &Value) -> Result<SparklineSpec, ExportError> {
+    let spec: SparklineSpec = serde_json::from_value(value.clone()).map_err(|error| invalid(format!("SPARKLINE_MODEL_INVALID: {error}")))?;
+    spec.validate().map_err(invalid)?; Ok(spec)
 }
 
 pub(crate) fn write_xml(
-    sheet_name: &str,
-    cells: &serde_json::Map<String, Value>,
-    warnings: &mut Vec<ExportWarning>,
+    sheet_name: &str, cells: &serde_json::Map<String, Value>, warnings: &mut Vec<ExportWarning>,
 ) -> Result<String, ExportError> {
-    let mut groups = Vec::new();
-    for (target, cell) in cells {
-        let Some(spec) = cell.get("sparkline").filter(|value| !value.is_null()) else { continue };
-        let Some(object) = spec.as_object() else {
-            warnings.push(ExportWarning::new("INVALID_SPARKLINE", format!("Ignored malformed sparkline at {target}")));
-            continue;
-        };
-        let Some((row, column)) = parse_a1(target) else {
-            warnings.push(ExportWarning::new("INVALID_SPARKLINE", format!("Ignored sparkline with invalid target {target:?}")));
-            continue;
-        };
-        if row > 1_048_575 || column > 16_383 {
-            return Err(ExportError::invalid("sparkline target exceeds XLSX worksheet limits"));
+    let mut groups = BTreeMap::<(String, String), Group>::new();
+    let mut authored = BTreeMap::<String, SparklineSpec>::new();
+    let mut group_styles = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut budget = SparklineModelBudget::default();
+    let mut local_features = false;
+    for (raw_target, cell) in cells {
+        let Some(raw) = cell.get("sparkline").filter(|value| !value.is_null()) else { continue; };
+        let target = io::normalize_target(raw_target).ok_or_else(|| invalid(format!("SPARKLINE_REFERENCE_INVALID: invalid target {raw_target:?}")))?;
+        let spec = parsed_spec(raw)?; budget.include(&spec).map_err(invalid)?;
+        if authored.contains_key(&target) { return Err(invalid("SPARKLINE_MODEL_INVALID: repeated canonical target")); }
+        local_features |= spec.show_gradient == Some(true) || spec.show_radius == Some(true)
+            || spec.non_numeric_cells.as_deref().is_some_and(|value| value != "gap");
+        if let Some(template) = io::native_group_for_spec(&spec).map_err(invalid)? {
+            let source = io::source_formula(sheet_name, &spec.source_range).map_err(invalid)?;
+            let theme = spec.office_source.as_ref().and_then(|source| source.theme_xml.as_deref()).map(source_xml::parse).transpose().map_err(invalid)?;
+            let palette = spec.office_source.as_ref().and_then(|source| source.indexed_colors.clone());
+            let style = io::native_group_fingerprint(&template, theme.as_ref(), palette.as_deref()).map_err(invalid)?;
+            let identity = spec.group_id.clone().unwrap_or_else(|| format!("ungrouped:{target}"));
+            group_styles.entry(identity.clone()).or_default().insert(style.clone());
+            groups.entry((identity, style)).or_insert_with(|| Group { template, members: Vec::new(), theme, palette }).members.push((target.clone(), source));
+        } else {
+            warnings.push(ExportWarning::new("SPARKLINE_LOCAL_ONLY",
+                format!("Pie sparkline at {target} is saved as editable Office Studio metadata; XLSX has no native Pie sparkline type")));
         }
-        let source = object.get("sourceRange").and_then(Value::as_str).unwrap_or_default();
-        let Some(source) = source_formula(sheet_name, source) else {
-            warnings.push(ExportWarning::new("INVALID_SPARKLINE", format!("Ignored sparkline with invalid source range at {target}")));
-            continue;
-        };
-        let kind = match object.get("type").and_then(Value::as_str).unwrap_or("line") {
-            "line" => "line",
-            "column" => "column",
-            "winloss" => "stacked",
-            other => {
-                warnings.push(ExportWarning::new("UNSUPPORTED_SPARKLINE_TYPE", format!("Ignored unsupported sparkline type {other:?} at {target}")));
-                continue;
-            }
-        };
-        let empty = match object.get("emptyCells").and_then(Value::as_str).unwrap_or("gap") {
-            "gap" => "gap",
-            "zero" => "zero",
-            "connect" => "span",
-            other => {
-                warnings.push(ExportWarning::new("UNSUPPORTED_SPARKLINE_EMPTY_MODE", format!("Ignored unsupported sparkline empty-cell mode {other:?} at {target}")));
-                continue;
-            }
-        };
-        let Some(series_color) = color(object, "color") else {
-            warnings.push(ExportWarning::new("INVALID_SPARKLINE_COLOR", format!("Ignored sparkline with invalid color at {target}")));
-            continue;
-        };
-        let axis = if object.get("axis").and_then(Value::as_str) == Some("custom") { "custom" } else { "individual" };
-        let min = object.get("min").and_then(Value::as_f64);
-        let max = object.get("max").and_then(Value::as_f64);
-        if axis == "custom" && (!min.zip(max).is_some_and(|(minimum, maximum)| minimum < maximum)) {
-            warnings.push(ExportWarning::new("INVALID_SPARKLINE_AXIS", format!("Ignored sparkline with invalid custom axis at {target}")));
-            continue;
+        authored.insert(target, spec);
+    }
+    if authored.is_empty() { return Ok(String::new()); }
+    for (identity, styles) in group_styles {
+        if styles.len() > 1 {
+            warnings.push(ExportWarning::new("SPARKLINE_NATIVE_GROUP_SPLIT",
+                format!("Sparkline group {identity:?} has incompatible retained native settings; native groups were split and the editable group ID was retained")));
         }
-        groups.push(Sparkline {
-            target: cell_ref(row, column), source, kind: kind.into(), color: series_color,
-            negative: color(object, "negativeColor"), high: color(object, "highPointColor"),
-            low: color(object, "lowPointColor"), empty: empty.into(), axis: axis.into(), min, max,
-        });
     }
-    if groups.is_empty() { return Ok(String::new()) }
-    let mut out = format!("<extLst><ext uri=\"{{05C60535-1F16-4fd2-B633-F4F36F0B64E0}}\"><x14:sparklineGroups xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\" xmlns:xm=\"http://schemas.microsoft.com/office/excel/2006/main\">");
-    for group in groups {
-        let axis_attrs = if group.axis == "custom" { format!("minAxisType=\"custom\" maxAxisType=\"custom\" manualMin=\"{}\" manualMax=\"{}\"", format_number(group.min.unwrap()), format_number(group.max.unwrap())) } else { "minAxisType=\"individual\" maxAxisType=\"individual\"".into() };
-        out.push_str(&format!("<x14:sparklineGroup type=\"{}\" displayEmptyCellsAs=\"{}\" {} negative=\"{}\" high=\"{}\" low=\"{}\"><x14:colorSeries rgb=\"{}\"/>", group.kind, group.empty, axis_attrs, if group.negative.is_some() { 1 } else { 0 }, if group.high.is_some() { 1 } else { 0 }, if group.low.is_some() { 1 } else { 0 }, group.color));
-        if let Some(color) = group.negative { out.push_str(&format!("<x14:colorNegative rgb=\"{color}\"/>")); }
-        if let Some(color) = group.high { out.push_str(&format!("<x14:colorHigh rgb=\"{color}\"/>")); }
-        if let Some(color) = group.low { out.push_str(&format!("<x14:colorLow rgb=\"{color}\"/>")); }
-        out.push_str(&format!("<x14:sparklines><x14:sparkline><xm:f>{}</xm:f><xm:sqref>{}</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup>", esc(&group.source), group.target));
+    if local_features {
+        warnings.push(ExportWarning::new("SPARKLINE_LOCAL_FEATURES",
+            "Gradient, rounded corners and non-numeric display policies are retained in the editable local extension; native XLSX rendering differs"));
     }
-    out.push_str("</x14:sparklineGroups></ext></extLst>");
-    Ok(out)
-}
-
-fn color(spec: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
-    let value = spec.get(key)?.as_str()?;
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None }
-    Some(format!("FF{}", hex.to_ascii_uppercase()))
-}
-
-fn source_formula(sheet_name: &str, source: &str) -> Option<String> {
-    let source = source.trim();
-    let (sheet, reference) = source.rsplit_once('!').map_or((sheet_name, source), |(sheet, reference)| (sheet.trim_matches('\''), reference));
-    let refs = reference.replace('$', "");
-    let mut parts = refs.split(':');
-    let first = parts.next()?;
-    let last = parts.next().unwrap_or(first);
-    if parts.next().is_some() || parse_a1(first).is_none() || parse_a1(last).is_none() { return None }
-    let sheet = sheet.replace('\'', "''");
-    Some(format!("'{}'!{}:{}", sheet, first.to_ascii_uppercase(), last.to_ascii_uppercase()))
-}
-
-fn parse_a1(value: &str) -> Option<(u32, u32)> {
-    let value = value.trim().replace('$', "");
-    let mut column = 0u32;
-    let mut chars = value.chars().peekable();
-    let mut letters = 0;
-    while let Some(ch) = chars.peek().copied().filter(char::is_ascii_alphabetic) {
-        chars.next(); letters += 1;
-        column = column.checked_mul(26)?.checked_add(ch.to_ascii_uppercase() as u32 - 'A' as u32 + 1)?;
+    let mut signatures = BTreeMap::<String, String>::new();
+    let mut native_groups = Element::prefixed(source_xml::X14_NAMESPACE, "x14", "sparklineGroups");
+    for (_, mut group) in groups {
+        let mut members = Element::prefixed(source_xml::X14_NAMESPACE, "x14", "sparklines");
+        for (target, formula) in &group.members {
+            let mut member = Element::prefixed(source_xml::X14_NAMESPACE, "x14", "sparkline");
+            let mut f = Element::prefixed(source_xml::XM_NAMESPACE, "xm", "f"); f.set_text(formula);
+            let mut sqref = Element::prefixed(source_xml::XM_NAMESPACE, "xm", "sqref"); sqref.set_text(target);
+            member.push(f); member.push(sqref); members.push(member);
+        }
+        group.template.push(members);
+        group.template.order_children(&["colorSeries", "colorNegative", "colorAxis", "colorMarkers", "colorFirst", "colorLast", "colorHigh", "colorLow", "f", "sparklines", "extLst"]);
+        group.template.validate_fragment().map_err(invalid)?;
+        let fingerprint = io::native_group_fingerprint(&group.template, group.theme.as_ref(), group.palette.as_deref()).map_err(invalid)?;
+        for (target, _) in &group.members { signatures.insert(target.clone(), io::native_projection_signature(&fingerprint, target).map_err(invalid)?); }
+        native_groups.push(group.template);
     }
-    if letters == 0 { return None }
-    let row = chars.collect::<String>().parse::<u32>().ok()?.checked_sub(1)?;
-    Some((row, column.checked_sub(1)?))
-}
-
-fn cell_ref(row: u32, column: u32) -> String {
-    let mut label = String::new();
-    let mut current = column;
-    loop {
-        label.insert(0, char::from_u32((current % 26 + 65) as u32).unwrap());
-        if current < 26 { break }
-        current = current / 26 - 1;
+    let mut ext_list = Element::new(source_xml::MAIN_NAMESPACE, "extLst");
+    if !native_groups.children.is_empty() {
+        let mut extension = Element::new(source_xml::MAIN_NAMESPACE, "ext"); extension.set_attr("uri", io::NATIVE_EXTENSION_URI);
+        extension.push(native_groups); ext_list.push(extension);
     }
-    format!("{label}{}", row + 1)
+    let mut local = Element::prefixed(io::MODEL_NAMESPACE, "os", "sparklines"); local.set_attr("version", "1");
+    for (target, spec) in authored {
+        let record = SparklineModelRecord { native_signature: signatures.remove(&target), target: target.clone(), spec };
+        let mut node = Element::prefixed(io::MODEL_NAMESPACE, "os", "sparkline"); node.set_attr("target", target);
+        node.set_text(serde_json::to_string(&record).map_err(|error| invalid(error.to_string()))?); local.push(node);
+    }
+    let mut extension = Element::new(source_xml::MAIN_NAMESPACE, "ext"); extension.set_attr("uri", io::MODEL_EXTENSION_URI);
+    extension.push(local); ext_list.push(extension);
+    // The full extension is admitted before a String allocation. No partial output is returned.
+    ext_list.validate_fragment().map_err(invalid)?;
+    Ok(ext_list.render())
 }
 
-fn format_number(value: f64) -> String {
-    let mut result = format!("{value:.10}");
-    while result.contains('.') && result.ends_with('0') { result.pop(); }
-    if result.ends_with('.') { result.pop(); }
-    result
+fn all_specs(workbook: &super::WorkbookInput, mut visit: impl FnMut(SparklineSpec) -> Result<(), ExportError>) -> Result<(), ExportError> {
+    for sheet in &workbook.sheets {
+        for cell in sheet.cells.values() {
+            if let Some(raw) = cell.get("sparkline").filter(|value| !value.is_null()) { visit(parsed_spec(raw)?)?; }
+        }
+    }
+    Ok(())
 }
 
-fn esc(value: &str) -> Cow<'_, str> { xml::escape(value) }
+/// The parent emits this one theme part and relationship for both conditional formats and sparklines.
+pub(super) fn merge_theme(workbook: &super::WorkbookInput, conditional_theme: Option<String>) -> Result<Option<String>, ExportError> {
+    let mut selected = conditional_theme.map(|xml| source_xml::parse(&xml).map(|node| (node.fingerprint(), xml))).transpose().map_err(invalid)?;
+    let mut budget = SparklineModelBudget::default();
+    all_specs(workbook, |spec| {
+        budget.include(&spec).map_err(invalid)?;
+        if spec.sparkline_type == "pie" { return Ok(()); }
+        if let Some(theme) = spec.office_source.and_then(|source| source.theme_xml) {
+            let fingerprint = source_xml::parse(&theme).map_err(invalid)?.fingerprint();
+            if selected.as_ref().is_some_and(|(existing, _)| existing != &fingerprint) {
+                return Err(invalid("SPARKLINE_THEME_CONFLICT: a single workbook theme cannot preserve conflicting native source themes"));
+            }
+            if selected.is_none() { selected = Some((fingerprint, theme)); }
+        }
+        Ok(())
+    })?;
+    Ok(selected.map(|(_, xml)| xml))
+}
+
+/// Append the authored indexed palette to generated styles, without building a tree of the full styles part.
+pub(super) fn apply_indexed_colors(workbook: &super::WorkbookInput, mut styles_xml: String) -> Result<String, ExportError> {
+    let mut selected = None::<Vec<String>>;
+    all_specs(workbook, |spec| {
+        if spec.sparkline_type == "pie" { return Ok(()); }
+        if let Some(palette) = spec.office_source.and_then(|source| source.indexed_colors) {
+            if selected.as_ref().is_some_and(|existing| existing != &palette) {
+                return Err(invalid("SPARKLINE_PALETTE_CONFLICT: a single workbook palette cannot preserve conflicting indexed source colors"));
+            }
+            if selected.is_none() { selected = Some(palette); }
+        }
+        Ok(())
+    })?;
+    let Some(palette) = selected else { return Ok(styles_xml); };
+    // Mixing a copied default-palette source with a different custom palette must never change its colors silently.
+    all_specs(workbook, |spec| {
+        if spec.sparkline_type == "pie" { return Ok(()); }
+        if let Some(source) = spec.office_source.filter(|source| source.indexed_colors.is_none()) {
+            let group = source_xml::parse(&source.group_xml).map_err(invalid)?;
+            let theme = source.theme_xml.as_deref().map(source_xml::parse).transpose().map_err(invalid)?;
+            let before = io::native_group_fingerprint(&group, theme.as_ref(), None).map_err(invalid)?;
+            let after = io::native_group_fingerprint(&group, theme.as_ref(), Some(&palette)).map_err(invalid)?;
+            if before != after { return Err(invalid("SPARKLINE_PALETTE_CONFLICT: the selected palette changes a retained default-palette sparkline")); }
+        }
+        Ok(())
+    })?;
+    let mut colors = Element::new(source_xml::MAIN_NAMESPACE, "colors");
+    let mut indexed = Element::new(source_xml::MAIN_NAMESPACE, "indexedColors");
+    for value in palette {
+        let mut entry = Element::new(source_xml::MAIN_NAMESPACE, "rgbColor"); entry.set_attr("rgb", value); indexed.push(entry);
+    }
+    colors.push(indexed);
+    let position = styles_xml.rfind("</styleSheet>").ok_or_else(|| invalid("SPARKLINE_PALETTE_INVALID: generated styles closing tag is unavailable"))?;
+    if styles_xml.contains("<colors") { return Err(invalid("SPARKLINE_PALETTE_CONFLICT: generated styles already contain a color palette")); }
+    styles_xml.insert_str(position, &colors.render()); Ok(styles_xml)
+}
+
+#[cfg(test)]
+#[path = "xlsx_sparkline_tests.rs"]
+mod tests;

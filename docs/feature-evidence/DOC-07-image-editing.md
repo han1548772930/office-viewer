@@ -1,6 +1,6 @@
 # DOC-07 图片编辑与对象入口
 
-记录日期：2026-11-26。状态：**开发中，未验收**。包含第一批图片编辑和第二批 flip / 段内 atom / 双侧文字续作。两批均仅读取、编辑文本，不运行测试、类型检查、构建、dev、浏览器、Rust/WASM、基准或 `git diff --check`。
+记录日期：2026-11-26。状态：**开发中，未验收**。包含第一批图片编辑、第二批 flip / 段内 atom / 双侧文字，以及第三批图片多选 / 对齐 / 分布 / 整体变换。三批均仅读取、编辑文本，不运行测试、类型检查、构建、dev、浏览器、Rust/WASM、基准或 `git diff --check`。
 
 ## 1. 实现前的入口清点
 
@@ -61,7 +61,7 @@
 
 公开插入 `doc.command.insert-float-image` 返回 `Promise<boolean>`；无 source 时打开已绑定编辑器，有 source 时完成资源读取与内容插入。公开 transform / wrapping / arrange / remove 命令映射到同一 Docs 内容命令，edit / crop / replace operation 打开 Ant 面板。unit、segment / subUnit、image / drawing 身份冲突、过期 revision / history generation、缺失目标、无效参数均显式拒绝；不以消息提示充当成功。
 
-多对象命令 `doc.command.arrange-images` 接收 `imageIds` 与 `arrange` 或单对象 `zOrder`。选中图片内部顺序保留；绝对索引 floor 后 clamp，负数到 0、过大到末尾、NaN 到 0；移动后统一写回图片层级。仅允许同一容器，任何受影响 peer 的权限或内容控件锁失败均不部分提交；一次候选提交产生一次内容历史。单对象 Facade 与 UI 仍可独立排列，未提供多选 UI。
+多对象命令 `doc.command.arrange-images` 接收 `imageIds` 与 `arrange` 或单对象 `zOrder`。选中图片内部顺序保留；有限绝对索引 floor 后 clamp，负数到 0、过大到末尾，移动后统一写回图片层级。第一批纯排序函数沿用上游 NaN 到 0 的行为；第三批内容命令边界明确拒绝 NaN / Infinity，防止无效 API 输入产生层级编辑。仅允许同一容器，任何受影响 peer 的权限或内容控件锁失败均不部分提交；一次候选提交产生一次内容历史。第三批已增加多选 UI 和四种批量 Facade，见第 6 节，均未验收。
 
 图片控件锁也检查旧 `metadata.pictureBlockId`。变化图片同步到对应 `metadata.pictureImage`；删除后清除图片指针 / 数据，保留 inline 控件锚点和未知 metadata，设置空值与 placeholder；整块控件删除沿用现有范围协调规则。不改写无关控件。替换保留可见框、角度、位置、环绕和层级，更新资源身份并清除裁剪；reset 使用已读原始尺寸，缺少原始尺寸时拒绝。
 
@@ -89,7 +89,7 @@ Facade 草稿使用 Vite SSR 与假 Image / FileReader；已静态修正不存�
 剩余交付目标保留完整范围：
 
 - 段内 image atom、两侧区间文字与 flipX / flipY 已有第二批实现及草稿，全部未验收。复杂旋转 / 大对象、精确行高的溢出、文本对齐、RTL、行边界 affinity、连续上下导航、段落内多个浮动锚点及真实分页仍需补场景。
-- 多选 UI、group、align、distribute、跨容器 / 跨类型层级；非图片 drawing 的槽位保留不提供这些语义。
+- 第三批已落盘多选 UI、六种 align、两种 distribute、整体平移 / 均匀缩放 / 旋转；全部未验收。group、非均匀仿射、跨容器 / 跨类型层级仍须实现；非图片 drawing 的槽位保留不提供这些语义。
 - 跨页图片拖动与逻辑锚点迁移、复杂 SDT / 嵌套和分页；表格 / 辅助宿主 page / margin 定位仍使用相对测量参考。
 - UUID / 跨设备媒体解析、EXIF / DPI、Office 原生媒体关系、复杂环绕 / 锚点 / crop 与源资源冲突样本；转换继续扩展本项目解析 / 写出链路。
 - Worker / Rust / WASM 图片布局、内存 / lease / 复制次数与字节 / 取消契约、首屏 / 滚动 / 缩放 / 编辑和大样本前后基准。
@@ -157,4 +157,99 @@ Canvas 单击、右键、双击图片统一先发布实际 atom source range，�
 
 上述草稿均未运行；Facade 草稿的 Vite SSR / 假 Image 和浏览器草稿的 Vite / Edge 仅写在测试代码中，没有实际启动。未运行类型检查、测试、构建、dev、浏览器、Rust / Cargo / WASM、基准或 `git diff --check`。
 
-剩余目标：实际 browser / Canvas2D / WebGPU / Windows 原生 IME / 系统剪贴板 / Office 文件保存重开；多图浮动锚点、分页 / 分节 / note / exact 行高与对象溢出、复杂 RTL / 对齐 / 行边界 affinity；完整 picture 控件 atom 迁移和复杂 SDT；多选 / group / align / distribute / 跨容器与跨类型层级；媒体 UUID / EXIF / DPI / 原生关系；Worker / Rust / WASM 布局与取消、内存 lease / 复制计量和大样本同数据集性能基准。全部完整功能及 Pro 范围继续保留。
+剩余目标：实际 browser / Canvas2D / WebGPU / Windows 原生 IME / 系统剪贴板 / Office 文件保存重开；多图浮动锚点、分页 / 分节 / note / exact 行高与对象溢出、复杂 RTL / 对齐 / 行边界 affinity；完整 picture 控件 atom 迁移和复杂 SDT；第三批多选 / align / distribute 的运行验收及 group / 跨容器与跨类型层级；媒体 UUID / EXIF / DPI / 原生关系；Worker / Rust / WASM 布局与取消、内存 lease / 复制计量和大样本同数据集性能基准。全部完整功能及 Pro 范围继续保留。
+
+<a id="image-batch"></a>
+
+## 6. 第三批：图片多选、对齐 / 分布与整体变换
+
+本节记录真实模型和交互代码的续作，不是运行验证。第三批新增 **57 个 `test(...)` 声明草稿**：模型 / Canvas / scene 契约 19、Facade / 历史 / 布局借用契约 20、浏览器交互 18。第一批 44、第二批 36 保留，三批合计 **137 个未运行声明草稿**。一个模型 test 内有六种对齐黄金坐标，一个浏览器 test 内循环八个菜单场景；这些内部场景不重复计入 test 声明数，也不计入已完成功能数。
+
+### 6.1 固定源码与实现差异
+
+固定源码仍为 v1.6.0 / `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。下列路径相对只读 `E:\rust_test\univer\packages`，本轮只读取，不执行上游代码。
+
+| 契约 | 固定来源 | 本地行为 / 未核实项 |
+| --- | --- | --- |
+| 对齐枚举与八个叶入口 | `drawing-ui/src/commands/operations/drawing-align.operation.ts`，`AlignType` / `SetDrawingAlign*Operation` | 保留 default=`'0'`、left / center / right / top / middle / bottom=`'1'…'6'`、horizon / vertical=`'7'/'8'`。共享 `sheet.operation.set-image-align` handler 仅 `return true`，未找到 Docs 覆盖；该 stub 不是本地功能证据。本地独立实现真实图片几何命令，不把上游空 handler 接成成功提示 |
+| 对齐父项显隐 | `drawing-ui/src/menu/align.menu.ts`，`DrawingAlignContextMenuItemFactory` | 上游 focus 少于两项隐藏父项；本地仅多选显示对齐根，分布少于三项禁用，命令同样检查。三项门槛属于本地真实分布语义，不假称上游 stub 已执行 |
+| 右键组与子项顺序 | `drawing-ui/src/menu/schema.ts` | Drawing / Others 下 group order 1、arrange 2、align 3；align 八叶顺序为左 / 水平居中 / 右 / 上 / 垂直居中 / 下 / 水平分布 / 垂直分布。本地多图右键排列在对齐前，group 保留为未完成目标 |
+| 多对象层级 | `docs-drawing/src/commands/commands/set-drawing-arrange.command.ts`、`core/src/common/drawing-order.ts` | 保留源层级中选中对象的相对顺序，front / back 分区，forward / backward 按相邻块移动；同容器和所有受影响 peer 权限 / 锁统一验证。绝对索引的有限数值校验是本地命令边界差异 |
+| 多对象几何效果 | 同上入口 / 枚举及图片公开 transform 契约 | 本地以可见旋转包围框对齐，等边间距分布，整体均匀缩放并绕选区中心旋转；图片局部宽高、crop、flip 和资源身份独立保留。Office 可观察行为的复杂重叠 / 分布、跨页 / 锚点和混合对象仍需样本核实，不能据当前算法宣称完全等价 |
+
+上游链接可按同一 commit 复查：[对齐 operation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/drawing-ui/src/commands/operations/drawing-align.operation.ts)、[对齐菜单](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/drawing-ui/src/menu/align.menu.ts)、[绘图 schema](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/drawing-ui/src/menu/schema.ts)、[Docs 排列 command](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-drawing/src/commands/commands/set-drawing-arrange.command.ts)。公开枚举和菜单顺序有源码证据；线上完整装配、Office 文件和最终像素效果没有运行证据。
+
+### 6.2 本地入口分类与状态
+
+本批不新增常规 Ribbon 根或段落 mount，第 1 节常规根 1 / 段落挂载 5 不变。以下是 **本地图片覆盖层** 的分类计数，与上游 fallback 4 根、共享绘图 right-click 3 根 / 14 叶的统计分开。
+
+| 本地类别 | 根 / 叶数量与顺序 | 状态 / 命令 |
+| --- | --- | --- |
+| 单图浮条 | 6 根：编辑、裁剪、删除、重置、替换、排列 | 既有图片面板 / 内容命令；重置还需要已读 intrinsic 尺寸 |
+| 多图浮条 | 3 根：删除选中、排列、对齐与分布；“已选 N 张”是状态文字，不计根 | 单图 edit / crop / replace / reset 隐藏；逐选中目标 edit / view、控件锁、输入会话和 active owner 判断 |
+| 单图右键 | 6 根：编辑、裁剪、替换、重置、排列、删除；分隔线不计根 | 同一单图内容命令 / operation |
+| 多图右键 | 3 根：排列、对齐与分布、删除选中；分隔线不计根 | 右键已选对象保留所有 IDs，外部对象先改选择；无单图面板叶项 |
+| 排列子项 | 4 叶：置顶、上移一层、置底、下移一层 | `doc.command.arrange-images`；不同容器或任一选中对象不可编辑时禁用 |
+| 对齐与分布子项 | 8 叶：左、水平居中、右、顶部、垂直居中、底部、水平分布、垂直分布 | `doc.command.align-images`；同页 / 同容器且 geometry 当前；前六项至少两图，后两项至少三图 |
+| Canvas 核心手柄 / 键盘 | 四角均匀缩放柄、旋转柄、整体拖动；不是 Ribbon 根 | `doc.command.transform-images`；Shift 旋转 15° snap；方向键 1px / Shift 10px；Delete / Backspace 批删，Esc 先取消手势、再次清对象选区 |
+
+浮条 / 右键都是已有图片上下文呈现扩展；经典 / grid 主 Ribbon 根数不因多选而增加。未运行动态 adapter、插件扩展和溢出装配，不能把上述本地静态计数推广为 Univer 全部浮动入口总数。所有完整 Sheets / Docs / Pro 目标继续保留。
+
+### 6.3 模型、命令、API 与持久化
+
+以下文件相对 `packages/office-studio/src`。它们已落盘，实际运行仍未验收。
+
+| 责任 / 文件 | 续作行为 |
+| --- | --- |
+| `features/document/images/document-image-batch.ts`（新增） | 派生 `DocumentImageBatchMember` 保存 imageId、当前 image 副本、LayoutImage 和 pageOrigin；1–1000 个唯一 ID、合法尺寸 / 坐标 / 页、同容器 / 同页、陈旧 image 输入验证。对齐采用可见旋转框；分布使用 union 的最小 / 最大端点；整体 transform 保留局部框和资源。inline 转 float 保持当前 paint 尺寸和原 atom 地址，360° / 相同位置不伪造编辑 |
+| `features/document/commands/document-image-commands.ts` | 新 align / transform 先逐选中目标检查 view / edit / 控件锁，再编排同一 batch 候选。即使边界图片原地不动，也不能跳过其权限；arrange 检查所有受影响 peer；批删失败不发布先前删除，atom 删除继续协调 UTF-16 范围、资源和控件 |
+| `api/document-image-layout.ts`（新增） | `bindDocumentImageLayout(source, read)` 用 source 实例绑定 live layout owner；旧 handle dispose 不删除新 owner。`readDocumentImageLayout` 核对 source / host，优先借用当前布局，缺失时复用同一布局引擎和辅助 inspection 布局；detached 调用允许传 measurer，geometry 不进入快照 |
+| `api/document-images.ts`、`api/document-image-commands.ts` | 四个批量 helpers 和两个公开命令；本地 handle 必须属于同一文档实例和 segment。读取 geometry 后重新核对模型实例 / revision；callback 重入后拒绝旧结果；无效 IDs / 参数 / segment 显式拒绝 |
+| `components/document/use-document-image-editor.ts` | selectedIds 是对象选择的唯一权威，selectedId 只是最后一项兼容 getter / 单选 setter；内容改动保留仍存在的成员，unit / host / API owner 切换和 deactivation 清选择。多选拒绝单图面板，显式打开单图面板转回单选；绑定 / 释放 live layout provider |
+| `components/DocumentWorkbench.vue` | 给 Canvas 传所有 IDs；selection 请求可设置新 IDs，command / operation 必须匹配当前 IDs、source / host / session 并逐目标 editable。geometry 只借出与当前模型匹配的排版，内容修改仍调用同一 execute / 文档历史 |
+| `components/document/DocumentCanvasViewport.vue`、`features/document/controllers/document-image-canvas.ts` | Ctrl / Cmd / Shift toggle、普通点击 / 右键保留已选对象；整体拖动 / 四角均匀缩放 / 旋转只改 preview，pointer-up 一次内容命令。模型 / 会话 / 文字输入 / composition / host / zoom / deactivation 取消旧手势；回到起点清 preview；捕获的全部 IDs 和命令目标匹配 |
+| `features/document/layout/document-image-layout.ts`、`features/document/rendering/document-scene.ts` | 旋转 stem 保持 24 屏幕像素；每张图轮廓和一个整体框，geometry 不可用时不提供手柄。批量 preview 投影全部图片到同一共享 image 绘制命令，限定物理 page 避免移动重复页眉的其他出现位置；两后端共用场景，无独立 Docs 绘图引擎 |
+| `components/document/DocumentImageOverlay.vue` | 三个多图根、八个对齐叶、四个排列叶；全部 Ant Button / Dropdown / Menu / Tooltip。受控 open、autoFocus、Esc 和焦点返回，主题由统一 ConfigProvider / token 提供 |
+| `features/document/services/document-clipboard.ts` | `documentImagesClipboardData(model, ids)` 投影全部选中真实 IMG / alt / resource / crop / flip，单图 helper 委托它；多图 copy / cut 不再只取最后一个对象，源模型不改写 |
+
+接口已与主任务协调，`api/facade.ts`、`api/office-studio.ts`、`index.ts`、Enum 和共享 rendering 由主任务接线。已静态回读四个 wrappers；没有类型 / 构建 / 浏览器证据。
+
+```ts
+type Images = readonly (FDocumentImage | string)[]
+interface DocumentImageGeometryReadOptions { preferredPage?: number; measurer?: LayoutMeasurer }
+interface DocumentImageBatchTransform { x?: number; y?: number; scale?: number; angle?: number; origin?: { x: number; y: number } }
+FDocument.alignImages(images: Images, align: DocumentImageAlign, segmentId?: string, options?: DocumentImageGeometryReadOptions): boolean
+FDocument.transformImages(images: Images, transform: DocumentImageBatchTransform, segmentId?: string, options?: DocumentImageGeometryReadOptions): boolean
+FDocument.arrangeImages(images: Images, arrange: DocumentImageArrange | number, segmentId?: string): boolean
+FDocument.removeImages(images: Images, segmentId?: string): boolean
+```
+
+代码块为公开签名说明，不是可执行整文件。公开 `doc.command.align-doc-images` 使用 `drawingIds / alignType / preferredPage`，`doc.command.transform-doc-images` 使用 `drawingIds / transform / preferredPage`；二者复用既有 `unitId / segmentId / subUnitId / expectedRevision / expectedHistoryGeneration` 守卫。`Enum.DocumentImageAlignType` 对应九个固定字符串值（含 default）；本地 Docs 几何命令没有借用 Sheets 的 `sheet.operation.set-image-align` 注册项。
+
+transform / align / arrange / remove 只改变同一领域模型，通过现有正向 / 逆向候选进入一个文档内容历史；拖动 preview、对象 IDs 和布局不进内容历史。保存使用同一 `body / customBlocks / drawings / drawingsOrder` 编解码链路，保留图片 ID、位置、尺寸、角度、flip、crop、资源和 atom 地址。这里只说明落盘接线，真实保存重开仍无运行证据，Office 二进制不能由 JSON 草稿代替。
+
+### 6.4 草稿、静态修正与验证边界
+
+| 新草稿（相对 `packages/office-studio/tests`） | test 声明数 | 草稿目标 |
+| --- | ---: | --- |
+| `document-image-batch.contract.test.mjs` | 19 | 六种对齐独立坐标、水平 / 垂直 / 负间距分布、union 末端来自中间宽图、no-op、旋转 / 局部框 / crop / flip、对角固定均匀缩放、24px 旋转柄 / snap、合法大框中心、单图旋转、缩小 inline 转 float、错误 / 陈旧 / 跨页 / 跨容器、权限 / 锁原子性、同段 atom 删除、目标匹配、多图 clipboard、共享 scene 和重复页眉 page preview |
+| `document-image-batch-facade.contract.test.mjs` | 20 | 四个真实 FDocument 批 API、单次事件 / 内容历史、undo / redo / save / reopen、两 atom / UTF-16、无效 / no-op、同 ID 不同 Studio、锁 / view / edit / peer、header / note segment、live layout 借用 / owner 替换 / cleanup / mismatch、回调重入版本保护、事件取消、公开命令 / Enum / version / segment 守卫 |
+| `document-image-batch.browser.test.mjs` | 18 | Ctrl / Shift toggle、普通 / 右键保留选择、三根 / 八叶 / 两图分布 disabled、八叶实际几何闭环、拖动 / resize / rotate / Esc / 起点 no-op、方向键 / 批删、copy / cut / paste、取消 / 陈旧输入或模型、锁、主题 / focus、合成 composition、KeepAlive、standalone source 替换 |
+| `fixtures/document-images.html`（扩展） | — | `?multi` / `?multi-locked` 四张不同位置 / 尺寸的真实 PNG，含 30° 图；groupPoint / imageRectangles / 可取消命令 / API update / transform helper。旧场景保留，夹具未启动 |
+
+本轮只静态回读源文件和草稿，使用 `rg` 读取 test 声明计数；没有执行这些 test。已按现有契约修正：完整块控件锁草稿必须包含合法文字 anchor；重复页眉的 pageContent 使用实际 `cells / columnSeparators` 字段；选区旋转中心允许合法大框的派生坐标，大框草稿使用合法的布局 top-left 并覆盖成员校验和真实内容命令；绝对层级命令拒绝非有限值；浏览器重新选组先用 Esc 清旧 IDs。它们是静态修正，不是通过结果。
+
+本批可替换 UI 全部仍用 `antdv-next`，包括 Canvas 的既有 Input.TextArea 和新增多图浮条 / menu；没有新增产品原生表单控件。已沿用 Context7 查询 Ant Dropdown / Menu 与 Playwright 修饰键 / 鼠标 API，版本以本地依赖为准；没有运行 UI、原生 Windows IME 或系统剪贴板。Facade 草稿的 Vite SSR、浏览器草稿的 Vite / Edge 仅写在测试代码里，不是已启动服务。
+
+计算域仍是有界主线程 TypeScript 几何 / 命令编排和共享 Canvas 场景；这批没有新增 Worker / Rust / WASM 接口，不声称完成重计算迁移、性能优化或零拷贝。两个后端、内存与大样本指标仍须统一验证。
+
+### 6.5 剩余目标
+
+- 非均匀缩放 / 错切、group / ungroup、跨类型和跨容器的完整层级、混合图片 / shape / chart 对齐；本批同容器几何限制是当前开发缺口，不改写最终范围。
+- 真正跨页拖动及逻辑 anchor 迁移、复杂分节 / RTL / exact 行高 / 表格和 note 分页、全部图片内容控件 atom 迁移与复杂 SDT。
+- 极端重叠且宽度不同的分布：当前等负间距使用原 union 跨度，中间对象可能超出原 union，不能笼统声称所有外缘始终保持；需 Office 可观察样本和具体语义补核实。
+- 媒体 UUID / EXIF / DPI、Office 原生图片 / 锚点 / crop / 关系与资源冲突，真实 DOCX 二进制 / 独立重开。
+- Canvas2D / WebGPU、真实明暗主题、焦点 / 窄屏 / 设备缩放、系统剪贴板、Windows 原生 IME、动态插件 / Pro / 移动入口的完整运行验收。
+- Worker / Rust / WASM 图片布局与批量几何、取消 / 版本 / lease / memory.grow / 复制次数和字节，以及同数据集首屏 / 滚动 / 缩放 / 编辑和大样本前后基准。
+
+中央清单与后端需求由主任务同步。本节和 57 个新草稿不能作为 DOC-07 或完整 Univer / Pro 的验收完成证据。

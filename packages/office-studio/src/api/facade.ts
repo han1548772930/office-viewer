@@ -68,15 +68,23 @@ import type {
   DocumentModel,
   DocumentParagraphStyle,
   PivotAggregation,
+  PivotChartControls,
+  PivotDateFilter,
   PivotDateGroupType,
   PivotDateGroupingMode,
   PivotFieldArea,
   PivotFieldFilter,
+  PivotFieldModel,
+  PivotLabelConditionFilter,
   PivotManualGroup,
   PivotNumberGroup,
+  PivotRecordSelection,
+  PivotShowDataAsInfo,
   PivotTableModel,
   PivotTableOptions,
   SlicerModel,
+  SheetSlicerConnections,
+  SlicerConnectionCandidate,
   SlicerTimelineRange,
   SpreadsheetCell,
   SpreadsheetSheet,
@@ -222,9 +230,24 @@ import { FOverGridImage, FOverGridImageBuilder, canViewSheetImage, insertWorkshe
 import { SheetDrawingAnchorTypes, type SheetFloatingImage } from '../domain/sheet-images.ts'
 import { SHEET_IMAGE_CROP_TYPES } from '../features/sheet-images/sheet-image-crop.ts'
 import { SHEET_IMAGE_ALIGN_TYPES, SHEET_IMAGE_ALIGN_OPERATIONS, type SheetImageAlignType } from '../features/sheet-images/sheet-image-selection.ts'
-import { FDocumentImage, insertDocumentImage, getDocumentImage, getDocumentImages, type DocumentImageInsertOptions } from './document-images'
+import { FDocumentImage, insertDocumentImage, getDocumentImage, getDocumentImages, alignDocumentImages, transformDocumentImages,
+  arrangeDocumentImages, removeDocumentImages, type DocumentImageInsertOptions } from './document-images'
+import { DOCUMENT_IMAGE_ALIGN_TYPES, type DocumentImageAlign, type DocumentImageBatchTransform } from '../features/document/images/document-image-batch'
+import type { DocumentImageGeometryReadOptions } from './document-image-layout'
+import type { DocumentImageArrange } from '../features/document/images/document-image-model'
+import { SHEET_DRAWING_ALIGN_TYPES, type SheetDrawingAlignType, type SheetDrawingRef, type SheetDrawingAffineGeometry, type SheetDrawingMatrix, type SheetDrawingMoveDirection } from '../domain/sheet-drawings.ts'
+import { SHEET_DRAWING_GROUP_COMMAND_IDS, drawingPaintOrder, planDrawingArrange, type SheetDrawingArrangeType } from '../features/drawing-groups/index.ts'
+import { createSheetDrawingScene } from '../features/sheet-drawings/sheet-drawing-host.ts'
 import { registerDocumentImageEditor, type DocumentImageEditor, type DocumentImageEditorHandle } from './document-image-editors'
-import { createSparklineGroupPatches, type SparklineGroupRequest } from '../features/sparkline/sparkline-model.ts'
+import { createSparklineGroupPatches, readSparklineGroups, type SparklineGroupInfo, type SparklineGroupRequest, type SparklineMutationRequest } from '../features/sparkline/sparkline-model.ts'
+import { SET_SPARKLINES_COMMAND, assertSparklineReadPermission, type SparklineMutationContext } from '../features/sparkline/sparkline-command.ts'
+import { createSparklineGroupId } from '../features/sparkline/sparkline-model.ts'
+import { SparklineTypeEnum, SparklineThemeTypeEnum, SparklineExtremumTypeEnum, SpacialShowAsEnum, sparklineTypeFromPublic, type ISparklineGroup } from '../features/sparkline/sparkline-api-types.ts'
+import { FSparkline, FSparklineGroup, sparklineApiRangeReference, sparklineGroupToPublic } from './sparklines.ts'
+import { sparklineCellAddress } from '../features/sparkline/sparkline-reference.ts'
+import { SHEET_SPARKLINE_PLUGIN, serializeWorkbookSparklineResource } from '../features/sparkline/sparkline-resources.ts'
+import { getSheetDimensionOutlines, serializeWorkbookOutlineResource, sheetOutlinePublicAddRange, sheetOutlineScope } from '../features/sheet-outline/sheet-outline-resources.ts'
+import { DimensionOutlineAxis, SHEET_OUTLINE_PLUGIN, isIgnoredOutlineAddError, type IDimensionOutline } from '../features/sheet-outline/sheet-outline-types.ts'
 import { parseSheetHyperlinkTarget } from '../features/sheet-workbench/sheet-hyperlink.ts'
 import { SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCellInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { SHEET_FONT_FORMAT_COMMANDS } from '../features/sheet-workbench/sheet-font-format-command.ts'
@@ -260,6 +283,15 @@ export type {
 } from '../features/document/services/document-facade'
 import {
   getPivotSourceFields,
+  getPivotShowDataAs,
+  getPivotShowDataAsBaseItems,
+  getPivotAxisState,
+  getPivotCollapse,
+  getPivotCollapseItems,
+  getPivotDateFilter,
+  getPivotLabelConditionFilter,
+  getPivotManualFilterItemState,
+  getPivotFieldFilterCapabilities,
   getPivotTableAtCell,
   pivotDrillDown,
   pivotFieldIds,
@@ -267,6 +299,18 @@ import {
   type PivotTableAnchorInput,
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
+import { getPivotChartReport, getPivotChartConfiguredField, getPivotChartFieldItems, getPivotChartShowDataAsBaseItems, getPivotChartAxisState, getPivotChartCollapseItems, type PivotChartFieldsConfig, type PivotChartFieldSetting,
+  type PivotChartReportEdit } from '../features/pivot/services/pivot-chart-engine.ts'
+import { PIVOT_CHART_COMMANDS, type PivotChartCommandContext, type PivotChartConfigureInput,
+  type PivotChartInfo, type PivotChartInsertInfo, type PivotChartInsertOptions, type PivotChartSourceSpec, type PivotChartTableReference } from '../features/pivot/services/pivot-chart-api-types.ts'
+import { assertPivotReportReadPermission } from '../features/pivot/services/pivot-report-permissions.ts'
+import { PIVOT_HIERARCHY_COMMANDS } from '../features/pivot/services/pivot-hierarchy-api-types.ts'
+import { PIVOT_CHART_FIELD_COMMANDS } from '../features/pivot/services/pivot-chart-field-command-types.ts'
+import type { PivotDateFilterInput, PivotLabelConditionInput } from '../features/pivot/services/pivot-filter-api.ts'
+import type { PivotReportCommandContext } from '../features/pivot/services/pivot-report-api-types.ts'
+import { PIVOT_REPORT_FILTER_COMMANDS } from './pivot-filter-commands.ts'
+import type { PivotAxisArea, PivotAxisState } from '../features/pivot/services/pivot-axis-state.ts'
+import { pivotChartControls } from '../features/pivot/services/pivot-chart-controls.ts'
 import {
   chartLayout,
   chartRenderCommands,
@@ -278,7 +322,27 @@ import {
 } from '../features/charts/chart-engine'
 import { ChartLegendPositions, ChartLegendSelectModes, chartLegendPatch, type ChartLegendSpec } from '../features/charts/chart-legend'
 import { ChartTitlePositions, ChartTextAlignments, chartTitlePatch, type ChartTitleSpec, type ChartSubtitleSpec } from '../features/charts/chart-titles'
-import { getSlicer, getSlicerItems, type SlicerCreateInput } from '../features/slicer/slicer-engine'
+import { getSlicer, getSlicerItems, readSlicerItemState, readSlicerRecordSelection, readSlicerSelection, type SlicerCreateInput } from '../features/slicer/slicer-engine'
+import { RecordValueType, FilterSelectionMode, isRecordValue, normalizeRecordSelection, type RecordSelection } from '../domain/record-value.ts'
+import { getPivotValuesPosition, normalizePivotValuesPosition, normalizePivotValuePositionInput, PIVOT_VALUE_POSITIONS } from '../features/pivot/services/pivot-values-position.ts'
+import type { PivotValuePosition } from '../domain/model.ts'
+import { getSlicerCache, getSlicerConnectionCandidates, getSlicerPivotSource, getSlicerSourceValues,
+  getSlicerSourceRecordValues, getSlicerTableNativeFilter, SlicerConnectionError } from '../features/slicer/slicer-connections.ts'
+import { slicerPublicRecordSelection } from '../features/slicer/slicer-record-selection.ts'
+import { SlicerMemberQueryError, getSlicerDisplayMembers, type SlicerDisplayMember, type ISheetSlicerItemsRequest, type ISlicerSourceMemberWindow, type ISlicerSourceMetadata,
+  type SlicerMemberQueryContext } from '../features/slicer/slicer-member-query.ts'
+import { normalizeSlicerCacheOptions } from '../features/slicer/slicer-cache-options.ts'
+import { readSlicerSettings, type SheetSlicerSettings } from '../features/slicer/slicer-settings.ts'
+import { listSlicerStyleNames } from '../features/slicer/slicer-style-catalog.ts'
+import { FSheetSlicerBuilder, FSheetTimelineBuilder, type FBoundSheetSlicerBuilder, type FBoundSheetTimelineBuilder } from './slicer-builders.ts'
+import { readTimelineSettings, type SheetTimelineSettings, type TimelineSettingsInputPatch } from '../features/slicer/timeline-settings.ts'
+import { readTimelineDateCondition, readTimelineDateRange } from '../features/slicer/timeline-filter.ts'
+import { readSheetSlicerDrawing, readSheetSlicerInfo, readSheetSlicerSource, readSheetTimelineInfo, sheetSlicerCacheDefinition, sheetTimelineCacheDefinition, SLICER_PUBLIC_COMMANDS,
+  type ISheetSlicerDrawing, type ISheetSlicerInfo, type ISheetTimelineInfo, type ITimelineCacheDefinition, type SheetSlicerAnchorSpec,
+  type SheetSlicerPlacement, type SheetSlicerSourceSpec, type SlicerCacheDefinition, type TimelinePresentationPatch } from '../features/slicer/slicer-public-info.ts'
+import type { ITimelineDateCondition, ITimelineRange, TimelinePublicLevel } from '../domain/timeline-filters.ts'
+import { canViewProtectedRanges, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
+import { assertSlicerSourceReadPermission, assertSlicerViewPermission } from '../features/slicer/slicer-permissions.ts'
 import { expandVisibleSortOrder, getFilteredRows, getNumericSortColumns, getSortedRowOrder, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { createSheetDataValidationRule, sheetDataValidationOptions, validateSheetDataValidationChanges, type SheetDataValidationDraft, type SheetValidationIssue } from '../features/sheet-validation/validation-engine.ts'
 import { createSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
@@ -309,8 +373,13 @@ export type DocumentContentControlPatch = ContentControlPatch
 export class FOffice {
   readonly Event = new FEventName()
   readonly Enum = Object.freeze({ BorderType: SheetBorderTypes, BorderStyleTypes: SheetBorderStyleTypes, Direction: SheetSelectionDirections,
+    SparklineTypeEnum, SparklineThemeTypeEnum, SparklineExtremumTypeEnum, SpacialShowAsEnum, DimensionOutlineAxis,
+    RecordValueType: Object.freeze(RecordValueType), FilterSelectionMode: Object.freeze(FilterSelectionMode), PivotValuePosition: PivotValuePositions,
+    SlicerCacheSortOrder: Object.freeze({ Ascending: 'ascending', Descending: 'descending' } as const),
+    SlicerCacheCrossFilter: Object.freeze({ None: 'none', ShowItemsWithDataAtTop: 'showItemsWithDataAtTop', ShowItemsWithNoData: 'showItemsWithNoData' } as const),
     ImageSourceType: SheetImageSourceTypes, SheetDrawingAnchorType: Object.freeze(SheetDrawingAnchorTypes), CropType: Object.freeze(SHEET_IMAGE_CROP_TYPES),
-    ArrangeType: Object.freeze({ forward: 0, backward: 1, front: 2, back: 3 } as const), AlignType: SHEET_IMAGE_ALIGN_TYPES, DrawingType: Object.freeze({ UNRECOGNIZED: -1, DRAWING_IMAGE: 0, DRAWING_SHAPE: 1,
+    ArrangeType: Object.freeze({ forward: 0, backward: 1, front: 2, back: 3 } as const), AlignType: SHEET_IMAGE_ALIGN_TYPES,
+    DocumentImageAlignType: DOCUMENT_IMAGE_ALIGN_TYPES, DrawingAlignType: SHEET_DRAWING_ALIGN_TYPES, DrawingType: Object.freeze({ UNRECOGNIZED: -1, DRAWING_IMAGE: 0, DRAWING_SHAPE: 1,
       DRAWING_CHART: 2, DRAWING_TABLE: 3, DRAWING_SMART_ART: 4, DRAWING_VIDEO: 5, DRAWING_GROUP: 6, DRAWING_UNIT: 7,
       DRAWING_DOM: 8, DRAWING_BLOCK: 9, DRAWING_SLICER: 10, DRAWING_TIMELINE: 11, DRAWING_OLE: 12 } as const),
     Dimension: SheetCellShiftDimensions,
@@ -467,7 +536,13 @@ export class FWorkbook {
   }
   getSnapshot(): UniverWorkbookData {
     for (const sheet of this.model().sheets) this.api.assertCanViewWorksheet(this.id, sheet.id)
-    return workbookWithPublicSheetImages(this.model())
+    const workbook = this.model(), snapshot = workbookWithPublicSheetImages(workbook)
+    for (const sheet of workbook.sheets) assertSparklineReadPermission(sheet, readSparklineGroups(sheet).flatMap(group => group.targetRanges), this.api.currentUserId)
+    for (const sheet of workbook.sheets) new FWorksheet(this.api, this.id, sheet.id).getDimensionOutlines()
+    snapshot.resources = [...(snapshot.resources ?? []).filter(resource => resource.name !== SHEET_SPARKLINE_PLUGIN && resource.name !== SHEET_OUTLINE_PLUGIN),
+      { name: SHEET_SPARKLINE_PLUGIN, data: JSON.stringify(serializeWorkbookSparklineResource(workbook)) },
+      { name: SHEET_OUTLINE_PLUGIN, data: JSON.stringify(serializeWorkbookOutlineResource(workbook)) }]
+    return snapshot
   }
   savePublicSnapshot(): UniverWorkbookData {
     const snapshot = this.getSnapshot()
@@ -564,12 +639,35 @@ export class FWorkbook {
     return (this.model().pivotTables ?? []).map((pivot) => new FPivotTable(this.api, this.id, pivot.id))
   }
 
+  getPivotChartById(pivotChartId: string): FSheetPivotChart | null {
+    const chart = this.model().charts?.find(candidate => candidate.id === pivotChartId && (candidate.ownedPivot || candidate.pivotTableId))
+    return chart ? new FSheetPivotChart(this.api, this.id, chart.id) : null
+  }
+
+  getPivotCharts(): FSheetPivotChart[] {
+    return (this.model().charts ?? []).filter(chart => chart.ownedPivot || chart.pivotTableId)
+      .map(chart => new FSheetPivotChart(this.api, this.id, chart.id))
+  }
+
   getSlicers(): FSheetSlicer[] {
-    return (this.model().slicers ?? []).map((slicer) => new FSheetSlicer(this.api, this.id, slicer.id))
+    return this.getSheets().flatMap(sheet => sheet.getSlicers())
   }
 
   getSlicer(slicerId: string): FSheetSlicer | null {
-    return getSlicer(this.model(), slicerId) ? new FSheetSlicer(this.api, this.id, slicerId) : null
+    return this.model().slicers?.some(view => view.id === slicerId && view.type === 'slicer') ? new FSheetSlicer(this.api, this.id, slicerId) : null
+  }
+  getSlicerById(slicerId: string): FSheetSlicer | null { return this.getSlicer(slicerId) }
+  getTimelines(): FSheetTimeline[] { return this.getSheets().flatMap(sheet => sheet.getTimelines()) }
+  getTimeline(timelineId: string): FSheetTimeline | null {
+    return this.model().slicers?.some(view => view.id === timelineId && view.type === 'timeline') ? new FSheetTimeline(this.api, this.id, timelineId) : null
+  }
+  getTimelineById(timelineId: string): FSheetTimeline | null { return this.getTimeline(timelineId) }
+  getSlicerStyleNames(): string[] { return listSlicerStyleNames(this.model(), 'slicer') }
+  getTimelineStyleNames(): string[] { return listSlicerStyleNames(this.model(), 'timeline') }
+  /** Local mixed drawing API for Canvas and property panels. */
+  getSlicerControls(): FSheetSlicer[] { return this.getSheets().flatMap(sheet => sheet.getSlicerControls()) }
+  getSlicerControl(controlId: string): FSheetSlicer | null {
+    return this.model().slicers?.some(view => view.id === controlId) ? new FSheetSlicer(this.api, this.id, controlId) : null
   }
 
   getPivotTableByCell(subUnitId: string, row: number, col: number): FPivotTable | null
@@ -651,6 +749,39 @@ export class FWorksheet {
       drawings: images.map(image => ({ unitId: this.unitId, subUnitId: this.id, drawingId: image.getId() })), alignType })
     return this
   }
+  groupDrawings(selection: readonly SheetDrawingRef[], groupId?: string): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.group, { unitId: this.unitId, sheetId: this.id,
+      selection: selection.map(ref => ({ ...ref })), ...(groupId === undefined ? {} : { groupId }) })
+    return this
+  }
+  ungroupDrawings(selection: readonly SheetDrawingRef[]): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup, { unitId: this.unitId, sheetId: this.id, selection: selection.map(ref => ({ ...ref })) })
+    return this
+  }
+  transformDrawings(selection: readonly SheetDrawingRef[], transform: { frame?: SheetDrawingAffineGeometry; delta?: SheetDrawingMatrix }): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.transform, { ...transform, unitId: this.unitId, sheetId: this.id,
+      selection: selection.map(ref => ({ ...ref })) })
+    return this
+  }
+  arrangeDrawings(selection: readonly SheetDrawingRef[], arrangeType: SheetDrawingArrangeType | 0 | 1 | 2 | 3): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.arrange, { unitId: this.unitId, sheetId: this.id,
+      selection: selection.map(ref => ({ ...ref })), arrangeType })
+    return this
+  }
+  alignDrawings(selection: readonly SheetDrawingRef[], alignType: SheetDrawingAlignType): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.align, { unitId: this.unitId, sheetId: this.id,
+      selection: selection.map(ref => ({ ...ref })), alignType })
+    return this
+  }
+  moveDrawings(selection: readonly SheetDrawingRef[], direction: SheetDrawingMoveDirection, step: 1 | 10 = 1): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.move, { unitId: this.unitId, sheetId: this.id,
+      selection: selection.map(ref => ({ ...ref })), direction, step })
+    return this
+  }
+  removeDrawings(selection: readonly SheetDrawingRef[]): this {
+    this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.remove, { unitId: this.unitId, sheetId: this.id, selection: selection.map(ref => ({ ...ref })) })
+    return this
+  }
   saveCellImagesAsync(options: SaveCellImagesOptions = {}, ranges?: readonly FRange[]): Promise<boolean> {
     if (ranges?.some(range => range.getUnitId() !== this.unitId || range.getSheetId() !== this.id)) throw new Error('图片范围必须属于当前工作表。')
     return this.api.executeCommand(SHEET_IMAGE_COMMANDS.saveCell, { unitId: this.unitId, sheetId: this.id, saveConfig: sheetImageSaveConfig(options),
@@ -705,14 +836,100 @@ export class FWorksheet {
     ).flat()
     return validateSheetDataValidationChanges(this.workbook(), this.id, positions).issues
   }
+  addRowOutline(startRow: number, numRows: number): this { return this.addDimensionOutline(DimensionOutlineAxis.ROW, startRow, numRows) }
+  addColumnOutline(startColumn: number, numColumns: number): this { return this.addDimensionOutline(DimensionOutlineAxis.COLUMN, startColumn, numColumns) }
+  private addDimensionOutline(axis: DimensionOutlineAxis, start: number, count: number): this {
+    const sheet = this.sheet()
+    try {
+      const range = sheetOutlinePublicAddRange(axis, start, count, axis === DimensionOutlineAxis.ROW ? sheet.rowCount : sheet.columnCount)
+      this.api.executeCommandSync('sheet.command.add-dimension-outline', { unitId: this.unitId, subUnitId: this.id, ...range,
+        expectedRevision: this.api.getWorkbookRevision(this.unitId), expectedHistoryGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+        expectedUserId: this.api.currentUserId, host: 'api' })
+    } catch (error) { if (!isIgnoredOutlineAddError(error)) throw error }
+    return this
+  }
+  removeDimensionOutline(outlineId: string): this {
+    this.sheet()
+    this.api.executeCommandSync('sheet.command.remove-dimension-outline', { unitId: this.unitId, subUnitId: this.id, outlineId,
+      expectedRevision: this.api.getWorkbookRevision(this.unitId), expectedHistoryGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: this.api.currentUserId, host: 'api' })
+    return this
+  }
+  setDimensionOutlineCollapsed(outlineId: string, collapsed: boolean): this {
+    this.sheet()
+    this.api.executeCommandSync('sheet.command.set-dimension-outline-collapsed', { unitId: this.unitId, subUnitId: this.id, outlineId, collapsed,
+      expectedRevision: this.api.getWorkbookRevision(this.unitId), expectedHistoryGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: this.api.currentUserId, host: 'api' })
+    return this
+  }
+  clearDimensionOutlines(axis: DimensionOutlineAxis, start: number, end: number): this {
+    this.sheet()
+    this.api.executeCommandSync('sheet.command.clear-dimension-outlines', { unitId: this.unitId, subUnitId: this.id, axis, start, end,
+      expectedRevision: this.api.getWorkbookRevision(this.unitId), expectedHistoryGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: this.api.currentUserId, host: 'api' })
+    return this
+  }
+  getDimensionOutlines(axis?: DimensionOutlineAxis): IDimensionOutline[] {
+    const sheet = this.sheet(), outlines = getSheetDimensionOutlines(sheet.outline, sheetOutlineScope(this.workbook(), sheet), axis)
+    for (const group of outlines) this.api.assertCanViewRange(this.unitId, this.id, group.axis === 'row'
+      ? { startRow: group.start, endRow: group.end, startCol: 0, endCol: sheet.columnCount - 1 }
+      : { startRow: 0, endRow: sheet.rowCount - 1, startCol: group.start, endCol: group.end })
+    return outlines
+  }
   getSparkline(address: string): SparklineSpec | null {
     const cell = parseA1Cell(address)
-    const value = this.sheet().cells[`${cell.row}:${cell.column}`]?.sparkline
+    const sheet = this.sheet()
+    assertSparklineReadPermission(sheet, [cellAddress(cell.row, cell.column)], this.api.currentUserId)
+    const value = sheet.cells[`${cell.row}:${cell.column}`]?.sparkline
     return cloneModel(value ?? null)
+  }
+  getSparklineGroups(ranges?: readonly string[]): SparklineGroupInfo[] {
+    const sheet = this.sheet(), groups = readSparklineGroups(sheet, ranges)
+    assertSparklineReadPermission(sheet, groups.flatMap(group => group.members.map(member => member.address)), this.api.currentUserId)
+    return cloneModel(groups)
+  }
+  addSparkline(sourceRanges: ApiRange[], targetRanges: ApiRange[], type: SparklineTypeEnum = SparklineTypeEnum.LINE_CHART): FSparklineGroup | undefined {
+    this.sheet()
+    if (!Array.isArray(sourceRanges) || !Array.isArray(targetRanges)) throw new TypeError('迷你图 API 须提供源数据和放置区域数组。')
+    const groupId = createSparklineGroupId()
+    const changed = this.applySparklineMutation({ kind: 'insert', groupId, settings: { type: sparklineTypeFromPublic(type) },
+      sourceRanges: sourceRanges.map(range => sparklineApiRangeReference(this.api, this.unitId, this.id, range)),
+      targetRanges: targetRanges.map(range => sparklineApiRangeReference(this.api, this.unitId, this.id, range, true)) })
+    return changed ? new FSparklineGroup(this.api, this, groupId) : undefined
+  }
+  getAllSubSparkline(): Map<string, ISparklineGroup> | undefined {
+    const groups = this.getSparklineGroups(), workbook = this.workbook()
+    if (!groups.length) return undefined
+    return new Map(groups.map(group => [group.groupId, sparklineGroupToPublic(group, name => workbook.sheets.find(sheet => sheet.id === name || sheet.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.id)]))
+  }
+  composeSparkline(ranges: ApiRange[]): void {
+    if (!Array.isArray(ranges)) throw new TypeError('迷你图组合 API 须提供区域数组。')
+    this.applySparklineMutation({ kind: 'combine', ranges: ranges.map(range => sparklineApiRangeReference(this.api, this.unitId, this.id, range, true)) })
+  }
+  unComposeSparkline(ranges: ApiRange[]): void {
+    if (!Array.isArray(ranges)) throw new TypeError('迷你图取消组合 API 须提供区域数组。')
+    this.applySparklineMutation({ kind: 'uncombine', ranges: ranges.map(range => sparklineApiRangeReference(this.api, this.unitId, this.id, range, true)) })
+  }
+  getSparklineByCell(row: number, col: number): FSparkline | undefined {
+    const address = sparklineCellAddress(row, col), group = this.getSparklineGroups([address])[0]
+    return group ? new FSparkline(this.api, this, group.groupId, row, col) : undefined
+  }
+  getSparklineGroupByCell(row: number, col: number): FSparklineGroup | undefined {
+    const group = this.getSparklineGroups([sparklineCellAddress(row, col)])[0]
+    return group ? new FSparklineGroup(this.api, this, group.groupId) : undefined
+  }
+  applySparklineMutation(request: SparklineMutationRequest, context: SparklineMutationContext = {}): boolean {
+    this.sheet()
+    return this.api.executeCommandSync(SET_SPARKLINES_COMMAND, { unitId: this.unitId, sheetId: this.id, request,
+      expectedRevision: context.expectedRevision ?? this.api.getWorkbookRevision(this.unitId),
+      historyGeneration: context.historyGeneration ?? this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: context.expectedUserId ?? this.api.currentUserId, host: context.host })
   }
   setSparklines(request: SparklineGroupRequest): this {
     const patches = createSparklineGroupPatches(request)
-    this.api.executeCommandSync('sheet.command.set-sparklines', { unitId: this.unitId, sheetId: this.id, patches })
+    this.api.executeCommandSync(SET_SPARKLINES_COMMAND, { unitId: this.unitId, sheetId: this.id, patches,
+      expectedRevision: this.api.getWorkbookRevision(this.unitId), historyGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: this.api.currentUserId })
     return this
   }
   clearSparklines(range: FRange | FRangeCoordinates | string): this {
@@ -720,7 +937,9 @@ export class FWorksheet {
     const patches: Record<string, null> = {}
     for (const cell of Object.values(this.sheet().cells)) if (cell.sparkline && cell.row >= bounds.startRow && cell.row <= bounds.endRow
       && cell.col >= bounds.startCol && cell.col <= bounds.endCol) patches[cellAddress(cell.row, cell.col)] = null
-    this.api.executeCommandSync('sheet.command.set-sparklines', { unitId: this.unitId, sheetId: this.id, patches })
+    this.api.executeCommandSync(SET_SPARKLINES_COMMAND, { unitId: this.unitId, sheetId: this.id, patches,
+      expectedRevision: this.api.getWorkbookRevision(this.unitId), historyGeneration: this.api.editor.history.captureSavepoint(this.unitId).generation,
+      expectedUserId: this.api.currentUserId })
     return this
   }
   getRangeProtectionRules(): SheetRangeProtectionRule[] { return cloneModel(this.sheet().rangeProtectionRules ?? []) }
@@ -789,6 +1008,7 @@ export class FWorksheet {
   }
   getChartTypes(): ReturnType<typeof chartTypeSelectOptions> { return chartTypeSelectOptions() }
   newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type) }
+  newPivotChart(type: ChartType): PivotChartConfigBuilder { return new PivotChartConfigBuilder(this.api, this.unitId, this.id, type) }
   /** Local draft-source read; it never inserts a chart or changes content history. */
   async getChartSettingsData(config: ChartConfig, options: ChartComputationReadOptions = {}): Promise<ChartData> {
     const { workbook, chart, context } = this.chartSettingsReadContext(config, options)
@@ -829,23 +1049,59 @@ export class FWorksheet {
     await this.api.executeCommand('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
     return new FChart(this.api, this.unitId, chartId)
   }
-  async insertPivotChart(info: ChartInfo & { pivotTableId: string }): Promise<FChart> {
-    if (!info.pivotTableId) throw new TypeError('Pivot chart requires a pivot table id')
-    if (!this.workbook().pivotTables?.some((pivot) => pivot.id === info.pivotTableId)) throw new Error(`Pivot table not found: ${info.pivotTableId}`)
+  async insertPivotChart(info: PivotChartInsertInfo, context: PivotChartCommandContext = {}, options?: PivotChartInsertOptions): Promise<FSheetPivotChart> {
     const chartId = randomId('pivot-chart')
-    await this.api.executeCommand('sheet.command.add-chart', { unitId: this.unitId, sheetId: this.id, chartId, chart: info })
-    return new FChart(this.api, this.unitId, chartId)
+    const accepted = await this.api.executeCommand(PIVOT_CHART_COMMANDS.insert, { ...context, unitId: this.unitId, sheetId: this.id, pivotChartId: chartId, chart: info, options })
+    if (!accepted || !this.workbook().charts?.some(chart => chart.id === chartId && chart.sheetId === this.id)) throw new Error('透视图插入未能提交。')
+    return new FSheetPivotChart(this.api, this.unitId, chartId)
   }
+  getPivotCharts(): FSheetPivotChart[] { return (this.workbook().charts ?? []).filter(chart => chart.sheetId === this.id && (chart.ownedPivot || chart.pivotTableId))
+    .map(chart => new FSheetPivotChart(this.api, this.unitId, chart.id)) }
+  getPivotChart(pivotChartId: string): FSheetPivotChart | null { return this.workbook().charts?.some(chart => chart.id === pivotChartId
+    && chart.sheetId === this.id && (chart.ownedPivot || chart.pivotTableId)) ? new FSheetPivotChart(this.api, this.unitId, pivotChartId) : null }
   getCharts(): FChart[] { return (this.workbook().charts ?? []).filter((chart) => chart.sheetId === this.id).map((chart) => new FChart(this.api, this.unitId, chart.id)) }
   getChartById(chartId: string): FChart | null { return this.workbook().charts?.some((chart) => chart.id === chartId && chart.sheetId === this.id) ? new FChart(this.api, this.unitId, chartId) : null }
-  async insertSlicer(info: SlicerInfo): Promise<FSheetSlicer> {
-    const slicerId = info.id ?? randomId(info.type === 'timeline' ? 'timeline' : 'slicer')
-    const slicer: SlicerCreateInput = { ...info, id: slicerId, unitId: this.unitId, hostSheetId: this.id }
-    this.api.executeCommandSync('sheet.command.add-slicer', { unitId: this.unitId, slicer })
+  newSlicer(fieldId: string): FSheetSlicerBuilder { return new FSheetSlicerBuilder(this.api, this.unitId, fieldId) }
+  newTimeline(fieldId: string): FSheetTimelineBuilder { return new FSheetTimelineBuilder(this.api, this.unitId, fieldId) }
+  async insertSlicer(info: ISheetSlicerInfo, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<FSheetSlicer> {
+    const slicerId = randomId('slicer')
+    const accepted = await this.api.executeCommand(SLICER_PUBLIC_COMMANDS.insert, { unitId: this.unitId, hostSheetId: this.id, slicerId, info,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted || !this.getSlicer(slicerId)) throw new Error('切片器插入未能提交。')
     return new FSheetSlicer(this.api, this.unitId, slicerId)
   }
-  getSlicers(): FSheetSlicer[] { return (this.workbook().slicers ?? []).filter((slicer) => slicer.hostSheetId === this.id).map((slicer) => new FSheetSlicer(this.api, this.unitId, slicer.id)) }
-  getSlicer(slicerId: string): FSheetSlicer | null { return this.workbook().slicers?.some((slicer) => slicer.hostSheetId === this.id && slicer.id === slicerId) ? new FSheetSlicer(this.api, this.unitId, slicerId) : null }
+  async insertTimeline(info: ISheetTimelineInfo, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<FSheetTimeline> {
+    const slicerId = randomId('timeline')
+    const accepted = await this.api.executeCommand(SLICER_PUBLIC_COMMANDS.insertTimeline, { unitId: this.unitId, hostSheetId: this.id, slicerId, info,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted || !this.getTimeline(slicerId)) throw new Error('时间线插入未能提交。')
+    return new FSheetTimeline(this.api, this.unitId, slicerId)
+  }
+  /** Local model-based insertion shared by existing Canvas/Ribbon adapters. */
+  async insertSlicerControl(info: SlicerInfo, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<FSheetSlicer> {
+    const slicerId = info.id ?? randomId(info.type === 'timeline' ? 'timeline' : 'slicer')
+    const slicer: SlicerCreateInput = { ...info, id: slicerId, unitId: this.unitId, hostSheetId: this.id }
+    const accepted = await this.api.executeCommand('sheet.command.add-slicer', { unitId: this.unitId, slicer,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted || !this.getSlicerControl(slicerId)) throw new Error('切片器或时间线插入未能提交。')
+    return new FSheetSlicer(this.api, this.unitId, slicerId)
+  }
+  getSlicers(): FSheetSlicer[] { return this.orderedSlicerIds('slicer').map(id => new FSheetSlicer(this.api, this.unitId, id)) }
+  getSlicer(slicerId: string): FSheetSlicer | null { return this.workbook().slicers?.some(slicer => slicer.hostSheetId === this.id && slicer.id === slicerId && slicer.type === 'slicer')
+    ? new FSheetSlicer(this.api, this.unitId, slicerId) : null }
+  getSlicerById(slicerId: string): FSheetSlicer | null { return this.getSlicer(slicerId) }
+  getTimelines(): FSheetTimeline[] { return this.orderedSlicerIds('timeline').map(id => new FSheetTimeline(this.api, this.unitId, id)) }
+  getTimeline(timelineId: string): FSheetTimeline | null { return this.workbook().slicers?.some(slicer => slicer.hostSheetId === this.id && slicer.id === timelineId && slicer.type === 'timeline')
+    ? new FSheetTimeline(this.api, this.unitId, timelineId) : null }
+  getTimelineById(timelineId: string): FSheetTimeline | null { return this.getTimeline(timelineId) }
+  getSlicerControls(): FSheetSlicer[] { return this.orderedSlicerIds().map(id => new FSheetSlicer(this.api, this.unitId, id)) }
+  getSlicerControl(controlId: string): FSheetSlicer | null { return this.workbook().slicers?.some(slicer => slicer.hostSheetId === this.id && slicer.id === controlId)
+    ? new FSheetSlicer(this.api, this.unitId, controlId) : null }
+  private orderedSlicerIds(type?: 'slicer' | 'timeline'): string[] {
+    this.api.assertCanViewWorksheet(this.unitId, this.id)
+    return drawingPaintOrder(createSheetDrawingScene(this.workbook(), this.id))
+      .filter(ref => (ref.kind === 'slicer' || ref.kind === 'timeline') && (type === undefined || ref.kind === type)).map(ref => ref.id)
+  }
   setName(name: string): this {
     const oldName = this.sheet().name
     const changed = this.api.executeCommandSync('sheet.command.set-worksheet-name', { unitId: this.unitId, sheetId: this.id, name })
@@ -1487,15 +1743,15 @@ export class ChartConfigBuilder {
   build(): ChartInfo { return cloneModel(this.value) }
 }
 
-export class FChart {
-  private readonly api: OfficeStudio
-  private readonly unitId: string
+class ChartVisualFacade {
+  protected readonly api: OfficeStudio
+  protected readonly unitId: string
   readonly id: string
   constructor(api: OfficeStudio, unitId: string, id: string) { this.api = api; this.unitId = unitId; this.id = id }
   getChartId(): string { return this.id }
   getType(): ChartType { return this.model().type }
   getInfo(): ChartModel { return cloneModel(this.model()) }
-  getOptions(): ChartSemanticOptions { return cloneChartOptions(this.model().options) ?? {} }
+  protected chartOptions(): ChartSemanticOptions { return cloneChartOptions(this.model().options) ?? {} }
   getAreaLineStyle(): ChartAreaLineStyle { return resolveChartAreaLineStyle(this.model()) }
   getInvalidValueStrategy(): ChartInvalidValueStrategy { return this.model().options?.invalidValueStrategy ?? CHART_INVALID_VALUE_STRATEGY_DEFAULT }
   /** Local live description API; upstream names describe() on its builder. */
@@ -1547,10 +1803,10 @@ export class FChart {
   async setSubtitle(subtitle: ChartSubtitleSpec | undefined): Promise<this> { const patch = chartTitlePatch(subtitle, 'subtitle'); return Object.keys(patch).length ? this.update(patch) : this }
   async clearSubtitle(): Promise<this> { return this.setSubtitle(undefined) }
   async setPalette(palette: readonly string[]): Promise<this> { return this.update({ palette: [...palette] }) }
-  async setOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
-  async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.setOptions(chartOptionPatch(key, value)) }
-  async setAreaLineStyle(value: ChartAreaLineStyle): Promise<this> { return this.setOptions(chartAreaLineStylePatch(this.model().type, chartAreaLineStyleValue(value))) }
-  async clearAreaLineStyle(): Promise<this> { return this.setOptions(chartAreaLineStylePatch(this.model().type, undefined)) }
+  protected async updateChartOptions(options: ChartSemanticOptions): Promise<this> { return this.update({ options: cloneChartOptions(options) }) }
+  async setOption<K extends keyof ChartSemanticOptions>(key: K, value: ChartSemanticOptions[K]): Promise<this> { return this.updateChartOptions(chartOptionPatch(key, value)) }
+  async setAreaLineStyle(value: ChartAreaLineStyle): Promise<this> { return this.updateChartOptions(chartAreaLineStylePatch(this.model().type, chartAreaLineStyleValue(value))) }
+  async clearAreaLineStyle(): Promise<this> { return this.updateChartOptions(chartAreaLineStylePatch(this.model().type, undefined)) }
   async setInvalidValueStrategy(value: ChartInvalidValueStrategy): Promise<this> { return this.setOption('invalidValueStrategy', chartInvalidValueStrategyValue(value)) }
   async resetInvalidValueStrategy(): Promise<this> { return this.setOption('invalidValueStrategy', undefined) }
   async setAutoGradientFill(value: boolean): Promise<this> { validateChartAutomaticGradientValue(value); return this.setOption('autoGradientFill', value) }
@@ -1634,36 +1890,36 @@ export class FChart {
   async setSeries(selector: ChartSeriesSelector, style: ChartNullablePatch<ChartSeriesOptions> | undefined): Promise<this> {
     const model = this.model(), next = chartSeriesStyleValues(style)
     validateChartGradientSeriesPatch(model.type, next)
-    return this.setOptions(patchChartSeriesOverride(model.options, selector, next))
+    return this.updateChartOptions(patchChartSeriesOverride(model.options, selector, next))
   }
   async clearSeries(selector: ChartSeriesSelector, target?: ChartSeriesClearTarget): Promise<this> {
     validateChartSeriesSelector(selector)
-    return this.setOptions(patchChartSeriesOverride(this.model().options, selector, clearChartSeriesStyle(chartSeriesOverride(this.model().options, selector), target)))
+    return this.updateChartOptions(patchChartSeriesOverride(this.model().options, selector, clearChartSeriesStyle(chartSeriesOverride(this.model().options, selector), target)))
   }
-  async clearAllSeriesOverrides(): Promise<this> { return this.setOptions({ series: {}, namedSeries: [] }) }
+  async clearAllSeriesOverrides(): Promise<this> { return this.updateChartOptions({ series: {}, namedSeries: [] }) }
   async setPositiveStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'positive', value))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'positive', value))
   }
   async clearPositiveStyle(selector: ChartSeriesSelector): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'positive', undefined))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'positive', undefined))
   }
   async setNegativeStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'negative', value))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'negative', value))
   }
   async clearNegativeStyle(selector: ChartSeriesSelector): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'negative', undefined))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'negative', undefined))
   }
   async setSubtotalStyle(selector: ChartSeriesSelector, value: ChartNullablePatch<ChartWaterfallSeriesStyle>): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', value))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', value))
   }
   async clearSubtotalStyle(selector: ChartSeriesSelector): Promise<this> {
     const model = this.model(); assertChartWaterfallType(model.type)
-    return this.setOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', undefined))
+    return this.updateChartOptions(patchChartWaterfallStyle(model.options, selector, 'subtotal', undefined))
   }
   async setConnector(value: boolean | ChartNullablePatch<ChartWaterfallConnectorOptions>): Promise<this> {
     assertChartWaterfallType(this.model().type)
@@ -1796,13 +2052,13 @@ export class FChart {
   async setAbsolutePosition(x: number, y: number): Promise<this> { return this.update({ position: { x, y } }) }
   async setSize(width: number, height: number): Promise<this> { return this.update({ size: { width, height } }) }
   async remove(): Promise<boolean> { return this.api.executeCommand('sheet.command.remove-chart', { unitId: this.unitId, chartId: this.id }) }
-  private model(): ChartModel {
+  protected model(): ChartModel {
     const chart = this.workbook().charts?.find((item) => item.id === this.id)
     if (!chart) throw new Error(`Chart not found: ${this.id}`)
     this.api.assertCanViewWorksheet(this.unitId, chart.sheetId)
     return chart
   }
-  private assertCanReadSource(chart: ChartModel): void {
+  protected assertCanReadSource(chart: ChartModel): void {
     assertChartReadPermission(this.workbook(), chart, this.api.currentUserId)
     const sourceSheetId = chart.pivotTableId ? this.workbook().pivotTables?.find(pivot => pivot.id === chart.pivotTableId)?.source.subUnitId : chart.source.sheetId ?? chart.sheetId
     if (sourceSheetId) this.api.assertCanViewWorksheet(this.unitId, sourceSheetId)
@@ -1821,10 +2077,229 @@ export class FChart {
         this.assertCanReadSource(current)
       } }
   }
-  private workbook(): WorkbookModel {
+  protected workbook(): WorkbookModel {
     const workbook = this.api.getWorkbookModel(this.unitId)
     if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
     return workbook
+  }
+}
+
+export class FChart extends ChartVisualFacade {
+  getOptions(): ChartSemanticOptions { return this.chartOptions() }
+  async setOptions(options: ChartSemanticOptions): Promise<this> { return this.updateChartOptions(options) }
+}
+
+/** A Pivot report facade over the same drawing, chart engine and content history. */
+export class FSheetPivotChart extends ChartVisualFacade {
+  getId(): string { return this.id }
+  getUnitId(): string { return this.unitId }
+  getSubUnitId(): string { return this.model().sheetId }
+  getSourceKind(): 'range' | 'pivotTable' { return this.model().ownedPivot ? 'range' : 'pivotTable' }
+  isLinkedToPivotTable(): boolean { return this.getSourceKind() === 'pivotTable' }
+  getSourceRangeInfo(): PivotTableSourceInput {
+    const report = this.reportModel(), source = report.source
+    return { unitId: source.unitId, subUnitId: source.subUnitId, sheetName: source.sheetName,
+      ...(report.pivotCacheId ? { pivotCacheId: report.pivotCacheId } : {}),
+      range: { startRow: source.range.startRow, startColumn: source.range.startCol, endRow: source.range.endRow, endColumn: source.range.endCol } }
+  }
+  getPivotTableReference(): PivotChartTableReference | undefined {
+    const chart = this.model()
+    if (!chart.pivotTableId) return undefined
+    const report = this.reportModel()
+    return { unitId: this.unitId, subUnitId: report.anchor.subUnitId, pivotTableId: report.id }
+  }
+  getPivotTable(): FPivotTable | null {
+    const reference = this.getPivotTableReference()
+    return reference ? new FPivotTable(this.api, this.unitId, reference.pivotTableId) : null
+  }
+  getFieldsConfig(): PivotChartFieldsConfig {
+    const report = this.reportModel()
+    return cloneModel({ fields: report.fields, options: report.options, valuePosition: report.options.valuePosition, valueIndex: report.options.valueIndex ?? -1,
+      ...(report.dateGroupingMode ? { dateGroupingMode: report.dateGroupingMode } : {}),
+      ...(report.collapseInfo ? { collapseInfo: report.collapseInfo } : {}) })
+  }
+  getSourceFieldsInfo(): Array<{ id: string; name: string; fieldId: string; fieldName: string; sourceColumn: number }> {
+    return getPivotSourceFields(this.workbook(), this.reportModel()).map(field => ({ ...field, id: field.fieldId, name: field.fieldName }))
+  }
+  getFieldItems(fieldId: string): string[] {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    return getPivotChartFieldItems(this.workbook(), chart, fieldId)
+  }
+  getFieldSetting(fieldId: string): PivotFieldModel | undefined {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    const field = getPivotChartConfiguredField(this.workbook(), chart, fieldId)
+    return field ? cloneModel(field) : undefined
+  }
+  getFieldIdsByArea(area: PivotFieldArea): string[] { return pivotFieldIds(this.reportModel(), area) }
+  getOptions(): PivotTableOptions { return cloneModel(this.reportModel().options) }
+  getReportOptions(): PivotTableOptions { return cloneModel(this.reportModel().options) }
+  getChartOptions(): ChartSemanticOptions { return this.chartOptions() }
+  getControls(): PivotChartControls { return pivotChartControls(this.model()) }
+  getManualFilterItemState(fieldId: string): { checkedItems: string[]; partialItems: string[] } {
+    return getPivotManualFilterItemState(this.workbook(), this.reportModel(), fieldId)
+  }
+  getFilterCapabilities(fieldId: string): { supportsDateFilter: boolean; date1904: boolean } {
+    return getPivotFieldFilterCapabilities(this.workbook(), this.reportModel(), fieldId)
+  }
+  getDateFilter(fieldId: string): PivotDateFilter | undefined { return getPivotDateFilter(this.reportModel(), fieldId) }
+  getLabelConditionFilter(fieldId: string): PivotLabelConditionFilter | undefined { return getPivotLabelConditionFilter(this.reportModel(), fieldId) }
+  async setControls(controls: Partial<PivotChartControls>, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_COMMANDS.setControls, this.commandTarget(context, { controls }))
+  }
+  getValueFilter(fieldId: string): PivotFieldFilter | undefined { return this.getFieldSetting(fieldId)?.valueFilter }
+  getValueFilters(): Array<{ fieldId: string; filter: PivotFieldFilter }> {
+    return this.reportModel().fields.filter(field => field.valueFilter).map(field => ({ fieldId: field.id, filter: cloneModel(field.valueFilter!) }))
+  }
+  async applyReportEdit(edit: PivotChartReportEdit, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_COMMANDS.edit, this.commandTarget(context, { edit }))
+  }
+  async configure(input: PivotChartConfigureInput, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_COMMANDS.configure, this.commandTarget(context, input))
+  }
+  override async update(info: ChartPatch): Promise<this> {
+    if (!await this.configure({ patch: info })) throw new Error('透视图设置未能提交。')
+    return this
+  }
+  async setFieldsConfig(config: PivotChartFieldsConfig, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setFieldsConfig, this.commandTarget(context, { pivotTableConfig: config })) }
+  async resetFields(area?: PivotFieldArea, context: PivotChartCommandContext = {}): Promise<boolean> { return this.applyReportEdit({ type: 'resetFields', area }, context) }
+  async addField(dataFieldId: string | number, fieldArea: PivotFieldArea, index?: number, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.add, this.commandTarget(context, { dataFieldId, fieldArea, index }))
+  }
+  async removeField(fieldIds: string[], context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.remove, this.commandTarget(context, { fieldIds })) }
+  async updateFieldPosition(fieldId: string, fieldArea: PivotFieldArea, index: number, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.move, this.commandTarget(context, { fieldId, fieldArea, index }))
+  }
+  async setOptions(options: Partial<PivotTableOptions>, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setOptions, this.commandTarget(context, { options })) }
+  async setReportOptions(options: Partial<PivotTableOptions>, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setOptions(options, context) }
+  async setChartOptions(options: ChartSemanticOptions): Promise<this> { return this.updateChartOptions(options) }
+  async setFieldSetting(fieldId: string, setting: PivotChartFieldSetting, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setFieldSetting, this.commandTarget(context, { fieldId, setting }))
+  }
+  async renameField(fieldId: string, displayName: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setFieldSetting(fieldId, { displayName }, context) }
+  async setSubtotalType(fieldId: string, subtotalType: PivotAggregation, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setFieldSetting(fieldId, { subtotalType }, context) }
+  getShowDataAs(fieldId: string): PivotShowDataAsInfo | undefined { return this.getFieldSetting(fieldId)?.showDataAs }
+  getShowDataAsBaseItems(baseFieldId: string): string[] {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    return getPivotChartShowDataAsBaseItems(this.workbook(), chart, baseFieldId)
+  }
+  async setShowDataAs(fieldId: string, showDataAs: PivotShowDataAsInfo | null, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.applyReportEdit({ type: 'setShowDataAs', fieldId, showDataAs }, context)
+  }
+  async resetShowDataAs(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setShowDataAs(fieldId, null, context) }
+  getAxisState(area: PivotAxisArea = 'row'): PivotAxisState {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    return cloneModel(getPivotChartAxisState(this.workbook(), chart, area))
+  }
+  getCollapse(fieldId: string, item?: string): boolean {
+    const report = this.reportModel(), field = getPivotChartConfiguredField(this.workbook(), this.model(), fieldId)
+    if (!field || field.area !== 'row') throw new Error('透视图展开折叠需要行字段。')
+    return getPivotCollapse(report, field.id, item)
+  }
+  getCollapseItems(fieldId: string): string[] {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    return getPivotChartCollapseItems(this.workbook(), chart, fieldId)
+  }
+  async setCollapse(fieldId: string, collapse: boolean, item?: string, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_HIERARCHY_COMMANDS.chartSetCollapse, { ...this.commandTarget(context), fieldId, collapse, item })
+  }
+  async setCategoryLevel(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_HIERARCHY_COMMANDS.chartSetCategoryLevel, { ...this.commandTarget(context), fieldId })
+  }
+  async stepCategoryLevel(direction: 'expand' | 'collapse', context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_HIERARCHY_COMMANDS.chartStepCategoryLevel, { ...this.commandTarget(context), direction })
+  }
+  async setLabelSort(fieldId: string, info: { type: 'ascending' | 'descending' }, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setSort, this.commandTarget(context, { fieldId, info })) }
+  async clearLabelSort(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setSort, this.commandTarget(context, { fieldId })) }
+  async setLabelManualFilter(fieldId: string, items: string[] | null, isAll = false, context: PivotChartCommandContext = {}, partialItems?: string[]): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setFilter, this.commandTarget(context, { fieldId, items, isAll, partialItems }))
+  }
+  async clearFilters(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setFilter, this.commandTarget(context, { fieldId, items: [], clearAllFilters: true }))
+  }
+  async setDateFilter(fieldId: string, filterInfo?: PivotDateFilterInput | null, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setDateFilter, this.commandTarget(context, { fieldId, filterInfo }))
+  }
+  async clearDateFilter(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setDateFilter(fieldId, undefined, context) }
+  async setLabelConditionFilter(fieldId: string, filterInfo?: PivotLabelConditionInput | null, context: PivotChartCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setLabelConditionFilter, this.commandTarget(context, { fieldId, filterInfo }))
+  }
+  async clearLabelConditionFilter(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setLabelConditionFilter(fieldId, undefined, context) }
+  async setValueFilter(fieldId: string, filter: PivotFieldFilter | null, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setValueFilter, this.commandTarget(context, { fieldId, valueFilterInfo: filter })) }
+  async clearValueFilter(fieldId: string, context: PivotChartCommandContext = {}): Promise<boolean> { return this.setValueFilter(fieldId, null, context) }
+  async setNumberGroup(fieldId: string, group: PivotNumberGroup | null, context: PivotChartCommandContext = {}): Promise<boolean> { return this.applyReportEdit({ type: 'setNumberGroup', fieldId, group }, context) }
+  async setDateGroupingMode(mode: PivotDateGroupingMode, context: PivotChartCommandContext = {}): Promise<boolean> { return this.applyReportEdit({ type: 'setDateGroupingMode', mode }, context) }
+  async setDateGroupType(fieldId: string, dateType: PivotDateGroupType | null, context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_FIELD_COMMANDS.setDateGroup, this.commandTarget(context, { fieldId, dateType })) }
+  async setExcelDateGroup(fieldId: string, dateType: PivotDateGroupType, context: PivotChartCommandContext = {}): Promise<boolean> { return this.applyReportEdit({ type: 'setDateGroup', fieldId, dateType, excelLike: true }, context) }
+  async setManualGroups(fieldId: string, groups: PivotManualGroup[], context: PivotChartCommandContext = {}): Promise<boolean> { return this.applyReportEdit({ type: 'setManualGroups', fieldId, groups }, context) }
+  getValuesPosition(): { position: PivotValuePosition; index: number } { return getPivotValuesPosition(this.reportModel()) }
+  async updateValuePosition(position: PivotValuePositionInput, indexOrContext: number | PivotChartCommandContext = -1,
+    context: PivotChartCommandContext = {}): Promise<boolean> {
+    const index = typeof indexOrContext === 'number' ? indexOrContext : -1
+    const target = typeof indexOrContext === 'number' ? context : indexOrContext
+    const state = normalizePivotValuesPosition(normalizePivotValuePositionInput(position), index)
+    return this.applyReportEdit({ type: 'updateValuePosition', position: state.position, index: state.index }, target)
+  }
+  async refresh(context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_COMMANDS.refresh, this.commandTarget(context)) }
+  override async remove(context: PivotChartCommandContext = {}): Promise<boolean> { return this.api.executeCommand(PIVOT_CHART_COMMANDS.remove, this.commandTarget(context)) }
+  private reportModel(): PivotTableModel {
+    const chart = this.model()
+    this.assertCanReadSource(chart)
+    return getPivotChartReport(this.workbook(), chart)
+  }
+  private commandTarget(context: PivotChartCommandContext, extra: object = {}): object {
+    const chart = this.model()
+    return { ...context, ...extra, unitId: this.unitId, sheetId: chart.sheetId, pivotChartId: this.id }
+  }
+}
+
+/** Visual configuration delegates to the existing Chart builder. Report source remains typed. */
+export class PivotChartConfigBuilder {
+  private readonly visual: ChartConfigBuilder
+  private source?: PivotChartSourceSpec
+  private fields?: PivotChartFieldsConfig
+  constructor(private readonly api: OfficeStudio, private readonly unitId: string, private readonly sheetId: string, type: ChartType) { this.visual = new ChartConfigBuilder(type) }
+  setSource(input: string | FRange | FRangeCoordinates | PivotTableSourceInput): this {
+    if (typeof input === 'object' && !(input instanceof FRange) && 'subUnitId' in input) {
+      if (input.unitId !== this.unitId) throw new Error('透视图来源必须属于同一工作簿。')
+      this.source = { kind: 'range', sourceRangeInfo: cloneModel(input) }
+      return this
+    }
+    const range = input instanceof FRange ? input : typeof input === 'string'
+      ? new FWorksheet(this.api, this.unitId, this.sheetId).getRange(input) : new FWorksheet(this.api, this.unitId, this.sheetId).getRange(input)
+    if (range.getUnitId() !== this.unitId) throw new Error('透视图来源必须属于同一工作簿。')
+    const sheet = this.api.getWorkbookModel(this.unitId)?.sheets.find(candidate => candidate.id === range.getSheetId())
+    if (!sheet) throw new Error('透视图来源工作表不存在。')
+    this.source = { kind: 'range', sourceRangeInfo: { unitId: this.unitId, subUnitId: sheet.id, sheetName: sheet.name, range: range.getRange() } }
+    return this
+  }
+  setPivotTable(pivot: FPivotTable): this { return this.setPivotTableReference({ unitId: pivot.getUnitId(), subUnitId: pivot.getSubUnitId(), pivotTableId: pivot.getPivotTableId() }) }
+  setPivotTableReference(reference: PivotChartTableReference): this {
+    if (reference.unitId !== this.unitId) throw new Error('关联透视表必须属于同一工作簿。')
+    this.source = { kind: 'pivotTable', pivotTableRef: cloneModel(reference) }
+    return this
+  }
+  setInitialFieldsConfig(fields: PivotChartFieldsConfig): this { this.fields = cloneModel(fields); return this }
+  setType(type: ChartType): this { this.visual.setType(type); return this }
+  setPosition(cell: string): this { this.visual.setPosition(cell); return this }
+  setAbsolutePosition(x: number, y: number): this { this.visual.setAbsolutePosition(x, y); return this }
+  setSize(width: number, height: number): this { this.visual.setSize(width, height); return this }
+  setTitle(title: ChartTitleSpec | undefined): this { this.visual.setTitle(title); return this }
+  clearTitle(): this { this.visual.clearTitle(); return this }
+  setSubtitle(title: ChartSubtitleSpec | undefined): this { this.visual.setSubtitle(title); return this }
+  clearSubtitle(): this { this.visual.clearSubtitle(); return this }
+  setLegend(legend: ChartLegendSpec): this { this.visual.setLegend(legend); return this }
+  clearLegend(): this { this.visual.clearLegend(); return this }
+  setPalette(palette: readonly string[]): this { this.visual.setPalette(palette); return this }
+  setVisualOptions(options: ChartSemanticOptions): this { this.visual.setOptions(options); return this }
+  build(): PivotChartInfo {
+    if (!this.source) throw new TypeError('请选择独立范围或关联透视表来源。')
+    const { source: _source, pivotTableId: _pivotTableId, ownedPivot: _ownedPivot, ...visual } = this.visual.build()
+    return { ...visual, source: cloneModel(this.source), ...(this.fields ? { initialFieldsConfig: cloneModel(this.fields) } : {}) }
   }
 }
 
@@ -2149,6 +2624,8 @@ export class FRange {
 
 export const PositionTypeEnum = { Existing: 'existing' } as const
 export type PositionTypeEnum = typeof PositionTypeEnum[keyof typeof PositionTypeEnum]
+export const PivotValuePositions = PIVOT_VALUE_POSITIONS
+export type PivotValuePositionInput = PivotValuePosition | typeof PivotValuePositions[keyof typeof PivotValuePositions]
 
 export class FPivotTable {
   private readonly api: OfficeStudio
@@ -2162,8 +2639,10 @@ export class FPivotTable {
   }
 
   getPivotTableId(): string { return this.id }
+  getUnitId(): string { return this.unitId }
+  getSubUnitId(): string { return this.model().anchor.subUnitId }
   newChart(type: ChartType): ChartConfigBuilder { return new ChartConfigBuilder(type).setPivotTableId(this.id) }
-  async insertChart(info: ChartInfo): Promise<FChart> {
+  async insertChart(info: ChartInfo): Promise<FSheetPivotChart> {
     const sheet = new FWorksheet(this.api, this.unitId, this.model().anchor.subUnitId)
     return sheet.insertPivotChart({ ...info, pivotTableId: this.id })
   }
@@ -2182,58 +2661,138 @@ export class FPivotTable {
     }) : null
   }
   getOptions(): PivotTableOptions { return cloneModel(this.model().options) }
-  async addField(fieldIdOrIndex: string | number, area: PivotFieldArea, index?: number): Promise<this> {
-    return this.execute('sheet.command.set-pivot-field', { fieldId: fieldIdOrIndex, area, index })
+  getFieldItems(fieldId: string): string[] {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotGroupedFieldItems(workbook, report, fieldId)
   }
-  async removeField(fieldIds: string | string[]): Promise<this> {
-    return this.execute('sheet.command.remove-pivot-field', { fieldIds: Array.isArray(fieldIds) ? fieldIds : [fieldIds] })
+  getManualFilterItemState(fieldId: string): { checkedItems: string[]; partialItems: string[] } {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotManualFilterItemState(workbook, report, fieldId)
   }
-  async setOptions(options: Partial<PivotTableOptions>): Promise<this> {
-    return this.execute('sheet.command.set-pivot-options', { options })
+  getFilterCapabilities(fieldId: string): { supportsDateFilter: boolean; date1904: boolean } {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotFieldFilterCapabilities(workbook, report, fieldId)
   }
-  async setLabelSort(fieldId: string, options: { type: 'ascending' | 'descending' }): Promise<this> {
-    return this.execute('sheet.command.set-pivot-label-sort', { fieldId, direction: options.type })
+  getDateFilter(fieldId: string): PivotDateFilter | undefined {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotDateFilter(report, fieldId)
   }
-  async setLabelManualFilter(fieldId: string, selectedItems: string[] | null): Promise<this> {
-    return this.execute('sheet.command.set-pivot-label-filter', { fieldId, selectedItems })
+  getLabelConditionFilter(fieldId: string): PivotLabelConditionFilter | undefined {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotLabelConditionFilter(report, fieldId)
   }
-  async setFieldSetting(fieldId: string, setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation }): Promise<this> {
-    return this.execute('sheet.command.set-pivot-field-setting', { fieldId, setting })
+  async setManualFilterItems(fieldId: string, items: string[] | null, isAll = false, partialItems?: string[], context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute(PIVOT_REPORT_FILTER_COMMANDS.setFilter, { ...context, tableFieldId: fieldId, items, isAll, partialItems })
   }
-  async setSubtotalType(fieldId: string, subtotalType: PivotAggregation): Promise<this> {
-    return this.setFieldSetting(fieldId, { subtotalType })
+  async clearFilters(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute(PIVOT_REPORT_FILTER_COMMANDS.setFilter, { ...context, tableFieldId: fieldId, items: [], clearAllFilters: true })
   }
-  async setValueFilter(fieldId: string, filter: PivotFieldFilter | null): Promise<this> {
-    return this.execute('sheet.command.set-pivot-value-filter', { fieldId, filter })
+  async setDateFilter(fieldId: string, filterInfo?: PivotDateFilterInput | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute(PIVOT_REPORT_FILTER_COMMANDS.setDateFilter, { ...context, tableFieldId: fieldId, filterInfo })
   }
-  async setNumberGroup(fieldId: string, settings: PivotNumberGroup | null): Promise<this> {
-    return this.execute('sheet.command.set-pivot-number-group', { fieldId, settings })
+  async clearDateFilter(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> { return this.setDateFilter(fieldId, undefined, context) }
+  async setLabelConditionFilter(fieldId: string, filterInfo?: PivotLabelConditionInput | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute(PIVOT_REPORT_FILTER_COMMANDS.setLabelConditionFilter, { ...context, tableFieldId: fieldId, filterInfo })
   }
-  async setDateGroupingMode(mode: PivotDateGroupingMode): Promise<this> {
-    return this.execute('sheet.command.set-pivot-date-grouping-mode', { mode })
+  async clearLabelConditionFilter(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> { return this.setLabelConditionFilter(fieldId, undefined, context) }
+  async addField(fieldIdOrIndex: string | number, area: PivotFieldArea, index?: number, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-field', { ...context, fieldId: fieldIdOrIndex, area, index })
   }
-  async setDateGroupType(fieldId: string, type: PivotDateGroupType | null): Promise<this> {
-    return this.execute('sheet.command.set-pivot-date-group-type', { fieldId, type })
+  async removeField(fieldIds: string | string[], context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.remove-pivot-field', { ...context, fieldIds: Array.isArray(fieldIds) ? fieldIds : [fieldIds] })
   }
-  async setExcelDateGroup(fieldId: string, type: PivotDateGroupType): Promise<this> {
-    return this.execute('sheet.command.set-pivot-excel-date-group', { fieldId, type })
+  async setOptions(options: Partial<PivotTableOptions>, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-options', { ...context, options })
   }
-  async setManualGroups(fieldId: string, groups: PivotManualGroup[]): Promise<this> {
-    return this.execute('sheet.command.set-pivot-manual-groups', { fieldId, groups })
+  async setLabelSort(fieldId: string, options: { type: 'ascending' | 'descending' }, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-label-sort', { ...context, fieldId, direction: options.type })
   }
-  async updateValuePosition(position: 'row' | 'column', _index = 0): Promise<this> {
-    return this.execute('sheet.command.update-pivot-value-position', { position })
+  async clearLabelSort(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-label-sort', { ...context, fieldId, direction: null })
   }
-  async refresh(): Promise<this> { return this.execute('sheet.command.refresh-pivot-table', {}) }
-  async remove(): Promise<void> {
-    await this.api.executeCommand('sheet.command.remove-pivot-table', { unitId: this.unitId, pivotTableId: this.id })
+  async setLabelManualFilter(fieldId: string, selectedItems: string[] | null, isAll = false, context: PivotReportCommandContext = {}, partialItems?: string[]): Promise<this> {
+    return this.setManualFilterItems(fieldId, selectedItems, isAll, partialItems, context)
+  }
+  async setFieldSetting(fieldId: string, setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation; showDataAs?: PivotShowDataAsInfo | null }, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-field-setting', { ...context, fieldId, setting })
+  }
+  async setSubtotalType(fieldId: string, subtotalType: PivotAggregation, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.setFieldSetting(fieldId, { subtotalType }, context)
+  }
+  getShowDataAs(fieldId: string): PivotShowDataAsInfo | undefined {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    const info = getPivotShowDataAs(report, fieldId)
+    return info ? cloneModel(info) : undefined
+  }
+  getShowDataAsBaseItems(baseFieldId: string): string[] {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotShowDataAsBaseItems(workbook, report, baseFieldId)
+  }
+  async setShowDataAs(fieldId: string, showDataAs: PivotShowDataAsInfo | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-show-data-as', { ...context, fieldId, showDataAs })
+  }
+  async resetShowDataAs(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> { return this.setShowDataAs(fieldId, null, context) }
+  getAxisState(area: PivotAxisArea = 'row'): PivotAxisState {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return cloneModel(getPivotAxisState(workbook, report, area))
+  }
+  getCollapse(fieldId: string, item?: string): boolean {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotCollapse(report, fieldId, item)
+  }
+  getCollapseItems(fieldId: string): string[] {
+    const workbook = this.workbook(), report = this.model()
+    assertPivotReportReadPermission(workbook, report, this.api.currentUserId)
+    return getPivotCollapseItems(workbook, report, fieldId)
+  }
+  async setCollapse(fieldId: string, collapse: boolean, item?: string, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute(PIVOT_HIERARCHY_COMMANDS.setCollapse, { ...context, fieldId, collapse, item })
+  }
+  async setCategoryLevel(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> { return this.execute(PIVOT_HIERARCHY_COMMANDS.setCategoryLevel, { ...context, fieldId }) }
+  async stepCategoryLevel(direction: 'expand' | 'collapse', context: PivotReportCommandContext = {}): Promise<this> { return this.execute(PIVOT_HIERARCHY_COMMANDS.stepCategoryLevel, { ...context, direction }) }
+  async setValueFilter(fieldId: string, filter: PivotFieldFilter | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-value-filter', { ...context, fieldId, filter })
+  }
+  async clearValueFilter(fieldId: string, context: PivotReportCommandContext = {}): Promise<this> { return this.setValueFilter(fieldId, null, context) }
+  async setNumberGroup(fieldId: string, settings: PivotNumberGroup | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-number-group', { ...context, fieldId, settings })
+  }
+  async setDateGroupingMode(mode: PivotDateGroupingMode, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-date-grouping-mode', { ...context, mode })
+  }
+  async setDateGroupType(fieldId: string, type: PivotDateGroupType | null, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-date-group-type', { ...context, fieldId, type })
+  }
+  async setExcelDateGroup(fieldId: string, type: PivotDateGroupType, context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-excel-date-group', { ...context, fieldId, type })
+  }
+  async setManualGroups(fieldId: string, groups: PivotManualGroup[], context: PivotReportCommandContext = {}): Promise<this> {
+    return this.execute('sheet.command.set-pivot-manual-groups', { ...context, fieldId, groups })
+  }
+  getValuesPosition(): { position: PivotValuePosition; index: number } { return getPivotValuesPosition(this.model()) }
+  async updateValuePosition(position: PivotValuePositionInput, index = -1, context: PivotReportCommandContext = {}): Promise<this> {
+    const state = normalizePivotValuesPosition(normalizePivotValuePositionInput(position), index)
+    return this.execute('sheet.command.update-pivot-value-position', { ...context, position: state.position, index: state.index })
+  }
+  async refresh(context: PivotReportCommandContext = {}): Promise<this> { return this.execute('sheet.command.refresh-pivot-table', { ...context }) }
+  async remove(context: PivotReportCommandContext = {}): Promise<void> {
+    await this.api.executeCommand('sheet.command.remove-pivot-table', { ...context, unitId: this.unitId, pivotTableId: this.id })
   }
   drillDown(rowOffset: number, columnOffset: number): { headers: string[]; rows: CellScalar[][] } {
     return pivotDrillDown(this.workbook(), this.model(), rowOffset, columnOffset)
   }
 
   private async execute(commandId: string, params: Record<string, unknown>): Promise<this> {
-    await this.api.executeCommand(commandId, { unitId: this.unitId, pivotTableId: this.id, ...params })
+    if (!await this.api.executeCommand(commandId, { ...params, unitId: this.unitId, pivotTableId: this.id })) throw new Error('透视表命令未能提交。')
     return this
   }
   private model(): PivotTableModel {
@@ -2250,40 +2809,269 @@ export class FPivotTable {
 
 export class FSheetSlicer {
   private readonly api: OfficeStudio
-  private readonly unitId: string
+  readonly unitId: string
+  readonly subUnitId: string
   readonly id: string
 
   constructor(api: OfficeStudio, unitId: string, id: string) {
     this.api = api
     this.unitId = unitId
     this.id = id
+    this.subUnitId = api.getWorkbookModel(unitId)?.slicers?.find(control => control.id === id)?.hostSheetId ?? ''
   }
 
   getId(): string { return this.id }
-  getInfo(): SlicerModel { return cloneModel(this.model()) }
-  getItems(): string[] { return getSlicerItems(this.workbook(), this.model()) }
-  async setItems(items: string[] | null): Promise<this> {
-    await this.api.executeCommand('sheet.command.set-slicer-items', { unitId: this.unitId, slicerId: this.id, selectedItems: items })
+  getUnitId(): string { return this.unitId }
+  getSubUnitId(): string { return this.subUnitId }
+  getDrawingId(): string { return this.id }
+  /** Local hosted-model projection. It remains readable when a source/cache is unavailable. */
+  getModel(): SlicerModel { return cloneModel(this.model()) }
+  getInfo(): ISheetSlicerInfo { return readSheetSlicerInfo(this.workbook(), this.model()) }
+  getDrawing(): ISheetSlicerDrawing | undefined {
+    const model = this.optionalModel()
+    return model?.drawing ? readSheetSlicerDrawing(this.workbook(), model) : undefined
+  }
+  getSource(): SheetSlicerSourceSpec | undefined {
+    const model = this.optionalModel()
+    return model ? readSheetSlicerSource(this.workbook(), model) : undefined
+  }
+  getCache(): SlicerCacheDefinition | undefined {
+    const cache = this.optionalCache()
+    return cache?.type === 'slicer' ? sheetSlicerCacheDefinition(this.workbook(), cache) : undefined
+  }
+  /** Local retained cache projection used by the independent Timeline facade. */
+  getCacheModel(): import('../domain/model.ts').SlicerCacheModel | undefined {
+    const cache = this.optionalCache()
+    return cache ? cloneModel(cache) : undefined
+  }
+  toBuilder(): FBoundSheetSlicerBuilder { return FSheetSlicerBuilder.fromInfo(this.api, this.unitId, this.getInfo()) }
+  async update(info: ISheetSlicerInfo, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand(SLICER_PUBLIC_COMMANDS.update, { unitId: this.unitId, slicerId: this.id, info,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('切片器信息更新未能提交。')
     return this
   }
-  async setTimelineRange(range: SlicerTimelineRange | null): Promise<this> {
-    await this.api.executeCommand('sheet.command.set-timeline-range', { unitId: this.unitId, slicerId: this.id, range })
+  /** Local display projection shares raw identity and cross-filter availability with public member windows. */
+  getDisplayMembers(): SlicerDisplayMember[] {
+    const workbook = this.workbook(), model = this.model()
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    return getSlicerDisplayMembers(workbook, model, this.api.regionalSettings.locale.value)
+  }
+  /** Local Canvas/panel label projection; public getItems is an asynchronous typed window. */
+  getItemLabels(): string[] {
+    const workbook = this.workbook(), model = this.model()
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    return getSlicerItems(workbook, model, this.api.regionalSettings.locale.value)
+  }
+  async getItems(request: ISheetSlicerItemsRequest = {}): Promise<ISlicerSourceMemberWindow> {
+    const workbook = this.workbook(), model = this.model(), context = this.queryContext(workbook, model)
+    return this.api.slicerMemberQueryService.getItems(workbook, model, request, context)
+  }
+  /** Local Canvas window folds raw captions and retains checked/partial states; the public typed member API is independent. */
+  async getDisplayMemberWindow(request: ISheetSlicerItemsRequest = {}): Promise<import('../features/slicer/slicer-member-query.ts').ISlicerDisplayMemberWindow> {
+    const workbook = this.workbook(), model = this.model(), context = this.queryContext(workbook, model)
+    return this.api.slicerMemberQueryService.getDisplayMemberWindow(workbook, model, request, context)
+  }
+  async getSourceMetadata(): Promise<ISlicerSourceMetadata> {
+    const workbook = this.workbook(), model = this.model(), context = this.queryContext(workbook, model)
+    return this.api.slicerMemberQueryService.getSourceMetadata(workbook, model, context)
+  }
+  /** Owner-bound Canvas reads can cancel their own query without cancelling another API caller's task. */
+  async getCanvasSourceMetadata(signal?: AbortSignal): Promise<ISlicerSourceMetadata> {
+    const workbook = this.workbook(), model = this.model(), context = this.queryContext(workbook, model)
+    return this.api.slicerMemberQueryService.getSourceMetadata(workbook, model, context, signal)
+  }
+  getSelection(): RecordSelection | { mode: 'condition' | 'color' | 'manual' } | undefined {
+    const workbook = this.api.getWorkbookModel(this.unitId), model = this.optionalModel()
+    if (!workbook || !model || model.type !== 'slicer') return undefined
+    assertSlicerViewPermission(workbook, model, this.api.currentUserId, false)
+    const retained = this.optionalCache()
+    let cache: import('../domain/model.ts').SlicerCacheModel
+    try { cache = getSlicerCache(workbook, model) }
+    catch (error) {
+      if (!(error instanceof SlicerConnectionError)) throw error
+      if (error.code === 'source-missing' || error.code === 'field-missing') {
+        return retained?.source.kind === 'pivot' ? slicerPublicRecordSelection(retained.recordSelection) : undefined
+      }
+      if (error.code === 'invalid-resource' && !retained) return undefined
+      throw error
+    }
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    if (cache.source.kind === 'table') {
+      const filter = getSlicerTableNativeFilter(workbook, model)
+      if (filter?.kind === 'condition') return { mode: 'condition' }
+    }
+    const selection = readSlicerRecordSelection(workbook, model)
+    if (selection && selection.mode !== 'all' && selection.values.every(isRecordValue)) return normalizeRecordSelection(selection)
+    return slicerPublicRecordSelection(selection, getSlicerSourceValues(workbook, model), getSlicerSourceRecordValues(workbook, model))
+  }
+  getSelectedItems(): string[] | undefined {
+    const workbook = this.workbook(), model = this.model()
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    return readSlicerSelection(workbook, model)
+  }
+  getRecordSelection(): PivotRecordSelection | undefined {
+    const workbook = this.workbook(), model = this.model()
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    return readSlicerRecordSelection(workbook, model)
+  }
+  getItemState(): { checkedItems: string[]; partialItems: string[] } {
+    const workbook = this.workbook(), model = this.model()
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    return readSlicerItemState(workbook, model)
+  }
+  getCacheId(): string | undefined { return this.optionalCache()?.id }
+  getConnections(): SheetSlicerConnections | undefined {
+    const cache = this.optionalCache()
+    return cache?.source.kind === 'pivot' ? cloneModel(cache.connections ?? { pivotTables: [] }) : undefined
+  }
+  getSettings(): SheetSlicerSettings | undefined {
+    const model = this.optionalModel()
+    if (!model || model.type !== 'slicer') return undefined
+    return readSlicerSettings(model)
+  }
+  getCacheOptions(): import('../domain/model.ts').SheetSlicerCacheOptions | undefined {
+    const cache = this.optionalCache()
+    return cache?.type === 'slicer' ? normalizeSlicerCacheOptions(cache.options) : undefined
+  }
+  async updateSettings(patch: Partial<SheetSlicerSettings>, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.update-slicer-settings', { unitId: this.unitId, slicerId: this.id, patch,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async setCacheOptions(patch: Partial<import('../domain/model.ts').SheetSlicerCacheOptions>, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.patch-slicer-cache-options', { unitId: this.unitId, slicerId: this.id, patch,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  setName(name: string): Promise<boolean> { return this.updateSettings({ name }) }
+  setCaption(caption: string): Promise<boolean> { return this.updateSettings({ caption }) }
+  setStyle(style: string): Promise<boolean> { return this.updateSettings({ style }) }
+  clearStyle(): Promise<boolean> { return this.updateSettings({ style: undefined }) }
+  setColumnCount(columnCount: number): Promise<boolean> { return this.updateSettings({ columnCount }) }
+  setRowHeight(rowHeight: number): Promise<boolean> { return this.updateSettings({ rowHeight }) }
+  setShowCaption(showCaption: boolean): Promise<boolean> { return this.updateSettings({ showCaption }) }
+  setLockedPosition(lockedPosition: boolean): Promise<boolean> { return this.updateSettings({ lockedPosition }) }
+  setStartItem(startItem: number): Promise<boolean> { return this.updateSettings({ startItem }) }
+  setPosition(anchor: SheetSlicerAnchorSpec): this { return this.setPlacement({ anchor }) }
+  setAbsolutePosition(x: number, y: number): this { return this.setPlacement({ position: { x, y } }) }
+  setSize(width: number, height: number): this { return this.setPlacement({ size: { width, height } }) }
+  bringToFront(): this { return this.setOrder({ arrangeType: 'front' }) }
+  bringForward(): this { return this.setOrder({ arrangeType: 'forward' }) }
+  sendBackward(): this { return this.setOrder({ arrangeType: 'backward' }) }
+  sendToBack(): this { return this.setOrder({ arrangeType: 'back' }) }
+  setZOrder(index: number): this {
+    if (typeof index !== 'number' || !Number.isFinite(index)) throw new TypeError('绘图层级必须是有限数值。')
+    return this.setOrder({ zOrder: index })
+  }
+  private setPlacement(placement: SheetSlicerPlacement): this {
+    this.model()
+    const accepted = this.api.executeCommandSync(SLICER_PUBLIC_COMMANDS.placement, { unitId: this.unitId, slicerId: this.id, placement })
+    if (!accepted) throw new Error('切片器或时间线绘图位置更新未能提交。')
     return this
   }
-  async updatePresentation(patch: import('../features/slicer/slicer-engine').SlicerPresentationPatch): Promise<this> {
-    await this.api.executeCommand('sheet.command.update-slicer-presentation', { unitId: this.unitId, slicerId: this.id, patch })
+  private setOrder(order: { arrangeType: SheetDrawingArrangeType; zOrder?: never } | { zOrder: number; arrangeType?: never }): this {
+    const workbook = this.workbook(), model = this.model(), selection: SheetDrawingRef[] = [{ kind: model.type, id: this.id }]
+    assertSlicerViewPermission(workbook, model, this.api.currentUserId, true)
+    const plan = planDrawingArrange(createSheetDrawingScene(workbook, this.subUnitId), { selection, ...order })
+    const accepted = this.api.executeCommandSync(SHEET_DRAWING_GROUP_COMMAND_IDS.arrange, { unitId: this.unitId, sheetId: this.subUnitId, selection, ...order })
+    if (!accepted && plan.status !== 'noop') throw new Error('切片器或时间线绘图层级更新未能提交。')
     return this
   }
-  async clearFilter(): Promise<this> {
-    await this.api.executeCommand('sheet.command.clear-slicer-filter', { unitId: this.unitId, slicerId: this.id })
+  async getConnectionCandidates(): Promise<SlicerConnectionCandidate[]> {
+    const workbook = this.workbook(), model = this.model(), cache = getSlicerCache(workbook, model)
+    this.api.assertCanViewWorksheet(this.unitId, model.hostSheetId)
+    if (cache.source.kind === 'table') return []
+    const source = getSlicerPivotSource(workbook, model)
+    this.api.assertCanViewWorksheet(this.unitId, source.subUnitId)
+    const sourceSheet = workbook.sheets.find(sheet => sheet.id === source.subUnitId)!
+    if (!canViewProtectedRanges(sourceSheet, [source.range], this.api.currentUserId)) throw new SlicerConnectionError('permission-denied', '没有查看切片器来源范围的权限。')
+    return getSlicerConnectionCandidates(workbook, model).filter(candidate => {
+      const sheet = workbook.sheets.find(item => item.id === candidate.subUnitId)
+      return sheet && canViewWorksheetProtection(sheet, this.api.currentUserId)
+    })
+  }
+  async setConnections(connections: SheetSlicerConnections, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.set-slicer-connections', { unitId: this.unitId, slicerId: this.id, connections,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async setItems(items: string[] | null, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand('sheet.command.set-slicer-items', { unitId: this.unitId, slicerId: this.id, selectedItems: items,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('切片器成员筛选未能提交。')
     return this
   }
-  async remove(): Promise<boolean> {
-    return this.api.executeCommand('sheet.command.remove-slicer', { unitId: this.unitId, slicerId: this.id })
+  async setSelection(selection: RecordSelection, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    let normalized: RecordSelection
+    try { normalized = normalizeRecordSelection(selection) }
+    catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error }
+    return this.setRecordSelection(normalized, context)
+  }
+  async setItemStates(checkedItems: string[], partialItems: string[], context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.set-slicer-item-states', { unitId: this.unitId, slicerId: this.id, checkedItems, partialItems,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async setRecordSelection(selection: PivotRecordSelection | null, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.set-slicer-record-selection', { unitId: this.unitId, slicerId: this.id, selection,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async setTimelineRange(range: SlicerTimelineRange | null, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand('sheet.command.set-timeline-range', { unitId: this.unitId, slicerId: this.id, range,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('时间线筛选未能提交。')
+    return this
+  }
+  async updatePresentation(patch: import('../features/slicer/slicer-engine').SlicerPresentationPatch, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand('sheet.command.update-slicer-presentation', { unitId: this.unitId, slicerId: this.id, patch,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('切片器显示设置未能提交。')
+    return this
+  }
+  async clearFilter(context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.clear-slicer-filter', { unitId: this.unitId, slicerId: this.id,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async remove(context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand('sheet.command.remove-slicer', { unitId: this.unitId, slicerId: this.id,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  private optionalCache(): import('../domain/model.ts').SlicerCacheModel | undefined {
+    const workbook = this.api.getWorkbookModel(this.unitId), model = this.optionalModel()
+    if (!workbook || !model) return undefined
+    if (model.cacheId) return workbook.slicerCaches?.find(cache => cache.id === model.cacheId && cache.unitId === this.unitId && cache.type === model.type
+      && (cache.source.kind === 'table' ? cache.source.columnId : cache.source.sourceFieldId) === model.sourceFieldId)
+    try { return getSlicerCache(workbook, model) }
+    catch (error) { if (error instanceof SlicerConnectionError) return undefined; throw error }
+  }
+  private queryContext(workbook: WorkbookModel, model: SlicerModel): SlicerMemberQueryContext {
+    assertSlicerSourceReadPermission(workbook, model, this.api.currentUserId)
+    const revision = this.api.getWorkbookRevision(this.unitId), userId = this.api.currentUserId
+    const cache = getSlicerCache(workbook, model), identity = JSON.stringify({ cacheId: cache.id, source: cache.source, hostSheetId: model.hostSheetId })
+    return { unitId: this.unitId, baseRevision: revision, locale: this.api.regionalSettings.locale.value, assertCurrent: () => {
+      if (this.api.isDisposed) throw new SlicerMemberQueryError('SLICER_RPC_DISPOSED', '切片器工作台已释放。')
+      const current = this.api.getWorkbookModel(this.unitId), view = current?.slicers?.find(control => control.id === this.id)
+      if (!current || !view) throw new SlicerMemberQueryError('SLICER_RPC_UNIT_DISPOSED', '切片器所属工作簿或对象已关闭。')
+      if (view.hostSheetId !== this.subUnitId) throw new SlicerMemberQueryError('SLICER_SOURCE_INVALIDATED', '切片器所属工作表已更改。')
+      if (current !== workbook || this.api.getWorkbookRevision(this.unitId) !== revision || this.api.currentUserId !== userId) {
+        throw new SlicerMemberQueryError('SLICER_SOURCE_INVALIDATED', '切片器或其来源已在查询期间更改。')
+      }
+      const liveCache = getSlicerCache(current, view)
+      if (JSON.stringify({ cacheId: liveCache.id, source: liveCache.source, hostSheetId: view.hostSheetId }) !== identity) {
+        throw new SlicerMemberQueryError('SLICER_SOURCE_INVALIDATED', '切片器来源身份已更改。')
+      }
+      assertSlicerSourceReadPermission(current, view, userId)
+    } }
   }
   private model(): SlicerModel {
-    const model = getSlicer(this.workbook(), this.id)
+    const model = this.optionalModel()
     if (!model) throw new Error(`Slicer not found: ${this.id}`)
+    return model
+  }
+  private optionalModel(): SlicerModel | undefined {
+    const workbook = this.api.getWorkbookModel(this.unitId), model = workbook?.slicers?.find(control => control.id === this.id)
+    if (!workbook || !model) return undefined
+    if (model.unitId !== this.unitId || model.hostSheetId !== this.subUnitId || !workbook.sheets.some(sheet => sheet.id === this.subUnitId)) {
+      throw new SlicerConnectionError('invalid-target', '切片器的工作簿或绘图宿主已更改。')
+    }
+    assertSlicerViewPermission(workbook, model, this.api.currentUserId, false)
     return model
   }
   private workbook(): WorkbookModel {
@@ -2291,6 +3079,110 @@ export class FSheetSlicer {
     if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
     return workbook
   }
+}
+
+/** The fixed public Timeline contract has date filtering and per-view settings, independently of Slicer member selections. */
+export class FSheetTimeline {
+  private readonly control: FSheetSlicer
+  readonly subUnitId: string
+  constructor(private readonly api: OfficeStudio, readonly unitId: string, readonly id: string) {
+    this.control = new FSheetSlicer(api, unitId, id)
+    this.subUnitId = this.control.getSubUnitId()
+  }
+  getId(): string { return this.id }
+  getUnitId(): string { return this.unitId }
+  getSubUnitId(): string { return this.subUnitId }
+  getDrawingId(): string { return this.id }
+  getModel(): SlicerModel {
+    const model = this.control.getModel()
+    if (model.type !== 'timeline') throw new SlicerConnectionError('invalid-target', '该对象不是时间线。')
+    return model
+  }
+  private optionalModel(): SlicerModel | undefined {
+    const model = this.api.getWorkbookModel(this.unitId)?.slicers?.find(view => view.id === this.id)
+    return model ? this.getModel() : undefined
+  }
+  private workbook(): WorkbookModel {
+    const workbook = this.api.getWorkbookModel(this.unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${this.unitId}`)
+    return workbook
+  }
+  getDrawing(): ISheetSlicerDrawing | undefined { return this.optionalModel() ? this.control.getDrawing() : undefined }
+  getSource(): SheetSlicerSourceSpec | undefined { return this.optionalModel() ? this.control.getSource() : undefined }
+  getCacheId(): string | undefined { return this.optionalModel() ? this.control.getCacheId() : undefined }
+  getCache(): ITimelineCacheDefinition | undefined {
+    if (!this.optionalModel()) return undefined
+    const cache = this.control.getCacheModel()
+    return cache ? sheetTimelineCacheDefinition(this.workbook(), cache) : undefined
+  }
+  getSettings(): SheetTimelineSettings | undefined {
+    const model = this.optionalModel()
+    return model ? readTimelineSettings(model) : undefined
+  }
+  getInfo(): ISheetTimelineInfo { return readSheetTimelineInfo(this.workbook(), this.getModel()) }
+  getSourceMetadata(): Promise<ISlicerSourceMetadata> { this.getModel(); return this.control.getSourceMetadata() }
+  toBuilder(): FBoundSheetTimelineBuilder { return FSheetTimelineBuilder.fromInfo(this.api, this.unitId, this.getInfo()) }
+  async update(info: ISheetTimelineInfo, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand(SLICER_PUBLIC_COMMANDS.updateTimeline, { unitId: this.unitId, slicerId: this.id, info,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('时间线信息更新未能提交。')
+    return this
+  }
+  updateSettings(patch: TimelineSettingsInputPatch, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(SLICER_PUBLIC_COMMANDS.timelineSettings, { unitId: this.unitId, slicerId: this.id, patch,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  setName(name: string): Promise<boolean> { return this.updateSettings({ name }) }
+  setCaption(caption: string): Promise<boolean> { return this.updateSettings({ caption }) }
+  setStyle(style: string): Promise<boolean> { return this.updateSettings({ style }) }
+  clearStyle(): Promise<boolean> { return this.updateSettings({ style: undefined }) }
+  setLevel(level: TimelinePublicLevel | import('../domain/model.ts').TimelineLevel): Promise<boolean> { return this.updateSettings({ level }) }
+  setSelectionLevel(selectionLevel: TimelinePublicLevel | import('../domain/model.ts').TimelineLevel): Promise<boolean> { return this.updateSettings({ selectionLevel }) }
+  setScrollPosition(scrollPosition: number): Promise<boolean> { return this.updateSettings({ scrollPosition }) }
+  setShowHeader(showHeader: boolean): Promise<boolean> { return this.updateSettings({ showHeader }) }
+  setShowSelectionLabel(showSelectionLabel: boolean): Promise<boolean> { return this.updateSettings({ showSelectionLabel }) }
+  setShowTimeLevel(showTimeLevel: boolean): Promise<boolean> { return this.updateSettings({ showTimeLevel }) }
+  setShowHorizontalScrollbar(showHorizontalScrollbar: boolean): Promise<boolean> { return this.updateSettings({ showHorizontalScrollbar }) }
+  getConnections(): SheetSlicerConnections | undefined { return this.optionalModel() ? this.control.getConnections() : undefined }
+  getConnectionCandidates(): Promise<SlicerConnectionCandidate[]> { this.getModel(); return this.control.getConnectionCandidates() }
+  setConnections(connections: SheetSlicerConnections, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    this.getModel(); return this.control.setConnections(connections, context)
+  }
+  setPosition(anchor: SheetSlicerAnchorSpec): this { this.getModel(); this.control.setPosition(anchor); return this }
+  setAbsolutePosition(x: number, y: number): this { this.getModel(); this.control.setAbsolutePosition(x, y); return this }
+  setSize(width: number, height: number): this { this.getModel(); this.control.setSize(width, height); return this }
+  bringToFront(): this { this.getModel(); this.control.bringToFront(); return this }
+  bringForward(): this { this.getModel(); this.control.bringForward(); return this }
+  sendBackward(): this { this.getModel(); this.control.sendBackward(); return this }
+  sendToBack(): this { this.getModel(); this.control.sendToBack(); return this }
+  setZOrder(index: number): this { this.getModel(); this.control.setZOrder(index); return this }
+  getDateRange(): ITimelineRange | undefined {
+    const model = this.optionalModel()
+    return model ? readTimelineDateRange(this.workbook(), model) : undefined
+  }
+  getDateCondition(): ITimelineDateCondition | undefined {
+    const model = this.optionalModel()
+    return model ? readTimelineDateCondition(this.workbook(), model) : undefined
+  }
+  setDateRange(range: ITimelineRange | undefined, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> {
+    return this.api.executeCommand(SLICER_PUBLIC_COMMANDS.dateRange, { unitId: this.unitId, slicerId: this.id, range,
+      expectedRevision: context.expectedRevision, host: context.host })
+  }
+  async getDateBounds(): Promise<{ minDate?: number; maxDate?: number; dateSystem: 'date1900' | 'date1904' }> {
+    const dateSystem = this.workbook().date1904 ? 'date1904' : 'date1900'
+    const metadata = await this.getSourceMetadata()
+    return { dateSystem, ...(metadata.timeline?.minDate === undefined ? {} : { minDate: metadata.timeline.minDate }),
+      ...(metadata.timeline?.maxDate === undefined ? {} : { maxDate: metadata.timeline.maxDate }) }
+  }
+  /** Local combined properties transaction for Canvas/property-panel geometry and settings. */
+  async updatePresentation(patch: TimelinePresentationPatch, context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<this> {
+    const accepted = await this.api.executeCommand('sheet.command.update-slicer-presentation', { unitId: this.unitId, slicerId: this.id, patch,
+      expectedRevision: context.expectedRevision, host: context.host })
+    if (!accepted) throw new Error('时间线显示设置未能提交。')
+    return this
+  }
+  clearFilter(context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> { return this.setDateRange(undefined, context) }
+  remove(context: import('./slicer-command-context.ts').SlicerCommandContext = {}): Promise<boolean> { this.getModel(); return this.control.remove(context) }
 }
 
 export class FDocument {
@@ -2394,6 +3286,16 @@ export class FDocument {
   insertImage(options: DocumentImageInsertOptions): Promise<FDocumentImage | null> { return insertDocumentImage(this, options) }
   getImage(imageId: string, segmentId = ''): FDocumentImage | null { return getDocumentImage(this, imageId, segmentId) }
   getImages(segmentId = ''): FDocumentImage[] { return getDocumentImages(this, segmentId) }
+  alignImages(images: readonly (FDocumentImage | string)[], align: DocumentImageAlign, segmentId = '', options: DocumentImageGeometryReadOptions = {}): boolean {
+    return alignDocumentImages(this, images, align, segmentId, options)
+  }
+  transformImages(images: readonly (FDocumentImage | string)[], transform: DocumentImageBatchTransform, segmentId = '', options: DocumentImageGeometryReadOptions = {}): boolean {
+    return transformDocumentImages(this, images, transform, segmentId, options)
+  }
+  arrangeImages(images: readonly (FDocumentImage | string)[], arrange: DocumentImageArrange | number, segmentId = ''): boolean {
+    return arrangeDocumentImages(this, images, arrange, segmentId)
+  }
+  removeImages(images: readonly (FDocumentImage | string)[], segmentId = ''): boolean { return removeDocumentImages(this, images, segmentId) }
   openLatexPopup(request: Omit<DocumentLatexPopupOperationRequest, 'unitId'> = {}): boolean {
     return this.api.executeCommandSync(DOCUMENT_LATEX_POPUP_OPERATIONS.open, { ...request, unitId: this.id })
   }

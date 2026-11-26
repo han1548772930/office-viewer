@@ -6,7 +6,7 @@ import { canEditWorksheetProtection } from '../sheet-protection/range-protection
 import { assertSheetCommandRanges, normalizeSheetCommandRange, type SheetRangeCommandInput } from './sheet-range-command.ts'
 import { calculateSheetAxisAutoFit, type SheetAutoFitOptions } from './sheet-auto-fit.ts'
 import type { SheetTextMeasure } from './sheet-cell-text-layout.ts'
-import { hiddenSheetRows, isSheetColumnVisible } from './sheet-row-visibility.ts'
+import { hiddenSheetRows, hiddenSheetColumns, isSheetColumnVisible } from './sheet-row-visibility.ts'
 
 export const SHEET_AXIS_DIMENSION_COMMANDS = {
   rowHeight: 'sheet.command.set-row-height', columnWidth: 'sheet.command.set-worksheet-col-width',
@@ -130,7 +130,7 @@ function measurementContext(sheet: ExcelSheetView, options: SheetAxisDimensionOp
     const [start, end] = value.split(':'), first = parseCellKey(start ?? ''), last = parseCellKey(end ?? start ?? '')
     return first && last ? [{ range: { startRow: first.row, endRow: last.row, startCol: first.col, endCol: last.col }, order }] : []
   })
-  const index = mergeIndex(merges), hiddenColumns = new Set([...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])])
+  const index = mergeIndex(merges), hiddenColumns = hiddenSheetColumns(sheet)
   return { ...options, hiddenRows: hiddenSheetRows(sheet), hiddenColumns,
     columnWidth: column => isSheetColumnVisible(sheet, column, hiddenColumns) ? sheetColumnWidth(sheet, column) : 0,
     mergeAt: (row, column) => {
@@ -254,8 +254,8 @@ function heightCellSignature(cell: ExcelCellView | undefined): string {
 }
 /** Refresh in the same content transaction, after formula values settle. Only sparse populated/cache rows are measured. */
 export function refreshSheetViewAutoRowHeights(sheet: ExcelSheetView, previous: ExcelSheetView | undefined, options: SheetAxisDimensionOptions): boolean {
-  const all = !previous || JSON.stringify([sheet.columnWidths, sheet.columnWidthSpans, sheet.hiddenColumns, sheet.columnHiddenSpans, sheet.outlineHiddenColumns,
-    sheet.merges, sheet.defaultColumnWidth, sheet.defaultRowHeight, sheet.defaultRowAutoHeight, sheet.rowAutoHeightSpans, sheet.date1904]) !== JSON.stringify([previous.columnWidths, previous.columnWidthSpans, previous.hiddenColumns, previous.columnHiddenSpans, previous.outlineHiddenColumns,
+  const all = !previous || JSON.stringify([sheet.columnWidths, sheet.columnWidthSpans, sheet.hiddenColumns, sheet.columnHiddenSpans, sheet.outlineHiddenColumns, sheet.outlineHiddenColumnSpans,
+    sheet.merges, sheet.defaultColumnWidth, sheet.defaultRowHeight, sheet.defaultRowAutoHeight, sheet.rowAutoHeightSpans, sheet.date1904]) !== JSON.stringify([previous.columnWidths, previous.columnWidthSpans, previous.hiddenColumns, previous.columnHiddenSpans, previous.outlineHiddenColumns, previous.outlineHiddenColumnSpans,
     previous.merges, previous.defaultColumnWidth, previous.defaultRowHeight, previous.defaultRowAutoHeight, previous.rowAutoHeightSpans, previous.date1904])
   const affected = new Set<number>()
   if (!all) for (const key of new Set([...Object.keys(sheet.cells), ...Object.keys(previous!.cells)])) {

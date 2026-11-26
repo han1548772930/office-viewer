@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="UTF-8"><title>Slicer member real Worker fixture</title></head>
+  <body>
+    <main id="status">loading</main>
+    <script type="module">
+      import { createSlicerMemberWorkerRuntime } from './slicer-member-worker-runtime.mjs'
+      window.slicerMemberWorkerFixture = createSlicerMemberWorkerRuntime()
+      document.querySelector('#status').textContent = 'ready'
+    </script>
+  </body>
+</html>

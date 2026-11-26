@@ -1,6 +1,6 @@
 import type { CellRange } from '../../domain/model.ts'
 import type { SheetPasteMode } from '../../features/sheet-workbench/sheet-paste.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, type GridRange, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
+import { type GridRange, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
 
 export interface SheetClipboardPasteOptionsView { range: CellRange; mode: SheetPasteMode }
 
@@ -24,7 +24,7 @@ export function sheetClipboardOverlayPosition(geometry: SpreadsheetGeometry, vie
     || range.endRow < 0 || range.endCol < 0 || range.endRow >= geometry.rows.count || range.endCol >= geometry.columns.count
     || ![viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop].every(Number.isFinite)
     || !Number.isFinite(viewport.zoom) || viewport.zoom <= 0
-    || viewport.width < GRID_HEADER_WIDTH + width + margin * 2 || viewport.height < GRID_HEADER_HEIGHT + height + margin * 2) return undefined
+    || viewport.width < geometry.headerWidth + width + margin * 2 || viewport.height < geometry.headerHeight + height + margin * 2) return undefined
   const pane = geometry.panes(viewport).find(candidate => candidate.clip.width > 0 && candidate.clip.height > 0
     && candidate.rows.includes(range.endRow) && candidate.columns.includes(range.endCol))
   if (!pane) return undefined
@@ -32,7 +32,7 @@ export function sheetClipboardOverlayPosition(geometry: SpreadsheetGeometry, vie
   if (rect.width <= 0 || rect.height <= 0 || rect.x >= clip.x + clip.width || rect.x + rect.width <= clip.x
     || rect.y >= clip.y + clip.height || rect.y + rect.height <= clip.y) return undefined
   return {
-    left: Math.max(GRID_HEADER_WIDTH + margin, Math.min(rect.x + rect.width + margin, viewport.width - width - margin)),
-    top: Math.max(GRID_HEADER_HEIGHT + margin, Math.min(rect.y + rect.height + margin, viewport.height - height - margin)),
+    left: Math.max(geometry.headerWidth + margin, Math.min(rect.x + rect.width + margin, viewport.width - width - margin)),
+    top: Math.max(geometry.headerHeight + margin, Math.min(rect.y + rect.height + margin, viewport.height - height - margin)),
   }
 }

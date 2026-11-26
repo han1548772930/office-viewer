@@ -4,6 +4,7 @@ import { taskViews } from './tasks.ts'
 import { isUnsignedCount, isWasmTaskMetrics, matchesWasmTaskControl } from '../platform/wasm/task-protocol.ts'
 import type { WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 import { readChartStatisticsOutput } from './chart-results.ts'
+import { readSlicerMembersOutput } from './slicer-member-results.ts'
 
 function isFiniteOrNull(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value))
@@ -20,6 +21,7 @@ function isMetrics(value: unknown, expected: Pick<ComputeMetrics, 'inputBytes' |
     && value.estimatedPeakBytes === expected.estimatedPeakBytes
 }
 export function progressUnits(task: ComputeTask): Pick<ComputeProgress, 'total' | 'unit'> {
+  if (task.kind === 'slicerMembers') return { total: task.params.rowCount, unit: 'rows' }
   if (task.kind === 'chartStatistics') return { total: task.params.jobs.length, unit: 'jobs' }
   if (task.kind === 'aggregate') return { total: task.values.length, unit: 'values' }
   if (task.kind === 'filter') return { total: task.rowCount, unit: 'rows' }
@@ -39,8 +41,11 @@ export function readResult(data: Record<string, unknown>, context: ComputeContex
   const boundary = data.metrics.boundary
   const transport = data.metrics.transport
   const chartTask = task.kind === 'chartStatistics'
-  const inputBytes = chartTask ? memory.inputBytes : inputLength * 9
-  const inputCopies = (inputLength ? 2 : 0) + (chartTask && task.params.rowCount ? 1 : 0)
+  const slicerTask = task.kind === 'slicerMembers'
+  const inputBytes = chartTask || slicerTask ? memory.inputBytes : inputLength * 9
+  const inputCopies = slicerTask ? (task.params.rowCount ? 4 : 0) + 1
+    + (task.params.textByteLength ? 1 : 0) + (task.params.dictionaryCount ? 1 : 0)
+    : (inputLength ? 2 : 0) + (chartTask && task.params.rowCount ? 1 : 0)
   if (boundary.inputBytes !== inputBytes || boundary.inputCopies !== inputCopies
     || boundary.jsonConversions !== 0 || boundary.rustBufferClones !== 0
     || transport.inputBytes !== memory.inputBytes || transport.inputTransfers !== taskViews(task).length) return null
@@ -60,6 +65,15 @@ export function readResult(data: Record<string, unknown>, context: ComputeContex
     output = chart
     outputBytes = chart.values.byteLength + chart.indices.byteLength
     outputCopies = (chart.values.byteLength ? 1 : 0) + (chart.indices.byteLength ? 1 : 0)
+    outputTransfers = 2
+    structuredResultMessages = 1
+  } else if (data.output.kind === 'slicerMembers') {
+    if (task.kind !== 'slicerMembers' || boundary.controlDtoConversions < 2) return null
+    const members = readSlicerMembersOutput(data.output, task.params)
+    if (!members) return null
+    output = members
+    outputBytes = members.indices.byteLength + members.hasData.byteLength
+    outputCopies = (members.indices.byteLength ? 1 : 0) + (members.hasData.byteLength ? 1 : 0)
     outputTransfers = 2
     structuredResultMessages = 1
   } else {

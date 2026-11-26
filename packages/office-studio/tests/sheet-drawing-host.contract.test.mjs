@@ -26,7 +26,8 @@ test('the host derives header-free image/chart/shape/slicer geometry from native
   assert.deepEqual(bounds('chart', 'c'), { left: 50, top: 40, width: 30, height: 20 })
   assert.deepEqual(bounds('shape', 'b'), { left: 30, top: 20, width: 20, height: 10 })
   assert.deepEqual(bounds('slicer', 's'), { left: 120, top: 80, width: 80, height: 40 })
-  assert.equal(scene.objects.find(item => item.ref.id === 's').transformable, false); assert.deepEqual(snapshot(workbook), before)
+  assert.equal(scene.objects.find(item => item.ref.id === 's').transformable, true)
+  assert.equal(scene.objects.find(item => item.ref.id === 's').groupable, true); assert.deepEqual(snapshot(workbook), before)
 })
 
 test('mixed group shear publishes native geometry while retaining image resource/crop/flip, chart source/options/size and shape authors', () => {

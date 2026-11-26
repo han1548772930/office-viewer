@@ -4,6 +4,9 @@ import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetPro
 import { createUniqueSheetName, validateSheetName } from './sheet-workbench.ts'
 import { rebindWorksheetScopedNames, rewriteWorkbookWorksheetReferences } from './sheet-worksheet-references.ts'
 import type { CopyWorksheetCommandInput } from './sheet-worksheet-copy.ts'
+import { reconcileSlicerConnectionResources } from '../slicer/slicer-connections-lifecycle.ts'
+import { invalidateRemovedPivotSourceWorksheet } from '../pivot/services/pivot-source-lifecycle.ts'
+import { synchronizeLinkedPivotChartReports } from '../pivot/services/pivot-chart-report-lifecycle.ts'
 
 export const WORKSHEET_LIFECYCLE_COMMANDS = {
   insert: 'sheet.command.insert-sheet', remove: 'sheet.command.remove-sheet', rename: 'sheet.command.set-worksheet-name',
@@ -81,6 +84,7 @@ export function planWorksheetRename(original: WorkbookModel, id: string, name: s
   if (name === source.name) return result(candidate, id, false)
   candidate.sheets.find(sheet => sheet.id === id)!.name = name
   rewriteWorkbookWorksheetReferences(candidate, original, { sheetId: id, oldName: source.name, newName: name })
+  synchronizeLinkedPivotChartReports(original, candidate)
   return result(candidate, id, true)
 }
 
@@ -101,8 +105,11 @@ export function planWorksheetRemove(original: WorkbookModel, id: string, userId:
   if (candidate.pivotTables) candidate.pivotTables = candidate.pivotTables.filter(pivot => !removedPivots.has(pivot.id))
   if (candidate.charts) candidate.charts = candidate.charts.filter(chart => chart.sheetId !== id && (!chart.pivotTableId || !removedPivots.has(chart.pivotTableId)))
   if (candidate.slicers) candidate.slicers = candidate.slicers.filter(slicer => slicer.hostSheetId !== id
-    && (!slicer.tableId || !removedTables.has(slicer.tableId)) && (!slicer.pivotTableId || !removedPivots.has(slicer.pivotTableId)))
+    && (!slicer.tableId || !removedTables.has(slicer.tableId)))
   rewriteWorkbookWorksheetReferences(candidate, original, { sheetId: id, oldName: source.name }, removedTableNames)
+  invalidateRemovedPivotSourceWorksheet(original, candidate, id)
+  reconcileSlicerConnectionResources(original, candidate)
+  synchronizeLinkedPivotChartReports(original, candidate)
   return result(candidate, id, true)
 }
 

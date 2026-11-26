@@ -15,16 +15,22 @@ import { documentImageFromResource, prepareDocumentImageSource } from '../../api
 import { resolveDocumentImageEditorTarget } from '../../api/document-image-commands'
 import type { DocumentImageEditorTarget, DocumentImageEditorMode } from '../../api/document-image-editors'
 import { trackDocumentImageTask } from '../../api/document-image-editors'
+import { bindDocumentImageLayout } from '../../api/document-image-layout'
+import type { DocumentLayout } from '../../features/document/layout/document-layout-types'
 
 export interface DocumentImageEditorEnvironment {
   source: () => DocumentModel; model: () => DocumentModel; selection: () => DocumentSelection; host: () => DocumentAuxiliaryBlockHost | undefined
   api: () => FDocument | undefined; session: () => DocumentInputSession | undefined; permission: () => DocumentPermissionContext; inactive: () => boolean
   execute: (command: DocumentCommand, restoreFocus?: boolean, feedback?: { selectionCurrent: boolean; error?: string }) => boolean
+  layout?: () => DocumentLayout | undefined
   focus: () => void; notify: (message: string) => void
 }
 export function useDocumentImageEditor(environment: DocumentImageEditorEnvironment) {
-  const selectedId = ref<string>(), open = ref(false), mode = ref<DocumentImageEditorMode>('insert'), editorKey = ref(0), busy = ref(false), error = ref(''), composing = ref(false)
-  const target = shallowRef<DocumentImageEditorTarget>(), selected = computed(() => documentImageEntries(environment.model()).find(entry => entry.imageId === selectedId.value))
+  const selectedIds = ref<string[]>([])
+  const selectedId = computed<string | undefined>({ get: () => selectedIds.value.at(-1), set: value => { selectedIds.value = value ? [value] : [] } })
+  const open = ref(false), mode = ref<DocumentImageEditorMode>('insert'), editorKey = ref(0), busy = ref(false), error = ref(''), composing = ref(false)
+  const target = shallowRef<DocumentImageEditorTarget>(), selected = computed(() => selectedIds.value.length === 1
+    ? documentImageEntries(environment.model()).find(entry => entry.imageId === selectedId.value) : undefined)
   const image = computed(() => target.value?.imageId ? documentImageEntries(environment.model()).find(entry => entry.imageId === target.value!.imageId)?.image : undefined)
   let controller: AbortController | undefined, disposed = false, applying = false, closeTarget: DocumentImageEditorTarget | undefined
   function current(value = target.value): boolean {
@@ -43,6 +49,10 @@ export function useDocumentImageEditor(environment: DocumentImageEditorEnvironme
     try { if (imageId) assertDocumentImageEditable(model, imageId); return true } catch { return false }
   }
   const readOnly = computed(() => !current() || !editable(target.value?.imageId))
+  function selectImages(ids: readonly string[]): void {
+    const available = new Set(documentImageEntries(environment.model()).map(entry => entry.imageId))
+    selectedIds.value = [...new Set(ids)].filter(id => available.has(id))
+  }
   function close(force = false): boolean {
     if (!force && composing.value) return false
     controller?.abort(); controller = undefined; busy.value = false; composing.value = false
@@ -50,10 +60,12 @@ export function useDocumentImageEditor(environment: DocumentImageEditorEnvironme
     return true
   }
   function accept(value: DocumentImageEditorTarget): boolean {
+    if (value.mode !== 'insert' && !value.imageId && selectedIds.value.length !== 1) return false
     const imageId = value.imageId ?? (value.mode === 'insert' ? undefined : selectedId.value)
     if (value.mode !== 'insert' && !imageId || !current(value) || !editable(imageId) || composing.value) return false
     close(true); closeTarget = undefined
     target.value = { ...value, imageId }; mode.value = value.mode; error.value = ''; editorKey.value++; open.value = true
+    if (imageId) selectedId.value = imageId
     return true
   }
   function show(nextMode: DocumentImageEditorMode = 'insert', imageId?: string, paragraphMenuPlacement?: 'below'): boolean {
@@ -113,14 +125,28 @@ export function useDocumentImageEditor(environment: DocumentImageEditorEnvironme
   watch(() => [environment.source(), environment.host(), environment.selection(), environment.session()?.generation, environment.inactive()], () => {
     if (applying) return
     if (open.value && !current()) { controller?.abort(); busy.value = false; error.value = '文档、图片或输入位置已变化，请重新打开。' }
-    if (selectedId.value && !selected.value) selectedId.value = undefined
+    const available = new Set(documentImageEntries(environment.model()).map(entry => entry.imageId))
+    if (selectedIds.value.some(id => !available.has(id))) selectedIds.value = selectedIds.value.filter(id => available.has(id))
+  })
+  watch(() => [environment.source().id, environment.host()] as const, (value, previous) => {
+    if (value[0] !== previous[0] || !sameDocumentBlockHost(value[1], previous[1])) selectedIds.value = []
   })
   watch(() => environment.api(), (api, _previous, cleanup) => {
+    if (_previous && api !== _previous) selectedIds.value = []
     if (!api) return
     const owner = api.bindImageEditor({ open: accept, close })
     cleanup(() => owner.dispose())
   }, { immediate: true })
+  watch(() => environment.source(), (source, _previous, cleanup) => {
+    if (!environment.layout) return
+    const owner = bindDocumentImageLayout(source, () => {
+      const layout = environment.layout?.()
+      return !disposed && !environment.inactive() && source === environment.source() && layout
+        ? { source, host: environment.host(), layout } : undefined
+    })
+    cleanup(() => owner.dispose())
+  }, { immediate: true })
   onDeactivated(() => { close(true); selectedId.value = undefined })
   onUnmounted(() => { disposed = true; close(true) })
-  return { selectedId, selected, open, mode, image, editorKey, busy, error, composing, readOnly, editable, current, accept, show, close, apply, choose, closed }
+  return { selectedId, selectedIds, selected, selectImages, open, mode, image, editorKey, busy, error, composing, readOnly, editable, current, accept, show, close, apply, choose, closed }
 }

@@ -9,21 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "camelCase")]
 pub(super) struct AxisSpanInput<T> { pub start: u32, pub end: u32, pub value: T }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct OutlineInput {
-    #[serde(default)]
-    pub groups: Vec<OutlineGroupInput>,
-}
-#[derive(Debug, Deserialize)]
-pub(super) struct OutlineGroupInput {
-    pub axis: String,
-    pub start: u32,
-    pub end: u32,
-    #[serde(default)]
-    pub collapsed: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RowSize { pub height: f64, pub automatic: bool }
 #[derive(Debug, Clone)]

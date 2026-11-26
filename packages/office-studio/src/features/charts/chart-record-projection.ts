@@ -46,6 +46,13 @@ function* prepareChartRecordProjectionSteps(source: ChartRecords, chart: ChartDa
   context: ChartComputePreparationContext = {}): Generator<void, ChartRecordProjection, void> {
   assertChartPreparationMemory(chartProjectionSourceBytes(source.records.length, source.fields.length), context)
   const descriptor = resolveChartType(chart.type), shape = descriptor.dataShape
+  // A retained Pivot report with an unconfigured area has no plot yet. Its
+  // existing author bindings remain available for the next field configuration.
+  if (!source.records.length && (source.sourceCategoryFields?.length === 0 || source.sourceValueFields?.length === 0)) {
+    const empty: ChartData = { ...source, categories: [], series: [], visibleFields: source.visibleFields ?? [] }
+    return { source, binding: chart, categories: source.sourceCategoryFields ?? [], fields: [], values: [],
+      visible: new Set(empty.visibleFields), empty }
+  }
   const sourceNumericFields = shape === 'hierarchy' || chart.type === 'chord' ? yield* chartNumericFieldSteps(source.records, source.fields.length, chartHierarchyNumber)
     : source.sourceNumericFields ?? (yield* chartNumericFieldSteps(source.records, source.fields.length, chartNumber))
   source = { ...source, sourceNumericFields }
@@ -65,8 +72,8 @@ function* prepareChartRecordProjectionSteps(source: ChartRecords, chart: ChartDa
   const fields = authoredFields.length ? authoredFields : singleValue ? defaults.slice(0, 1) : defaults
   for (const field of chart.valueFields) chartField(source, field, '数值字段')
   const binding: ChartDataBinding = shape === 'edge' ? chart : { ...chart, valueFields: fields,
-    ...(shape === 'hierarchy' && !chart.options?.mapping?.hierarchyIndexes && source.sourceCategoryFields?.length
-      ? { options: { ...chart.options, mapping: { ...chart.options?.mapping, hierarchyIndexes: source.sourceCategoryFields } } } : {}) }
+    ...(shape === 'hierarchy' && !chart.options?.mapping?.hierarchyIndexes && (source.pivotAxis?.rowFields.length || source.sourceCategoryFields?.length)
+      ? { options: { ...chart.options, mapping: { ...chart.options?.mapping, hierarchyIndexes: chartHierarchyFields(source, chart) } } } : {}) }
 
   const roles = primaryFields(source, binding, categories)
   for (const field of roles) chartField(source, field, '图表字段')
@@ -110,9 +117,11 @@ function* projectPreparedChartRecordSteps(plan: ChartRecordProjection,
   for (const field of values) chartField(source, field, '数值字段')
   const labels: string[] = [], categoryValues: NonNullable<ChartData['categoryValues']> = []
   let work = 0
-  for (const record of plotted.records) {
+  const defaultPivotCategories = !source.syntheticValues && !!source.pivotAxis
+    && categories.length === source.sourceCategoryFields?.length && categories.every((field, index) => field === source.sourceCategoryFields![index])
+  for (const [index, record] of plotted.records.entries()) {
     const parts = yield* chartMapSteps(categories, field => String(record[field] ?? ''))
-    const label = parts.join(' / ')
+    const label = (defaultPivotCategories ? parts.slice(0, source.pivotAxis!.recordRows[index]?.labels.length ?? parts.length) : parts).join(' / ')
     labels.push(label); categoryValues.push(categories.length === 1 ? record[categories[0]!] ?? null : label)
     if (++work % CHART_PREPARATION_CHUNK === 0) yield
   }
@@ -133,7 +142,7 @@ function primaryFields(source: ChartRecords, chart: ChartDataBinding, categories
   if (shape === 'bubble') return Object.values(chartBubbleMapping(source, chart)).filter((field): field is number => field !== undefined)
   if (shape === 'edge') return Object.values(chartEdgeMapping(source, chart)).filter((field): field is number => field !== undefined)
   if (shape === 'ohlc') return [chart.categoryField, ...Object.values(chartCandlestickMapping(source, chart)).filter((field): field is number => field !== undefined)]
-  if (shape === 'hierarchy') return [...(chart.options?.mapping?.hierarchyIndexes ?? [chart.categoryField]), chartHierarchyValueField(source, chart)]
+  if (shape === 'hierarchy') return [...chartHierarchyFields(source, chart), chartHierarchyValueField(source, chart)]
   if (shape === 'gauge') {
     const mapping = chart.options?.mapping?.gauge ?? { valueIndex: chart.valueFields[0] ?? (source.fields.length > 1 ? 1 : 0),
       labelIndex: source.fields.length > 1 ? chart.categoryField : undefined }

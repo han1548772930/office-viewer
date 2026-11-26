@@ -2,7 +2,15 @@ import type { SheetAxisSpan } from './sheet-axis.ts'
 import type { SheetBackgroundImage, SheetCellImage, SheetFloatingImage } from './sheet-images.ts'
 import type { DrawingAffineGeometry } from './drawing-affine.ts'
 import type { SheetDrawingShapeDTO, SheetDrawingState } from './sheet-drawings.ts'
+import type { PivotRecordValue } from './record-value.ts'
+import type { ISlicerStylesDefinition, ITimelineStylesDefinition } from './slicer-styles.ts'
+import type { ITimelineRange, ITimelineDateCondition } from './timeline-filters.ts'
+import type { OfficeSparklineSource } from './sparkline-office-source.ts'
 export type { SheetImageResource, SheetCellImage, SheetFloatingImage, SheetBackgroundImage } from './sheet-images.ts'
+export type { RecordValue, RecordSelection, PivotRecordValue } from './record-value.ts'
+export type { ISlicerStylesDefinition, ITimelineStylesDefinition } from './slicer-styles.ts'
+export type { ITimelineRange, ITimelineDateCondition } from './timeline-filters.ts'
+export type { OfficeSparklineSource } from './sparkline-office-source.ts'
 
 export type OfficeKind = 'workbook' | 'document'
 
@@ -66,7 +74,7 @@ export interface SpreadsheetCell {
   metadata?: Record<string, unknown>
 }
 
-export type SparklineType = 'line' | 'column' | 'winloss'
+export type SparklineType = 'line' | 'column' | 'winloss' | 'pie'
 export type SparklineEmptyCells = 'gap' | 'zero' | 'connect'
 export interface SparklineSpec {
   type: SparklineType
@@ -79,6 +87,18 @@ export interface SparklineSpec {
   axis: 'individual' | 'custom'
   min?: number
   max?: number
+  groupId?: string
+  themeType?: 'standard' | 'specialty' | 'distinctive' | 'soft' | 'fresh' | 'custom'
+  points?: Partial<Record<'highPoint' | 'firstPoint' | 'lowPoint' | 'lastPoint' | 'negativePoint' | 'markersPoint', { visible?: boolean; color?: string }>>
+  axisOptions?: { visible?: boolean; reverse?: boolean; color?: string }
+  extremumMin?: { type: 'individual' | 'group' | 'custom'; value?: number }
+  extremumMax?: { type: 'individual' | 'group' | 'custom'; value?: number }
+  nonNumericCells?: SparklineEmptyCells
+  containHiddenCells?: boolean
+  lineWidth?: number
+  showGradient?: boolean
+  showRadius?: boolean
+  officeSource?: OfficeSparklineSource
 }
 
 export type OutlineAxis = 'row' | 'column'
@@ -124,7 +144,15 @@ export interface SheetSortCriterion { column: number; direction: SheetSortDirect
 export type SheetFilterConditionOperator = 'equals' | 'doesNotEqual' | 'greaterThan' | 'greaterThanOrEqual' |
   'lessThan' | 'lessThanOrEqual' | 'between' | 'notBetween' | 'contains' | 'doesNotContain' |
   'beginsWith' | 'endsWith' | 'isBlank' | 'isNotBlank' | 'isError'
-export interface SheetValueFilter { kind: 'values'; selectedItems: CellScalar[] }
+export interface SheetValueFilter {
+  kind: 'values'
+  selectedItems: CellScalar[]
+  selectionMode?: 'include' | 'exclude'
+  /** Native typed member rule; selectedItems is its legacy/raw mirror. */
+  recordSelection?: PivotRecordSelection
+  /** Calendar context for date storage aliases; numeric serial identity is unchanged. */
+  recordDate1904?: boolean
+}
 export interface SheetConditionFilter {
   kind: 'condition'
   operator: SheetFilterConditionOperator
@@ -273,6 +301,20 @@ export type PivotAggregation = 'average' | 'count' | 'countNums' | 'max' | 'min'
 export type PivotSortDirection = 'ascending' | 'descending'
 export type PivotDateGroupType = 'year' | 'quarter' | 'month' | 'day'
 export type PivotDateGroupingMode = 'derived' | 'excelLike'
+/** String names from the fixed Show Values As contract; the legacy parent-grand mode is retained separately. */
+export type PivotShowDataAsType = 'normal' | 'percentOfColumnTotal' | 'percentOfRowTotal' | 'percentOfGrandTotal'
+  | 'percentOfParentColumnTotal' | 'percentOfParentRowTotal' | 'index' | 'percentOfParent' | 'percentOf'
+  | 'differenceFrom' | 'percentDifferenceFrom' | 'runningTotal' | 'percentRunningTotal' | 'rankAscending' | 'rankDescending'
+  | 'percentOfParentGrandTotal'
+export type PivotShowDataAsBaseItemType = 'item' | 'previous' | 'next'
+export interface PivotShowDataAsInfo {
+  type: PivotShowDataAsType
+  /** Report-local row/column instance ID after canonical source IDs have been resolved. */
+  baseFieldId: string
+  /** Grouped member key; empty for rules that do not select a concrete member. */
+  baseItem: string
+  baseItemType?: PivotShowDataAsBaseItemType
+}
 export interface PivotNumberGroup { start: number; end: number; interval: number }
 export interface PivotManualGroup { name: string; members: CellScalar[] }
 export type PivotFilterOperator = 'valueGreaterThan' | 'valueGreaterThanOrEqual' | 'valueLessThan' |
@@ -283,6 +325,18 @@ export interface PivotTableSource {
   subUnitId: string
   sheetName: string
   range: CellRange
+  /** Imported source identity; report.pivotCacheId is the canonical retained reference. */
+  pivotCacheId?: string
+}
+
+/** A source reference shared by reports. The source cells remain in the workbook. */
+export interface PivotCacheModel {
+  id: string
+  source: PivotTableSource
+  /** Field identity/column metadata survives disconnection from every report. */
+  fields?: Array<{ id: string; sourceColumn: number; name?: string }>
+  nextFieldId?: number
+  revision: number
 }
 
 export interface PivotTableAnchor {
@@ -299,22 +353,56 @@ export interface PivotFieldFilter {
   valueFieldId: string
 }
 
+export type PivotDateFilterOperator = 'dateBetween' | 'dateEqual' | 'dateNewerThan' | 'dateNewerThanOrEqual'
+  | 'dateNotBetween' | 'dateNotEqual' | 'dateOlderThan' | 'dateOlderThanOrEqual'
+export interface PivotDateFilter {
+  operator: PivotDateFilterOperator
+  expected: number | [number, number]
+  /** Omitted means exact serial/time comparison. */
+  useWholeDay?: boolean
+}
+export type PivotLabelConditionOperator = 'captionBeginsWith' | 'captionBetween' | 'captionContains' | 'captionEndsWith'
+  | 'captionEqual' | 'captionGreaterThan' | 'captionGreaterThanOrEqual' | 'captionLessThan' | 'captionLessThanOrEqual'
+  | 'captionNotBeginsWith' | 'captionNotBetween' | 'captionNotContains' | 'captionNotEndsWith' | 'captionNotEqual'
+export interface PivotLabelConditionFilter {
+  operator: PivotLabelConditionOperator
+  expected: string | [string, string]
+}
+/** Raw member identity preserves scalar types when one displayed item is only partly selected. */
+export type PivotRecordSelection = { mode: 'all' } | { mode: 'include' | 'exclude'; values: PivotRecordValue[] }
+
 export interface PivotFieldModel {
   id: string
+  /** Source-cache identity, independent of this report's field instance ID. */
+  sourceFieldId?: string
   sourceColumn: number
   name: string
   area: PivotFieldArea
   position: number
   displayName?: string
   aggregation?: PivotAggregation
+  showDataAs?: PivotShowDataAsInfo
   format?: string
   sort?: PivotSortDirection
+  /** Legacy/Slicer source-string selection; grouped checklist queries use the computed item state. */
   selectedItems?: string[]
+  /** Fully selected grouped keys remain rules when new raw source members enter the same group. */
+  groupedItems?: string[]
+  partialItems?: string[]
+  recordSelection?: PivotRecordSelection
+  labelFilter?: PivotLabelConditionFilter
+  dateFilter?: PivotDateFilter
+  /** Canonical Timeline range is a live half-open source rule, independent of enumerated members. */
+  timelineDateRange?: ITimelineRange
+  /** Typed-date authority for a Timeline condition; dateFilter retains its public Pivot projection. */
+  timelineDateCondition?: ITimelineDateCondition
   valueFilter?: PivotFieldFilter
   numberGroup?: PivotNumberGroup
   dateGroupType?: PivotDateGroupType
   manualGroups?: PivotManualGroup[]
 }
+
+export type PivotValuePosition = 'none' | 'row' | 'column'
 
 export interface PivotTableOptions {
   repeatRowLabels: boolean
@@ -322,18 +410,44 @@ export interface PivotTableOptions {
   showColGrandTotal: boolean
   showRowSubtotals: boolean
   showColSubtotals: boolean
-  valuePosition: 'row' | 'column'
+  valuePosition: PivotValuePosition
+  /** Zero-based ΣValues gap in its dimension axis; omitted/-1 chooses the current tail. */
+  valueIndex?: number
+  /** Filter categories are exclusive per canonical source unless explicitly enabled. */
+  allowMultipleFilters?: boolean
+}
+
+/** Report-local hierarchy state; member maps are keyed by grouped member keys. */
+export type PivotCollapseState = boolean | Record<string, boolean>
+export type PivotCollapseInfo = Record<string, PivotCollapseState>
+export interface PivotAxisOutputEntry {
+  /** Absolute row/column index within the output matrix, including its headers. */
+  index: number
+  kind: 'detail' | 'collapsed' | 'subtotal' | 'grand-total'
+  fieldId?: string
+  /** Zero-based field depth; -1 for a grand total or an empty dimension axis. */
+  level: number
+  labels: CellScalar[]
+  /** Report-local IDs and grouped scalar labels defining the original aggregate scope. */
+  fieldFilters: Record<string, CellScalar>
+  /** Original source members behind each grouped label in the scope. */
+  fieldMembers: Record<string, CellScalar[]>
+  valueFieldId?: string
 }
 
 export interface PivotTableModel {
   id: string
+  pivotCacheId?: string
   source: PivotTableSource
   anchor: PivotTableAnchor
   fields: PivotFieldModel[]
   options: PivotTableOptions
   dateGroupingMode?: PivotDateGroupingMode
+  collapseInfo?: PivotCollapseInfo
   outputRange?: CellRange
   generatedCellKeys?: string[]
+  /** Derived worksheet output hit/projection metadata; never an independent aggregation state. */
+  axisOutput?: { rowAxis: PivotAxisOutputEntry[]; columnAxis: PivotAxisOutputEntry[] }
   drillDownMap?: Record<string, {
     fieldFilters: Record<string, CellScalar>
     fieldMembers?: Record<string, CellScalar[]>
@@ -743,6 +857,11 @@ export interface ChartLegendOptions {
 
 export type ChartDepthAxisOptions = Omit<ChartAxisOptions, 'scaleType' | 'logBase' | 'min' | 'max' | 'format' | 'baseTimeUnit' | 'majorTimeUnit' | 'majorUnit'>
 
+export interface PivotChartControls {
+  showFieldButtons: boolean
+  showExpandCollapseButtons: boolean
+}
+
 export interface ChartModel {
   id: string
   sheetId: string
@@ -760,6 +879,10 @@ export interface ChartModel {
   valueFields: number[]
   seriesToCategory?: Record<number, number[]>
   pivotTableId?: string
+  /** Independently owned report. It uses the Pivot engine without writing a worksheet output. */
+  ownedPivot?: PivotTableModel
+  /** Pivot presentation controls; both default to true when absent in an older snapshot. */
+  controls?: PivotChartControls
   xAxis: ChartAxisOptions
   yAxis: ChartAxisOptions
   revision: number
@@ -774,20 +897,90 @@ export interface SlicerTimelineRange {
   level: TimelineLevel
 }
 
-/** A persisted filter control bound to one Pivot source field or stable Table column. */
+export interface SlicerPivotTableReference {
+  subUnitId: string
+  pivotTableId: string
+}
+
+export interface SlicerOwnedPivotChartReference {
+  subUnitId: string
+  pivotChartId: string
+}
+
+export interface SheetSlicerConnections {
+  pivotTables: SlicerPivotTableReference[]
+  ownedPivotCharts?: SlicerOwnedPivotChartReference[]
+}
+
+export interface SlicerConnectionCandidate {
+  kind: 'pivotTable' | 'ownedPivotChart'
+  subUnitId: string
+  id: string
+  name: string
+  sheetName: string
+}
+
+export type SlicerCacheSource = {
+  kind: 'pivot'
+  pivotCacheId: string
+  sourceFieldId: string
+} | {
+  kind: 'table'
+  subUnitId: string
+  tableId: string
+  columnId: string
+}
+
+export type SlicerCacheSortOrder = 'ascending' | 'descending'
+export type SlicerCacheCrossFilter = 'none' | 'showItemsWithDataAtTop' | 'showItemsWithNoData'
+export interface SheetSlicerCacheOptions {
+  sortOrder?: SlicerCacheSortOrder
+  customListSort?: boolean
+  crossFilter?: SlicerCacheCrossFilter
+  hideItemsWithNoData?: boolean
+}
+
+/** Pivot filters/connections are authoritative here; Table values mirror native column filters; drawings own presentation only. */
+export interface SlicerCacheModel {
+  id: string
+  unitId: string
+  type: SlicerType
+  /** Cache and original-source names are independent of each hosted view caption/name. */
+  name?: string
+  sourceName?: string
+  source: SlicerCacheSource
+  connections?: SheetSlicerConnections
+  /** Authored options are shared; own undefined in an options patch clears the optional value. */
+  options?: SheetSlicerCacheOptions
+  /** Typed raw member identity is authoritative; selectedItems is a display/legacy mirror. */
+  recordSelection?: PivotRecordSelection
+  selectedItems?: string[]
+  timelineRange?: SlicerTimelineRange
+  timelineDateRange?: ITimelineRange
+  timelineDateCondition?: ITimelineDateCondition
+  /** Decoded legacy member filters are retired together with the canonical date rule when reports are available. */
+  timelineLegacyMemberFilterPending?: boolean
+  revision: number
+}
+
+/** A persisted filter drawing bound to a shared cache, with legacy source hints retained. */
 export interface SlicerModel {
   id: string
   unitId: string
   hostSheetId: string
+  cacheId?: string
   pivotTableId?: string
+  ownedPivotChartId?: string
   tableId?: string
   sourceFieldId: string
   type: SlicerType
-  caption: string
+  caption?: string
   name?: string
   position: { row: number; column: number }
   size: { rows: number; columns: number }
   layout?: { left: number; top: number; width: number; height: number }
+  /** Local control layout mapped to header-free Sheet CSS pixels; filters remain in this feature model. */
+  drawingGeometry?: DrawingAffineGeometry
   drawing?: {
     anchorType: 'both' | 'position' | 'none'
     from: { row: number; column: number; offsetX: number; offsetY: number }
@@ -810,6 +1003,8 @@ export interface SlicerModel {
   scrollPosition?: number
   selectedItems?: string[]
   timelineRange?: SlicerTimelineRange
+  timelineDateRange?: ITimelineRange
+  timelineDateCondition?: ITimelineDateCondition
   revision: number
 }
 
@@ -892,9 +1087,13 @@ export interface WorkbookModel {
   id?: string
   metadata?: Record<string, unknown>
   pivotTables?: PivotTableModel[]
+  pivotCaches?: PivotCacheModel[]
   tables?: SheetTableModel[]
   charts?: ChartModel[]
   slicers?: SlicerModel[]
+  slicerCaches?: SlicerCacheModel[]
+  slicerStyles?: ISlicerStylesDefinition
+  timelineStyles?: ITimelineStylesDefinition
 }
 
 export type DocumentSectionBreakType = 'unspecified' | 'nextPage' | 'continuous' | 'nextColumn' | 'evenPage' | 'oddPage'

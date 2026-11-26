@@ -11,6 +11,8 @@ export interface SheetDrawingObject {
   transformable?: boolean
   /** Missing media is retained in state; an unavailable selected leaf cannot be transformed or grouped. */
   available?: boolean
+  /** Absolute (None) anchors can move beyond the worksheet skeleton. Other owners are constrained by it. */
+  constrainMovement?: boolean
 }
 
 export interface SheetDrawingSceneInput {

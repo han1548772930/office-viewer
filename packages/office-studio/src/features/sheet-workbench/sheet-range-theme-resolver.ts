@@ -13,6 +13,7 @@ export interface SheetRangeThemeSheet extends SheetAxisDimensions {
   hiddenRows?: readonly number[]
   filteredRows?: readonly number[]
   outlineHiddenRows?: readonly number[]
+  outlineHiddenRowSpans?: readonly SheetAxisSpan<boolean>[]
   outline?: SpreadsheetSheet['outline']
   autoFilter?: SpreadsheetSheet['autoFilter']
 }
@@ -32,7 +33,7 @@ export function sheetUsedRangeThemeRule(sheet: SheetRangeThemeSheet, range: Cell
 export function sheetRangeThemeHiddenRowSpans(sheet: SheetRangeThemeSheet, context: SheetRangeThemeContext = {}): SheetAxisSpan<boolean>[] {
   const effective = effectiveSheetRowSizes(sheet)
   const zero = canonicalSheetAxisSpans([
-    ...(effective.defaultSize <= 0 ? [{ start: 0, end: 1_048_575, value: true }] : []),
+    ...((sheet.defaultRowHeight ?? 26) <= 0 ? [{ start: 0, end: 1_048_575, value: true }] : []),
     ...effective.spans.filter(span => span.value <= 0).map(span => ({ ...span, value: true })),
     ...Object.entries(effective.sizes).map(([key, value]) => ({ start: Number(key), end: Number(key), value: value <= 0 })),
   ]).filter(span => span.value)
@@ -40,6 +41,7 @@ export function sheetRangeThemeHiddenRowSpans(sheet: SheetRangeThemeSheet, conte
     ...(sheet.autoFilter?.filteredRows ?? []), ...(context.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => table.autoFilter?.filteredRows ?? [])])
   return canonicalSheetAxisSpans([
     ...zero, ...canonicalSheetAxisSpans(sheet.rowHiddenSpans ?? []).filter(span => span.value),
+    ...canonicalSheetAxisSpans(sheet.outlineHiddenRowSpans ?? []).filter(span => span.value),
     ...(sheet.outline?.groups ?? []).filter(group => group.axis === 'row' && group.collapsed).map(group => ({ start: group.start, end: group.end, value: true })),
     ...[...points].filter(row => Number.isSafeInteger(row) && row >= 0 && row < 1_048_576).map(row => ({ start: row, end: row, value: true })),
   ])

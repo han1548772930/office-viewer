@@ -1,5 +1,5 @@
 import type { SheetImageResource } from '../../domain/sheet-images.ts'
-import { sheetImageClipboardPngBlob } from '../../features/sheet-images/sheet-image-system-clipboard.ts'
+import { sheetImageClipboardPngBlob, type SheetImageClipboardEncodingOptions } from '../../features/sheet-images/sheet-image-system-clipboard.ts'
 
 export interface SheetSystemClipboardContent {
   text?: string
@@ -11,7 +11,7 @@ export interface SheetSystemClipboard {
   /** Optional adapter-specific probe. Merely having a clipboard object does not establish a reader. */
   canRead?(): boolean
   read(): Promise<SheetSystemClipboardContent | undefined>
-  write(content: { plain: string; html: string; image?: SheetImageResource }): Promise<boolean>
+  write(content: { plain: string; html: string; image?: SheetImageResource }, options?: SheetImageClipboardEncodingOptions): Promise<boolean>
 }
 
 /** Browser I/O stays outside the model planner. Undefined means no reader, rather than an empty clipboard. */
@@ -52,21 +52,24 @@ export const sheetSystemClipboard: SheetSystemClipboard = {
     if (typeof clipboard?.readText === 'function') return { text: await clipboard.readText() }
     return undefined
   },
-  async write(content) {
+  async write(content, options = {}) {
+    const current = () => !options.signal?.aborted && options.current?.() !== false
+    if (!current()) return false
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
     if (typeof clipboard?.write === 'function' && typeof ClipboardItem !== 'undefined') {
       try {
         await clipboard.write([new ClipboardItem({
           'text/plain': new Blob([content.plain], { type: 'text/plain' }),
           'text/html': new Blob([content.html], { type: 'text/html' }),
-          ...(content.image ? { 'image/png': sheetImageClipboardPngBlob(content.image) } : {}),
+          ...(content.image ? { 'image/png': sheetImageClipboardPngBlob(content.image, options) } : {}),
         })])
-        return true
+        return current()
       } catch (error) {
+        if (!current()) return false
         if (typeof clipboard.writeText !== 'function') throw error
       }
     }
-    if (typeof clipboard?.writeText === 'function') { await clipboard.writeText(content.plain); return true }
+    if (current() && typeof clipboard?.writeText === 'function') { await clipboard.writeText(content.plain); return current() }
     return false
   },
 }

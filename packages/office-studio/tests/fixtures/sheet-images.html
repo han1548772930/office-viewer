@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Sheets image Canvas contracts</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div>
+<script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, Form, FormItem, Input, theme } from 'antdv-next'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { FOffice } from '/packages/office-studio/src/api/facade.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { drawingAffinePoint } from '/packages/office-studio/src/domain/drawing-affine.ts'
+import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '/packages/office-studio/src/rendering/spreadsheet/layout.ts'
+import { sheetClipboardObjectAxes } from '/packages/office-studio/src/features/sheet-workbench/sheet-clipboard-object-geometry.ts'
+import { sheetImageFrame } from '/packages/office-studio/src/features/sheet-images/sheet-image-placement.ts'
+import { SHEET_IMAGE_COMMANDS } from '/packages/office-studio/src/features/sheet-images/sheet-image-commands.ts'
+import { SHEET_IMAGE_OBJECT_COMMANDS } from '/packages/office-studio/src/features/sheet-images/sheet-image-object-clipboard.ts'
+import { sheetImageAffine, sheetImageAt, sheetImageFixture, sheetImagePng } from '/packages/office-studio/tests/fixtures/sheet-image-fixture.mjs'
+
+const copy = value => JSON.parse(JSON.stringify(value)), fixture = sheetImageFixture(), original = fixture.workbook
+original.calculationMode = 'manual'; original.name = '图片工作台'
+for (const sheet of original.sheets) { sheet.defaultRowHeight = 28; sheet.defaultColumnWidth = 110; sheet.defaultRowAutoHeight = false }
+const axes = sheetClipboardObjectAxes(original, fixture.sheet)
+fixture.sheet.images = [sheetImageAffine('a', axes), sheetImageAt('b', axes, { left: 340, top: 190, width: 100, height: 60 })]
+let board = { text: '', html: '' }
+const notices = [], commands = []
+Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+  read: async () => [{ types: ['text/plain', 'text/html'], getType: async type => new Blob([type === 'text/html' ? board.html : board.text], { type }) }],
+  write: async values => {
+    const item = values[0]
+    board = { text: item.types.includes('text/plain') ? await (await item.getType('text/plain')).text() : '',
+      html: item.types.includes('text/html') ? await (await item.getType('text/html')).text() : '' }
+  },
+  writeText: async text => { board = { text, html: '' } }, readText: async () => board.text,
+} })
+function connect(model) {
+  const studio = new OfficeStudio({ workbook: model, currentUserId: 'editor' })
+  studio.events.addEvent('BeforeCommandExecute', event => commands.push(event.id))
+  return studio
+}
+const owner = shallowRef(connect(original)), view = ref(toExcelWorkbookView(owner.value.editor.workbook.model)), dark = ref(false), variant = ref('classic'), outside = ref('native text')
+watch(() => owner.value.editor.workbook.model, model => { view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+const current = () => owner.value.editor.workbook.model
+const api = () => FOffice.newAPI(owner.value)
+window.sheetImageFixture = {
+  png: sheetImagePng, images: (sheetId = 'source') => copy(current().sheets.find(sheet => sheet.id === sheetId).images ?? []),
+  board: () => copy(board), commands: () => [...commands], notices: () => [...notices],
+  history: () => { const unit = owner.value.editor.history.units[current().id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
+  point: (id, handle) => {
+    const sheet = current().sheets.find(sheet => sheet.id === 'source'), image = sheet.images.find(image => image.id === id),
+      geometry = image.drawingGeometry, frame = sheetImageFrame(image, sheetClipboardObjectAxes(current(), sheet)),
+      point = geometry ? drawingAffinePoint(geometry.matrix, handle === 'e' ? geometry.width : geometry.width / 2, geometry.height / 2)
+        : { x: frame.left + frame.width / 2, y: frame.top + frame.height / 2 }, rect = document.querySelector('.spreadsheet-canvas').getBoundingClientRect()
+    return { x: rect.left + GRID_HEADER_WIDTH + point.x, y: rect.top + GRID_HEADER_HEIGHT + point.y }
+  },
+  copyAuthor: () => { const result = owner.value.executeCommandSync(SHEET_IMAGE_OBJECT_COMMANDS.copy, { unitId: current().id,
+    sheetId: 'source', imageIds: ['a'], range: { startRow: 0, endRow: 0, startCol: 0, endCol: 0 } }); board = { text: result.plain, html: result.html }; return result.accepted },
+  openInsert: () => { void owner.value.executeCommand(SHEET_IMAGE_COMMANDS.insertFloat, { unitId: current().id, sheetId: 'source', row: 8, column: 4 }).catch(error => notices.push(error.message)); return true },
+  pasteTarget: () => { const sheet = api().getActiveWorkbook().getSheetBySheetId('destination'); sheet.activate(); sheet.setActiveRange(sheet.getRange('G13')) },
+  switchSheet: () => api().getActiveWorkbook().getSheetBySheetId('destination').activate(),
+  appearance: (value, layout) => { dark.value = value; variant.value = layout ?? 'classic' },
+  undo: () => owner.value.undo('workbook', current().id), redo: () => owner.value.redo('workbook', current().id),
+  reopen: async () => { const saved = api().getActiveWorkbook().save(), previous = owner.value; owner.value = connect(copy(saved));
+    view.value = toExcelWorkbookView(current()); await nextTick(); previous.dispose() },
+}
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h('main', { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } }, [
+    h(Form, { layout: 'inline', style: { padding: '4px 8px', flex: '0 0 auto' } }, { default: () => h(FormItem, { label: '外部文本' }, {
+      default: () => h(Input, { value: outside.value, 'aria-label': '外部文本', onChange: event => { outside.value = event.target.value } }),
+    }) }),
+    h(ExcelWorkbench, { modelValue: view.value, studio: owner.value, ribbonVariant: variant.value,
+      canUndo: owner.value.editor.canUndo, canRedo: owner.value.editor.canRedo,
+      'onUpdate:modelValue': value => owner.value.editor.replaceWorkbookFromView(value, owner.value.regionalSettings.region.value),
+      onUndo: source => owner.value.undo('workbook', source?.workbookId ?? current().id),
+      onRedo: source => owner.value.redo('workbook', source?.workbookId ?? current().id), onNotify: value => notices.push(copy(value)),
+      style: { flex: '1 1 auto', minHeight: 0 },
+    }),
+  ]),
+}) }).mount('#app')
+await nextTick()
+const grid = document.querySelector('.spreadsheet-canvas')
+for (const kind of ['copy', 'cut']) grid.addEventListener(kind, event => {
+  if (event.target instanceof Element && event.target.closest('input, textarea')) return
+  if (event.defaultPrevented) board = { text: event.clipboardData?.getData('text/plain') ?? '', html: event.clipboardData?.getData('text/html') ?? '' }
+})
+window.addEventListener('pagehide', () => owner.value.dispose(), { once: true })
+</script></body></html>

@@ -1,0 +1,104 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred slicer connections workbench</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}</style></head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FSheetSlicer } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { setSheetDrawingSelection, getSheetDrawingSelection } from '/packages/office-studio/src/api/sheet-drawing-selection.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { slicerConnectionsWorkbook, connectionFixtureIds as ids } from './slicer-connections-fixture.mjs'
+import { slicerSettingsUiWorkbook } from './slicer-settings-ui-fixture.mjs'
+
+// Deferred real Ant/Canvas/Facade/history fixture; no app/browser/server has been started for this draft.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const commands = [], notices = [], originalCandidates = FSheetSlicer.prototype.getConnectionCandidates
+const originalConnections = FSheetSlicer.prototype.setConnections, originalPresentation = FSheetSlicer.prototype.updatePresentation
+const originalSettings = FSheetSlicer.prototype.updateSettings, originalCacheOptions = FSheetSlicer.prototype.setCacheOptions
+let app, stopView, pending = [], mutations = []
+const json = value => JSON.parse(JSON.stringify(value)), studio = () => slot.value, book = () => FOffice.newAPI(studio()).getActiveWorkbook()
+const model = () => studio().getWorkbookModel(book().getId()), unitId = () => book().getId()
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id]
+  const controlErrors = [], settings = {}, cacheOptions = {}, displayMembers = {}
+  for (const control of book().getSlicerControls()) {
+    try { settings[control.getId()] = control.getSettings() ?? null; cacheOptions[control.getId()] = control.getCacheOptions() ?? null
+      displayMembers[control.getId()] = control.getModel().type === 'slicer' ? control.getDisplayMembers() : null }
+    catch (error) { controlErrors.push({ id: control.getId(), message: error instanceof Error ? error.message : String(error) }) }
+  }
+  return { model: json(value), revision: studio().getWorkbookRevision(value.id), userId: studio().currentUserId,
+    settings: json(settings), cacheOptions: json(cacheOptions), displayMembers: json(displayMembers), controlErrors,
+    selection: json(getSheetDrawingSelection(studio(), value.id, value.activeSheetId)),
+    connections: Object.fromEntries(book().getSlicerControls().map(control => [control.getId(), control.getConnections() ?? null])),
+    history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0, dirty: studio().editor.history.isDirty(value.id) },
+    commands: json(commands), notices: json(notices) }
+}
+async function release() {
+  pending.splice(0).forEach(resolve => resolve()); FSheetSlicer.prototype.getConnectionCandidates = originalCandidates
+  mutations.splice(0).forEach(value => value.resolve())
+  FSheetSlicer.prototype.setConnections = originalConnections; FSheetSlicer.prototype.updatePresentation = originalPresentation
+  FSheetSlicer.prototype.updateSettings = originalSettings; FSheetSlicer.prototype.setCacheOptions = originalCacheOptions
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'
+  slot.value = new OfficeStudio({ workbook: options.model ?? (options.settingsUi ? slicerSettingsUiWorkbook(options) : slicerConnectionsWorkbook(options)), currentUserId: options.currentUserId })
+  view.value = toExcelWorkbookView(model())
+  stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => {
+    const patch = event.params?.patch
+    commands.push({ id: event.id, params: json(event.params ?? {}), patchKeys: patch ? Object.keys(patch) : [],
+      clearedKeys: patch ? Object.keys(patch).filter(key => patch[key] === undefined) : [] })
+  })
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)),
+    }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+window.slicerConnectionsFixture = { ids, mount, state,
+  async select(id = ids.slicer) {
+    const control = book().getSlicerControl(id).getModel()
+    setSheetDrawingSelection(studio(), unitId(), control.hostSheetId, [{ kind: control.type, id }]); await settled(); return state()
+  },
+  async clearSelection() { setSheetDrawingSelection(studio(), unitId(), model().activeSheetId, []); await settled(); return state() },
+  async setConnections(id, connections) { const result = await book().getSlicerControl(id).setConnections(connections); await settled(); return { result, ...state() } },
+  async setItems(id, items) { await book().getSlicerControl(id).setItems(items); await settled(); return state() },
+  async changeCaption(id = ids.slicer) { await book().getSlicerControl(id).updatePresentation({ caption: 'Changed externally' }); await settled(); return state() },
+  async updateSettings(id, patch) { const result = await book().getSlicer(id).updateSettings(patch); await settled(); return { result, ...state() } },
+  async setCacheOptions(id, patch) { const result = await book().getSlicer(id).setCacheOptions(patch); await settled(); return { result, ...state() } },
+  async members(id = ids.slicer, start = 0, count = 128) { return book().getSlicer(id).getItems({ start, count }) },
+  async changeSource() { book().getSheetBySheetId(ids.source).getRange('C2').setValue(11); await settled(); return state() },
+  async switchUser(id = 'peer') { Object.defineProperty(studio(), 'currentUserId', { configurable: true, value: id }); await settled(); return state() },
+  async switchSheet(id = ids.other) { book().setActiveSheet(id); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId, dark: dark.value, variant: variant.value }) },
+  async markSaved() { studio().editor.history.markSaved(unitId()); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(unitId()); await settled(); return state() },
+  pendingCandidates() { return pending.length },
+  delayCandidates() {
+    FSheetSlicer.prototype.getConnectionCandidates = async function() { await new Promise(resolve => pending.push(resolve)); return originalCandidates.call(this) }
+  },
+  async releaseCandidates() { FSheetSlicer.prototype.getConnectionCandidates = originalCandidates; pending.splice(0).forEach(resolve => resolve()); await settled(); return state() },
+  delayMutation(kind) {
+    const method = kind === 'connections' ? 'setConnections' : kind === 'settings' ? 'updateSettings' : kind === 'cacheOptions' ? 'setCacheOptions' : 'updatePresentation'
+    const original = method === 'setConnections' ? originalConnections : method === 'updateSettings' ? originalSettings : method === 'setCacheOptions' ? originalCacheOptions : originalPresentation
+    FSheetSlicer.prototype[method] = async function(...args) {
+      await new Promise(resolve => mutations.push({ kind, resolve })); return original.apply(this, args)
+    }
+  },
+  pendingMutations(kind) { return mutations.filter(value => value.kind === kind).length },
+  async releaseMutation(kind, index = 0) {
+    const selected = mutations.filter(value => value.kind === kind)[index], current = mutations.indexOf(selected)
+    if (current >= 0) mutations.splice(current, 1)[0].resolve()
+    await settled(); return state()
+  },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

@@ -10,6 +10,10 @@ export type SheetDrawingMatrix = DrawingAffineMatrix
 export type SheetDrawingAffineMatrix = DrawingAffineMatrix
 export type SheetDrawingAffineGeometry = DrawingAffineGeometry
 export type SheetDrawingGeometry = DrawingAffineGeometry
+export const SHEET_DRAWING_ALIGN_TYPES = { default: '0', left: '1', center: '2', right: '3', top: '4', middle: '5', bottom: '6', horizon: '7', vertical: '8' } as const
+export type SheetDrawingAlignType = typeof SHEET_DRAWING_ALIGN_TYPES[keyof typeof SHEET_DRAWING_ALIGN_TYPES]
+/** Fixed Univer Direction values: UP, RIGHT, DOWN, LEFT. */
+export type SheetDrawingMoveDirection = 0 | 1 | 2 | 3
 
 /** Members and roots are ordered from back to front. Leaf coordinates remain owned by their models. */
 export interface SheetDrawingGroup {

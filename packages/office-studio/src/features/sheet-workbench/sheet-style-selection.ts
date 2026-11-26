@@ -26,7 +26,7 @@ export function sheetStyleSelectionProbes(sheet: ExcelSheetView, ranges: readonl
     }
     if (sheet.rangeThemeRules?.length) {
       for (const row of [...(sheet.hiddenRows ?? []), ...(sheet.outlineHiddenRows ?? [])]) around(row, addRow)
-      for (const span of [...(sheet.rowHiddenSpans ?? []), ...(sheet.rowHeightSpans ?? []), ...(sheet.rowAutoHeightSpans ?? [])]) {
+      for (const span of [...(sheet.rowHiddenSpans ?? []), ...(sheet.outlineHiddenRowSpans ?? []), ...(sheet.rowHeightSpans ?? []), ...(sheet.rowAutoHeightSpans ?? [])]) {
         around(span.start, addRow); around(span.end, addRow)
       }
     }

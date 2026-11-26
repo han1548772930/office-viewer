@@ -1,0 +1,112 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred Show Values As UI workbench</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}.fixture-shell{height:100%;display:flex;flex-direction:column}.fixture-shell>.excel-workbench{flex:1;min-height:0}.fixture-launchers{display:flex;gap:8px;padding:8px}.shared-picker{max-width:460px;padding:16px;position:fixed;right:16px;top:80px;z-index:2000;background:var(--ant-color-bg-elevated)}</style>
+</head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { Button, ConfigProvider, Form, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FPivotTable, FSheetPivotChart } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import { getPivotShowDataAsBaseItems } from '/packages/office-studio/src/features/pivot/services/pivot-engine.ts'
+import { getPivotChartReport } from '/packages/office-studio/src/features/pivot/services/pivot-chart-engine.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import PivotTablePanel from '/packages/office-studio/src/components/spreadsheet/PivotTablePanel.vue'
+import PivotChartPanel from '/packages/office-studio/src/components/spreadsheet/PivotChartPanel.vue'
+import PivotShowDataAsFields from '/packages/office-studio/src/features/pivot/views/PivotShowDataAsFields.vue'
+import { showAsUIIds as ids, showAsUIRange, showAsUIRule as rule, showAsUIValue, showAsUIWorkbook } from './pivot-show-data-as-ui-fixture.mjs'
+
+// Deferred fixtures use the production Ant panels, Canvas, field engine and Facade/history. Gates release into real methods.
+const slot = shallowRef(), view = ref(), open = ref(false), mode = ref('table'), chartId = ref(ids.chart), dark = ref(false), variant = ref('classic')
+const display = ref({ chrome: 'full', zoom: 100 }), shared = ref(false), sharedValue = ref(rule('percentOf', ids.product, 'B')), sharedReadable = ref(true), sharedEpoch = ref(0), sharedValid = ref(false)
+const commands = [], notices = [], pending = [], reads = []
+const originals = { tableMembers: FPivotTable.prototype.getShowDataAsBaseItems, tableSet: FPivotTable.prototype.setShowDataAs,
+  tableSettings: FPivotTable.prototype.setFieldSetting, chartConfigure: FSheetPivotChart.prototype.configure }
+let app, stopView, holdShared = false
+const studio = () => slot.value, model = () => studio().getWorkbookModel(ids.unit), book = () => FOffice.newAPI(studio()).getWorkbook(ids.unit)
+const json = value => JSON.parse(JSON.stringify(value))
+const report = () => getPivotChartReport(model(), model().charts[0])
+const settled = async () => { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function restore() {
+  FPivotTable.prototype.getShowDataAsBaseItems = originals.tableMembers
+  FPivotTable.prototype.setShowDataAs = originals.tableSet; FPivotTable.prototype.setFieldSetting = originals.tableSettings
+  FSheetPivotChart.prototype.configure = originals.chartConfigure
+}
+async function release() {
+  restore(); holdShared = false; pending.splice(0).forEach(gate => gate.resolve())
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+function state() {
+  const current = model(), grouped = report().fields.find(field => field.id === ids.product)?.manualGroups?.length
+  return { model: json(current), commands: json(commands), notices: json(notices), open: open.value, mode: mode.value,
+    history: { undo: studio().editor.history.units[ids.unit]?.undo.length ?? 0, redo: studio().editor.history.units[ids.unit]?.redo.length ?? 0,
+      dirty: studio().editor.history.isDirty(ids.unit) },
+    revision: studio().getWorkbookRevision(ids.unit), generation: studio().editor.history.captureSavepoint(ids.unit).generation,
+    value: showAsUIValue(current, ids.chart, grouped ? ['North', 'Mix'] : ['North', 'A']),
+    shared: { value: json(sharedValue.value), valid: sharedValid.value, reads: json(reads) },
+    pending: pending.map(gate => ({ kind: gate.kind, fieldId: gate.fieldId })) }
+}
+async function loadSharedItems(fieldId) {
+  reads.push(fieldId)
+  if (holdShared) await new Promise(resolve => pending.push({ kind: 'shared-members', fieldId, resolve }))
+  return getPivotShowDataAsBaseItems(model(), report(), fieldId)
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = reads.length = 0; mode.value = options.mode ?? 'table'; open.value = false
+  shared.value = false; sharedReadable.value = true; sharedValue.value = rule('percentOf', ids.product, 'B'); sharedEpoch.value++
+  dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'
+  slot.value = new OfficeStudio({ workbook: options.model ?? showAsUIWorkbook(options), currentUserId: options.currentUserId ?? 'local-user' })
+  view.value = toExcelWorkbookView(model())
+  stopView = watch(() => studio().editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h('div', { class: 'fixture-shell' }, [
+      h('div', { class: 'fixture-launchers' }, [h(Button, { onClick: () => { mode.value = 'table'; open.value = true } }, () => '打开普通透视表'),
+        h(Button, { onClick: () => { mode.value = 'chart'; open.value = true } }, () => '打开透视图')]),
+      h(ExcelWorkbench, { modelValue: view.value, studio: studio(), ribbonVariant: variant.value,
+        canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+        'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+        onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)) }),
+      mode.value === 'table' ? h(PivotTablePanel, { open: open.value, studio: studio(), workbookId: ids.unit, sheetId: model().activeSheetId,
+        sourceRange: 'C2:G10', 'onUpdate:open': value => { open.value = value } })
+        : h(PivotChartPanel, { open: open.value, studio: studio(), workbookId: ids.unit, sheetId: model().activeSheetId, chartId: chartId.value,
+          sourceSheetId: ids.data, sourceRange: showAsUIRange, 'onUpdate:open': value => { open.value = value } }),
+      shared.value ? h(Form, { layout: 'vertical', class: 'shared-picker', 'data-testid': 'shared-show-as-picker' }, () => h(PivotShowDataAsFields, {
+        value: sharedValue.value, report: report(), loadBaseItems: loadSharedItems, readable: sharedReadable.value,
+        contextKey: String(sharedEpoch.value), 'onUpdate:value': value => { sharedValue.value = value }, onValidityChange: value => { sharedValid.value = value },
+      })) : undefined,
+    ]),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+window.showAsUIFixture = { ids, mount, state,
+  async open(kind = 'table') { mode.value = kind; open.value = true; await settled(); return state() },
+  async closeExternally() { open.value = false; await settled(); return state() },
+  async changeSource(value = 11) { book().getSheetBySheetId(ids.data).getRange('G3').setValue(value); await settled(); return state() },
+  async changeUser(userId = 'peer') { Object.defineProperty(studio(), 'currentUserId', { configurable: true, value: userId }); await settled(); return state() },
+  async switchSheet(sheetId = ids.other) { book().setActiveSheet(sheetId); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(ids.unit); await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), mode: mode.value, currentUserId: studio().currentUserId, dark: dark.value, variant: variant.value }) },
+  async setRule(value) { await book().getPivotTables()[0].setShowDataAs(ids.amount, value); await settled(); return state() },
+  async readMembers(fieldId = ids.product) { return book().getPivotTables()[0].getShowDataAsBaseItems(fieldId) },
+  delayMembers() { FPivotTable.prototype.getShowDataAsBaseItems = async function(fieldId) {
+    await new Promise(resolve => pending.push({ kind: 'table-members', fieldId, resolve })); return originals.tableMembers.call(this, fieldId)
+  } },
+  delayMutation(kind = 'tableSet') {
+    const target = kind === 'chartConfigure' ? FSheetPivotChart.prototype : FPivotTable.prototype
+    const method = kind === 'chartConfigure' ? 'configure' : kind === 'tableSettings' ? 'setFieldSetting' : 'setShowDataAs'
+    target[method] = async function(...args) { await new Promise(resolve => pending.push({ kind, resolve })); return originals[kind].apply(this, args) }
+  },
+  async releaseGate(kind, index = 0, restoreMethod = true) {
+    if (restoreMethod) { if (kind === 'shared-members') holdShared = false; else restore() }
+    const gates = pending.filter(gate => gate.kind === kind), selected = gates[index]
+    if (selected) { pending.splice(pending.indexOf(selected), 1); selected.resolve() }
+    await settled(); return state()
+  },
+  async sharedPicker(value = rule('percentOf', ids.product, 'B'), delayed = false) { open.value = false; holdShared = delayed; sharedValue.value = value; shared.value = true; await settled(); return state() },
+  async sharedAccess(readable) { sharedReadable.value = readable; sharedEpoch.value++; await settled(); return state() },
+  async sharedContext() { sharedEpoch.value++; await settled(); return state() },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

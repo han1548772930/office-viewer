@@ -23,7 +23,12 @@ import { documentFromPublicInput } from './document-input'
 import { initializeWorkbookCellStyles, normalizeSheetStyleInput, resolveSheetCellStyle, resolveSheetStyleSource, setSheetCellStyleProperties,
   type SheetStyleContext, type SheetStyleInput, type SheetStyleSheet } from '../features/sheet-workbench/sheet-style-inheritance.ts'
 import { applySheetPublicAxisInput } from '../features/sheet-workbench/sheet-public-axis.ts'
+import { normalizeWorkbookSparkline } from '../parser/workbookSparkline.ts'
+import { importWorkbookSparklineResources } from '../features/sparkline/sparkline-resources.ts'
+import { importWorkbookOutlineResources } from './workbook-outline-resources.ts'
 import { initializeWorkbookDrawingStates } from '../features/sheet-drawings/sheet-drawing-model-lifecycle.ts'
+import { normalizeSlicerCaches } from '../features/slicer/slicer-connections.ts'
+import { importSlicerStyleResources } from '../features/slicer/slicer-style-resources.ts'
 import { importSheetRangeThemeResources, normalizeWorkbookRangeThemes } from '../features/sheet-workbench/sheet-range-theme-model.ts'
 import { applySheetPublicCellBody, importWorkbookSheetImageResources, normalizeWorkbookSheetImages, sheetBackgroundImageFromPublic,
   type UniverSheetImageBody, type UniverWorkbookData } from '../features/sheet-images/sheet-image-public.ts'
@@ -61,11 +66,17 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
     sheet.visible ??= true
     sheet.showGridlines ??= true
     sheet.rangeProtectionRules ??= []
+    for (const cell of Object.values(sheet.cells)) if (cell.sparkline !== undefined) cell.sparkline = normalizeWorkbookSparkline(cell.sparkline, cell.row, cell.col)
     if (sheet.worksheetProtection) setWorksheetProtectionRule(sheet, sheet.worksheetProtection)
   })
   next.activeSheetId = next.sheets.some((sheet) => sheet.id === next.activeSheetId) ? next.activeSheetId : next.sheets[0]!.id
   next.calculationMode ??= 'automatic'
   next.pivotTables ??= []
+  const styles = importSlicerStyleResources(next)
+  delete next.slicerStyles
+  delete next.timelineStyles
+  Object.assign(next, styles)
+  normalizeSlicerCaches(next)
   normalizeWorkbookRangeThemes(next)
   normalizeWorkbookSheetImages(next)
   initializeWorkbookDrawingStates(next)
@@ -82,7 +93,12 @@ export function ensureDocumentId(model: DocumentModel): DocumentModel {
 }
 
 export function workbookFromInput(input: WorkbookInput = {}): WorkbookModel {
-  if (input.kind === 'workbook' && Array.isArray(input.sheets)) return ensureWorkbookId(input as WorkbookModel)
+  if (input.kind === 'workbook' && Array.isArray(input.sheets)) {
+    const workbook = ensureWorkbookId(input as WorkbookModel)
+    importWorkbookSparklineResources(workbook, input.resources)
+    importWorkbookOutlineResources(workbook, input.resources)
+    return workbook
+  }
   assertWorkbookConditionalFormatBudget(input.sheets)
   const base = createBlankWorkbook()
   base.id = typeof input.id === 'string' ? input.id : randomId('workbook')
@@ -93,7 +109,10 @@ export function workbookFromInput(input: WorkbookInput = {}): WorkbookModel {
   if (Array.isArray(input.tables)) base.tables = clone(input.tables) as WorkbookModel['tables']
   if (Array.isArray(input.charts)) base.charts = clone(input.charts) as WorkbookModel['charts']
   if (Array.isArray(input.pivotTables)) base.pivotTables = clone(input.pivotTables) as WorkbookModel['pivotTables']
+  if (Array.isArray(input.pivotCaches)) base.pivotCaches = clone(input.pivotCaches) as WorkbookModel['pivotCaches']
   if (Array.isArray(input.slicers)) base.slicers = clone(input.slicers) as WorkbookModel['slicers']
+  if (Array.isArray(input.slicerCaches)) base.slicerCaches = clone(input.slicerCaches) as WorkbookModel['slicerCaches']
+  Object.assign(base, importSlicerStyleResources(input))
   if (input.defaultStyle !== undefined) base.defaultStyle = clone(input.defaultStyle) as WorkbookModel['defaultStyle']
   if (input.styles && typeof input.styles === 'object') base.styles = clone(input.styles) as WorkbookModel['styles']
   if (input.rangeThemes !== undefined) base.rangeThemes = clone(input.rangeThemes) as WorkbookModel['rangeThemes']
@@ -113,6 +132,8 @@ export function workbookFromInput(input: WorkbookInput = {}): WorkbookModel {
   base.activeSheetId = typeof input.activeSheetId === 'string' ? input.activeSheetId : base.sheets[0]!.id
   importSheetRangeThemeResources(base, input.resources)
   importWorkbookSheetImageResources(base, input.resources)
+  importWorkbookSparklineResources(base, input.resources)
+  importWorkbookOutlineResources(base, input.resources)
   return ensureWorkbookId(base)
 }
 

@@ -357,7 +357,13 @@ export class ChartStatisticsService {
       } }
     let records = await readChartRecordsAsync(workbook, chart, preparation)
     if (entry.authoring?.previous) {
-      chart = updateChartDefinition(workbook, entry.authoring.previous, entry.authoring.patch ?? {}, records)
+      const seed = chart, pivotReport = Boolean(seed.ownedPivot || seed.pivotTableId)
+      // Field edits and shared Slicer preparation already changed the candidate
+      // report. The source-aware visual pass must keep that report and its source.
+      const patch = pivotReport ? { ...entry.authoring.patch, source: seed.source,
+        pivotTableId: seed.pivotTableId, ownedPivot: seed.ownedPivot } : entry.authoring.patch ?? {}
+      chart = updateChartDefinition(workbook, entry.authoring.previous, patch, records)
+      if (pivotReport) chart.revision = seed.revision
       this.assertEntryCurrent(entry)
       assertChartReadPermission(workbook, chart, entry.userId)
     }
@@ -562,7 +568,7 @@ export class ChartStatisticsService {
 }
 
 export function chartStatisticsSignature(chart: ChartModel): string {
-  return JSON.stringify([chart.sheetId, chart.type, chart.source, chart.pivotTableId, chart.categoryField, chart.valueFields, chart.seriesToCategory,
+  return JSON.stringify([chart.sheetId, chart.type, chart.source, chart.pivotTableId, chart.ownedPivot, chart.categoryField, chart.valueFields, chart.seriesToCategory,
     chart.options, chart.xAxis, chart.yAxis])
 }
 
@@ -577,6 +583,10 @@ export function assertChartReadPermission(workbook: WorkbookModel, chart: ChartM
     if (!pivot || !pivotSource || !pivotOutput || !canViewWorksheetProtection(pivotSource, userId) || !canViewWorksheetProtection(pivotOutput, userId)
       || !canViewProtectedRanges(pivotSource, [pivot.source.range], userId)
       || pivot.outputRange && !canViewProtectedRanges(pivotOutput, [pivot.outputRange], userId)) throw new ComputeError('COMPUTE_INVALID_INPUT', '没有查看透视图源数据或输出的权限')
+  } else if (chart.ownedPivot) {
+    const report = chart.ownedPivot, source = workbook.sheets.find(sheet => sheet.id === report.source.subUnitId)
+    if (report.source.unitId !== workbook.id || !source || !canViewWorksheetProtection(source, userId)
+      || !canViewProtectedRanges(source, [report.source.range], userId)) throw new ComputeError('COMPUTE_INVALID_INPUT', '没有查看独立透视图表来源的权限')
   } else {
     const source = workbook.sheets.find(sheet => sheet.id === (chart.source.sheetId ?? chart.sheetId))
     if (!source || !canViewWorksheetProtection(source, userId) || !canViewProtectedRanges(source, [chart.source.range], userId)) {

@@ -2,7 +2,8 @@
 import { computed, h, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Menu, Tooltip, theme } from 'antdv-next'
 import type { MenuItemType, MenuRef } from 'antdv-next'
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ClipboardPaste, Columns3, Copy, Download, Eraser, Eye, EyeOff, Grid2X2, Hash, Image, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, ChartLine, ClipboardPaste, Columns3, Copy, Download, Eraser, Eye, EyeOff, Grid2X2, Group, Hash, Image, Link, LockKeyhole, Minus, PinOff, Plus, Rows3, Scissors, ShieldCheck, Snowflake, Trash2 } from 'lucide-vue-next'
+import type { SheetContextMenuContext } from './sheet-context-menu.ts'
 import type { GridHit, GridRange } from '../../rendering/spreadsheet/layout.ts'
 import { createSheetContextMenuItems, type SheetContextMenuItem } from './sheet-context-menu.ts'
 import { OfficeDirectionKey, OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
@@ -35,6 +36,8 @@ const props = defineProps<{
   canVisibilityRows?: boolean
   canVisibilityColumns?: boolean
   clipboardCapabilities?: SheetClipboardCapabilities
+  sparkline?: SheetContextMenuContext['sparkline']
+  outline?: SheetContextMenuContext['outline']
 }>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
@@ -119,6 +122,8 @@ const menuIcons = {
   LinkIcon: Link,
   ImageIcon: Image,
   SaveImagesIcon: Download,
+  SparklineIcon: ChartLine,
+  OutlineIcon: Group,
 } as const
 
 function toMenuItem(item: (typeof items.value)[number]): MenuItemType {
@@ -146,7 +151,7 @@ function toMenuItems(source: typeof items.value): MenuItemType[] {
 
 function close() { emit('update:open', false) }
 function execute(item: (typeof items.value)[number] | undefined) {
-  if (!item || item.children?.length) return
+  if (!props.open || !item || item.children?.length) return
   if (item.hidden || item.disabled) return
   close()
   emit('command', item.commandId, item.params)

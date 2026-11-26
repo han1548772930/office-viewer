@@ -5,6 +5,9 @@ import { SHEET_BORDER_FORMAT_COMMANDS } from '../../features/sheet-workbench/she
 import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 import { SHEET_CELL_SHIFT_CONFIRM_COMMANDS } from '../../features/sheet-workbench/sheet-cell-shift-command.ts'
 import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-commands.ts'
+import type { ApiRange } from '../../api/events.ts'
+import { createSheetOutlineContextMenuItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
+import type { SheetOutlineCommandContext, SheetOutlineCommandInput } from '../../features/sheet-outline/sheet-outline-command.ts'
 
 export interface SheetContextMenuItem {
   id: string
@@ -46,6 +49,8 @@ export interface SheetContextMenuContext {
   canStructureColumns?: boolean
   canVisibilityRows?: boolean
   canVisibilityColumns?: boolean
+  sparkline?: { ranges: ApiRange[]; primary: string; canEdit: boolean; canDelete: boolean; expectedRevision?: number }
+  outline?: { context: SheetOutlineCommandContext; owner: Pick<SheetOutlineCommandInput, 'expectedRevision' | 'expectedHistoryGeneration' | 'expectedUserId'> }
 }
 
 function targetParams(hit: GridHit, sheetId: string, axis: 'row' | 'column', offset = 0) {
@@ -138,6 +143,24 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
   const rowTarget = targetParams(hit, options.sheetId, 'row')
   const columnTarget = targetParams(hit, options.sheetId, 'column')
   const rowStructure = sheetContextStructureTarget(hit, options, 'row'), columnStructure = sheetContextStructureTarget(hit, options, 'column')
+  const outlineActions = (axis: 'row' | 'column'): SheetContextMenuItem[] => {
+    const entry = createSheetOutlineContextMenuItem(options.outline?.context, axis)
+    if (entry.hidden) return []
+    const context = options.outline!.context
+    return [{ id: entry.id, label: entry.title, commandId: '', icon: 'OutlineIcon', disabled: entry.disabled, children: entry.children?.map(child => ({
+      id: child.id, label: child.title, commandId: child.commandId ?? child.id, disabled: child.disabled, disabledReason: child.disabledReason,
+      params: { ...(child.params && typeof child.params === 'object' ? child.params : {}), ...options.outline!.owner,
+        unitId: context.unitId, subUnitId: context.sheetId, ranges: context.selections, host: 'workbench' },
+    })) }]
+  }
+  const sparklineActions: SheetContextMenuItem[] = options.sparkline ? [{ id: 'sheet.sparkline.context-menu-id', label: '迷你图', commandId: '',
+    icon: 'SparklineIcon', separatorBefore: true, children: [
+      { id: 'edit-sparkline', label: '编辑迷你图', commandId: 'sheet.operation.open-sparkline-panel', disabled: !options.sparkline.canEdit,
+        disabledReason: options.sparkline.canEdit ? undefined : '没有查看迷你图完整数据来源的权限。',
+        params: { sheetId: options.sheetId, ranges: options.sparkline.ranges, primary: options.sparkline.primary, expectedRevision: options.sparkline.expectedRevision } },
+      { id: 'remove-sparkline', label: '删除迷你图', commandId: 'sheet.command.remove-sparkline', disabled: !options.sparkline.canDelete,
+        params: { sheetId: options.sheetId, ranges: options.sparkline.ranges, expectedRevision: options.sparkline.expectedRevision, isSingle: false } },
+    ] }] : []
 
   if (hit.kind === 'row') return [
     ...clipboard,
@@ -148,8 +171,10 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     { id: 'show-hidden-rows', label: '显示隐藏行', commandId: 'sheet.command.set-specific-rows-visible', icon: 'EyeIcon', params: rowStructure.params, disabled: !options.hasHiddenRows || options.canVisibilityRows === false },
     { id: 'row-height', label: '行高', commandId: 'sheet.command.set-row-height', icon: 'AdjustHeightDoubleIcon', params: rowTarget },
     { id: 'auto-fit-row', label: '适合数据', commandId: 'sheet.command.auto-fit-row', icon: 'AutoHeightDoubleIcon', params: rowTarget },
+    ...outlineActions('row'),
     ...freeze,
     protect,
+    ...sparklineActions,
     ...imageActions,
   ]
   if (hit.kind === 'column') return [
@@ -161,8 +186,10 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
     { id: 'delete-column', label: '删除选中列', commandId: 'sheet.command.delete-column', icon: 'DeleteColumnDoubleIcon', params: columnStructure.params, disabled: !options.canDeleteColumn || options.canStructureColumns === false },
     { id: 'column-width', label: '列宽', commandId: 'sheet.command.set-worksheet-col-width', icon: 'AdjustWidthDoubleIcon', params: columnTarget },
     { id: 'auto-fit-column', label: '适合数据', commandId: 'sheet.command.auto-fit-column', icon: 'AutoWidthDoubleIcon', params: columnTarget },
+    ...outlineActions('column'),
     ...freeze,
     protect,
+    ...sparklineActions,
     ...imageActions,
   ]
   if (hit.kind === 'all') return [
@@ -174,6 +201,7 @@ export function createSheetContextMenuItems(hit: GridHit, options: SheetContextM
   return [
     ...clipboard,
     ...linkActions,
+    ...sparklineActions,
     {
       id: 'insert-cells', label: '插入', commandId: '', icon: 'InsertDoubleIcon', separatorBefore: true, children: [
         { id: 'insert-row', label: '在上方插入行', commandId: 'sheet.command.insert-row-before', icon: 'InsertRowAboveDoubleIcon', params: rowStructure.params, disabled: !rowStructure.continuous || options.canStructureRows === false },

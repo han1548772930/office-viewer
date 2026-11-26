@@ -2,10 +2,12 @@ import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { shallowReactive, watch } from 'vue'
 import { OfficeRegionalSettings } from '../i18n/regional-settings.ts'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SlicerTimelineRange, SparklineSpec, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SheetSlicerConnections, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
-import { createSparklineSpec } from '../features/sparkline/sparkline-model.ts'
+import { registerSparklineCommands } from '../features/sparkline/sparkline-command.ts'
+import { publishWorkbookSparklineChanges } from './sparkline-events.ts'
+import { registerPublicSparklineCommands } from './sparkline-public-commands.ts'
 import { applySheetFontFormatCommand, assertSheetFontFormatRanges, fontFormatActionForCommand, SHEET_FONT_FORMAT_COMMAND_IDS, sheetFontFormatCommandInput, sheetFontFormatInputRanges, type SheetFontFormatCommandParams } from '../features/sheet-workbench/sheet-font-format-command.ts'
 import { applySheetNumberFormatCommand, numberFormatActionForCommand, SHEET_NUMBER_FORMAT_ALIASES, SHEET_NUMBER_FORMAT_COMMANDS, type SheetNumberFormatCommandInput } from '../features/sheet-workbench/sheet-number-format-command.ts'
 import { applySheetLayoutFormatCommand, assertSheetLayoutFormatRanges, layoutFormatActionForCommand, SHEET_LAYOUT_FORMAT_COMMAND_IDS, sheetLayoutFormatInputRanges, type SheetLayoutFormatCommandInput } from '../features/sheet-workbench/sheet-layout-format-command.ts'
@@ -44,9 +46,19 @@ import { registerSheetDefaultStyleCommands } from './sheet-default-style-command
 import { registerSheetRangeThemeCommands } from './sheet-range-theme-commands.ts'
 import { registerSheetImageCommands } from './sheet-image-commands.ts'
 import { registerSheetDrawingCommands } from './sheet-drawing-commands.ts'
+import type { SlicerCommandContext } from './slicer-command-context.ts'
 import { reconcileWorkbookDrawingStates } from '../features/sheet-drawings/sheet-drawing-model-lifecycle.ts'
 import { refreshWorkbookCellStyles } from '../features/sheet-workbench/sheet-style-inheritance.ts'
 import { registerSheetClipboardCommands } from './sheet-clipboard-commands.ts'
+import { registerPivotChartCommands } from './pivot-chart-commands.ts'
+import { registerPivotChartFieldCommands } from './pivot-chart-field-commands.ts'
+import { registerPivotHierarchyCommands } from './pivot-hierarchy-commands.ts'
+import { registerPivotFilterCommands } from './pivot-filter-commands.ts'
+import type { PivotReportCommandContext } from '../features/pivot/services/pivot-report-api-types.ts'
+import type { PivotChartCommandContext } from '../features/pivot/services/pivot-chart-api-types.ts'
+import type { PivotRecordSelection, PivotShowDataAsInfo, PivotTableModel } from '../domain/model.ts'
+import { assertPivotReportEditPermission } from '../features/pivot/services/pivot-report-permissions.ts'
+import { synchronizeLinkedPivotChartReports } from '../features/pivot/services/pivot-chart-report-lifecycle.ts'
 import { registerSheetFillCommands } from './sheet-fill-commands.ts'
 import { registerSheetLifecycleCommands } from './sheet-lifecycle-commands.ts'
 import { CONTENT_HISTORY_COMMAND_IDS, CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, contentHistoryCommandAction, resolveContentHistoryTarget } from './content-history-commands.ts'
@@ -69,13 +81,16 @@ import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { normalizeSheetSelection, resolveVisibleSheetSelection, type SheetSelectionOptions, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
 import { planSheetSelectionShortcut } from '../features/sheet-workbench/sheet-selection-navigation.ts'
 import {
+  createDetachedPivotReport,
   createPivotTable,
   refreshPivotTable,
   removePivotFields,
   setPivotField,
   setPivotFieldSetting,
+  setPivotShowDataAs,
   setPivotLabelFilter,
   setPivotOptions,
+  setPivotValuesPosition,
   setPivotSort,
   setPivotValueFilter,
   setPivotNumberGroup,
@@ -86,6 +101,7 @@ import {
   type PivotTableAnchorInput,
   type PivotTableSourceInput,
 } from '../features/pivot/services/pivot-engine'
+import { normalizePivotValuePositionInput } from '../features/pivot/services/pivot-values-position.ts'
 import { createChartDefinition, updateChartDefinition, type ChartConfig, type ChartUpdatePatch } from '../features/charts/chart-engine'
 import { publishChartImageResourceCandidate, pruneChartImageResources } from '../features/charts/chart-image-resources.ts'
 import { CHART_OBJECT_COMMANDS, PASTE_COPIED_CHART_COMMAND, assertChartObjectAction, assertChartObjectRevision, chartObjectSheetId,
@@ -94,7 +110,20 @@ import { captureChartObjectClipboard, chartObjectClipboardContent, chartObjectPa
 import { normalizeChartEditPanelRoute, planChartEditPanelRoute } from '../features/charts/chart-edit-panel-route.ts'
 import { chartObjectClipboardStore } from '../features/charts/chart-object-clipboard-store.ts'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
-import { clearSlicerFilter, createSlicer, removeSlicer, setSlicerItems, setSlicerTimelineRange, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationPatch } from '../features/slicer/slicer-engine'
+import { clearSlicerFilter, createSlicer, patchSlicerSettings, removeSlicer, setSlicerConnections, setSlicerItems, setSlicerItemStates, setSlicerRecordSelection, setSlicerTimelineRange, synchronizeSlicerSelections, updateSlicerPresentation, type SlicerCreateInput, type SlicerPresentationInputPatch } from '../features/slicer/slicer-engine'
+import { patchSlicerCacheOptions } from '../features/slicer/slicer-cache-options.ts'
+import type { SheetSlicerSettings } from '../features/slicer/slicer-settings.ts'
+import { patchTimelineSettings, type TimelineSettingsInputPatch } from '../features/slicer/timeline-settings.ts'
+import { setTimelineDateCondition, setTimelineDateRange } from '../features/slicer/timeline-filter.ts'
+import { normalizeTimelineDateCondition, normalizeTimelineDateRange } from '../features/slicer/timeline-date-filter.ts'
+import type { ITimelineDateCondition, ITimelineRange } from '../domain/timeline-filters.ts'
+import { createSheetSlicerFromInfo, updateSheetSlicerFromInfo } from '../features/slicer/slicer-public-control.ts'
+import { SLICER_PUBLIC_COMMANDS, sheetSlicerPlacementPatch, type ISheetSlicerInfo, type ISheetTimelineInfo,
+  type SheetSlicerPlacement } from '../features/slicer/slicer-public-info.ts'
+import { normalizeSlicerCaches, planSlicerConnections, SlicerConnectionError } from '../features/slicer/slicer-connections.ts'
+import { SlicerMemberQueryService, type SlicerMemberQueryOptions } from '../features/slicer/slicer-member-query.ts'
+import { reconcileSlicerConnectionResources } from '../features/slicer/slicer-connections-lifecycle.ts'
+import { assertSlicerFilterPermission, assertSlicerViewPermission } from '../features/slicer/slicer-permissions.ts'
 import { recalculateWorkbookFormulas } from '../features/formula/index.ts'
 import { clearFilter, refreshAutoFilter, setAutoFilter, setFilterCriteria, sortRange, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { CONFIGURE_SHEET_FILTER_COMMAND, configureFilterFromPanel, type ConfigureSheetFilterInput } from '../features/sheet-sort-filter/sheet-data-panel-state'
@@ -103,9 +132,9 @@ import { ComputeError } from '../compute/errors.ts'
 import { NumericIndexService } from '../features/sheet-compute/numeric-index-service.ts'
 import { assertChartReadPermission, ChartStatisticsService, type ChartAuthoringPlan, type ChartStatisticsServiceOptions } from '../features/charts/services/chart-statistics-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
-import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineUpdate, type ChangeSheetOutlineInput } from '../features/sheet-outline/sheet-outline.ts'
+import { registerSheetOutlineCommands } from './sheet-outline-commands.ts'
 import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
-import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
+import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import { registerDocumentContentControlCommands } from './document-content-control-commands'
 import { registerDocumentCustomXmlCommands } from './document-custom-xml-commands'
@@ -130,6 +159,7 @@ export interface OfficeStudioOptions {
   computeClient?: OfficeComputeClient
   numericIndexMinRows?: number
   chartStatisticsOptions?: ChartStatisticsServiceOptions
+  slicerOptions?: SlicerMemberQueryOptions
   currentUserId?: string
   /** Local permission-rule manager. Defaults to currentUserId and is not server authorization. */
   permissionAdminUserId?: string
@@ -145,7 +175,7 @@ export interface WorkbookCommitOptions {
   preserveStyleInheritance?: boolean
   expectedRevision?: number
   expectedHistoryGeneration?: number
-  /** A recent paste changes its exact top entry, keeping the first paste's undo. */
+  /** Recent paste options or a continuous drawing move retain the first undo and publish the newest snapshot. */
   amend?: HistorySavepoint
   /** Receives the committed entry even if a settled listener immediately makes another edit. */
   onHistoryCommitted?: (savepoint: HistorySavepoint) => void
@@ -174,6 +204,7 @@ export class OfficeStudio {
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
   readonly chartStatisticsService: ChartStatisticsService
+  readonly slicerMemberQueryService: SlicerMemberQueryService
   readonly currentUserId: string
   readonly permissionAdminUserId: string
   readonly sheetTextMeasure: SheetTextMeasure
@@ -225,6 +256,8 @@ export class OfficeStudio {
     this.computeClient = options.computeClient ?? new OfficeComputeClient()
     this.numericIndexService = new NumericIndexService(this.computeClient, { minRows: options.numericIndexMinRows })
     this.chartStatisticsService = new ChartStatisticsService(this.computeClient, options.chartStatisticsOptions)
+    this.slicerMemberQueryService = new SlicerMemberQueryService({ ...options.slicerOptions,
+      computeClient: options.slicerOptions?.computeClient ?? this.computeClient })
     this.numericIndexService.setDocumentRevision(workbook.id!, 0)
     this.chartStatisticsService.setDocumentRevision(workbook.id!, 0)
     this.documents.set(document.id!, document)
@@ -415,6 +448,15 @@ export class OfficeStudio {
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     if (!canViewWorksheetProtection(requireSheet(workbook, sheetId), this.currentUserId)) {
       throw new Error('该工作表受保护，当前用户没有查看权限。')
+    }
+  }
+
+  assertCanViewRange(unitId: string, sheetId: string, range: CellRange): void {
+    const workbook = this.getWorkbookModel(unitId)
+    if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
+    const sheet = requireSheet(workbook, sheetId)
+    if (!canViewWorksheetProtection(sheet, this.currentUserId) || !canViewProtectedRanges(sheet, [range], this.currentUserId)) {
+      throw new Error('该区域受保护，当前用户没有查看权限。')
     }
   }
 
@@ -696,7 +738,7 @@ export class OfficeStudio {
     return this.prepareWorkbookChange(id, label, update, options)?.publish() ?? false
   }
 
-  private async commitChartChange(id: string, label: string, chartId: string, update: (draft: WorkbookModel) => void,
+  async commitChartChange(id: string, label: string, chartId: string, update: (draft: WorkbookModel) => void,
     authoring: ChartAuthoringPlan, assertHostCurrent?: () => void): Promise<boolean> {
     this.assertAlive()
     this.assertContentUnitIdentity('workbook', id)
@@ -761,7 +803,18 @@ export class OfficeStudio {
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
-    reconcileWorkbookDrawingStates(before, after)
+    const removedReportResource = (['pivotTables', 'charts', 'tables'] as const).some(key => {
+      const surviving = new Set((after[key] ?? []).map(resource => resource.id))
+      return (before[key] ?? []).some(resource => !surviving.has(resource.id))
+    })
+    if (removedReportResource) reconcileSlicerConnectionResources(before, after)
+    normalizeSlicerCaches(after)
+    synchronizeSlicerSelections(after, before)
+    synchronizeLinkedPivotChartReports(before, after)
+    for (const source of [before, after]) for (const control of source.slicers ?? []) {
+      const peer = (source === before ? after : before).slicers?.find(view => view.id === control.id)
+      if (!equivalentModelData(control, peer)) assertSlicerViewPermission(source, control, this.currentUserId, true)
+    }
     refreshWorkbookCellStyles(after, before, typeof options === 'boolean' || options.preserveStyleInheritance !== true, this.regionalSettings.region.value)
     assertWorkbookConditionalFormatBudget(after.sheets)
     assertWorksheetProtectionChanges(before, after, this.currentUserId)
@@ -775,6 +828,7 @@ export class OfficeStudio {
       : after
     for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
     refreshWorkbookAutoRowHeights(recalculated, before, { measure: this.sheetTextMeasure, region: this.regionalSettings.region.value })
+    reconcileWorkbookDrawingStates(before, recalculated)
     recalculated.id = id
     if (JSON.stringify(before) === JSON.stringify(recalculated)) return undefined
     recalculated.modified = true
@@ -846,6 +900,7 @@ export class OfficeStudio {
       const committed = amendment ? this.editor.history.amendWithReceipt(id, amendment, label, redo)
         : this.editor.history.execute(id, label, redo, undo)
       if (!committed) return false
+      publishWorkbookSparklineChanges(this, before, recalculated)
       if (typeof options !== 'boolean' && options.onHistoryCommitted) {
         try { options.onHistoryCommitted(committed) }
         catch (error) {
@@ -1107,6 +1162,10 @@ export class OfficeStudio {
     const generation = this.documentInput.get(id)?.generation
     const label = direction === 'undo' ? this.editor.undo() : this.editor.redo()
     if (!label) return false
+    if (kind === 'workbook') {
+      const next = this.getWorkbookModel(id)
+      if (next) publishWorkbookSparklineChanges(this, model as WorkbookModel, next)
+    }
     if (kind === 'document' && this.getDocumentModel(id) && this.getDocumentRevision(id) === revision + 1
       && this.documentInput.get(id)?.generation === generation) {
       this.documentInput.clearMarks(id)
@@ -1140,6 +1199,7 @@ export class OfficeStudio {
       this.sheetFill.clear(id)
       this.sheetSelections.removeUnit(id)
       this.chartStatisticsService.forgetDocument(id)
+      this.slicerMemberQueryService.forgetDocument(id)
       this.computeClient.forgetDocument(id)
       this.workbookRevisions.delete(id)
       this.borderFormatStates.delete(id)
@@ -1183,6 +1243,7 @@ export class OfficeStudio {
     for (const stop of this.stopModelSync) stop()
     this.editor.parser.cancel()
     this.chartStatisticsService.dispose()
+    this.slicerMemberQueryService.dispose()
     if (this.ownsComputeClient) this.computeClient.dispose()
     this.events.emit('LifeCycleChanged', { stage: 'disposed' })
     this.events.clear()
@@ -1645,19 +1706,7 @@ export class OfficeStudio {
         }, { recalculate: false })
       })
     }
-    this.registerCommand<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, ({ unitId, sheetId, action }) =>
-      this.commitWorkbook(unitId, '编辑工作表分组', (model) => {
-        const sheet = requireSheet(model, sheetId)
-        let rowCount = Math.max(100, sheet.rowCount ?? 0)
-        let columnCount = Math.max(26, sheet.columnCount ?? 0)
-        for (const cell of Object.values(sheet.cells)) {
-          rowCount = Math.max(rowCount, cell.row + 1)
-          columnCount = Math.max(columnCount, cell.col + 1)
-        }
-        const outline = getSheetOutlineUpdate({ ...sheet, rowCount, columnCount }, action, this.currentUserId)
-        if (outline) sheet.outline = outline
-      }),
-    )
+    registerSheetOutlineCommands(this)
     for (const id of SHEET_FONT_FORMAT_COMMAND_IDS) {
       this.registerCommand<SheetFontFormatCommandParams, boolean>(id, params => {
         const input = sheetFontFormatCommandInput(params)
@@ -1711,11 +1760,15 @@ export class OfficeStudio {
       if (input.expectedRevision !== undefined && this.getWorkbookRevision(input.unitId) !== input.expectedRevision) throw new Error('数据已更改，请重新读取数据区域后再应用筛选。')
       return this.commitWorkbook(input.unitId, '配置工作表筛选', (model) => configureFilterFromPanel(model, input))
     })
-    this.registerCommand<ConfigurePivotFromPanelInput, boolean>(CONFIGURE_PIVOT_COMMAND, (input) => this.commitPivotChange(
-      input.unitId, input.pivotTableId, input.anchor.subUnitId, CONFIGURE_PIVOT_COMMAND,
-      input.mode === 'create' ? '插入数据透视表' : '配置数据透视表',
-      (draft) => { configurePivotFromPanel(draft, input) },
-    ))
+    this.registerCommand<ConfigurePivotFromPanelInput & PivotChartCommandContext & { hostSheetId?: string }, boolean>(CONFIGURE_PIVOT_COMMAND, raw => {
+      const input = cloneModel(raw), workbook = this.getWorkbookModel(input.unitId)
+      if (!workbook) throw new Error('透视报告工作簿已关闭。')
+      const prepared = createDetachedPivotReport(workbook, input.source, input.anchor, input.pivotTableId)
+      assertPivotReportEditPermission(workbook, prepared, this.currentUserId)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, input.anchor.subUnitId, CONFIGURE_PIVOT_COMMAND,
+        input.mode === 'create' ? '插入数据透视表' : '配置数据透视表',
+        draft => { configurePivotFromPanel(draft, input) }, input, input.hostSheetId ?? workbook.activeSheetId, prepared)
+    })
     this.registerCommand<{ unitId: string; name: string }, boolean>('sheet.command.set-workbook-name', ({ unitId, name }) => this.commitWorkbook(unitId, 'Rename workbook', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; sheetId: string; range: { startRow: number; startColumn: number; endRow: number; endColumn: number }; values: Array<Array<unknown>> }, boolean>('sheet.command.set-range-values', ({ unitId, sheetId, range, values }) => this.commitWorkbook(unitId, 'Set range values', (model) => {
       this.assertCanEditWorksheet(unitId, sheetId)
@@ -1803,28 +1856,12 @@ export class OfficeStudio {
       if (rule.ownerUserId !== this.currentUserId) throw new Error('只有工作表保护创建者可以移除该保护。')
       delete sheet.worksheetProtection
     }))
-    this.registerCommand<{ unitId: string; sheetId: string; patches: Record<string, SparklineSpec | null> }, boolean>('sheet.command.set-sparklines', ({ unitId, sheetId, patches }) => {
-      const normalizedPatches = Object.fromEntries(Object.entries(patches).map(([address, sparkline]) => [
-        address,
-        sparkline === null ? null : createSparklineSpec({ targetRange: address, ...sparkline }),
-      ])) as Record<string, SparklineSpec | null>
-      const positions = Object.keys(normalizedPatches).map(parseSparklineAddress)
-      for (const position of positions) this.assertCanEditRange(unitId, sheetId, {
-        startRow: position.row, endRow: position.row, startCol: position.column, endCol: position.column,
-      })
-      return this.commitWorkbook(unitId, 'Set sparklines', (model) => {
-        const sheet = requireSheet(model, sheetId)
-        for (const [address, sparkline] of Object.entries(normalizedPatches)) {
-          const position = parseSparklineAddress(address)
-          const key = `${position.row}:${position.column}`
-          const cell = sheet.cells[key] ?? (sparkline ? createCell(position.row, position.column) : undefined)
-          if (!cell) continue
-          if (sparkline) cell.sparkline = cloneModel(sparkline)
-          else delete cell.sparkline
-          if (sparkline) sheet.cells[key] = cell
-        }
-      })
-    })
+    registerSparklineCommands(this)
+    registerPublicSparklineCommands(this)
+    registerPivotChartCommands(this)
+    registerPivotChartFieldCommands(this)
+    registerPivotHierarchyCommands(this)
+    registerPivotFilterCommands(this)
     this.registerCommand<{ unitId: string; sheetId: string; chartId: string; chart: ChartConfig }, Promise<boolean>>('sheet.command.add-chart', ({ unitId, sheetId, chartId, chart }) => this.commitChartChange(unitId, 'Insert chart', chartId, (model) => {
       this.assertCanEditWorksheet(unitId, sheetId)
       if (!model.sheets.some((item) => item.id === sheetId)) throw new Error(`Worksheet not found: ${sheetId}`)
@@ -1925,80 +1962,187 @@ export class OfficeStudio {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)
       createPivotTable(model, source, anchor, pivotTableId)
     }))
-    this.registerCommand<{ unitId: string; pivotTableId: string }, boolean>('sheet.command.refresh-pivot-table', ({ unitId, pivotTableId }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.refresh-pivot-table', 'Refresh pivot table', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      refreshPivotTable(model, pivot)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string | number; area: PivotFieldArea; index?: number }, boolean>('sheet.command.set-pivot-field', ({ unitId, pivotTableId, fieldId, area, index }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-field', 'Set pivot field', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotField(model, pivot, fieldId, area, index)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldIds: string[] }, boolean>('sheet.command.remove-pivot-field', ({ unitId, pivotTableId, fieldIds }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.remove-pivot-field', 'Remove pivot field', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      removePivotFields(model, pivot, fieldIds)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; options: Partial<PivotTableOptions> }, boolean>('sheet.command.set-pivot-options', ({ unitId, pivotTableId, options }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-options', 'Set pivot options', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotOptions(model, pivot, options)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; direction: 'ascending' | 'descending' }, boolean>('sheet.command.set-pivot-label-sort', ({ unitId, pivotTableId, fieldId, direction }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-label-sort', 'Sort pivot labels', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotSort(model, pivot, fieldId, direction)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; selectedItems: string[] | null }, boolean>('sheet.command.set-pivot-label-filter', ({ unitId, pivotTableId, fieldId, selectedItems }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-label-filter', 'Filter pivot labels', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotLabelFilter(model, pivot, fieldId, selectedItems)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation } }, boolean>('sheet.command.set-pivot-field-setting', ({ unitId, pivotTableId, fieldId, setting }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-field-setting', 'Set pivot field setting', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotFieldSetting(model, pivot, fieldId, setting)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; filter: PivotFieldFilter | null }, boolean>('sheet.command.set-pivot-value-filter', ({ unitId, pivotTableId, fieldId, filter }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-value-filter', 'Filter pivot values', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotValueFilter(model, pivot, fieldId, filter)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; settings: PivotNumberGroup | null }, boolean>('sheet.command.set-pivot-number-group', ({ unitId, pivotTableId, fieldId, settings }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-number-group', 'Group pivot numbers', (model) => {
-      setPivotNumberGroup(model, requirePivot(model, pivotTableId), fieldId, settings)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; mode: PivotDateGroupingMode }, boolean>('sheet.command.set-pivot-date-grouping-mode', ({ unitId, pivotTableId, mode }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-date-grouping-mode', 'Set pivot date grouping mode', (model) => {
-      setPivotDateGroupingMode(model, requirePivot(model, pivotTableId), mode)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType | null }, boolean>('sheet.command.set-pivot-date-group-type', ({ unitId, pivotTableId, fieldId, type }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-date-group-type', 'Group pivot dates', (model) => {
-      setPivotDateGroupType(model, requirePivot(model, pivotTableId), fieldId, type)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType }, boolean>('sheet.command.set-pivot-excel-date-group', ({ unitId, pivotTableId, fieldId, type }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-excel-date-group', 'Group pivot dates (Excel)', (model) => {
-      setPivotExcelDateGroup(model, requirePivot(model, pivotTableId), fieldId, type)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; groups: PivotManualGroup[] }, boolean>('sheet.command.set-pivot-manual-groups', ({ unitId, pivotTableId, fieldId, groups }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.set-pivot-manual-groups', 'Group pivot members', (model) => {
-      setPivotManualGroups(model, requirePivot(model, pivotTableId), fieldId, groups)
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string; position: 'row' | 'column' }, boolean>('sheet.command.update-pivot-value-position', ({ unitId, pivotTableId, position }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.update-pivot-value-position', 'Update pivot value position', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      setPivotOptions(model, pivot, { valuePosition: position })
-    }))
-    this.registerCommand<{ unitId: string; pivotTableId: string }, boolean>('sheet.command.remove-pivot-table', ({ unitId, pivotTableId }) => this.commitPivotChange(unitId, pivotTableId, undefined, 'sheet.command.remove-pivot-table', 'Remove pivot table', (model) => {
-      const pivot = requirePivot(model, pivotTableId)
-      const target = model.sheets.find((sheet) => sheet.id === pivot.anchor.subUnitId)
-      if (target) for (const key of pivot.generatedCellKeys ?? []) if (target.cells[key]?.metadata?.pivotTableId === pivot.id) delete target.cells[key]
-      model.pivotTables = (model.pivotTables ?? []).filter((candidate) => candidate.id !== pivotTableId)
-    }))
-    this.registerCommand<{ unitId: string; slicer: SlicerCreateInput }, boolean>('sheet.command.add-slicer', ({ unitId, slicer }) => this.commitSlicerChange(unitId, slicer.id, slicer.hostSheetId, 'sheet.command.add-slicer', 'Add slicer', (model) => {
+    this.registerCommand<{ unitId: string; pivotTableId: string } & PivotReportCommandContext, boolean>('sheet.command.refresh-pivot-table', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.refresh-pivot-table', 'Refresh pivot table', model => {
+        refreshPivotTable(model, requirePivot(model, input.pivotTableId))
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string | number; area: PivotFieldArea; index?: number } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-field', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-field', 'Set pivot field', model => {
+        setPivotField(model, requirePivot(model, input.pivotTableId), input.fieldId, input.area, input.index)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldIds: string[] } & PivotReportCommandContext, boolean>('sheet.command.remove-pivot-field', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.remove-pivot-field', 'Remove pivot field', model => {
+        removePivotFields(model, requirePivot(model, input.pivotTableId), input.fieldIds)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; options: Partial<PivotTableOptions> } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-options', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-options', 'Set pivot options', model => {
+        setPivotOptions(model, requirePivot(model, input.pivotTableId), input.options)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; direction: 'ascending' | 'descending' | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-label-sort', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-label-sort', 'Sort pivot labels', model => {
+        setPivotSort(model, requirePivot(model, input.pivotTableId), input.fieldId, input.direction)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; selectedItems: string[] | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-label-filter', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-label-filter', 'Filter pivot labels', model => {
+        setPivotLabelFilter(model, requirePivot(model, input.pivotTableId), input.fieldId, input.selectedItems)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; setting: { displayName?: string; format?: string; subtotalType?: PivotAggregation; showDataAs?: PivotShowDataAsInfo | null } } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-field-setting', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-field-setting', 'Set pivot field setting', model => {
+        setPivotFieldSetting(model, requirePivot(model, input.pivotTableId), input.fieldId, input.setting)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; showDataAs: PivotShowDataAsInfo | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-show-data-as', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-show-data-as', '设置透视值显示方式', model => {
+        setPivotShowDataAs(model, requirePivot(model, input.pivotTableId), input.fieldId, input.showDataAs)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; filter: PivotFieldFilter | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-value-filter', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-value-filter', 'Filter pivot values', model => {
+        setPivotValueFilter(model, requirePivot(model, input.pivotTableId), input.fieldId, input.filter)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; settings: PivotNumberGroup | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-number-group', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-number-group', 'Group pivot numbers', model => {
+        setPivotNumberGroup(model, requirePivot(model, input.pivotTableId), input.fieldId, input.settings)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; mode: PivotDateGroupingMode } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-date-grouping-mode', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-date-grouping-mode', 'Set pivot date grouping mode', model => {
+        setPivotDateGroupingMode(model, requirePivot(model, input.pivotTableId), input.mode)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType | null } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-date-group-type', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-date-group-type', 'Group pivot dates', model => {
+        setPivotDateGroupType(model, requirePivot(model, input.pivotTableId), input.fieldId, input.type)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; type: PivotDateGroupType } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-excel-date-group', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-excel-date-group', 'Group pivot dates (Excel)', model => {
+        setPivotExcelDateGroup(model, requirePivot(model, input.pivotTableId), input.fieldId, input.type)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; fieldId: string; groups: PivotManualGroup[] } & PivotReportCommandContext, boolean>('sheet.command.set-pivot-manual-groups', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.set-pivot-manual-groups', 'Group pivot members', model => {
+        setPivotManualGroups(model, requirePivot(model, input.pivotTableId), input.fieldId, input.groups)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string; position: import('../domain/model.ts').PivotValuePosition | -1 | 1 | 2;
+      index?: number } & PivotReportCommandContext, boolean>('sheet.command.update-pivot-value-position', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.update-pivot-value-position', 'Update pivot value position', model => {
+        setPivotValuesPosition(model, requirePivot(model, input.pivotTableId), normalizePivotValuePositionInput(input.position), input.index === undefined ? -1 : input.index)
+      }, input, input.hostSheetId)
+    })
+    this.registerCommand<{ unitId: string; pivotTableId: string } & PivotReportCommandContext, boolean>('sheet.command.remove-pivot-table', raw => {
+      const input = cloneModel(raw)
+      return this.commitPivotChange(input.unitId, input.pivotTableId, undefined, 'sheet.command.remove-pivot-table', 'Remove pivot table', model => {
+        const pivot = requirePivot(model, input.pivotTableId), target = model.sheets.find(sheet => sheet.id === pivot.anchor.subUnitId)
+        if (target) for (const key of pivot.generatedCellKeys ?? []) if (target.cells[key]?.metadata?.pivotTableId === pivot.id) delete target.cells[key]
+        model.pivotTables = (model.pivotTables ?? []).filter(candidate => candidate.id !== input.pivotTableId)
+      }, input, input.hostSheetId)
+    })
+    for (const [commandId, kind] of [[SLICER_PUBLIC_COMMANDS.insert, 'slicer'], [SLICER_PUBLIC_COMMANDS.insertTimeline, 'timeline']] as const) {
+      this.registerCommand<{ unitId: string; hostSheetId: string; slicerId: string; info: ISheetSlicerInfo | ISheetTimelineInfo } & SlicerCommandContext, boolean>(commandId, ({ unitId, hostSheetId, slicerId, info, expectedRevision, host }) => {
+        const detached = cloneModel(info)
+        return this.commitSlicerChange(unitId, slicerId, hostSheetId, commandId, kind === 'timeline' ? '插入时间线' : '插入切片器',
+          model => { createSheetSlicerFromInfo(model, hostSheetId, slicerId, kind, detached) }, expectedRevision, host, true)
+      })
+    }
+    for (const [commandId, kind] of [[SLICER_PUBLIC_COMMANDS.update, 'slicer'], [SLICER_PUBLIC_COMMANDS.updateTimeline, 'timeline']] as const) {
+      this.registerCommand<{ unitId: string; slicerId: string; info: ISheetSlicerInfo | ISheetTimelineInfo } & SlicerCommandContext, boolean>(commandId, ({ unitId, slicerId, info, expectedRevision, host }) => {
+        const detached = cloneModel(info)
+        return this.commitSlicerChange(unitId, slicerId, undefined, commandId, kind === 'timeline' ? '更新时间线信息' : '更新切片器信息', model => {
+          const view = requireSlicer(model, slicerId)
+          if (view.type !== kind) throw new SlicerConnectionError('invalid-target', '切片器和时间线使用各自的信息命令。')
+          updateSheetSlicerFromInfo(model, view, detached)
+        }, expectedRevision, host, true)
+      })
+    }
+    this.registerCommand<{ unitId: string; slicerId: string; patch: TimelineSettingsInputPatch } & SlicerCommandContext, boolean>(SLICER_PUBLIC_COMMANDS.timelineSettings, ({ unitId, slicerId, patch, expectedRevision, host }) => {
+      const detached = cloneModel(patch)
+      return this.commitSlicerChange(unitId, slicerId, undefined, SLICER_PUBLIC_COMMANDS.timelineSettings, '更新时间线显示设置',
+        model => { patchTimelineSettings(model, requireSlicer(model, slicerId), detached) }, expectedRevision, host, true)
+    })
+    this.registerCommand<{ unitId: string; slicerId: string; range: ITimelineRange | undefined } & SlicerCommandContext, boolean>(SLICER_PUBLIC_COMMANDS.dateRange, ({ unitId, slicerId, range, expectedRevision, host }) => {
+      let normalized: ITimelineRange | undefined
+      try { normalized = range === undefined ? undefined : normalizeTimelineDateRange(range) }
+      catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error }
+      return this.commitSlicerChange(unitId, slicerId, undefined, SLICER_PUBLIC_COMMANDS.dateRange, '筛选时间线日期范围',
+        model => { setTimelineDateRange(model, requireSlicer(model, slicerId), normalized) }, expectedRevision, host, true)
+    })
+    this.registerCommand<{ unitId: string; slicerId: string; condition: ITimelineDateCondition | undefined } & SlicerCommandContext, boolean>(SLICER_PUBLIC_COMMANDS.dateCondition, ({ unitId, slicerId, condition, expectedRevision, host }) => {
+      let normalized: ITimelineDateCondition | undefined
+      try { normalized = condition === undefined ? undefined : normalizeTimelineDateCondition(condition) }
+      catch (error) { if (error instanceof TypeError || error instanceof RangeError) return false; throw error }
+      return this.commitSlicerChange(unitId, slicerId, undefined, SLICER_PUBLIC_COMMANDS.dateCondition, '筛选时间线日期条件',
+        model => { setTimelineDateCondition(model, requireSlicer(model, slicerId), normalized) }, expectedRevision, host, true)
+    })
+    this.registerCommand<{ unitId: string; slicerId: string; placement: SheetSlicerPlacement } & SlicerCommandContext, boolean>(SLICER_PUBLIC_COMMANDS.placement, ({ unitId, slicerId, placement, expectedRevision, host }) => {
+      const detached = cloneModel(placement)
+      return this.commitSlicerChange(unitId, slicerId, undefined, SLICER_PUBLIC_COMMANDS.placement, '更新切片器绘图位置', model => {
+        const view = requireSlicer(model, slicerId)
+        updateSlicerPresentation(view, sheetSlicerPlacementPatch(model, view, detached), model)
+      }, expectedRevision, host, true)
+    })
+    this.registerCommand<{ unitId: string; slicer: SlicerCreateInput } & SlicerCommandContext, boolean>('sheet.command.add-slicer', ({ unitId, slicer, expectedRevision, host }) => this.commitSlicerChange(unitId, slicer.id, slicer.hostSheetId, 'sheet.command.add-slicer', 'Add slicer', (model) => {
       if (slicer.unitId !== unitId) throw new Error('Slicer workbook does not match the command workbook')
       createSlicer(model, slicer)
-    }))
-    this.registerCommand<{ unitId: string; slicerId: string; selectedItems: string[] | null }, boolean>('sheet.command.set-slicer-items', ({ unitId, slicerId, selectedItems }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-items', 'Filter with slicer', (model) => {
+    }, expectedRevision, host))
+    this.registerCommand<{ unitId: string; slicerId: string; connections: SheetSlicerConnections } & SlicerCommandContext, boolean>('sheet.command.set-slicer-connections', ({ unitId, slicerId, connections, expectedRevision, host }) => {
+      const model = this.getWorkbookModel(unitId), slicer = model?.slicers?.find(control => control.id === slicerId)
+      if (!model || !slicer) return false
+      try {
+        const plan = planSlicerConnections(model, slicer, connections)
+        assertSlicerFilterPermission(model, slicer, this.currentUserId, [...plan.reports, ...plan.removedReports])
+      } catch (error) { if (error instanceof SlicerConnectionError) return false; throw error }
+      return this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-connections', 'Update slicer report connections',
+        draft => { setSlicerConnections(draft, requireSlicer(draft, slicerId), connections) }, expectedRevision, host, true)
+    })
+    this.registerCommand<{ unitId: string; slicerId: string; selectedItems: string[] | null } & SlicerCommandContext, boolean>('sheet.command.set-slicer-items', ({ unitId, slicerId, selectedItems, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-items', 'Filter with slicer', (model) => {
       setSlicerItems(model, requireSlicer(model, slicerId), selectedItems)
-    }))
-    this.registerCommand<{ unitId: string; slicerId: string; range: SlicerTimelineRange | null }, boolean>('sheet.command.set-timeline-range', ({ unitId, slicerId, range }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-timeline-range', 'Filter with timeline', (model) => {
+    }, expectedRevision, host))
+    this.registerCommand<{ unitId: string; slicerId: string; checkedItems: string[]; partialItems: string[] } & SlicerCommandContext, boolean>('sheet.command.set-slicer-item-states', ({ unitId, slicerId, checkedItems, partialItems, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-item-states', 'Filter slicer members', (model) => {
+      setSlicerItemStates(model, requireSlicer(model, slicerId), checkedItems, partialItems)
+    }, expectedRevision, host, true))
+    this.registerCommand<{ unitId: string; slicerId: string; selection: PivotRecordSelection | null } & SlicerCommandContext, boolean>('sheet.command.set-slicer-record-selection', ({ unitId, slicerId, selection, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-slicer-record-selection', 'Filter typed slicer members', (model) => {
+      setSlicerRecordSelection(model, requireSlicer(model, slicerId), selection)
+    }, expectedRevision, host, true))
+    this.registerCommand<{ unitId: string; slicerId: string; range: SlicerTimelineRange | null } & SlicerCommandContext, boolean>('sheet.command.set-timeline-range', ({ unitId, slicerId, range, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.set-timeline-range', 'Filter with timeline', (model) => {
       setSlicerTimelineRange(model, requireSlicer(model, slicerId), range)
-    }))
-    this.registerCommand<{ unitId: string; slicerId: string; patch: SlicerPresentationPatch }, boolean>('sheet.command.update-slicer-presentation', ({ unitId, slicerId, patch }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.update-slicer-presentation', 'Update slicer presentation', (model) => {
+    }, expectedRevision, host))
+    this.registerCommand<{ unitId: string; slicerId: string; patch: SlicerPresentationInputPatch } & SlicerCommandContext, boolean>('sheet.command.update-slicer-presentation', ({ unitId, slicerId, patch, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.update-slicer-presentation', 'Update slicer presentation', (model) => {
       updateSlicerPresentation(requireSlicer(model, slicerId), patch, model)
-    }))
-    this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.clear-slicer-filter', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.clear-slicer-filter', 'Clear slicer filter', (model) => {
+    }, expectedRevision, host))
+    this.registerCommand<{ unitId: string; slicerId: string; patch: Partial<SheetSlicerSettings> } & SlicerCommandContext, boolean>('sheet.command.update-slicer-settings', ({ unitId, slicerId, patch, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.update-slicer-settings', 'Update slicer view settings', model => {
+      patchSlicerSettings(model, requireSlicer(model, slicerId), patch)
+    }, expectedRevision, host, true))
+    this.registerCommand<{ unitId: string; slicerId: string; patch: Partial<import('../domain/model.ts').SheetSlicerCacheOptions> } & SlicerCommandContext, boolean>('sheet.command.patch-slicer-cache-options', ({ unitId, slicerId, patch, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.patch-slicer-cache-options', 'Update shared slicer cache options', model => {
+      patchSlicerCacheOptions(model, requireSlicer(model, slicerId), patch)
+    }, expectedRevision, host, true))
+    this.registerCommand<{ unitId: string; slicerId: string } & SlicerCommandContext, boolean>('sheet.command.clear-slicer-filter', ({ unitId, slicerId, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.clear-slicer-filter', 'Clear slicer filter', (model) => {
       clearSlicerFilter(model, requireSlicer(model, slicerId))
-    }))
-    this.registerCommand<{ unitId: string; slicerId: string }, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId)))
+    }, expectedRevision, host))
+    this.registerCommand<{ unitId: string; slicerId: string } & SlicerCommandContext, boolean>('sheet.command.remove-slicer', ({ unitId, slicerId, expectedRevision, host }) => this.commitSlicerChange(unitId, slicerId, undefined, 'sheet.command.remove-slicer', 'Remove slicer', (model) => removeSlicer(model, slicerId), expectedRevision, host))
     this.registerCommand<{ unitId: string; name: string }, boolean>('doc.command.set-name', ({ unitId, name }) => this.commitDocument(unitId, 'Rename document', (model) => { model.name = name }))
     this.registerCommand<{ unitId: string; rules: DocumentModel['permissionRules'] }, boolean>('doc.command.set-document-permission-rules', ({ unitId, rules }) => this.commitDocumentPermissionRules(unitId, rules))
     this.registerCommand<{ unitId: string; index: number; text: string; expectedRevision?: number } | DocumentEditorCommandRequest, boolean | DocumentEditorCommandResult>('doc.command.insert-text', input => {
@@ -2019,17 +2163,45 @@ export class OfficeStudio {
     registerDocumentNoteCommands(this)
   }
 
-  private commitPivotChange(
+  commitPivotChange(
     unitId: string,
     pivotTableId: string,
     subUnitId: string | undefined,
     commandId: string,
     label: string,
     update: (model: WorkbookModel) => void,
+    context?: PivotChartCommandContext,
+    contextHostSheetId?: string,
+    creationReport?: PivotTableModel,
   ): boolean {
     const current = this.getWorkbookModel(unitId)
     if (!current) throw new Error(`Workbook not found: ${unitId}`)
     const currentPivot = current.pivotTables?.find((pivot) => pivot.id === pivotTableId)
+    const revision = this.getWorkbookRevision(unitId), savepoint = this.editor.history.captureSavepoint(unitId),
+      signature = JSON.stringify(current), userId = this.currentUserId
+    if (context) {
+      if (context.expectedRevision !== undefined && (!Number.isSafeInteger(context.expectedRevision) || context.expectedRevision < 0)
+        || context.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(context.expectedHistoryGeneration) || context.expectedHistoryGeneration <= 0)
+        || context.expectedUserId !== undefined && (typeof context.expectedUserId !== 'string' || !context.expectedUserId.trim())
+        || context.host !== undefined && context.host !== 'workbench') throw new TypeError('透视报告交互上下文无效。')
+      if (contextHostSheetId !== undefined && (typeof contextHostSheetId !== 'string' || !current.sheets.some(sheet => sheet.id === contextHostSheetId))) throw new TypeError('透视报告工作台宿主无效。')
+      const permissionReport = currentPivot ?? creationReport
+      if (!permissionReport) throw new Error('透视报告不存在。')
+      assertPivotReportEditPermission(current, permissionReport, userId)
+    }
+    const assertCurrent = () => {
+      this.assertAlive()
+      if (this.getWorkbookModel(unitId) !== current || this.getWorkbookRevision(unitId) !== revision || JSON.stringify(current) !== signature
+        || this.editor.history.captureSavepoint(unitId).generation !== savepoint.generation || this.currentUserId !== userId
+        || context?.expectedRevision !== undefined && context.expectedRevision !== revision
+        || context?.expectedHistoryGeneration !== undefined && context.expectedHistoryGeneration !== savepoint.generation
+        || context?.expectedUserId !== undefined && context.expectedUserId !== userId) {
+        throw new Error('透视报告目标内容、用户或历史已更改。')
+      }
+      if (context?.host === 'workbench' && (this._activeWorkbookId !== unitId || this.editor.state.activeKind !== 'workbook'
+        || current.activeSheetId !== (contextHostSheetId ?? currentPivot?.anchor.subUnitId ?? creationReport?.anchor.subUnitId))) throw new Error('透视报告工作台宿主已更改。')
+    }
+    assertCurrent()
     const event: ApiEventMap['BeforePivotTableChange'] = {
       unitId,
       subUnitId: subUnitId ?? currentPivot?.anchor.subUnitId ?? '',
@@ -2038,14 +2210,41 @@ export class OfficeStudio {
     }
     this.events.emit('BeforePivotTableChange', event)
     if (event.cancel) throw new Error(`Pivot table change was canceled: ${commandId}`)
-    const changed = this.commitWorkbook(unitId, label, update)
+    assertCurrent()
+    let pivots: ApiEventMap['PivotTableRendered'][] = [], controls: ApiEventMap['SlicerChanged'][] = [], charts: ApiEventMap['PivotChartChanged'][] = []
+    const changed = this.commitWorkbook(unitId, label, draft => { assertCurrent(); update(draft) }, {
+      expectedRevision: revision, expectedHistoryGeneration: savepoint.generation,
+      prepareView: candidate => {
+        assertCurrent()
+        if (context) {
+          const report = candidate.pivotTables?.find(pivot => pivot.id === pivotTableId)
+          if (report) assertPivotReportEditPermission(candidate, report, userId)
+        }
+        for (const view of candidate.slicers ?? []) {
+          const previous = current.slicers?.find(control => control.id === view.id)
+          if (!previous || equivalentModelData(previous, view)) continue
+          assertSlicerFilterPermission(candidate, view, userId)
+        }
+        controls = (candidate.slicers ?? []).filter(view => !equivalentModelData(current.slicers?.find(previous => previous.id === view.id), view))
+          .map(view => ({ unitId, hostSheetId: view.hostSheetId, slicerId: view.id, revision: view.revision }))
+        pivots = (candidate.pivotTables ?? []).filter(pivot => !equivalentModelData(current.pivotTables?.find(previous => previous.id === pivot.id), pivot))
+          .map(pivot => ({ unitId, subUnitId: pivot.anchor.subUnitId, pivotTableId: pivot.id, revision: pivot.revision,
+            ...(pivot.outputRange ? { outputRange: { ...pivot.outputRange } } : {}) }))
+        charts = (candidate.charts ?? []).filter(chart => chart.pivotTableId && !chart.ownedPivot
+          && !equivalentModelData(current.charts?.find(previous => previous.id === chart.id), chart))
+          .flatMap(chart => {
+            const report = candidate.pivotTables?.find(pivot => pivot.id === chart.pivotTableId)
+            return report ? [{ unitId, subUnitId: chart.sheetId, pivotChartId: chart.id, revision: chart.revision, reportRevision: report.revision }] : []
+          })
+      },
+    })
     if (!changed) return false
-    const next = this.getWorkbookModel(unitId)?.pivotTables?.find((pivot) => pivot.id === pivotTableId)
-    if (next) {
-      const payload = { unitId, subUnitId: next.anchor.subUnitId, pivotTableId, revision: next.revision }
-      this.events.emit('PivotTableChanged', payload)
-      this.events.emit('PivotTableRendered', { ...payload, outputRange: next.outputRange })
+    for (const payload of controls) this.publishObserverEvent('SlicerChanged', () => ({ ...payload }))
+    for (const payload of pivots) {
+      this.publishObserverEvent('PivotTableChanged', () => ({ unitId, subUnitId: payload.subUnitId, pivotTableId: payload.pivotTableId, revision: payload.revision }))
+      this.publishObserverEvent('PivotTableRendered', () => cloneModel(payload))
     }
+    for (const payload of charts) this.publishObserverEvent('PivotChartChanged', () => ({ ...payload }))
     return true
   }
 
@@ -2056,10 +2255,36 @@ export class OfficeStudio {
     commandId: string,
     label: string,
     update: (model: WorkbookModel) => void,
+    expectedRevision?: number,
+    host?: 'workbench',
+    ordinaryRefusals = false,
   ): boolean {
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new TypeError('切片器内容版本无效。')
+    if (host !== undefined && host !== 'workbench') throw new TypeError('切片器交互宿主无效。')
     const current = this.getWorkbookModel(unitId)
-    if (!current) throw new Error(`Workbook not found: ${unitId}`)
+    if (!current) { if (ordinaryRefusals) return false; throw new Error(`Workbook not found: ${unitId}`) }
     const currentSlicer = current.slicers?.find((slicer) => slicer.id === slicerId)
+    if (!currentSlicer && !hostSheetId && ordinaryRefusals) return false
+    const changesFilter = ['sheet.command.add-slicer', SLICER_PUBLIC_COMMANDS.insert, SLICER_PUBLIC_COMMANDS.insertTimeline,
+      SLICER_PUBLIC_COMMANDS.dateRange, SLICER_PUBLIC_COMMANDS.dateCondition,
+      'sheet.command.set-slicer-items', 'sheet.command.set-slicer-item-states', 'sheet.command.set-slicer-record-selection',
+      'sheet.command.set-timeline-range', 'sheet.command.clear-slicer-filter',
+      'sheet.command.set-slicer-connections'].includes(commandId)
+    if (changesFilter && currentSlicer) {
+      try { assertSlicerFilterPermission(current, currentSlicer, this.currentUserId) }
+      catch (error) { if (ordinaryRefusals && error instanceof SlicerConnectionError) return false; throw error }
+    }
+    const revision = this.getWorkbookRevision(unitId), savepoint = this.editor.history.captureSavepoint(unitId),
+      signature = JSON.stringify(current), userId = this.currentUserId
+    const assertCurrent = () => {
+      this.assertAlive()
+      if (host === 'workbench' && (this._activeWorkbookId !== unitId || this.editor.state.activeKind !== 'workbook'
+        || current.activeSheetId !== (hostSheetId ?? currentSlicer?.hostSheetId))) throw new Error('切片器工作台宿主已更改。')
+      if (this.getWorkbookModel(unitId) !== current || this.getWorkbookRevision(unitId) !== revision || JSON.stringify(current) !== signature
+        || this.editor.history.captureSavepoint(unitId).generation !== savepoint.generation || this.currentUserId !== userId
+        || expectedRevision !== undefined && expectedRevision !== revision) throw new Error('切片器目标内容或历史已更改。')
+    }
+    assertCurrent()
     const event: ApiEventMap['BeforeSlicerChange'] = {
       unitId,
       hostSheetId: hostSheetId ?? currentSlicer?.hostSheetId ?? '',
@@ -2068,16 +2293,47 @@ export class OfficeStudio {
     }
     this.events.emit('BeforeSlicerChange', event)
     if (event.cancel) throw new Error(`Slicer change was canceled: ${commandId}`)
-    const changed = this.commitWorkbook(unitId, label, update)
-    if (!changed) return false
-    const next = this.getWorkbookModel(unitId)?.slicers?.find((slicer) => slicer.id === slicerId)
-    if (commandId === 'sheet.command.add-slicer' && next) {
-      this.events.emit('SlicerAdded', { unitId, hostSheetId: next.hostSheetId, slicerId, type: next.type })
-    } else if (commandId === 'sheet.command.remove-slicer') {
-      this.events.emit('SlicerRemoved', { unitId, hostSheetId: event.hostSheetId, slicerId })
-    } else if (next) {
-      this.events.emit('SlicerChanged', { unitId, hostSheetId: next.hostSheetId, slicerId, revision: next.revision })
+    assertCurrent()
+    let added: ApiEventMap['SlicerAdded'][] = [], removed: ApiEventMap['SlicerRemoved'][] = [],
+      updated: ApiEventMap['SlicerChanged'][] = [], pivots: ApiEventMap['PivotTableRendered'][] = [], charts: ApiEventMap['PivotChartChanged'][] = []
+    let changed: boolean
+    try { changed = this.commitWorkbook(unitId, label, draft => { assertCurrent(); update(draft) }, {
+      expectedRevision: revision, expectedHistoryGeneration: savepoint.generation,
+      prepareView: candidate => {
+        assertCurrent()
+        const beforeControls = new Map((current.slicers ?? []).map(control => [control.id, control])),
+          afterControls = new Map((candidate.slicers ?? []).map(control => [control.id, control]))
+        for (const id of new Set([...beforeControls.keys(), ...afterControls.keys()])) {
+          if (equivalentModelData(beforeControls.get(id), afterControls.get(id))) continue
+          for (const [model, control] of [[current, beforeControls.get(id)], [candidate, afterControls.get(id)]] as const) {
+            if (!control) continue
+            assertSlicerViewPermission(model, control, userId, true)
+          }
+        }
+        const control = candidate.slicers?.find(slicer => slicer.id === slicerId)
+        if (changesFilter && control) assertSlicerFilterPermission(candidate, control, userId)
+        added = (candidate.slicers ?? []).filter(view => !beforeControls.has(view.id)).map(view => ({ unitId, hostSheetId: view.hostSheetId, slicerId: view.id, type: view.type }))
+        removed = (current.slicers ?? []).filter(view => !afterControls.has(view.id)).map(view => ({ unitId, hostSheetId: view.hostSheetId, slicerId: view.id }))
+        updated = (candidate.slicers ?? []).filter(view => beforeControls.has(view.id) && !equivalentModelData(beforeControls.get(view.id), view))
+          .map(view => ({ unitId, hostSheetId: view.hostSheetId, slicerId: view.id, revision: view.revision }))
+        pivots = (candidate.pivotTables ?? []).filter(pivot => !equivalentModelData(current.pivotTables?.find(before => before.id === pivot.id), pivot))
+          .map(pivot => ({ unitId, subUnitId: pivot.anchor.subUnitId, pivotTableId: pivot.id, revision: pivot.revision,
+            ...(pivot.outputRange ? { outputRange: { ...pivot.outputRange } } : {}) }))
+        charts = (candidate.charts ?? []).filter(chart => (chart.ownedPivot || chart.pivotTableId)
+          && !equivalentModelData(current.charts?.find(before => before.id === chart.id), chart))
+          .map(chart => ({ unitId, subUnitId: chart.sheetId, pivotChartId: chart.id, revision: chart.revision,
+            reportRevision: chart.ownedPivot?.revision ?? candidate.pivotTables?.find(pivot => pivot.id === chart.pivotTableId)?.revision ?? 0 }))
+      },
+    }) } catch (error) { if (ordinaryRefusals && error instanceof SlicerConnectionError) return false; throw error }
+    if (!changed) return ordinaryRefusals
+    for (const payload of added) this.publishObserverEvent('SlicerAdded', () => ({ ...payload }))
+    for (const payload of removed) this.publishObserverEvent('SlicerRemoved', () => ({ ...payload }))
+    for (const payload of updated) this.publishObserverEvent('SlicerChanged', () => ({ ...payload }))
+    for (const payload of pivots) {
+      this.publishObserverEvent('PivotTableChanged', () => ({ unitId: payload.unitId, subUnitId: payload.subUnitId, pivotTableId: payload.pivotTableId, revision: payload.revision }))
+      this.publishObserverEvent('PivotTableRendered', () => cloneModel(payload))
     }
+    for (const payload of charts) this.publishObserverEvent('PivotChartChanged', () => ({ ...payload }))
     return true
   }
 
@@ -2115,14 +2371,6 @@ function requireSheet(model: WorkbookModel, sheetId: string) {
   const sheet = model.sheets.find((candidate) => candidate.id === sheetId)
   if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
   return sheet
-}
-
-function parseSparklineAddress(address: string): { row: number; column: number } {
-  const match = /^([A-Z]+)([1-9]\d*)$/i.exec(address)
-  if (!match) throw new TypeError(`Invalid sparkline target address: ${address}`)
-  let column = 0
-  for (const letter of match[1]!.toUpperCase()) column = column * 26 + letter.charCodeAt(0) - 64
-  return { row: Number(match[2]) - 1, column: column - 1 }
 }
 
 function rangeEditFromParams(params: unknown): { sheetId: string; range: CellRange } | undefined {

@@ -5,7 +5,7 @@ import { cloneModel } from '../../domain/serialization.ts'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '../../rendering/spreadsheet/layout.ts'
 import { sheetClipboardObjectAxes, sheetClipboardObjectRange } from '../sheet-workbench/sheet-clipboard-object-geometry.ts'
 import { sheetImageDrawingGeometry, sheetImageFrame, sheetImageWithDrawingGeometry } from '../sheet-images/sheet-image-placement.ts'
-import { resolveSlicerBounds } from '../slicer/slicer-drawing.ts'
+import { resolveSlicerBounds, slicerDrawingGeometry, slicerWithDrawingGeometry } from '../slicer/slicer-drawing.ts'
 import { isPrimaryChartObject } from '../charts/chart-object-commands.ts'
 import { pruneChartImageResources } from '../charts/chart-image-resources.ts'
 import { applyDrawingTransaction, drawingGraph, drawingRefKey, normalizeDrawingState, reconcileDrawingState, SheetDrawingError } from '../drawing-groups/index.ts'
@@ -33,12 +33,13 @@ export function createSheetDrawingScene(workbook: WorkbookModel, sheetId: string
     objects.push(object)
   }
   for (const image of sheet.images ?? []) {
-    const frame = sheetImageFrame(image, axes), collapsed = !image.drawingGeometry && image.anchorType === '1' && (frame.width === 0 || frame.height === 0)
+    const frame = sheetImageFrame(image, axes), collapsed = image.anchorType === '1' && (frame.width === 0 || frame.height === 0)
     // Both anchors may project to the same point while rows/columns are hidden. This geometry is only
     // a reversible state placeholder; rendering still uses the unchanged native image and its anchors.
-    const geometry = collapsed ? drawingAffineFromFrame({ ...frame, width: Math.max(1, frame.width), height: Math.max(1, frame.height) }, image.rotation)
+    const geometry = collapsed && !image.drawingGeometry ? drawingAffineFromFrame({ ...frame, width: Math.max(1, frame.width), height: Math.max(1, frame.height) }, image.rotation)
       : sheetImageDrawingGeometry(image, axes)
     add({ ref: { kind: 'image', id: image.id }, sheetId, geometry, groupable: true, transformable: true,
+      constrainMovement: image.anchorType !== '2',
       available: !collapsed && Boolean(image.resource && typeof image.resource.source === 'string' && image.resource.source.length),
     })
   }
@@ -55,9 +56,10 @@ export function createSheetDrawingScene(workbook: WorkbookModel, sheetId: string
     const bounds = resolveSlicerBounds(slicer, axes), collapsed = Number.isFinite(bounds.width) && bounds.width >= 0
       && Number.isFinite(bounds.height) && bounds.height >= 0 && (bounds.width === 0 || bounds.height === 0)
     add({ ref: { kind: slicer.type, id: slicer.id }, sheetId, revision: slicer.revision,
-      geometry: drawingAffineFromFrame({ ...bounds, left: bounds.left - GRID_HEADER_WIDTH, top: bounds.top - GRID_HEADER_HEIGHT,
-        width: collapsed ? Math.max(1, bounds.width) : bounds.width, height: collapsed ? Math.max(1, bounds.height) : bounds.height }),
-      groupable: false, transformable: false, ...(collapsed ? { available: false } : {}),
+      geometry: collapsed && !slicer.drawingGeometry ? drawingAffineFromFrame({ ...bounds, left: bounds.left - GRID_HEADER_WIDTH, top: bounds.top - GRID_HEADER_HEIGHT,
+        width: Math.max(1, bounds.width), height: Math.max(1, bounds.height) }) : slicerDrawingGeometry(slicer, axes),
+      groupable: true, transformable: !slicer.lockedPosition, constrainMovement: slicer.drawing?.anchorType !== 'none',
+      ...(collapsed ? { available: false } : {}),
     })
   }
   return { sheetId, objects, state: normalizeDrawingState({ sheetId, state: sheet.drawingState, objects }) }
@@ -70,9 +72,6 @@ export function applySheetDrawingTransaction(workbook: WorkbookModel, sheetId: s
   const applied = applyDrawingTransaction(current, transaction, { direction }), axes = sheetClipboardObjectAxes(workbook, sheet)
   const patches = new Map(transaction.geometryChanges.map(change => [drawingRefKey(change.ref), direction === 'backward' ? change.before : change.after]))
   const guards = new Map(transaction.expectedObjects.map(guard => [drawingRefKey(guard.ref), guard]))
-  for (const change of transaction.geometryChanges) if (change.ref.kind === 'slicer' || change.ref.kind === 'timeline') {
-    throw new SheetDrawingError('not-transformable', '切片器和时间线的完整仿射模型尚未接线，不能丢弃变换。', change.ref)
-  }
   const images = (sheet.images ?? []).map(image => {
     const geometry = patches.get(drawingRefKey({ kind: 'image', id: image.id }))
     return geometry ? sheetImageWithDrawingGeometry(image, geometry, axes) : image
@@ -95,15 +94,30 @@ export function applySheetDrawingTransaction(workbook: WorkbookModel, sheetId: s
     const geometry = patches.get(drawingRefKey({ kind: 'shape', id: shape.id }))
     return geometry ? { ...cloneModel(shape), geometry: normalizeDrawingAffineGeometry(geometry) } : shape
   })
+  const slicers = (workbook.slicers ?? []).map(slicer => {
+    if (slicer.hostSheetId !== sheetId) return slicer
+    const ref = { kind: slicer.type, id: slicer.id }, geometry = patches.get(drawingRefKey(ref))
+    if (!geometry) return slicer
+    const originalRevision = guards.get(drawingRefKey(ref))?.revision
+    if (direction === 'backward' && originalRevision !== undefined && slicer.revision !== originalRevision + 1) {
+      throw new SheetDrawingError('stale-object', '切片器在变换后已经更改，不能覆盖其新内容。', ref)
+    }
+    const next = slicerWithDrawingGeometry(workbook, slicer, geometry)
+    next.revision = direction === 'backward' && originalRevision !== undefined ? originalRevision : slicer.revision + 1
+    return next
+  })
   const writesImages = transaction.geometryChanges.some(change => change.ref.kind === 'image'),
     writesCharts = transaction.geometryChanges.some(change => change.ref.kind === 'chart'),
-    writesShapes = transaction.geometryChanges.some(change => change.ref.kind === 'shape')
+    writesShapes = transaction.geometryChanges.some(change => change.ref.kind === 'shape'),
+    writesSlicers = transaction.geometryChanges.some(change => change.ref.kind === 'slicer' || change.ref.kind === 'timeline')
   const nextSheet = { ...sheet, ...(writesImages ? { images } : {}), ...(writesShapes ? { shapes } : {}), drawingState: applied.scene.state }
-  const candidate = { ...workbook, ...(writesCharts ? { charts } : {}), sheets: workbook.sheets.map(candidate => candidate.id === sheetId ? nextSheet : candidate) }
+  const candidate = { ...workbook, ...(writesCharts ? { charts } : {}), ...(writesSlicers ? { slicers } : {}),
+    sheets: workbook.sheets.map(candidate => candidate.id === sheetId ? nextSheet : candidate) }
   const nextScene = createSheetDrawingScene(candidate, sheetId, options)
   if (writesImages) sheet.images = images
   if (writesCharts) workbook.charts = charts
   if (writesShapes) sheet.shapes = shapes
+  if (writesSlicers) workbook.slicers = slicers
   sheet.drawingState = nextScene.state
   return { scene: nextScene, selection: applied.selection }
 }

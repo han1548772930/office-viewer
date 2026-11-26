@@ -10,17 +10,23 @@ export function copySheetImageObjects(api: OfficeStudio, input: SheetClipboardCo
   const workbook = api.getWorkbookModel(target.unitId), sheet = workbook?.sheets.find(sheet => sheet.id === target.sheetId)
   if (!workbook || !sheet) return { accepted: false, plain: '', html: '' }
   api.assertCanViewWorksheet(target.unitId, target.sheetId)
-  const revision = api.getWorkbookRevision(target.unitId), historyGeneration = api.editor.history.captureSavepoint(target.unitId).generation
-  const snapshot = captureSheetImageObjects(workbook, sheet, input.imageIds ?? [], api.currentUserId, cut ? 'cut' : 'copy')
+  const revision = api.getWorkbookRevision(target.unitId), historyGeneration = api.editor.history.captureSavepoint(target.unitId).generation, userId = api.currentUserId
+  const current = () => api.currentUserId === userId && api.getWorkbookModel(target.unitId) === workbook
+    && api.getWorkbookRevision(target.unitId) === revision && api.editor.history.captureSavepoint(target.unitId).generation === historyGeneration
+    && (input.expectedRevision === undefined || input.expectedRevision === revision)
+    && (input.expectedHistoryGeneration === undefined || input.expectedHistoryGeneration === historyGeneration)
+  if (!current()) return { accepted: false, plain: '', html: '' }
+  const snapshot = captureSheetImageObjects(workbook, sheet, input.imageIds ?? [], userId, cut ? 'cut' : 'copy')
   const ranges = snapshot.entries.map(entry => sheetClipboardObjectRange(workbook, sheet.id, entry.bounds))
   if (!canViewProtectedRanges(sheet, ranges, api.currentUserId)) throw new Error('没有复制目标图片的权限。')
   if (cut) for (const range of ranges) api.assertCanEditRange(target.unitId, target.sheetId, range)
   const content = sheetImageObjectClipboardContent(snapshot), generation = api.sheetClipboard.clipboardGeneration
+  if (!current()) return { accepted: false, plain: '', html: '' }
   const changed = cut && api.executeCommandSync(SHEET_IMAGE_COMMANDS.remove, { ...input, unitId: target.unitId, sheetId: target.sheetId,
     imageIds: snapshot.entries.map(entry => entry.image.id), expectedRevision: revision, expectedHistoryGeneration: historyGeneration })
   if (cut && !changed) return { accepted: false, plain: '', html: '' }
-  const current = api.getWorkbookModel(target.unitId)
-  if (current && api.getWorkbookRevision(target.unitId) === revision + (changed ? 1 : 0) && api.sheetClipboard.clipboardGeneration === generation
+  const published = api.getWorkbookModel(target.unitId)
+  if (published && api.currentUserId === userId && api.getWorkbookRevision(target.unitId) === revision + (changed ? 1 : 0) && api.sheetClipboard.clipboardGeneration === generation
     && api.editor.history.captureSavepoint(target.unitId).generation === historyGeneration) api.sheetClipboard.setImageClipboard(snapshot)
   return { accepted: true, changed, imageClipboard: snapshot, ...content }
 }
@@ -28,7 +34,13 @@ export function copySheetImageObjects(api: OfficeStudio, input: SheetClipboardCo
 export function pasteSheetImageObjects(api: OfficeStudio, input: SheetClipboardCommandInput, target: SheetClipboardLocation, clipboard: SheetImageObjectClipboard): SheetClipboardPasteResult {
   const workbook = api.getWorkbookModel(target.unitId), sheet = workbook?.sheets.find(sheet => sheet.id === target.sheetId)
   if (!workbook || !sheet) return { accepted: false, changed: false, ranges: [], issues: [], reason: 'stale-target' }
-  if (clipboard.source.userId !== api.currentUserId) throw new Error('图片剪贴板属于其他用户。')
+  const revision = api.getWorkbookRevision(target.unitId), historyGeneration = api.editor.history.captureSavepoint(target.unitId).generation, userId = api.currentUserId
+  const current = () => api.currentUserId === userId && api.getWorkbookModel(target.unitId) === workbook
+    && api.getWorkbookRevision(target.unitId) === revision && api.editor.history.captureSavepoint(target.unitId).generation === historyGeneration
+    && (input.expectedRevision === undefined || input.expectedRevision === revision)
+    && (input.expectedHistoryGeneration === undefined || input.expectedHistoryGeneration === historyGeneration)
+  if (!current()) return { accepted: false, changed: false, ranges: [], issues: [], reason: 'stale-target' }
+  if (clipboard.source.userId !== userId) throw new Error('图片剪贴板属于其他用户。')
   const source = api.getWorkbookModel(clipboard.source.unitId), sourceSheet = source?.sheets.find(sheet => sheet.id === clipboard.source.sheetId)
   if (source && sourceSheet) {
     api.assertCanViewWorksheet(clipboard.source.unitId, clipboard.source.sheetId)
@@ -39,6 +51,8 @@ export function pasteSheetImageObjects(api: OfficeStudio, input: SheetClipboardC
     if (!canViewProtectedRanges(sourceSheet, ranges, api.currentUserId)) throw new Error('没有读取图片剪贴板来源的权限。')
   }
   const plan = planPasteSheetImageObjects(workbook, sheet, target.range, clipboard)
-  const changed = api.executeCommandSync(SHEET_IMAGE_COMMANDS.insertPrepared, { ...input, unitId: target.unitId, sheetId: target.sheetId, images: plan.images })
+  if (!current()) return { accepted: false, changed: false, ranges: [], issues: [], reason: 'stale-target' }
+  const changed = api.executeCommandSync(SHEET_IMAGE_COMMANDS.insertPrepared, { ...input, unitId: target.unitId, sheetId: target.sheetId,
+    expectedRevision: revision, expectedHistoryGeneration: historyGeneration, images: plan.images })
   return { accepted: true, changed, ranges: plan.ranges, issues: [], imageIds: changed ? plan.images.map(image => image.id) : [] }
 }

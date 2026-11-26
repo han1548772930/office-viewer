@@ -2,7 +2,7 @@ import type { SheetDrawingAnchorType, SheetFloatingImage, SheetImageAnchor, Shee
   SheetImagePlacement, SheetImagePlacementInput, SheetImageSourceRect } from '../../domain/sheet-images.ts'
 import type { RenderRect } from '../../rendering/contracts.ts'
 import { cloneModel } from '../../domain/serialization.ts'
-import { drawingAffineBounds, drawingAffineFromFrame, drawingAffinePoint, normalizeDrawingAffineGeometry,
+import { drawingAffineBounds, drawingAffineFrame, drawingAffineFromFrame, drawingAffinePoint, normalizeDrawingAffineGeometry,
   invertDrawingAffine, multiplyDrawingAffine, type DrawingAffineGeometry } from '../../domain/drawing-affine.ts'
 import { normalizeSheetFloatingImage, sheetImageIndex, sheetImageNumber, sheetImageRecord } from './sheet-image-model.ts'
 
@@ -43,6 +43,14 @@ export function sheetImageFrame(image: SheetFloatingImage, axes: SheetImageAxes)
   if (image.drawingGeometry) {
     const geometry = image.drawingGeometry, m = geometry.matrix, center = drawingAffinePoint(m, geometry.width / 2, geometry.height / 2),
       width = Math.hypot(m.a, m.b) * geometry.width, height = Math.hypot(m.c, m.d) * geometry.height
+    if (image.anchorType === '1') {
+      if (!image.endAnchor) throw new TypeError('随单元格缩放的图片缺少结束锚点。')
+      const origin = sheetImageProjectAnchor(axes, image.anchor), end = sheetImageProjectAnchor(axes, image.endAnchor)
+      let projectedWidth = Math.max(0, end.left - origin.left), projectedHeight = Math.max(0, end.top - origin.top)
+      if (sheetImageAxisSwapped(image.rotation)) [projectedWidth, projectedHeight] = [projectedHeight, projectedWidth]
+      if (projectedWidth <= 0 || projectedHeight <= 0) return { left: center.x - width / 2, top: center.y - height / 2,
+        width: projectedWidth <= 0 ? 0 : width, height: projectedHeight <= 0 ? 0 : height }
+    }
     return { left: center.x - width / 2, top: center.y - height / 2, width, height }
   }
   if (image.anchorType === '2' && image.absolutePosition) return { ...image.absolutePosition, ...image.size }
@@ -65,7 +73,10 @@ export function sheetImageRotatedBounds(frame: SheetImageBounds, rotation = 0): 
   return { left: frame.left + (frame.width - width) / 2, top: frame.top + (frame.height - height) / 2, width, height }
 }
 export function sheetImageFootprint(image: SheetFloatingImage, axes: SheetImageAxes): SheetImageBounds {
-  if (image.drawingGeometry) return drawingAffineBounds(image.drawingGeometry)
+  if (image.drawingGeometry) {
+    const frame = sheetImageFrame(image, axes)
+    return frame.width <= 0 || frame.height <= 0 ? { ...frame, width: 0, height: 0 } : drawingAffineBounds(image.drawingGeometry)
+  }
   return sheetImageRotatedBounds(sheetImageFrame(image, axes), image.rotation)
 }
 export function sheetImageDrawingGeometry(image: SheetFloatingImage, axes: SheetImageAxes): DrawingAffineGeometry {
@@ -130,6 +141,17 @@ export function sheetImageWithDrawingGeometry(image: SheetFloatingImage, geometr
   const valid = normalizeDrawingAffineGeometry(geometry), m = valid.matrix,
     center = drawingAffinePoint(m, valid.width / 2, valid.height / 2), width = Math.hypot(m.a, m.b) * valid.width,
     height = Math.hypot(m.c, m.d) * valid.height, base = cloneModel(image)
+  const before = image.drawingGeometry
+  if (before && before.width === valid.width && before.height === valid.height
+    && (['a', 'b', 'c', 'd'] as const).every(key => before.matrix[key] === m[key])) {
+    const frame = drawingAffineFrame(valid), major = sheetImageMajorBounds(frame, image.rotation)
+    base.drawingGeometry = valid
+    base.anchor = sheetImageAnchorAt(axes, major.left, major.top)
+    if (image.anchorType === '1') base.endAnchor = sheetImageAnchorAt(axes, major.left + major.width, major.top + major.height)
+    if (image.anchorType === '2') base.absolutePosition = { left: frame.left, top: frame.top }
+    // Both retains its original size/crop author basis after row/column dimensions change.
+    return normalizeSheetFloatingImage(base)
+  }
   delete base.drawingGeometry
   base.rotation = Math.atan2(m.b, m.a) * 180 / Math.PI
   const next = sheetImageWithFrame(base, { left: center.x - width / 2, top: center.y - height / 2, width, height }, axes)
@@ -171,7 +193,12 @@ export function patchSheetFloatingImage(image: SheetFloatingImage, patch: SheetF
   }
   const before = sheetImageFrame(image, axes), changedOrientation = fields.rotation !== undefined && fields.rotation !== image.rotation
   let next: SheetFloatingImage = { ...cloneModel(image), ...cloneModel(fields), id: image.id }
-  if (fields.drawingGeometry) return sheetImageWithDrawingGeometry(next, fields.drawingGeometry, axes)
+  if (fields.drawingGeometry) {
+    // Compare with the old geometry; merging the new matrix first would make every patch look like a translation.
+    if (image.drawingGeometry) next.drawingGeometry = cloneModel(image.drawingGeometry)
+    else delete next.drawingGeometry
+    return sheetImageWithDrawingGeometry(next, fields.drawingGeometry, axes)
+  }
   if (image.drawingGeometry && changedOrientation) {
     const angle = ((fields.rotation! - (image.rotation ?? 0)) % 360) * Math.PI / 180, cos = Math.cos(angle), sin = Math.sin(angle),
       cx = before.left + before.width / 2, cy = before.top + before.height / 2,

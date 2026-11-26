@@ -56,6 +56,7 @@ pub enum TaskKind {
     Sort,
     Filter,
     ChartStatistics,
+    SlicerMembers,
     Layout,
 }
 

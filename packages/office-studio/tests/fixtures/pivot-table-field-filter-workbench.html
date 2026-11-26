@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred ordinary PivotTable field filtering</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}</style></head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FPivotTable } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { pivotChartFieldButtonsIds as ids, pivotChartFieldButtonsWorkbook } from './pivot-chart-field-buttons-fixture.mjs'
+import { pivotValuesUiWorkbook } from './pivot-values-ui-fixture.mjs'
+
+// Production Ribbon -> ExcelWorkbench -> PivotTablePanel; no duplicate hand-mounted panel.
+// Reuses the real sparse source, table/chart builders and typed/grouped fixture. All gates call original APIs.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const commands = [], notices = [], pendingMembers = [], pendingEdits = []
+const editMethods = { manual: 'setLabelManualFilter', date: 'setDateFilter', label: 'setLabelConditionFilter', sort: 'setLabelSort',
+  clearSort: 'clearLabelSort', clear: 'clearFilters', value: 'setValueFilter', numberGroup: 'setNumberGroup', dateGroup: 'setDateGroupType', manualGroup: 'setManualGroups', values: 'updateValuePosition' }
+const originalMembers = FPivotTable.prototype.getFieldItems, originalEdits = Object.fromEntries(Object.entries(editMethods).map(([kind, method]) => [kind, FPivotTable.prototype[method]]))
+let app, stopView, pivotId = ids.primary
+const json = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+const studio = () => slot.value, book = () => FOffice.newAPI(studio()).getActiveWorkbook(), model = () => studio().getWorkbookModel(book().getId())
+const pivot = (id = pivotId) => book().getPivotTables().find(value => value.getPivotTableId() === id)
+const field = (name, id = pivotId) => model().pivotTables.find(value => value.id === id).fields.find(value => value.name === name)
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id]; let data, linkedData
+  try { data = pivot().getData() } catch { data = undefined }
+  try { linkedData = book().getPivotChartById(ids.linked).getData() } catch { linkedData = undefined }
+  return { model: json(value), pivotId, data: json(data), linkedData: json(linkedData), revision: studio().getWorkbookRevision(value.id),
+    generation: studio().editor.history.captureSavepoint(value.id).generation, userId: studio().currentUserId,
+    history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0, dirty: studio().editor.history.isDirty(value.id) },
+    commands: json(commands), notices: json(notices) }
+}
+function restoreEdits() { for (const [kind, method] of Object.entries(editMethods)) FPivotTable.prototype[method] = originalEdits[kind] }
+function restoreMethods() { FPivotTable.prototype.getFieldItems = originalMembers; restoreEdits() }
+async function release() {
+  restoreMethods(); pendingMembers.splice(0).forEach(gate => gate.resolve()); pendingEdits.splice(0).forEach(gate => gate.resolve())
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'; pivotId = options.pivotId ?? ids.primary
+  slot.value = new OfficeStudio({ workbook: options.model ?? (options.valuesUi ? pivotValuesUiWorkbook(options) : pivotChartFieldButtonsWorkbook(options)), currentUserId: options.currentUserId ?? 'local-user' })
+  view.value = toExcelWorkbookView(model()); stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)) }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+window.pivotTableFieldFilterFixture = { ids, mount, state,
+  field(name, id = pivotId) { return json(field(name, id)) },
+  async selected(id = ids.primary) { pivotId = id; await settled(); return state() },
+  async changeSource(value = 11) { book().getSheetBySheetId(ids.source).getRange('E4').setValue(value); await settled(); return state() },
+  async sourceCell(address, value) { book().getSheetBySheetId(ids.source).getRange(address).setValue(value); await settled(); return state() },
+  async switchSheet(id = ids.other) { book().setActiveSheet(id); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async changeUser(userId = 'peer') { Object.defineProperty(studio(), 'currentUserId', { value: userId, configurable: true }); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(book().getId()); await settled(); return state() },
+  async setOptions(options) { await pivot().setOptions(options); await settled(); return state() },
+  async valuesPosition(position, index = -1) { await pivot().updateValuePosition(position, index); await settled(); return state() },
+  async manual(name, keys, partialKeys, isAll = false) { await pivot().setLabelManualFilter(field(name).id, keys, isAll, {}, partialKeys); await settled(); return state() },
+  async dateFilter(filter) { await pivot().setDateFilter(field('Date').id, filter); await settled(); return state() },
+  async labelCondition(filter, name = 'Region') { await pivot().setLabelConditionFilter(field(name).id, filter); await settled(); return state() },
+  async fieldSetting(name, settings) { await pivot().setFieldSetting(field(name).id, settings); await settled(); return state() },
+  async multipleFilters(name = 'Region') {
+    await pivot().setOptions({ allowMultipleFilters: true }); await pivot().setLabelManualFilter(field(name).id, [name === 'Date' ? '2026-02-02' : 'South'])
+    await pivot().setLabelConditionFilter(field(name).id, { operator: 'captionContains', expected: name === 'Date' ? '2026-' : 'South' })
+    if (name === 'Date') await pivot().setDateFilter(field(name).id, { operator: 'dateEqual', expected: 46055 })
+    else await pivot().setValueFilter(field(name).id, { operator: 'valueGreaterThanOrEqual', expected: 50, valueFieldId: field('Amount').id })
+    await settled(); return state()
+  },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId, dark: dark.value, variant: variant.value, pivotId }) },
+  delayMembers() {
+    FPivotTable.prototype.getFieldItems = async function(...args) { await new Promise(resolve => pendingMembers.push({ pivotId: this.getPivotTableId(), fieldId: args[0], resolve })); return originalMembers.apply(this, args) }
+  },
+  pendingMembers() { return pendingMembers.map(({ pivotId, fieldId }) => ({ pivotId, fieldId })) },
+  async releaseMember(index = 0, restore = true) { if (restore) FPivotTable.prototype.getFieldItems = originalMembers; pendingMembers.splice(index, 1)[0]?.resolve(); await settled(); return state() },
+  delayEdits(kinds = ['manual', 'date', 'label', 'sort', 'clearSort', 'clear']) {
+    for (const kind of kinds) FPivotTable.prototype[editMethods[kind]] = async function(...args) {
+      await new Promise(resolve => pendingEdits.push({ kind, pivotId: this.getPivotTableId(), fieldId: args[0], resolve })); return originalEdits[kind].apply(this, args)
+    }
+  },
+  pendingEdits() { return pendingEdits.map(({ kind, pivotId, fieldId }) => ({ kind, pivotId, fieldId })) },
+  async releaseEdit(index = 0, restore = true) { if (restore) restoreEdits(); pendingEdits.splice(index, 1)[0]?.resolve(); await settled(); return state() },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

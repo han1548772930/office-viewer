@@ -3,10 +3,9 @@ import type { SheetFloatingImage } from '../../domain/sheet-images.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { assertSheetClipboardBytes } from '../sheet-workbench/sheet-clipboard-data.ts'
 import { sheetClipboardObjectAxes, sheetClipboardObjectRange, sheetClipboardRangeBounds } from '../sheet-workbench/sheet-clipboard-object-geometry.ts'
-import { assertSheetImageClipboardEntry, assertSheetImageClipboardEntryGeometry, sheetImageClipboardBounds, sheetImageClipboardEntryFrame, sheetImageClipboardFrame, type SheetImageClipboardEntry } from './sheet-image-clipboard.ts'
-import { normalizeSheetFloatingImage, sheetImageId, sheetImageNumber, sheetImageRecord, SHEET_IMAGE_MAX_BATCH_BYTES, SHEET_IMAGE_MAX_COUNT } from './sheet-image-model.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '../../rendering/spreadsheet/layout.ts'
-import { sheetImageWithFrame } from './sheet-image-placement.ts'
+import { assertSheetImageClipboardEntry, assertSheetImageClipboardEntryGeometry, captureSheetImageClipboardEntry, sheetImageClipboardBounds,
+  translateSheetImageClipboardEntry, type SheetImageClipboardEntry } from './sheet-image-clipboard.ts'
+import { sheetImageId, sheetImageNumber, sheetImageRecord, SHEET_IMAGE_MAX_BATCH_BYTES, SHEET_IMAGE_MAX_COUNT } from './sheet-image-model.ts'
 
 export interface SheetImageObjectClipboard {
   version: 1
@@ -17,7 +16,9 @@ export interface SheetImageObjectClipboard {
   entries: SheetImageClipboardEntry[]
 }
 export const SHEET_IMAGE_OBJECT_COMMANDS = { copy: 'sheet.command.copy-image-object', cut: 'sheet.command.cut-image-object', paste: 'sheet.command.paste-image-object' } as const
-const escapeHtml = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
+const htmlEscapes: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+const htmlEntities: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" }
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, character => htmlEscapes[character]!)
 
 export function assertSheetImageObjectClipboard(value: unknown): asserts value is SheetImageObjectClipboard {
   const input = sheetImageRecord(value, '图片对象剪贴板'), source = sheetImageRecord(input.source, '图片剪贴板来源'), origin = sheetImageRecord(input.origin, '图片剪贴板原点')
@@ -43,9 +44,7 @@ export function captureSheetImageObjects(workbook: WorkbookModel, sheet: Spreads
   const entries = imageIds.map(id => {
     const image = sheet.images?.find(image => image.id === id)
     if (!image) throw new Error('找不到选中的图片。')
-    const frame = sheetImageClipboardFrame(workbook, sheet, image)
-    return { image: sheetImageWithFrame(normalizeSheetFloatingImage(image), { ...frame, left: frame.left - GRID_HEADER_WIDTH,
-      top: frame.top - GRID_HEADER_HEIGHT }, sheetClipboardObjectAxes(workbook, sheet)), bounds: sheetImageClipboardBounds(workbook, sheet, image), frame }
+    return captureSheetImageClipboardEntry(workbook, sheet, image)
   })
   if (entries.reduce((bytes, entry) => bytes + entry.image.resource.byteLength, 0) > SHEET_IMAGE_MAX_BATCH_BYTES) throw new RangeError('图片对象剪贴板超过 32 MiB。')
   const result: SheetImageObjectClipboard = { version: 1, id: crypto.randomUUID(), source: { unitId: workbook.id!, sheetId: sheet.id, userId }, copyType,
@@ -55,14 +54,56 @@ export function captureSheetImageObjects(workbook: WorkbookModel, sheet: Spreads
 }
 export function sheetImageObjectClipboardContent(clipboard: SheetImageObjectClipboard): { plain: string; html: string } {
   assertSheetImageObjectClipboard(clipboard)
-  const html = `<div data-office-image-clipboard-id="${escapeHtml(clipboard.id)}">${clipboard.entries.map(({ image }) =>
-    `<img src="${escapeHtml(image.resource.source)}" width="${image.size.width}" height="${image.size.height}" alt="${escapeHtml(image.altText)}" title="${escapeHtml(image.title)}">`).join('')}</div>`
+  // HTML carries the actual author snapshot, so a new Studio can preserve crop/flip/affine after the broker is disposed.
+  // Media sources already live in IMG.src; do not duplicate their base64 bytes in the author descriptor.
+  const descriptor = { ...clipboard, entries: clipboard.entries.map(entry => {
+    const { source: _source, ...resource } = entry.image.resource
+    return { ...entry, image: { ...entry.image, resource } }
+  }) }
+  const encoded = encodeURIComponent(JSON.stringify(descriptor))
+  const html = `<div data-office-image-clipboard-id="${escapeHtml(clipboard.id)}" data-office-image-clipboard-model="${encoded}">${clipboard.entries.map(({ image }, index) =>
+    `<img data-office-image-index="${index}" src="${escapeHtml(image.resource.source)}" width="${image.size.width}" height="${image.size.height}" alt="${escapeHtml(image.altText)}" title="${escapeHtml(image.title)}">`).join('')}</div>`
   assertSheetClipboardBytes(html)
   return { plain: '', html }
 }
 export function sheetImageObjectClipboardIdFromHtml(html: string): string | undefined {
   const match = /\bdata-office-image-clipboard-id\s*=\s*(?:"([A-Za-z0-9._:-]+)"|'([A-Za-z0-9._:-]+)')/i.exec(html)
   return match?.[1] ?? match?.[2]
+}
+/** Decode only this versioned internal flavour. Foreign IMG content stays on the ordinary external image path. */
+export function sheetImageObjectClipboardFromHtml(html: string): SheetImageObjectClipboard | undefined {
+  assertSheetClipboardBytes(html)
+  const match = /\bdata-office-image-clipboard-model\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(html)
+  if (!match) return undefined
+  let parsed: unknown
+  try { parsed = JSON.parse(decodeURIComponent(match[1] ?? match[2]!)) }
+  catch { throw new TypeError('图片剪贴板作者数据无法读取。') }
+  const input = sheetImageRecord(parsed, '图片剪贴板作者数据')
+  if (!Array.isArray(input.entries) || !input.entries.length || input.entries.length > SHEET_IMAGE_MAX_COUNT) throw new TypeError('图片剪贴板作者条目无效。')
+  const attribute = (tag: string, name: string): string | undefined => {
+    const found = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag)
+    return found ? found[1] ?? found[2] : undefined
+  }
+  const sources = new Map<number, string>()
+  for (const tag of html.match(/<img\b[^>]*>/gi) ?? []) {
+    const rawIndex = attribute(tag, 'data-office-image-index')
+    if (rawIndex === undefined) continue
+    const index = Number(rawIndex), source = attribute(tag, 'src')
+    if (!/^\d+$/.test(rawIndex) || !Number.isInteger(index) || index >= input.entries.length || source === undefined || sources.has(index)) throw new TypeError('图片剪贴板媒体身份无效。')
+    // Only the entities emitted by escapeHtml are decoded, exactly once.
+    sources.set(index, source.replace(/&(amp|lt|gt|quot|#39);/g, entity => htmlEntities[entity]!))
+  }
+  input.entries.forEach((raw, index) => {
+    const entry = sheetImageRecord(raw, '图片剪贴板条目'), image = sheetImageRecord(entry.image, '图片剪贴板图片'), resource = sheetImageRecord(image.resource, '图片剪贴板资源')
+    if (resource.source === undefined) {
+      const source = sources.get(index)
+      if (!source) throw new TypeError('图片剪贴板缺少实际媒体。')
+      resource.source = source
+    }
+  })
+  assertSheetImageObjectClipboard(parsed)
+  if (sheetImageObjectClipboardIdFromHtml(html) !== parsed.id) throw new TypeError('图片剪贴板标识与作者数据不一致。')
+  return cloneModel(parsed)
 }
 export function sheetImageObjectPasteRanges(workbook: WorkbookModel, sheet: SpreadsheetSheet, target: CellRange, clipboard: SheetImageObjectClipboard): CellRange[] {
   if (!clipboard || clipboard.version !== 1 || !Array.isArray(clipboard.entries) || !clipboard.entries.length || clipboard.entries.length > SHEET_IMAGE_MAX_COUNT
@@ -76,12 +117,9 @@ export function sheetImageObjectPasteRanges(workbook: WorkbookModel, sheet: Spre
 export function planPasteSheetImageObjects(workbook: WorkbookModel, sheet: SpreadsheetSheet, target: CellRange, clipboard: SheetImageObjectClipboard): { images: SheetFloatingImage[]; ranges: CellRange[] } {
   assertSheetImageObjectClipboard(clipboard)
   const origin = sheetClipboardRangeBounds(workbook, sheet, target)
-  const images = clipboard.entries.map(entry => {
-    const frame = sheetImageClipboardEntryFrame(entry)
-    return sheetImageWithFrame({ ...cloneModel(entry.image), id: crypto.randomUUID() }, { ...frame,
-      left: origin.left + frame.left - clipboard.origin.left - GRID_HEADER_WIDTH,
-      top: origin.top + frame.top - clipboard.origin.top - GRID_HEADER_HEIGHT }, sheetClipboardObjectAxes(workbook, sheet))
-  })
+  const axes = sheetClipboardObjectAxes(workbook, sheet), images = clipboard.entries.map(entry => translateSheetImageClipboardEntry(entry,
+    axes, origin.left - clipboard.origin.left, origin.top - clipboard.origin.top, crypto.randomUUID()))
   if ((sheet.images?.length ?? 0) + images.length > SHEET_IMAGE_MAX_COUNT) throw new RangeError('粘贴后图片数量超过 1000 张。')
-  return { images, ranges: sheetImageObjectPasteRanges(workbook, sheet, target, clipboard) }
+  const ranges = images.map(image => sheetClipboardObjectRange(workbook, sheet.id, sheetImageClipboardBounds(workbook, sheet, image)))
+  return { images, ranges }
 }

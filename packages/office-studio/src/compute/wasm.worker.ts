@@ -3,6 +3,7 @@ import { isRecord } from './protocol.ts'
 import { assertWasmProtocol, requireWasmMemory } from '../platform/wasm/task-protocol.ts'
 import type { WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 import type { ChartStatisticsParams } from './chart-protocol.ts'
+import type { SlicerMembersParams } from './slicer-member-protocol.ts'
 
 export interface WasmAggregate {
   step(budget: number): boolean
@@ -12,6 +13,7 @@ export interface WasmAggregate {
 }
 export interface WasmIndexResult { copy_indices(): Uint32Array; metadata(): unknown; free(): void }
 export interface WasmChartResult { copy_values(): Float64Array; copy_indices(): Uint32Array; metadata(): unknown; free(): void }
+export interface WasmSlicerMemberResult { copy_indices(): Uint32Array; copy_has_data(): Uint8Array; metadata(): unknown; free(): void }
 export interface WasmStepper<Result = WasmIndexResult> { step(budget: number): boolean; progress(): number; finish(): Result; free(): void }
 export interface ComputeWasmModule {
   default(): Promise<unknown>
@@ -27,11 +29,15 @@ export interface ComputeWasmModule {
   }): WasmStepper
   create_chart_statistics(values: Float64Array, states: Uint8Array, categoryIds: Uint32Array,
     control: { context: WasmTaskControl; params: ChartStatisticsParams }): WasmStepper<WasmChartResult>
+  create_slicer_members(values: Float64Array, states: Uint8Array, textIds: Uint32Array, availability: Uint8Array,
+    textOffsets: Uint32Array, textBytes: Uint8Array, textRanks: Uint32Array,
+    control: { context: WasmTaskControl; params: SlicerMembersParams }): WasmStepper<WasmSlicerMemberResult>
 }
 export interface LoadedComputeWasm { module: ComputeWasmModule; memory: WebAssembly.Memory }
 export function isComputeWasmModule(value: unknown): value is ComputeWasmModule {
   return isRecord(value) && ['default', 'compute_protocol_version', 'compute_version', 'compute_yield',
-    'create_numeric_aggregate', 'create_numeric_sort', 'create_numeric_filter', 'create_chart_statistics'].every((key) => typeof value[key] === 'function')
+    'create_numeric_aggregate', 'create_numeric_sort', 'create_numeric_filter', 'create_chart_statistics',
+    'create_slicer_members'].every((key) => typeof value[key] === 'function')
 }
 export async function initializeComputeWasm(value: unknown): Promise<LoadedComputeWasm> {
   if (!isComputeWasmModule(value)) throw new ComputeError('COMPUTE_WASM_API_MISSING', 'Rust 计算模块缺少协议 2 接口，请执行 build:compute')

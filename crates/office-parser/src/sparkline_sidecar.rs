@@ -1,28 +1,32 @@
+//! Namespace-aware native and local sparkline metadata; publish only a complete model.
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{BufReader, Cursor};
 
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::{Reader, XmlVersion};
 use zip::ZipArchive;
-
+use office_io_common::conditional_format_xml::{self as xml, Element, XmlSelection, XmlSelectionLimits};
+use office_io_common::sparkline_io::{self as io, SparklineModelBudget, SparklineModelRecord};
 use crate::model::SparklinePayload;
+
+#[path = "sparkline_parts.rs"]
+mod parts;
 
 #[derive(Debug, Default)]
 pub(crate) struct SparklineSidecar {
     by_sheet: HashMap<String, HashMap<String, SparklinePayload>>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) failure: Option<String>,
 }
 
 impl SparklineSidecar {
     pub(crate) fn read(bytes: &[u8]) -> Self {
         match read_sidecar(bytes) {
             Ok(sidecar) => sidecar,
-            Err(warning) => Self { warnings: vec![warning], ..Self::default() },
+            Err(error) => Self { warnings: vec![error.clone()], failure: Some(error), ..Self::default() },
         }
     }
 
     pub(crate) fn take(&mut self, sheet: &str, target: &str) -> Option<SparklinePayload> {
-        self.by_sheet.get_mut(sheet)?.remove(&target.to_ascii_uppercase())
+        self.by_sheet.get_mut(sheet)?.remove(&io::normalize_target(target)?)
     }
 
     pub(crate) fn take_sheet(&mut self, sheet: &str) -> HashMap<String, SparklinePayload> {
@@ -30,221 +34,117 @@ impl SparklineSidecar {
     }
 }
 
-#[derive(Debug)]
-struct Relationship { id: String, target: String, kind: String, external: bool }
+fn main(namespace: &str) -> bool { matches!(namespace, xml::MAIN_NAMESPACE | xml::STRICT_MAIN_NAMESPACE) }
 
-#[derive(Debug, Default)]
-struct Group {
-    kind: String,
-    empty_cells: String,
-    series_color: Option<String>,
-    negative_color: Option<String>,
-    high_color: Option<String>,
-    low_color: Option<String>,
-    axis: String,
-    min: Option<f64>,
-    max: Option<f64>,
+fn select_sheet<R: std::io::BufRead>(reader: R, limits: XmlSelectionLimits) -> Result<XmlSelection, String> {
+    let mut extension = None::<String>;
+    let mut local_collections = 0usize;
+    let selected = xml::extract(reader, limits, |path, node| {
+        if path.len() == 3 {
+            extension = if main(&path[0].namespace) && path[0].name == "worksheet"
+                && main(&path[1].namespace) && path[1].name == "extLst"
+                && main(&path[2].namespace) && path[2].name == "ext" {
+                node.attribute_ns("", "uri").map(str::to_owned)
+            } else { None };
+        }
+        if path.len() == 4 && extension.as_deref().is_some_and(|uri| uri.eq_ignore_ascii_case(io::MODEL_EXTENSION_URI))
+            && path[3].is(io::MODEL_NAMESPACE, "sparklines") {
+            if node.attribute_ns("", "version") != Some("1") { return Err("SPARKLINE_MODEL_INVALID: unsupported local extension version".into()); }
+            local_collections += 1;
+            if local_collections > 1 { return Err("SPARKLINE_MODEL_INVALID: duplicate local collections".into()); }
+        }
+        if path.len() != 5 { return Ok(false); }
+        let native = extension.as_deref().is_some_and(|uri| uri.eq_ignore_ascii_case(io::NATIVE_EXTENSION_URI))
+            && path[3].is(xml::X14_NAMESPACE, "sparklineGroups") && path[4].is(xml::X14_NAMESPACE, "sparklineGroup");
+        let local = extension.as_deref().is_some_and(|uri| uri.eq_ignore_ascii_case(io::MODEL_EXTENSION_URI))
+            && path[3].is(io::MODEL_NAMESPACE, "sparklines") && path[4].is(io::MODEL_NAMESPACE, "sparkline");
+        Ok(native || local)
+    })?;
+    if selected.root.name != "worksheet" || !main(&selected.root.namespace) { return Err("SPARKLINE_NATIVE_INVALID: invalid worksheet root".into()); }
+    Ok(selected)
 }
 
-#[derive(Debug, Default)]
-struct Sparkline { formula: String, target: String }
-
 fn read_sidecar(bytes: &[u8]) -> Result<SparklineSidecar, String> {
-    let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))
-        .map_err(|_| "Could not read XLSX sparkline metadata: invalid ZIP package".to_owned())?;
-    let root_rels = read_xml_part(&mut archive, "_rels/.rels")?.ok_or_else(|| "Could not read XLSX sparkline metadata: missing package relationships".to_owned())?;
-    let workbook_path = relationships(&root_rels).into_iter().find_map(|rel| {
-        (rel.kind == "officeDocument" && !rel.external).then(|| resolve_target("", &rel.target)).flatten()
-    }).ok_or_else(|| "Could not locate XLSX workbook part for sparkline metadata".to_owned())?;
-    let workbook = read_xml_part(&mut archive, &workbook_path)?.ok_or_else(|| format!("Missing XLSX workbook part {workbook_path}"))?;
-    let rels_path = relationship_part_path(&workbook_path);
-    let rels_xml = read_xml_part(&mut archive, &rels_path)?.ok_or_else(|| format!("Missing XLSX workbook relationships {rels_path}"))?;
-    let sheet_relationships = relationships(&rels_xml).into_iter().filter(|rel| !rel.external).filter_map(|rel| {
-        resolve_target(&workbook_path, &rel.target).map(|path| (rel.id, (rel.kind, path)))
-    }).collect::<HashMap<_, _>>();
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|error| format!("SPARKLINE_OPC_INVALID: invalid XLSX ZIP: {error}"))?;
+    let sheets = crate::xlsx_parts::worksheet_parts(&mut archive)?;
+    let mut selected_sheets = Vec::new();
+    let mut selected_bytes = 0usize; let mut selected_elements = 0usize;
+    for sheet in sheets {
+        let entry = archive.by_name(&sheet.path).map_err(|error| format!("SPARKLINE_OPC_INVALID: missing worksheet {}: {error}", sheet.path))?;
+        let mut limits = XmlSelectionLimits::default();
+        limits.total_bytes = limits.total_bytes.saturating_sub(selected_bytes);
+        limits.total_elements = limits.total_elements.saturating_sub(selected_elements);
+        let selected = select_sheet(BufReader::new(entry), limits).map_err(|error| format!("{error} [worksheet {}]", sheet.name))?;
+        selected_bytes = selected_bytes.checked_add(selected.selected_bytes).ok_or("SPARKLINE_SOURCE_LIMIT: selected byte counter overflow")?;
+        selected_elements = selected_elements.checked_add(selected.selected_elements).ok_or("SPARKLINE_SOURCE_LIMIT: selected element counter overflow")?;
+        if !selected.fragments.is_empty() { selected_sheets.push((sheet.name, selected.fragments)); }
+    }
+    let has_native = selected_sheets.iter().any(|(_, fragments)| fragments.iter().any(|node| node.is(xml::X14_NAMESPACE, "sparklineGroup")));
+    let resources = if has_native { parts::read_color_resources(&mut archive)? } else { parts::ColorResources::default() };
     let mut sidecar = SparklineSidecar::default();
-    for (sheet_name, relationship_id) in workbook_sheets(&workbook) {
-        let Some((kind, path)) = sheet_relationships.get(&relationship_id) else {
-            sidecar.warnings.push(format!("Could not resolve sparkline worksheet relationship for {sheet_name}"));
-            continue;
-        };
-        if kind != "worksheet" { continue }
-        let Some(xml) = read_xml_part(&mut archive, path)? else {
-            sidecar.warnings.push(format!("Missing worksheet XML {path} while reading sparkline metadata"));
-            continue;
-        };
-        let controls = parse_sparklines(&xml, &mut sidecar.warnings);
-        if !controls.is_empty() { sidecar.by_sheet.insert(sheet_name, controls); }
+    let mut budget = SparklineModelBudget::default();
+    for (sheet_name, fragments) in selected_sheets {
+        let specs = parse_sheet_fragments(&fragments, &resources, &mut budget, &mut sidecar.warnings)?;
+        if !specs.is_empty() { sidecar.by_sheet.insert(sheet_name, specs); }
     }
     Ok(sidecar)
 }
 
-fn parse_sparklines(xml: &str, warnings: &mut Vec<String>) -> HashMap<String, SparklinePayload> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut in_group = false;
-    let mut in_sparkline = false;
-    let mut group = Group::default();
-    let mut sparkline = Sparkline::default();
-    let mut current_value: Option<&'static [u8]> = None;
-    let mut result = HashMap::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(element) | Event::Empty(element)) => {
-                let qualified_name = element.name();
-                let name = local_name(qualified_name.as_ref());
-                let attrs = attributes(&reader, &element);
-                if name == b"sparklineGroup" {
-                    in_group = true;
-                    group = Group {
-                        kind: attrs.get("type").cloned().unwrap_or_else(|| "line".into()),
-                        empty_cells: attrs.get("displayEmptyCellsAs").cloned().unwrap_or_else(|| "gap".into()),
-                        axis: if attrs.get("minAxisType").is_some_and(|value| value == "custom") || attrs.get("maxAxisType").is_some_and(|value| value == "custom") { "custom".into() } else { "individual".into() },
-                        min: attrs.get("manualMin").and_then(|value| value.parse().ok()),
-                        max: attrs.get("manualMax").and_then(|value| value.parse().ok()),
-                        ..Group::default()
-                    };
-                } else if in_group && name == b"sparkline" {
-                    in_sparkline = true;
-                    sparkline = Sparkline::default();
-                } else if in_group && name.starts_with(b"color") {
-                    let color = attrs.get("rgb").and_then(|value| normalize_color(value));
-                    match name {
-                        b"colorSeries" => group.series_color = color.clone(),
-                        b"colorNegative" => group.negative_color = color.clone(),
-                        b"colorHigh" => group.high_color = color.clone(),
-                        b"colorLow" => group.low_color = color.clone(),
-                        _ => {}
-                    }
-                }
-                if in_sparkline && !element.is_empty() {
-                    current_value = match name { b"f" => Some(b"f"), b"sqref" => Some(b"sqref"), _ => None };
-                }
-            }
-            Ok(Event::Text(text)) if in_sparkline => {
-                let decoded = text.decode().unwrap_or_default();
-                let value = quick_xml::escape::unescape(&decoded).unwrap_or_else(|_| decoded.clone()).into_owned();
-                match current_value {
-                    Some(b"f") => sparkline.formula.push_str(&value),
-                    Some(b"sqref") => sparkline.target.push_str(&value),
-                    _ => {}
-                }
-            }
-            Ok(Event::End(element)) => {
-                match local_name(element.name().as_ref()) {
-                    b"f" if in_sparkline => { /* populated by the text handler below */ }
-                    b"sparkline" if in_group => {
-                        if let Some(target) = normalize_cell_reference(&sparkline.target) {
-                            if let Some(source) = normalize_formula(&sparkline.formula) {
-                                let kind = match group.kind.as_str() { "column" => "column", "stacked" => "winloss", _ => "line" };
-                                let empty_cells = match group.empty_cells.as_str() { "zero" => "zero", "span" => "connect", _ => "gap" };
-                                result.insert(target, SparklinePayload {
-                                    sparkline_type: kind.into(), source_range: source,
-                                    color: group.series_color.clone().unwrap_or_else(|| "#4472C4".into()),
-                                    negative_color: group.negative_color.clone(), high_point_color: group.high_color.clone(),
-                                    low_point_color: group.low_color.clone(), empty_cells: empty_cells.into(), axis: group.axis.clone(),
-                                    min: group.min, max: group.max,
-                                });
-                            } else { warnings.push("Skipped XLSX sparkline with invalid source formula".into()); }
-                        } else { warnings.push("Skipped XLSX sparkline with invalid target cell".into()); }
-                        in_sparkline = false;
-                    }
-                    b"sparklineGroup" => in_group = false,
-                    _ => {}
-                }
-                if matches!(local_name(element.name().as_ref()), b"f" | b"sqref") { current_value = None; }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
+fn parse_sheet_fragments(
+    fragments: &[Element], resources: &parts::ColorResources, budget: &mut SparklineModelBudget,
+    warnings: &mut Vec<String>,
+) -> Result<HashMap<String, SparklinePayload>, String> {
+    let mut specs = HashMap::new();
+    let mut native_signatures = HashMap::new();
+    let mut rank = 0usize;
+    for group in fragments.iter().filter(|node| node.is(xml::X14_NAMESPACE, "sparklineGroup")) {
+        let fingerprint = io::native_group_fingerprint(group, resources.theme.as_ref(), resources.indexed_colors.as_deref())?;
+        let group_id = format!("office-sparkline-{rank}-{}", &fingerprint[..12]); rank += 1;
+        let decoded = io::decode_native_group(group, &group_id, resources.theme.as_ref(), resources.theme_xml.as_deref(),
+            resources.indexed_colors.as_deref(), warnings)?;
+        for (target, source) in decoded.members {
+            if specs.contains_key(&target) { return Err("SPARKLINE_NATIVE_INVALID: target belongs to multiple native groups".into()); }
+            let mut spec = decoded.settings.clone(); spec.source_range = source;
+            budget.include(&spec)?;
+            native_signatures.insert(target.clone(), io::native_projection_signature(&fingerprint, &target)?);
+            specs.insert(target, spec);
         }
     }
-    result
-}
-
-fn normalize_formula(value: &str) -> Option<String> {
-    let reference = value.rsplit_once('!').map_or(value, |(_, reference)| reference).replace('$', "");
-    let mut parts = reference.split(':');
-    let first = normalize_cell_reference(parts.next()?)?;
-    let last = normalize_cell_reference(parts.next().unwrap_or(&first))?;
-    if parts.next().is_some() { return None }
-    Some(if first == last { first } else { format!("{first}:{last}") })
-}
-
-fn normalize_cell_reference(value: &str) -> Option<String> {
-    let value = value.trim().replace('$', "");
-    let split = value.find(|ch: char| ch.is_ascii_digit())?;
-    let (letters, digits) = value.split_at(split);
-    if letters.is_empty() || !letters.bytes().all(|ch| ch.is_ascii_alphabetic()) { return None }
-    let row = digits.parse::<u32>().ok()?;
-    if row == 0 || row > 1_048_576 { return None }
-    Some(format!("{}{}", letters.to_ascii_uppercase(), row))
-}
-
-fn normalize_color(value: &str) -> Option<String> {
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() != 6 && hex.len() != 8 || !hex.bytes().all(|ch| ch.is_ascii_hexdigit()) { return None }
-    Some(format!("#{}", if hex.len() == 8 { &hex[2..] } else { hex }.to_ascii_uppercase()))
-}
-
-fn relationships(xml: &str) -> Vec<Relationship> {
-    let mut reader = Reader::from_str(xml); reader.config_mut().trim_text(true);
-    let mut result = Vec::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(element) | Event::Empty(element)) if local_name(element.name().as_ref()) == b"Relationship" => {
-                let attrs = attributes(&reader, &element);
-                if let (Some(id), Some(target), Some(kind)) = (attrs.get("Id"), attrs.get("Target"), attrs.get("Type").and_then(|value| value.rsplit('/').next())) {
-                    result.push(Relationship { id: id.clone(), target: target.clone(), kind: kind.into(), external: attrs.get("TargetMode").is_some_and(|value| value == "External") });
-                }
+    let mut local_targets = std::collections::HashSet::new();
+    for local in fragments.iter().filter(|node| node.is(io::MODEL_NAMESPACE, "sparkline")) {
+        if !local.children.is_empty() { return Err("SPARKLINE_MODEL_INVALID: local record must contain JSON text".into()); }
+        let mut record: SparklineModelRecord = serde_json::from_str(&local.text).map_err(|error| format!("SPARKLINE_MODEL_INVALID: invalid local record: {error}"))?;
+        let target = io::normalize_target(&record.target).ok_or("SPARKLINE_MODEL_INVALID: invalid local target")?;
+        if local.attribute_ns("", "target") != Some(target.as_str()) || !local_targets.insert(target.clone()) {
+            return Err("SPARKLINE_MODEL_INVALID: conflicting/duplicate local target".into());
+        }
+        record.spec.validate()?;
+        if record.spec.sparkline_type == "pie" {
+            if record.native_signature.is_some() { return Err("SPARKLINE_MODEL_INVALID: Pie cannot declare a native projection".into()); }
+            if native_signatures.contains_key(&target) {
+                warnings.push(format!("SPARKLINE_LOCAL_STALE: native content at {target} takes precedence over the local Pie record"));
+                continue;
             }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
+            budget.include(&record.spec)?; specs.insert(target, record.spec);
+            warnings.push(format!("SPARKLINE_LOCAL_ONLY: Pie at {target} was restored from the editable Office Studio extension"));
+        } else {
+            let signature = record.native_signature.as_deref().filter(|value| value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .ok_or("SPARKLINE_MODEL_INVALID: native record needs a valid projection signature")?;
+            if native_signatures.get(&target).map(String::as_str) != Some(signature) {
+                warnings.push(format!("SPARKLINE_LOCAL_STALE: native sparkline at {target} was changed/deleted; its old local configuration was not applied"));
+                continue;
+            }
+            let previous = specs.get(&target).ok_or("SPARKLINE_MODEL_INVALID: matching native target is unavailable")?;
+            // Refresh inert source resources from the actual package. Unrelated external theme edits
+            // must survive even when the group's resolved colors still match its native signature.
+            record.spec.office_source = previous.office_source.clone();
+            budget.replace(previous, &record.spec)?;
+            specs.insert(target, record.spec);
         }
     }
-    result
+    Ok(specs)
 }
 
-fn workbook_sheets(xml: &str) -> Vec<(String, String)> {
-    let mut reader = Reader::from_str(xml); reader.config_mut().trim_text(true);
-    let mut result = Vec::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(element) | Event::Empty(element)) if local_name(element.name().as_ref()) == b"sheet" => {
-                let attrs = attributes(&reader, &element);
-                if let (Some(name), Some(id)) = (attrs.get("name"), attrs.get("id")) { result.push((name.clone(), id.clone())); }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-    }
-    result
-}
-
-fn attributes(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> HashMap<String, String> {
-    element.attributes().with_checks(false).filter_map(Result::ok).filter_map(|attribute| {
-        let name = std::str::from_utf8(local_name(attribute.key.as_ref())).ok()?.to_owned();
-        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).ok()?.into_owned();
-        Some((name, value))
-    }).collect()
-}
-
-fn read_xml_part(archive: &mut ZipArchive<std::io::Cursor<&[u8]>>, path: &str) -> Result<Option<String>, String> {
-    let mut entry = match archive.by_name(path) { Ok(entry) => entry, Err(zip::result::ZipError::FileNotFound) => return Ok(None), Err(error) => return Err(format!("Could not read XLSX package part {path}: {error}")) };
-    if entry.size() > 16 * 1024 * 1024 { return Err(format!("XLSX metadata XML part {path} exceeds the parser limit")) }
-    let mut value = String::with_capacity(entry.size() as usize);
-    entry.read_to_string(&mut value).map_err(|error| format!("Could not decode XLSX package part {path}: {error}"))?;
-    Ok(Some(value))
-}
-
-fn relationship_part_path(source: &str) -> String {
-    match source.rsplit_once('/') { Some((directory, file)) => format!("{directory}/_rels/{file}.rels"), None => format!("_rels/{source}.rels") }
-}
-
-fn resolve_target(source: &str, target: &str) -> Option<String> {
-    if target.contains(':') || target.starts_with("//") { return None }
-    let mut parts = if target.starts_with('/') { Vec::new() } else { source.rsplit_once('/').map(|(directory, _)| directory.split('/').collect()).unwrap_or_default() };
-    for part in target.trim_start_matches('/').split('/') { match part { "" | "." => {}, ".." => { parts.pop()?; }, value => parts.push(value) } }
-    (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-fn local_name(value: &[u8]) -> &[u8] { value.rsplit(|byte| *byte == b':').next().unwrap_or(value) }
+#[cfg(test)]
+#[path = "sparkline_sidecar_tests.rs"]
+mod tests;

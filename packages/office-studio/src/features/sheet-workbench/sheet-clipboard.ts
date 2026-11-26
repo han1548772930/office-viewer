@@ -194,7 +194,7 @@ export function applySheetClipboardPastePlan(draft: WorkbookModel, plan: SheetCl
     if (plan.workbookMetadata === undefined) delete draft.metadata
     else draft.metadata = cloneModel(plan.workbookMetadata)
   }
-  if (plan.workbookResources) for (const key of ['tables', 'pivotTables', 'charts', 'slicers'] as const) {
+  if (plan.workbookResources) for (const key of ['tables', 'pivotTables', 'pivotCaches', 'charts', 'slicers', 'slicerCaches'] as const) {
     const resources = plan.workbookResources[key]
     if (resources === undefined) delete draft[key]
     else Object.assign(draft, { [key]: cloneModel(resources) })

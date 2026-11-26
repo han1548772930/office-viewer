@@ -65,7 +65,7 @@ function transformedPolygon(element: NativeElement): ChartVector[] {
   }
   return points.every(point => Number.isFinite(point.x) && Number.isFinite(point.y)) ? points : []
 }
-function transformedBounds(element: PaintedElement, frame: RenderRect): RenderRect | undefined {
+export function transformedBounds(element: PaintedElement, frame: RenderRect): RenderRect | undefined {
   let points = transformedPolygon(element)
   for (const clip of element.__clipPaths ?? []) {
     // The native Cartesian plot and scrolling legend use rect clip paths.

@@ -1,7 +1,7 @@
 # Docs 与 Sheets 顶部功能区对齐清单
 
 审阅日期：2026-11-21  
-静态入口复算快照：2026-11-22；2026-11-25 人工更新 Docs 常规根声明与续作证据，未执行产品、factory 或商业 SDK。
+静态入口复算快照：2026-11-22；2026-11-25–26 人工更新 Docs/Sheets 常规根声明与续作证据，未执行产品、factory 或商业 SDK。
 固定 Univer 版本：`eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公开说明为准。
 
@@ -48,16 +48,16 @@ v1.6.0 OSS 常规 Ribbon 静态根声明为 **38 项**，来自 `scripts/audit-u
 
 ### Sheets
 
-v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-26 本地常规 schema 为 **69 项**，含新增[本地范围主题根](SHEET-04-range-themes.md)；68 为此前快照。此处替换此前 62/75/78 等混用计数；根声明与子项分开，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
+v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-26 人工回读本地常规 schema 为 **71 项（30/7/11/17/6）**，含范围主题、图片与背景根；69/68 为此前清单快照。根声明与子项分开，More 不增加数量。Pro 注册中的重复挂载、替换与上下文条件仍待继续追踪，不将历史 1.5.2 的 15 项加到当前 OSS 数字。完整逐组、上下文、处理器和 Pro 边界见[Sheets Ribbon 源码入口清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md)、[图片入口](SHEET-19-images.md)及[Pro Ribbon 统计](../UNIVER_TOOLBAR_PARITY.md#根入口统计与布局)。
 
 | 标签 | 固定版根项 | 本地当前根项 | 主要差异 |
 | --- | ---: | ---: | --- |
 | START / 开始 | 30 | 30 | 本地 clipboard 5、font 11、layout 6、number 5、tools 3；工具第 3 项为本地范围主题，grid r1c3 跨两行。数量相同不表示入口语义一致；查找在 Data，快捷键/功能搜索和全部动态状态仍须核对。 |
-| INSERT / 插入 | 9 | 6 | 本地 media 3、cells 3；超链接、图表、迷你图及快速验证有入口。图片、线程评论和快捷数据条/图标集仍缺完整入口闭环。 |
+| INSERT / 插入 | 9 | 7 | 本地 media 4、cells 3；图片根在媒体首项 r1c1 跨两行，浮动/单元格图片两子项；超链接、图表、迷你图及快速验证已有接线。线程评论和快捷数据条/图标集仍缺完整入口闭环；图片保真/Office 未验收。 |
 | FORMULAS / 公式 | 12 | 11 | 固定版是常用加十类函数菜单与计算选项；本地 8 个 catalog 根分类、计算模式/编辑公式/重算 3 项，完整函数目录与语义未齐。 |
 | DATA / 数据 | 6 | 17 | 本地 organization 2、rules 2、pivot 4、outline 8、data-tools 1。筛选切换/清除/重应用已接入；表格选择器及完整 Pro 分组/分析仍须核对。 |
-| VIEW / 视图 | 6 | 5 | 十字高亮属于固定 OSS 入口；仍缺工作表背景图及添加/删除完整闭环。 |
-| 合计 | **63** | **69** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
+| VIEW / 视图 | 6 | 6 | 本地 display 4、visibility 2；背景根在冻结后、order 0.5、r1c2 跨两行，设置/删除两子项接实际模型；十字高亮属于固定 OSS 入口。背景历史/资源重开、两后端和所有动态状态仍未验收。 |
+| 合计 | **63** | **71** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
 
 Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。零根项的组不进入数量；根声明按菜单 schema 的产品归属静态投影。固定 desktop 装配与 factory 决定最终显隐，尚未执行。本地公式按当前 117 项 catalog 的 8 类静态展开；没有执行求值引擎。
 
@@ -66,6 +66,8 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 填充柄外观使用 1 CSS px 选区/预览边框，2026-11-21 历史描边测试覆盖 0.75、1 和 1.5 缩放，不覆盖后续修改。2026-11-25 已补共享 AutoFill/Refill/CopyDown/CopyRight/AutoClear、FRange 和 Ctrl/Cmd+D/R；Canvas 使用 antdv-next 四模式选项，拖动和双击共用推断默认、单向范围和内缩清尾。序列新增数值线性/等比、文本数字/补零、中文数字/星期、英文星期/月份及其他循环；筛选行、合并、CF/DV、权限与验证进入同一候选事务。重填修订同一历史，等价内容只更新选区/菜单；边缘自动滚动沿用现有调度。见 [SHEET-02 自动填充证据](SHEET-02-auto-fill.md)。本批草稿未执行，standalone 重填 receipt、超过同步预算的 Worker、完整日期/公式边界、真实 IME/冻结/主题/滚动和 Office 往返仍未验收。
 
 2026-11-26 [局部移位事务](SHEET-02-cell-shift-transactions.md)复用四核心+四确认命令、两个父项/四个移位子项，右键子项顺序按固定 schema；新增常规/扩展/溢出/独立上下文根均为 0。确认、Facade Dimension、完整候选/资源、权限/验证、内容与选择历史、宿主重入保护已落盘，56 个草稿未运行；完整 drawing/media、全部资源组合、Office、IME/两后端和性能仍有缺口。
+
+同日[共享绘图工作台](SHEET-21-drawing-workbench-affine.md#entry-inventory)接组合/排列/对齐三个右键父项（2/4/8 叶）及本地删除，Canvas 浮条四个控件复用同一命令。它们属于上下文展示位置，本批常规/顶部扩展/独立 More 根增量均为 0。八个对齐 operation ID 已按固定 `sheet.operation` 前缀修正；后续 `sheet.command.move-drawing` 方向键/API 入口、实际尺寸边界与 1000ms 连续历史不新增 Ribbon 根。主任务当前 82 条、Sheets 图片批 66 条及[Docs 图片批](DOC-07-image-editing.md#image-batch)57 条草稿均未运行，[slicer/timeline affine 与 Ant 控件](SHEET-25-slicer-timeline-affine.md)已补入独立 98/182 未运行草稿；[Pro 多目标连接](SHEET-25-slicer-connections.md)另批已落盘未验收。完整 shape 作者、交叉筛选成员状态/Pro API、组 clipboard、Office 与性能仍缺。
 
 ## 顶部入口对应功能闭环
 
@@ -79,7 +81,7 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] DOC-04 大纲、标题折叠和正文目录；目录入口、上下文更新/删除、跳转、页码与前导符完整闭环。
 - [ ] DOC-05 列表和增强列表。
 - [ ] DOC-06 表格、表格上下文命令、尺寸、合并拆分和样式。
-- [ ] DOC-07 图片、绘图、锚点及文字环绕。
+- [ ] DOC-07 图片、绘图、锚点及文字环绕；[单图/inline 与多选、六对齐/两分布/均匀变换/批删、四 Facade 和 57 条新草稿](DOC-07-image-editing.md#image-batch)，未验收。跨页 anchor、混合对象/非均匀 affine、Office 和真实 UI/性能仍缺。
 - [ ] DOC-08 超链接和书签。
 - [ ] DOC-09 查找替换及范围/选区作用域。
 - [ ] DOC-10 线程评论入口、锚点、回复/编辑/解决、权限和持久同步。
@@ -105,8 +107,8 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] SHEET-04 样式、默认样式、范围主题及混合态；[富文本/Canvas](SHEET-04-05-rich-text-font-editing.md)、[默认来源/引用/reset/空白复制填充与 58 个草稿](SHEET-04-default-style-inheritance.md)、[短字段读回与 13 个草稿](SHEET-04-public-style-readback.md)、[32 内置/九区段/共享命令/Ant 弹窗与 46 个草稿](SHEET-04-range-themes.md)、[九区段 Ant 表单/原子保存应用与 45 个新草稿](SHEET-04-range-theme-editor.md)、[局部移位/剪切与 32 个草稿](SHEET-04-range-theme-structure.md)，未验收。
 - [ ] SHEET-05 富文本；[局部格式/typing/API、连续拖选/换行定位与 55 个草稿](SHEET-04-05-rich-text-font-editing.md)，未验收。
 - [ ] SHEET-06 数字格式和 1900/1904 日期系统。
-- [ ] SHEET-07 冻结、网格线、视口和缩放。
-- [ ] SHEET-08 剪贴板和选择性粘贴。
+- [ ] SHEET-07 冻结、网格线、视口和缩放；[冻结图表作者输入与共享绘图命中](SHEET-21-drawing-workbench-affine.md)，未验收。
+- [ ] SHEET-08 剪贴板和选择性粘贴；[图片作者 affine/HTML/PNG 取消与资源](SHEET-19-images.md)，未验收。
 - [ ] SHEET-09 公式、函数和定义名称。
 - [ ] SHEET-10 高级公式（Pro 目标）。
 - [ ] SHEET-11 筛选。
@@ -117,13 +119,13 @@ Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；I
 - [ ] SHEET-16 超链接。
 - [ ] SHEET-17 批注与线程评论。
 - [ ] SHEET-18 结构化表格。
-- [ ] SHEET-19 图片和水印。
+- [ ] SHEET-19 图片和水印；[图片/背景两常规根、完整矩阵剪贴板、锚点投影与 66 条草稿](SHEET-19-images.md)、[最终 filter/auto-height 与组框生命周期](SHEET-21-drawing-workbench-affine.md#model-lifecycle)，未验收；水印及 Office 仍缺。
 - [ ] SHEET-20 十字高亮。
-- [ ] SHEET-21 形状及绘图（Pro 目标）。
+- [ ] SHEET-21 形状及绘图（Pro 目标）；[组合/混合层级与 45 条草稿](SHEET-21-drawing-groups-and-mixed-order.md)、[选区/对齐/移动/Canvas/Facade、作者 affine 与 82 条草稿](SHEET-21-drawing-workbench-affine.md)，未验收；[slicer/timeline affine、五类叶/组与 Ant 控件](SHEET-25-slicer-timeline-affine.md)及 [Pro 多目标连接](SHEET-25-slicer-connections.md)已另批落盘但未运行。完整 shape 作者、交叉筛选成员状态/Pro API 和组 clipboard/Office 仍缺。
 - [ ] SHEET-22 可编辑图表（Pro 目标）；[逐型审计](SHEET-22-chart-type-audit.md)、[Relation/词云资源](SHEET-22-relation-word-cloud-resources.md)、[图例](SHEET-22-legend-selection-wrap.md)、[标题配置](SHEET-22-title-subtitle-contract.md)、[标题直接编辑](SHEET-22-title-direct-editing.md)、[绘图区大小/恢复](SHEET-22-plot-area-direct-editing.md)、[层级图 Ant Tooltip](SHEET-22-hierarchy-ant-tooltip.md)、[四个对象上下文根/剪贴板/PNG/删除与 34 个草稿](SHEET-22-chart-object-context-actions.md)、[真实 Drawer 路由/草稿保护与 33 个草稿](SHEET-22-chart-edit-panel-routing.md)、[Line/Smooth/Step 二维/3D 与 34 个新草稿](SHEET-22-line-and-area-styles.md)，均未验收。27 route 分组是导航分类，不是完成数量；本批线型常规根增量为 0。
-- [ ] SHEET-23 数据透视表（Pro 目标）。
-- [ ] SHEET-24 透视图（Pro 目标）。
-- [ ] SHEET-25 切片器和时间线（Pro 目标）。
+- [ ] SHEET-23 数据透视表（Pro 目标）；[固定 15 项值显示方式](SHEET-23-24-pivot-show-data-as.md)与 [命令/Facade/linked 图格式](SHEET-23-24-pivot-show-data-as-facade.md)已落盘，枚举不计 Ribbon 根，所有草稿未运行；完整 UI/展开折叠/日期条件/Office/大样本继续闭环。
+- [ ] SHEET-24 透视图（Pro 目标）；[owned/linked 创建与一次作者配置](SHEET-24-owned-pivot-charts.md)、[字段引擎](SHEET-24-pivot-chart-engine.md)及 [四字段区/11 汇总/标签筛选 UI](SHEET-24-pivot-chart-ui.md)已落盘；上游两条互斥根、两个创建子项、四个轴子项与动态层级单列，本地常规根增量 0；全部草稿未运行，同时创建表图/展开折叠/全部 Pro API/Office/真实 UI/性能继续闭环。
+- [ ] SHEET-25 切片器和时间线（Pro 目标）；[原 affine/Ant 与 98/182 草稿](SHEET-25-slicer-timeline-affine.md)、[共享多目标连接/Facade/历史](SHEET-25-slicer-connections.md)、[四格式根与连接 UI](SHEET-25-slicer-connections-ui.md)、[复制/结构生命周期](SHEET-25-slicer-connections-lifecycle.md)已落盘，常规根增量 0、上下文四根分开统计；全部新草稿未运行，完整交叉筛选成员状态、日期/Pro API、缺依赖跨 workbook、Office 与真实 UI/性能仍缺。
 - [ ] SHEET-26 迷你图（Pro 目标）。
 - [ ] SHEET-27 大纲分组（Pro 目标）。
 - [ ] SHEET-28 打印和 PDF（Pro 目标）。

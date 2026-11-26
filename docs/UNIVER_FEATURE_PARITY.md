@@ -38,11 +38,13 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | COMMON-09 | 语义对比与恢复 | [公开对比规格][shared-compare]及历史规格 | 内容/样式/结构差异、范围定位与只读历史视图；恢复形成新版本而非清空日志 | 未验收 |
 | COMMON-10 | 跨文档嵌入（Pro 目标） | [公开嵌入规格][shared-embed] | Docs 嵌 Sheets、Sheets 对象/标签嵌 Docs；父子独立模型、焦点/权限/保存/生命周期；明确引用与快照语义 | 未验收 |
 | COMMON-11 | Canvas/WebGPU、大文件与 Worker/WASM | 公开源码引擎边界 + 用户技术要求 | Canvas 内容渲染、WebGPU 优先/2D 回退；大计算优先 Rust/WASM；进度/取消/过期结果、稀疏/视口、内存与真实基准 | 未验收；基准方法见 [COMMON-11 基准记录](feature-evidence/COMMON-11-compute-benchmark.md) |
-| COMMON-12 | 图片/媒体资源管理 | 公开源码 drawing、ImageIo | 资源 ID、二进制/关系、锚点/尺寸/裁剪/旋转/层级、引用计数；复制粘贴和保存后资源不丢失 | 未验收 |
+| COMMON-12 | 图片/媒体资源管理 | 公开源码 drawing、ImageIo | 资源 ID、二进制/关系、锚点/尺寸/裁剪/旋转/层级、引用计数；复制粘贴和保存后资源不丢失 | 未验收；[Sheets affine/HTML/PNG 与资源保真草稿](feature-evidence/SHEET-19-images.md)、[Docs 图片批量编辑与资源](feature-evidence/DOC-07-image-editing.md#image-batch) |
 
 协作、版本历史、持久评论与权限需要本项目内的真实服务及协议。BroadcastChannel 或多个本地数组只能作为辅助测试，不能替代跨用户服务验收。公开的“collaboration: true”、命令常量或数据类型并不构成能力实现。
 
 2026-11-25 用户要求先完成前端，后端暂缓；ntex、同步作业、协作/权限/持久历史等需求保存在[后端需求](BACKEND_REQUIREMENTS.md)，全部范围和未验收状态保留。
+
+2026-11-26 [绘图工作台接线](feature-evidence/SHEET-21-drawing-workbench-affine.md)扩展 COMMON-02/03/05/06/12：共享 typed 选区、主动空选区与 owner 生命周期、混合对象命令及 Facade、内容/选择历史与前后 footprint 权限、图片作者 HTML 和 PNG 取消/释放均已落盘。后续已接固定移动命令、实际 skeleton 边界、selection generation 和 1000ms 连续快照历史。主任务当前 82 条草稿（初批 53 条）、Sheets 图片批 66 条、Docs 批量图片 57 条均未运行；不据此验收系统剪贴板、Windows IME、两后端、Office 或性能。
 
 ## 3. Sheets 全量目标
 
@@ -68,13 +70,13 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-16 | 超链接 | [超链接][sheet-links]、公开源码 hyper-link | 普通/富文本链接、URL/内部范围/工作表目标、编辑/删除、引用变换和安全跳转 | 未验收 |
 | SHEET-17 | 批注与线程评论 | [批注][sheet-notes]、[评论][sheet-comments]、公开源码 note/thread-comment | 普通 Note 与 ThreadComment 分模型；锚点随行列变化、回复/解决、用户与持久同步 | 未验收 |
 | SHEET-18 | 结构化表格 | [表格][sheet-table]、公开源码 table | 表范围/列/表头/汇总行、样式、自动扩展、筛选排序联动、结构化引用、转换回范围及导出 | 未验收 |
-| SHEET-19 | 图片与水印 | [图片][sheet-images]、[水印][sheet-watermark]、公开源码 drawing/watermark | 插入/替换/移动/裁剪/缩放、锚点、文字/图片水印；打印及文件写回资源保真 | 未验收 |
+| SHEET-19 | 图片与水印 | [图片][sheet-images]、[水印][sheet-watermark]、公开源码 drawing/watermark | 插入/替换/移动/裁剪/缩放、锚点、文字/图片水印；打印及文件写回资源保真 | 未验收；[图片/背景入口、affine 剪贴板与 66 条草稿](feature-evidence/SHEET-19-images.md)、[最终尺寸/filter/auto-height 投影与共享工作台](feature-evidence/SHEET-21-drawing-workbench-affine.md#model-lifecycle)；水印、Office 和真实性能仍有缺口 |
 | SHEET-20 | 十字高亮 | [公开规格][sheet-crosshair]、公开源码 crosshair-highlight | 活动行列提示、颜色配置、冻结/滚动兼容；纯视图 operation 不改文档内容 | 未验收 |
-| SHEET-21 | 形状及绘图（含 Pro 目标） | [形状规格][sheet-shapes]、公开 drawing 基础 | 几何、箭头/连接线、填充/边框/文本、移动/调整/旋转/层级/组合、命中与 Office 映射 | 未验收 |
+| SHEET-21 | 形状及绘图（含 Pro 目标） | [形状规格][sheet-shapes]、公开 drawing 基础 | 几何、箭头/连接线、填充/边框/文本、移动/调整/旋转/层级/组合、命中与 Office 映射 | 未验收；[组合/混合层级与 45 条草稿](feature-evidence/SHEET-21-drawing-groups-and-mixed-order.md)、[共享选区/对齐/移动/Canvas/Facade、作者 affine 与 82 条草稿](feature-evidence/SHEET-21-drawing-workbench-affine.md)；[slicer/timeline affine、五类叶/组和 Ant 控件、98/182 草稿](feature-evidence/SHEET-25-slicer-timeline-affine.md)已落盘但未运行；完整 shape 作者、组剪贴板、跨 workbook 依赖和 Office 仍缺 |
 | SHEET-22 | 可编辑图表（Pro 目标） | [图表规格][sheet-charts] | 图表类型目录、系列/分类/区域绑定、轴/图例/标签/主题、数据变更刷新、属性面板、可编辑导出 | 未验收；[图型与入口审计](feature-evidence/SHEET-22-chart-type-audit.md)、[Relation/词云资源](feature-evidence/SHEET-22-relation-word-cloud-resources.md)、[图例选择/换行](feature-evidence/SHEET-22-legend-selection-wrap.md)、[主/副标题配置与几何](feature-evidence/SHEET-22-title-subtitle-contract.md)、[层级图 Ant Tooltip](feature-evidence/SHEET-22-hierarchy-ant-tooltip.md)、[四个对象上下文根、复制粘贴/PNG/删除与 34 个草稿](feature-evidence/SHEET-22-chart-object-context-actions.md)、[真实 Drawer 路由/草稿保护与 33 个草稿](feature-evidence/SHEET-22-chart-edit-panel-routing.md)、[Line/Smooth/Step、二维/3D 与 34 个新草稿](feature-evidence/SHEET-22-line-and-area-styles.md) |
-| SHEET-23 | 数据透视表（Pro 目标） | [透视表规格][sheet-pivot] | 数据源/cache、字段行列筛选值、公开汇总方式、小计总计、排序筛选、日期/数字/手工分组、下钻、刷新 | 未验收 |
-| SHEET-24 | 透视图（Pro 目标） | [透视图规格][sheet-pivot-chart] | 依赖透视模型和图表模型、字段联动、筛选刷新、编辑与持久化；不生成独立静态图 | 未验收 |
-| SHEET-25 | 切片器和时间线（Pro 目标） | [公开规格][sheet-slicer] | 表格/透视目标绑定、多选/清除、交叉筛选、日期粒度与时间范围、样式/布局及保存 | 未验收；现有入口与绑定、日期、Office 往返边界见[顶部功能对照](UNIVER_TOOLBAR_PARITY.md#3-sheets-顶部功能逐项映射) |
+| SHEET-23 | 数据透视表（Pro 目标） | [透视表规格][sheet-pivot]、固定 v1.6.0 发布 UI/类型 | 数据源/cache、字段行列筛选值、公开汇总方式、小计总计、排序筛选、日期/数字/手工分组、下钻、刷新 | 未验收；[15 种值显示方式共享引擎](feature-evidence/SHEET-23-24-pivot-show-data-as.md)及 [命令/Facade/关联图与格式投影](feature-evidence/SHEET-23-24-pivot-show-data-as-facade.md)已落盘；完整字段 UI、展开折叠/日期条件、Office Cache/Parts 与真实 UI/大样本仍待闭环 |
+| SHEET-24 | 透视图（Pro 目标） | [透视图规格][sheet-pivot-chart]、固定 v1.6.0 Range/PivotTable source/types/UI ES | 依赖透视模型和图表模型、字段联动、筛选刷新、编辑与持久化；不生成独立静态图 | 未验收；[独立/关联创建、一次配置与 Facade](feature-evidence/SHEET-24-owned-pivot-charts.md)、[字段引擎](feature-evidence/SHEET-24-pivot-chart-engine.md)、[创建/四字段区 UI](feature-evidence/SHEET-24-pivot-chart-ui.md)和 [15 项值显示方式](feature-evidence/SHEET-23-24-pivot-show-data-as-facade.md)已落盘，全部草稿未运行；同时创建表图/展开折叠/完整 Pro API、Office 与真实 UI/性能继续实现验收 |
+| SHEET-25 | 切片器和时间线（Pro 目标） | [公开规格][sheet-slicer] | 表格/透视目标绑定、多选/清除、交叉筛选、日期粒度与时间范围、样式/布局及保存 | 未验收；[affine/Ant 画布控件与原 98/182 草稿](feature-evidence/SHEET-25-slicer-timeline-affine.md)、[共享多目标连接、四格式根、Facade/历史与新草稿](feature-evidence/SHEET-25-slicer-connections.md)、[连接 UI](feature-evidence/SHEET-25-slicer-connections-ui.md)、[复制/结构生命周期](feature-evidence/SHEET-25-slicer-connections-lifecycle.md)已落盘但未运行；完整交叉筛选成员状态、日期/Pro API、跨 workbook 缺依赖迁移与 Office/真实 UI/性能仍缺 |
 | SHEET-26 | 迷你图（Pro 目标） | [公开规格][sheet-sparkline] | 公开图型、源范围、分组/比例/空值/负值样式、源更新与复制移动引用、导出 | 未验收 |
 | SHEET-27 | 大纲分组（Pro 目标） | [分组规格][sheet-outline] | 行列嵌套组、层级、折叠/展开、汇总方向；与筛选/手动隐藏原因组合，不互相覆盖 | 未验收 |
 | SHEET-28 | 打印和 PDF（Pro 目标） | [打印规格][sheet-print] | 纸张/方向/边距/打印区域/缩放适页、分页预览、重复标题、页眉页脚、网格与隐藏处理、真实输出 | 未验收 |
@@ -82,6 +84,8 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | SHEET-30 | 工作簿/工作表/范围保护 | [权限规格][sheet-permission]、公开源码 permission | 保护粒度、可执行操作、只读反馈与撤销/协作边界；服务端验证，不能仅隐藏菜单 | 未验收 |
 
 每个模块的“全部公开”指固定基线对应的具体行为/函数/图型目录，不代表可以用一条笼统说明代替细项。开发前把目录展开为可测试子项；未核实的子项记录为待核实，不能自行选择一小部分后将整个模块标完成。
+
+同日绘图接线还涉及 SHEET-03/07/08/22/25/29：最终轴投影在 filter/auto-height 后一次发布、冻结图表作者事件复用 local↔world affine、完整叶顺序决定输入 owner、图片 HTML/PNG 与七项 FWorksheet 绘图 API 已接入。来源、布局、命令、差异与未运行草稿统一见[绘图工作台证据](feature-evidence/SHEET-21-drawing-workbench-affine.md)。固定 move-drawing 与连续微移历史已落盘；[slicer/timeline 与五类叶/组变换、Ant 控件](feature-evidence/SHEET-25-slicer-timeline-affine.md)已补入但未运行；极端边界及真实 UI/文件样本仍未验收，不以入口接线或内部 JSON 关闭这些 ID。
 
 ## 4. Docs 全量目标
 
@@ -95,7 +99,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | DOC-04 | 左侧大纲、标题折叠和正文目录 | [目录规格][doc-toc]、公开源码 DocSideMenu/docs-toc/doc-heading-collapse/docs-toc-ui | 大纲导航；现代标题折叠保留子状态、隐藏选区迁回可见标题、历史/保存/同步；正文目录支持整体/页码更新与删除 | 未验收；[正文目录源码对照与本地差异](feature-evidence/DOC-04-table-of-contents.md) |
 | DOC-05 | 列表与增强列表（含 Pro 目标） | [列表规格][doc-list]、公开基础列表 | 有序/无序/复选、嵌套/升降级、编号连续/重启、样式与重排；复制和导出保留语义 | 未验收；[清单列表切片证据](feature-evidence/DOC-05-checklist.md)、[原生编号资源映射及未运行草稿](feature-evidence/DOC-22-native-numbering-resources.md) |
 | DOC-06 | 表格与增强表格（含 Pro 目标） | [表格规格][doc-table]、公开基础表格 | 行列/单元格模型、插删移动/尺寸、合并拆分、边框背景、文字对齐与整表对齐分别实现；上游整表对齐限传统模式，跨页/嵌套细项待核实并保留目标 | 未验收；[17 根清点、候选事务/续格/富文本粘贴与未运行草稿](feature-evidence/DOC-06-enhanced-tables.md)、[原生表格来源与读写草稿](feature-evidence/DOC-22-native-tables.md) |
-| DOC-07 | 图片和文字环绕 | [图片规格][doc-images]、公开源码 docs-drawing | 行内/环绕、锚点、偏移、尺寸/裁剪/旋转/层级、替换及 Office 关系；输入/分页随对象更新 | 未验收 |
+| DOC-07 | 图片和文字环绕 | [图片规格][doc-images]、公开源码 docs-drawing | 行内/环绕、锚点、偏移、尺寸/裁剪/旋转/层级、替换及 Office 关系；输入/分页随对象更新 | 未验收；[图片/inline 编辑](feature-evidence/DOC-07-image-editing.md)、[多选/六对齐/两分布/均匀变换/批删、四 Facade 与 57 条新草稿](feature-evidence/DOC-07-image-editing.md#image-batch)；跨页 anchor、混合对象/非均匀变换、Office 和真实 UI/性能仍缺 |
 | DOC-08 | 超链接和书签/锚点 | [超链接规格][doc-links]、公开源码 docs-hyper-link | 范围目标、插入/编辑/删除、位置变换、跳转、序列化与文件映射 | 未验收 |
 | DOC-09 | 查找替换 | [查找替换规格][doc-find]、公开源码 docs-find-replace | 遍历与作用域明确、匹配高亮/定位、可撤销替换；正文表格、页眉页脚等覆盖分别记录，不虚报上游一期限制 | 未验收 |
 | DOC-10 | 线程评论 | [评论规格][doc-comments]、公开源码 docs-thread-comment | 范围锚点、编辑后的定位、回复/解决、权限、用户与持久化同步；不以本地数组验收多人评论 | 未验收 |

@@ -632,6 +632,14 @@ fn parse_workbook(
     } else {
         SparklineSidecar::default()
     };
+    if let Some(details) = sparkline_sidecar.failure.as_deref() {
+        let resource_limit = details.starts_with("SPARKLINE_SOURCE_LIMIT");
+        return Err(ParseFailure::new(
+            if resource_limit { crate::model::ParseErrorCode::ParserFailure } else { crate::model::ParseErrorCode::InvalidOfficeFile },
+            if resource_limit { "Sparkline metadata exceeds the parser resource limit" } else { "Could not preserve sparklines from the XLSX file" },
+            Some(details.to_owned()),
+        ));
+    }
     let mut pivot_sidecar = if format == "xlsx" {
         PivotSidecar::read(bytes)
     } else {
@@ -669,6 +677,11 @@ fn parse_workbook(
     } else {
         crate::sheet_dimension_sidecar::SheetDimensionSidecar::default()
     };
+    let mut outline_sidecar = if format == "xlsx" {
+        crate::sheet_outline_sidecar::SheetOutlineSidecar::read(bytes)
+    } else {
+        crate::sheet_outline_sidecar::SheetOutlineSidecar::default()
+    };
     let mut sheets = workbook
         .sheets
         .iter()
@@ -678,6 +691,7 @@ fn parse_workbook(
     for sheet in &mut sheets {
         validation_sidecar.restore(sheet);
         dimension_sidecar.restore(sheet);
+        outline_sidecar.restore(sheet);
         if let Some(mut native_charts) = pivot_sidecar.native_charts.remove(&sheet.name) {
             let mut previous = std::mem::take(&mut sheet.charts);
             for native in &mut native_charts {
@@ -753,6 +767,7 @@ fn parse_workbook(
     warnings.extend(conditional_format_sidecar.warnings);
     warnings.extend(table_sidecar.warnings);
     warnings.extend(dimension_sidecar.warnings);
+    warnings.extend(outline_sidecar.warnings);
     if workbook.text_truncated {
         warnings.push("Some text cells were omitted after the parser allocation limit".into());
     }
@@ -869,6 +884,8 @@ fn sheet_payload(sheet: &rxls::Sheet, index: usize, validation_sidecar: &mut Val
         hidden_columns: sheet.hidden_columns().iter().copied().collect(),
         row_hidden_spans: Vec::new(),
         column_hidden_spans: Vec::new(),
+        outline: None,
+        source_outline: serde_json::Value::Null,
         auto_filter: None,
         source_auto_filter: None,
         hyperlinks: metadata

@@ -1,5 +1,4 @@
 import type { GridRange, GridViewport, SpreadsheetGeometry } from './layout.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from './layout.ts'
 import type { LineCommand, RenderRect } from '../contracts.ts'
 import { resolveSheetFillTarget, sheetFillPointerTarget } from '../../features/sheet-workbench/sheet-fill-target.ts'
 
@@ -38,8 +37,8 @@ export function sheetRangeDashedOutlineCommands(
       || !pane.columns.some(column => column >= range.startColumn && column <= range.endColumn)) continue
     const frozenRowPane = pane.rows[0]! < geometry.frozenRows
     const frozenColumnPane = pane.columns[0]! < geometry.frozenColumns
-    const originX = GRID_HEADER_WIDTH - (frozenColumnPane ? 0 : viewport.scrollLeft)
-    const originY = GRID_HEADER_HEIGHT - (frozenRowPane ? 0 : viewport.scrollTop)
+    const originX = geometry.headerWidth - (frozenColumnPane ? 0 : viewport.scrollLeft)
+    const originY = geometry.headerHeight - (frozenRowPane ? 0 : viewport.scrollTop)
     const left = originX + geometry.columns.offset(range.startColumn) * viewport.zoom + inset
     const right = originX + geometry.columns.offset(range.endColumn + 1) * viewport.zoom + inset
     const top = originY + geometry.rows.offset(range.startRow) * viewport.zoom + inset

@@ -1,5 +1,5 @@
 import type { DrawCommand, RenderRect } from '../contracts.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, type GridViewport, type SpreadsheetGeometry } from './layout.ts'
+import { type GridViewport, type SpreadsheetGeometry } from './layout.ts'
 import type { SheetAxis, SheetAxisInterval } from '../../domain/sheet-axis-structure.ts'
 
 export interface SheetHeaderDragPreview {
@@ -15,7 +15,7 @@ export function sheetHeaderAxisIndexAt(geometry: SpreadsheetGeometry, viewport: 
   if (!Number.isFinite(coordinate) || !Number.isFinite(viewport.zoom) || viewport.zoom <= 0) return undefined
   const index = axis === 'row' ? geometry.rows : geometry.columns
   const frozen = axis === 'row' ? geometry.frozenRows : geometry.frozenColumns
-  const header = axis === 'row' ? GRID_HEADER_HEIGHT : GRID_HEADER_WIDTH
+  const header = axis === 'row' ? geometry.headerHeight : geometry.headerWidth
   const scroll = axis === 'row' ? viewport.scrollTop : viewport.scrollLeft
   const limit = axis === 'row' ? viewport.height : viewport.width
   if (limit <= header) return undefined
@@ -31,10 +31,10 @@ export function sheetHeaderAxisIndexAt(geometry: SpreadsheetGeometry, viewport: 
 /** Preview commands are CSS coordinates appended after the header scene, on both rendering backends. */
 export function sheetHeaderDragCommands(geometry: SpreadsheetGeometry, viewport: GridViewport, preview: SheetHeaderDragPreview | undefined,
   colors: SheetHeaderDragColors): DrawCommand[] {
-  if (!preview || viewport.width <= GRID_HEADER_WIDTH || viewport.height <= GRID_HEADER_HEIGHT) return []
+  if (!preview || viewport.width <= geometry.headerWidth || viewport.height <= geometry.headerHeight) return []
   const { axis, source, destination } = preview, index = axis === 'row' ? geometry.rows : geometry.columns
   const frozen = axis === 'row' ? geometry.frozenRows : geometry.frozenColumns
-  const header = axis === 'row' ? GRID_HEADER_HEIGHT : GRID_HEADER_WIDTH
+  const header = axis === 'row' ? geometry.headerHeight : geometry.headerWidth
   const scroll = axis === 'row' ? viewport.scrollTop : viewport.scrollLeft
   const extent = axis === 'row' ? viewport.height : viewport.width
   const frozenEnd = Math.min(extent, header + index.offset(frozen) * viewport.zoom)

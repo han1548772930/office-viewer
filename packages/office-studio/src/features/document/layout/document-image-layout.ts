@@ -10,6 +10,13 @@ export function documentImageFrameCorners(image: DocumentImageFrame) {
   return ([['nw', -1, -1], ['ne', 1, -1], ['se', 1, 1], ['sw', -1, 1]] as const).map(([corner, dx, dy]) => ({ corner,
     x: centerX + dx * width * cosine / 2 - dy * height * sine / 2, y: centerY + dx * width * sine / 2 + dy * height * cosine / 2 }))
 }
+/** The stem length stays in screen pixels at every editor zoom. */
+export function documentImageRotationHandle(image: DocumentImageFrame, zoom: number) {
+  const corners = documentImageFrameCorners(image), first = corners[0]!, second = corners[1]!
+  const stemX = (first.x + second.x) / 2, stemY = (first.y + second.y) / 2
+  const radians = (image.angle ?? 0) * Math.PI / 180, distance = 24 / Math.max(0.1, zoom / 100)
+  return { stemX, stemY, x: stemX + Math.sin(radians) * distance, y: stemY - Math.cos(radians) * distance }
+}
 export function documentImageBox(image: DocumentImage, available: number, maximumHeight: number): DocumentImageBox {
   const angle = (image.angle ?? 0) * Math.PI / 180
   // Width/height describe the visible crop frame; fractions select source pixels inside it.

@@ -307,7 +307,7 @@ export function tagChartCanvasElementCommands(commands: DrawCommand[], start: nu
 export function chartCanvasCommandElement(command: DrawCommand): ChartCanvasElement | undefined {
   return 'chartCanvasElement' in command ? readChartCanvasElement(command.chartCanvasElement) : undefined
 }
-export function chartCanvasElementOutline(target: ChartCanvasElementTarget, position: ChartVector, color: string, width = 1.5): DrawCommand[] {
+export function chartCanvasElementOutline(target: Pick<ChartCanvasElementTarget, 'bounds'>, position: ChartVector, color: string, width = 1.5): DrawCommand[] {
   const { bounds } = target, x = bounds.x + position.x, y = bounds.y + position.y
   return [{ kind: 'line', x1: x, y1: y, x2: x + bounds.width, y2: y, color, width },
     { kind: 'line', x1: x + bounds.width, y1: y, x2: x + bounds.width, y2: y + bounds.height, color, width },

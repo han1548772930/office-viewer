@@ -1,4 +1,5 @@
-import { defaultCellStyle, type CellScalar, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SparklineSpec, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../domain/model.ts'
+import { defaultCellStyle, type CellScalar, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../domain/model.ts'
+import { normalizeWorkbookSparkline } from './workbookSparkline.ts'
 import { conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from '../features/conditional-formatting/conditional-format-office-source.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import type { ParseEnvelope } from './contracts.ts'
@@ -9,6 +10,9 @@ import { normalizeWorkbookAutoFilter } from './workbookAutoFilter.ts'
 import { normalizeWorkbookDataValidations } from './workbookDataValidation.ts'
 import { normalizeWorkbookCharts } from './workbookCharts.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
+import { normalizeSlicerCaches } from '../features/slicer/slicer-connections.ts'
+import { importSlicerStyleResources } from '../features/slicer/slicer-style-resources.ts'
+import { applySheetOutlineImport, reconcileSheetOutlineImportedVisibility } from '../features/sheet-outline/sheet-outline-import.ts'
 
 function normalizeCell(value: unknown): SpreadsheetCell {
   const raw = record(value)
@@ -29,7 +33,7 @@ function normalizeCell(value: unknown): SpreadsheetCell {
     cachedDataType: typeof raw.cachedDataType === 'string' ? raw.cachedDataType : null,
     richText: array(raw.richText).map(record),
     hyperlink: typeof raw.hyperlink === 'string' ? raw.hyperlink : null,
-    sparkline: normalizeSparkline(raw.sparkline),
+    sparkline: normalizeWorkbookSparkline(raw.sparkline, row, col),
     style: {
       ...base,
       font: {
@@ -46,26 +50,6 @@ function normalizeCell(value: unknown): SpreadsheetCell {
       shrinkToFit: !wrap && style.shrinkToFit === true, border: record(style.border), metadata: style,
     },
     metadata: { source: raw },
-  }
-}
-
-function normalizeSparkline(value: unknown): SparklineSpec | undefined {
-  const raw = record(value)
-  const type = raw.type
-  if (type !== 'line' && type !== 'column' && type !== 'winloss') return undefined
-  const color = text(raw.color)
-  const sourceRange = text(raw.sourceRange)
-  if (!/^#[0-9a-f]{6}$/i.test(color) || !/^[A-Z]{1,3}[1-9]\d*(?::[A-Z]{1,3}[1-9]\d*)?$/i.test(sourceRange)) return undefined
-  const optionalColor = (candidate: unknown) => typeof candidate === 'string' && /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : undefined
-  const emptyCells = raw.emptyCells === 'zero' || raw.emptyCells === 'connect' ? raw.emptyCells : 'gap'
-  const axis = raw.axis === 'custom' ? 'custom' : 'individual'
-  const minimum = finite(raw.min, Number.NaN)
-  const maximum = finite(raw.max, Number.NaN)
-  return {
-    type, sourceRange: sourceRange.toUpperCase(), color,
-    negativeColor: optionalColor(raw.negativeColor), highPointColor: optionalColor(raw.highPointColor), lowPointColor: optionalColor(raw.lowPointColor),
-    emptyCells, axis,
-    ...(axis === 'custom' && Number.isFinite(minimum) && Number.isFinite(maximum) && minimum < maximum ? { min: minimum, max: maximum } : {}),
   }
 }
 
@@ -250,13 +234,15 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     zoom: positive(raw.zoom, 100) / 100,
     metadata: { source: raw, axisDimensions: { sourceUnit: axis.compatibility, valuesKeptForLegacyView: axis.compatibility === 'legacyUnspecified' } },
   }
+  const outlineImport = applySheetOutlineImport(normalized, raw)
   const filterExtension = record(record(raw.sourceAxisDimensions).projectAutoFilterExtension)
   const axesExtension = record(record(raw.sourceAxisDimensions).projectAxisExtension)
   if (autoFilter && raw.sourceAutoFilter && filterExtension.restored !== true) {
     // Standard XLSX has one hidden bit for multiple causes. Criteria identify
     // failed rows; exact project geometry retains manual overlaps separately.
     const filteredRows = new Set(refreshAutoFilter(normalized))
-    if (axesExtension.restored !== true) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
+    if (axesExtension.restored !== true && !outlineImport.hiddenReasonsExact) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
+    reconcileSheetOutlineImportedVisibility(normalized, outlineImport, [...filteredRows])
   }
   return normalized
 }
@@ -290,7 +276,7 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
       if (area !== 'row' && area !== 'column' && area !== 'filter' && area !== 'value') return []
       const aggregation = field.aggregation
       return [{
-        id: text(field.id), sourceColumn: finite(field.sourceColumn), name: text(field.name), area, position: finite(field.position),
+        id: text(field.id), sourceFieldId: text(field.sourceFieldId, String(finite(field.sourceColumn) - startCol)), sourceColumn: finite(field.sourceColumn), name: text(field.name), area, position: finite(field.position),
         ...(typeof field.displayName === 'string' ? { displayName: field.displayName } : {}),
         ...(aggregation === 'average' || aggregation === 'count' || aggregation === 'countNums' || aggregation === 'max' || aggregation === 'min' || aggregation === 'product' || aggregation === 'stdDev' || aggregation === 'stdDevp' || aggregation === 'sum' || aggregation === 'var' || aggregation === 'varp' ? { aggregation } : {}),
       }]
@@ -299,7 +285,9 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
     const options = record(raw.options)
     return [{
       id: text(raw.id, `pivot-${index + 1}`),
-      source: { unitId, subUnitId: sourceSheetId, sheetName: text(source.sheetName), range: { startRow, startCol, endRow, endCol } },
+      ...(text(raw.pivotCacheId || source.pivotCacheId) ? { pivotCacheId: text(raw.pivotCacheId || source.pivotCacheId) } : {}),
+      source: { unitId, subUnitId: sourceSheetId, sheetName: text(source.sheetName), range: { startRow, startCol, endRow, endCol },
+        ...(typeof source.pivotCacheId === 'string' && source.pivotCacheId.length ? { pivotCacheId: source.pivotCacheId } : {}) },
       anchor: { unitId, subUnitId: targetSheetId, row: outputStartRow, col: outputStartCol },
       outputRange: { startRow: outputStartRow, startCol: outputStartCol, endRow: outputEndRow, endCol: outputEndCol },
       fields,
@@ -309,7 +297,8 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
         showColGrandTotal: options.showColGrandTotal !== false,
         showRowSubtotals: options.showRowSubtotals !== false,
         showColSubtotals: options.showColSubtotals !== false,
-        valuePosition: options.valuePosition === 'row' ? 'row' : 'column',
+        valuePosition: options.valuePosition === 'row' ? 'row' : options.valuePosition === 'none' ? 'none' : 'column',
+        ...(typeof options.valueIndex === 'number' && Number.isSafeInteger(options.valueIndex) && options.valueIndex >= 0 ? { valueIndex: options.valueIndex } : {}),
       },
       revision: finite(raw.revision),
     }]
@@ -348,7 +337,7 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   const pivotTables = normalizePivotTables(data.pivotTables, sheets, id)
   const chartImport = normalizeWorkbookCharts(data.sheets, sheets, pivotTables)
   if (!sheets.length) throw new Error('解析结果不包含工作表，未用空白工作簿替代原文件')
-  return {
+  const workbook: WorkbookModel = {
     id, kind: 'workbook', name: envelope.fileName, sheets,
     activeSheetId: sheets[finite(data.activeSheet)]?.id ?? sheets[0]!.id,
     date1904: data.date1904 === true, modified: false,
@@ -362,4 +351,10 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
       ...(chartImport.unresolved.length ? { unresolvedOfficeCharts: chartImport.unresolved } : {}),
     },
   }
+  const styleImport = importSlicerStyleResources(data)
+  if (styleImport.slicerStyles) workbook.slicerStyles = styleImport.slicerStyles
+  if (styleImport.timelineStyles) workbook.timelineStyles = styleImport.timelineStyles
+  if (styleImport.metadata) Object.assign(workbook.metadata!, styleImport.metadata)
+  normalizeSlicerCaches(workbook)
+  return workbook
 }

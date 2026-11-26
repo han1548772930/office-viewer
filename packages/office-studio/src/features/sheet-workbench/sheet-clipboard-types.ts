@@ -69,7 +69,7 @@ export interface SheetClipboardPasteContext {
   region?: string
   sourceHistoryGeneration?: number
 }
-export type SheetClipboardWorkbookResources = Pick<WorkbookModel, 'tables' | 'pivotTables' | 'charts' | 'slicers'>
+export type SheetClipboardWorkbookResources = Pick<WorkbookModel, 'tables' | 'pivotTables' | 'pivotCaches' | 'charts' | 'slicers' | 'slicerCaches'>
 export interface SheetClipboardPastePlan {
   sheetChanges: SpreadsheetSheet[]
   /** Actual changed cell, range-resource and object locations, grouped by sheet for observers. */

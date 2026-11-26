@@ -11,6 +11,8 @@ const props = defineProps<{
   capabilities(target?: ChartObjectTarget): ChartObjectCapabilities
   execute(action: ChartObjectAction, target: ChartObjectTarget): Promise<boolean>
   restoreFocus(target?: ChartObjectTarget): void
+  interceptContext?(event: MouseEvent): boolean
+  interceptKeyboard?(event: KeyboardEvent): boolean
 }>()
 const emit = defineEmits<{ (event: 'select'): void }>()
 const contextOpen = ref(false), moreOpen = ref(false)
@@ -42,11 +44,15 @@ async function choose({ key }: { key: string | number }): Promise<void> {
 }
 function keyboard(event: KeyboardEvent): void {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+  if (props.interceptKeyboard?.(event)) return
   if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault(); event.stopPropagation(); open('context', true)
   } else if (event.key === 'Escape' && (contextOpen.value || moreOpen.value)) {
     event.preventDefault(); event.stopPropagation(); close(true)
   }
+}
+function context(event: MouseEvent): void {
+  if (props.interceptContext?.(event)) { contextOpen.value = false; moreOpen.value = false; event.preventDefault(); event.stopPropagation() }
 }
 function close(restore = false): void {
   const target = captured.value
@@ -67,7 +73,7 @@ defineExpose({ openKeyboard: () => open('context', true), close })
 </script>
 
 <template>
-  <div class="chart-context-controls" :data-chart-menu-id="chartId" @keydown="keyboard">
+  <div class="chart-context-controls" :data-chart-menu-id="chartId" @keydown="keyboard" @contextmenu.capture="context">
     <Dropdown :trigger="['contextmenu']" :open="contextOpen" :menu="{ items, selectable: false }" auto-focus destroy-on-hidden
       @update:open="value => open('context', value)" @menu-click="choose">
       <slot />

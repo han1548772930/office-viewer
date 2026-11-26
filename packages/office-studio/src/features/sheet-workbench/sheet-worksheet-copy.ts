@@ -10,6 +10,10 @@ import { copySheetCellImage } from '../sheet-images/sheet-image-model.ts'
 import type { SheetDrawingRef } from '../../domain/sheet-drawings.ts'
 import { drawingRefKey } from '../drawing-groups/index.ts'
 import { createSheetDrawingScene } from '../sheet-drawings/sheet-drawing-host.ts'
+import { normalizeSlicerCaches } from '../slicer/slicer-connections.ts'
+import { copyPivotReportCache, copySlicerViewCache } from '../slicer/slicer-connections-lifecycle.ts'
+import { prepareCopiedPivotSourceReport, refreshPivotSourceWorksheetOutputs } from '../pivot/services/pivot-source-lifecycle.ts'
+import { synchronizeLinkedPivotChartReports } from '../pivot/services/pivot-chart-report-lifecycle.ts'
 
 export const COPY_WORKSHEET_COMMAND = 'sheet.command.copy-sheet'
 const fullSheet = { startRow: 0, startCol: 0, endRow: 1_048_575, endCol: 16_383 }
@@ -117,6 +121,8 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
   const name = validateSheetName(targetSheetName, original.sheets)
   if (!name.valid) throw new Error(name.message)
   const workbook = cloneModel(original), target = cloneModel(source)
+  normalizeSlicerCaches(workbook)
+  const pivotCacheIds = new Map<string, string>(), slicerCacheIds = new Map<string, string>(), chartIds = new Map<string, string>()
   const drawingIds = new Map<string, SheetDrawingRef>()
   target.id = targetSheetId
   target.name = targetSheetName
@@ -148,7 +154,7 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
 
   const pivotIds = new Map<string, { id: string; fields: Map<string, string> }>()
   const copiedPivots = (original.pivotTables ?? []).filter(pivot => pivot.anchor.subUnitId === source.id).map(pivot => {
-    const next = cloneModel(pivot), fields = new Map(pivot.fields.map(field => [field.id, newId('pivot-field')]))
+    const next = cloneModel(pivot), fields = new Map(pivot.fields.map(field => [field.id, field.id]))
     next.id = newId('pivot'); next.revision = 0
     next.anchor = { ...next.anchor, subUnitId: target.id }
     if (pivot.source.subUnitId === source.id && (!original.id || pivot.source.unitId === original.id)) {
@@ -161,12 +167,15 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
       fieldFilters: Object.fromEntries(Object.entries(entry.fieldFilters).map(([id, value]) => [fields.get(id) ?? id, value])),
       ...(entry.fieldMembers ? { fieldMembers: Object.fromEntries(Object.entries(entry.fieldMembers).map(([id, value]) => [fields.get(id) ?? id, value])) } : {}),
     }]))
+    copyPivotReportCache(original, workbook, pivot, next, pivotCacheIds)
+    prepareCopiedPivotSourceReport(next)
     pivotIds.set(pivot.id, { id: next.id, fields }); return next
   })
   if (copiedPivots.length) workbook.pivotTables = [...(workbook.pivotTables ?? []), ...copiedPivots]
   const pivotRange = (pivot: PivotTableModel) => pivot.outputRange ?? { startRow: pivot.anchor.row, endRow: pivot.anchor.row, startCol: pivot.anchor.col, endCol: pivot.anchor.col }
   const copiedCharts = (original.charts ?? []).filter(chart => chart.sheetId === source.id).map(chart => {
     const next = cloneModel(chart); next.id = newId('chart'); next.sheetId = target.id; next.revision = 0
+    chartIds.set(chart.id, next.id)
     drawingIds.set(drawingRefKey({ kind: 'chart', id: chart.id }), { kind: 'chart', id: next.id })
     if ((chart.source.sheetId ?? chart.sheetId) === source.id) next.source.sheetId = target.id
     if (chart.pivotTableId) {
@@ -174,6 +183,17 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
       const pivot = workbook.pivotTables?.find(item => item.id === next.pivotTableId)
       if (!pivot) throw new Error('透视图的数据源不存在，无法完整复制。')
       next.source = { ...next.source, sheetId: pivot.anchor.subUnitId, range: { ...pivotRange(pivot) } }
+    }
+    if (chart.ownedPivot && next.ownedPivot) {
+      if (chart.pivotTableId) throw new TypeError('透视图不能同时持有独立报告和链接报告。')
+      next.ownedPivot.id = newId('owned-pivot'); next.ownedPivot.revision = 0
+      next.ownedPivot.anchor = { ...next.ownedPivot.anchor, subUnitId: target.id }
+      if (chart.ownedPivot.source.subUnitId === source.id && chart.ownedPivot.source.unitId === original.id) {
+        next.ownedPivot.source = { ...next.ownedPivot.source, subUnitId: target.id, sheetName: target.name }
+      }
+      copyPivotReportCache(original, workbook, chart.ownedPivot, next.ownedPivot, pivotCacheIds)
+      prepareCopiedPivotSourceReport(next.ownedPivot, true)
+      next.source = { ...next.source, sheetId: next.ownedPivot.source.subUnitId, range: cloneModel(next.ownedPivot.source.range) }
     }
     return next
   })
@@ -183,17 +203,8 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
     const next = cloneModel(slicer); next.id = newId('slicer'); next.hostSheetId = target.id; next.revision = 0
     drawingIds.set(drawingRefKey({ kind: slicer.type, id: slicer.id }), { kind: slicer.type, id: next.id })
     if (next.name) next.name = uniqueResourceName(next.name, slicerNames)
-    if (slicer.tableId) {
-      const table = tableIds.get(slicer.tableId)
-      next.tableId = table?.id ?? slicer.tableId
-      next.sourceFieldId = table?.columns.get(slicer.sourceFieldId) ?? slicer.sourceFieldId
-      if (!workbook.tables?.some(table => table.id === next.tableId)) throw new Error('切片器的表格数据源不存在。')
-    } else if (slicer.pivotTableId) {
-      const pivot = pivotIds.get(slicer.pivotTableId)
-      next.pivotTableId = pivot?.id ?? slicer.pivotTableId
-      next.sourceFieldId = pivot?.fields.get(slicer.sourceFieldId) ?? slicer.sourceFieldId
-      if (!workbook.pivotTables?.some(pivot => pivot.id === next.pivotTableId)) throw new Error('切片器的透视数据源不存在。')
-    } else throw new Error('切片器缺少数据源，无法完整复制。')
+    copySlicerViewCache(original, workbook, slicer, next, { tableIds,
+      pivotTableIds: new Map([...pivotIds].map(([id, mapped]) => [id, mapped.id])), pivotChartIds: chartIds, pivotCacheIds, slicerCacheIds })
     return next
   })
   if (copiedSlicers.length) workbook.slicers = [...(workbook.slicers ?? []), ...copiedSlicers]
@@ -240,6 +251,9 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
     })) }
     createSheetDrawingScene(workbook, target.id)
   }
+  normalizeSlicerCaches(workbook)
+  refreshPivotSourceWorksheetOutputs(original, workbook, copiedPivots.map(report => report.id))
+  synchronizeLinkedPivotChartReports(original, workbook)
   return { workbook, sourceSheetId: source.id, targetSheetId: target.id, targetSheetName: target.name, index: sourceIndex + 1,
     resources: { tables: copiedTables.length, pivotTables: copiedPivots.length, charts: copiedCharts.length, slicers: copiedSlicers.length } }
 }

@@ -2,14 +2,14 @@ import type { ExcelCellView } from '../../services/excelViewAdapter'
 import { sheetViewCellAt } from '../../services/excelViewAdapter.ts'
 import type { DrawCommand, RenderRect, RenderScene } from '../contracts'
 import { intersectRect } from '../geometry.ts'
-import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from './layout.ts'
+import { cellAddress, columnLabel, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, gridViewportHeaders, parseAddress, SpreadsheetGeometry } from './layout.ts'
 import type { GridRange, GridViewport } from './layout'
 import { presentSheetCellNumber } from '../../features/sheet-workbench/sheet-number-presentation.ts'
 import { sheetCellTextAlignment } from '../../features/sheet-workbench/sheet-cell-alignment.ts'
 import { canSheetCellTextOverflow } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
 import { createSheetCellTextCommands } from './cell-text.ts'
 import { createSheetBorderLines as createBorderLines } from './borders.ts'
-import { sparklineCommandsForCell } from '../../features/sparkline/sparkline-render.ts'
+import { sparklineCommandsForCell, type SparklineRenderContext } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
 import { conditionalIconPreset } from '../../features/conditional-formatting/conditional-icon-presets.ts'
 import { evaluateFormula } from '../../features/formula/formula-engine.ts'
@@ -38,6 +38,7 @@ export function sheetNumberFormatPreviewPatternAt(preview: SheetNumberFormatPrev
 }
 
 export interface SpreadsheetSceneOptions {
+  sparklineContext?: SparklineRenderContext
   region?: string
   activeCell: string
   editing?: boolean
@@ -68,6 +69,9 @@ export function displayCell(cell: ExcelCellView | undefined, date1904 = false, r
 
 /** Layout and hit-testing share the same sparse axes and frozen-pane transforms. */
 export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: GridViewport, options: SpreadsheetSceneOptions): RenderScene {
+  const headerWidth = geometry.headerWidth, headerHeight = geometry.headerHeight
+  viewport = { ...viewport, headerWidth, headerHeight }
+  const sparklineContext: SparklineRenderContext = { ...options.sparklineContext, groupCache: new Map(), sampleCache: new Map() }
   const commands: DrawCommand[] = options.backgroundImageSource ? [{ kind: 'image', x: 0, y: 0, width: viewport.width, height: viewport.height,
     source: options.backgroundImageSource, sourceVersion: options.backgroundImageVersion }] : []
   const selected = new Set(options.selectedCells), search = options.searchText?.toLocaleLowerCase()
@@ -184,7 +188,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         color: conditionalStyle.fontColor, underline: conditionalStyle.underline, strike: conditionalStyle.strike,
         fontOverrides: { bold: conditionalStyle.bold, italic: conditionalStyle.italic } }))
     }
-    if (!foregroundOnly) foreground.push(...sparklineCommandsForCell(geometry.sheet, cell, rect).map(command => ({ ...command, clip: intersectRect(command.clip ?? rect, clip) })))
+    if (!foregroundOnly) foreground.push(...sparklineCommandsForCell(geometry.sheet, cell, rect, sparklineContext).map(command => ({ ...command, clip: intersectRect(command.clip ?? rect, clip) })))
   }
   for (const pane of panes) {
     if (pane.clip.width <= 0 || pane.clip.height <= 0) continue
@@ -273,8 +277,8 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     if (!command.drawingRef) { drawingCommands.push(transformOverlayCommand(command, viewport)); continue }
     for (const pane of geometry.panes(viewport)) {
       if (!pane.clip.width || !pane.clip.height) continue
-      const frozenX = geometry.frozenColumns > 0 && pane.clip.x === GRID_HEADER_WIDTH,
-        frozenY = geometry.frozenRows > 0 && pane.clip.y === GRID_HEADER_HEIGHT,
+      const frozenX = geometry.frozenColumns > 0 && pane.clip.x === headerWidth,
+        frozenY = geometry.frozenRows > 0 && pane.clip.y === headerHeight,
         projected = transformOverlayCommand(command, { ...viewport, scrollLeft: frozenX ? 0 : viewport.scrollLeft, scrollTop: frozenY ? 0 : viewport.scrollTop })
       projected.clip = projected.clip ? intersectRect(projected.clip, pane.clip) : pane.clip
       if (projected.clip.width > 0 && projected.clip.height > 0) drawingCommands.push(projected)
@@ -282,25 +286,26 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   }
   drawingCommands.push(...(options.imageCommands ?? []))
   commands.push(...orderSheetDrawingCommands(drawingCommands, options.drawingOrder))
-  commands.push({ kind: 'rect', x: 0, y: 0, width: viewport.width, height: GRID_HEADER_HEIGHT, fill: '#f5f7fa' })
-  commands.push({ kind: 'rect', x: 0, y: GRID_HEADER_HEIGHT, width: GRID_HEADER_WIDTH, height: Math.max(0, viewport.height - GRID_HEADER_HEIGHT), fill: '#f5f7fa' })
+  commands.push({ kind: 'rect', x: 0, y: 0, width: viewport.width, height: headerHeight, fill: '#f5f7fa' })
+  commands.push({ kind: 'rect', x: 0, y: headerHeight, width: headerWidth, height: Math.max(0, viewport.height - headerHeight), fill: '#f5f7fa' })
   for (const pane of panes) {
     for (const column of pane.columns) {
-      const rect = geometry.cellRect(0, column, viewport, false), clip = { x: pane.clip.x, y: 0, width: pane.clip.width, height: GRID_HEADER_HEIGHT }
-      commands.push({ kind: 'rect', x: rect.x, y: 0, width: rect.width, height: GRID_HEADER_HEIGHT, fill: active?.column === column ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
-      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: GRID_HEADER_HEIGHT / 2, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
+      const rect = geometry.cellRect(0, column, viewport, false), clip = { x: pane.clip.x, y: geometry.columnOutlineGutterHeight, width: pane.clip.width, height: GRID_HEADER_HEIGHT }
+      commands.push({ kind: 'rect', x: rect.x, y: geometry.columnOutlineGutterHeight, width: rect.width, height: GRID_HEADER_HEIGHT, fill: active?.column === column ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
+      commands.push({ kind: 'text', x: rect.x + rect.width / 2, y: geometry.columnOutlineGutterHeight + GRID_HEADER_HEIGHT / 2, text: columnLabel(column), font: '12px "Segoe UI", sans-serif', color: active?.column === column ? '#246bfd' : '#69778c', align: 'center', baseline: 'middle', clip })
     }
     for (const row of pane.rows) {
-      const rect = geometry.cellRect(row, 0, viewport, false), clip = { x: 0, y: pane.clip.y, width: GRID_HEADER_WIDTH, height: pane.clip.height }
-      commands.push({ kind: 'rect', x: 0, y: rect.y, width: GRID_HEADER_WIDTH, height: rect.height, fill: active?.row === row ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
-      commands.push({ kind: 'text', x: GRID_HEADER_WIDTH - 7, y: rect.y + rect.height / 2, text: String(row + 1), font: '12px "Segoe UI", sans-serif', color: active?.row === row ? '#246bfd' : '#69778c', align: 'right', baseline: 'middle', clip })
+      const rect = geometry.cellRect(row, 0, viewport, false), clip = { x: geometry.rowOutlineGutterWidth, y: pane.clip.y, width: GRID_HEADER_WIDTH, height: pane.clip.height }
+      commands.push({ kind: 'rect', x: geometry.rowOutlineGutterWidth, y: rect.y, width: GRID_HEADER_WIDTH, height: rect.height, fill: active?.row === row ? '#e8f0ff' : '#f5f7fa', stroke: '#dfe5ee', clip })
+      commands.push({ kind: 'text', x: headerWidth - 7, y: rect.y + rect.height / 2, text: String(row + 1), font: '12px "Segoe UI", sans-serif', color: active?.row === row ? '#246bfd' : '#69778c', align: 'right', baseline: 'middle', clip })
     }
   }
-  commands.push({ kind: 'rect', x: 0, y: 0, width: GRID_HEADER_WIDTH, height: GRID_HEADER_HEIGHT, fill: '#eef2f7', stroke: '#dfe5ee' })
-  commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH - 13, y1: GRID_HEADER_HEIGHT - 5, x2: GRID_HEADER_WIDTH - 5, y2: GRID_HEADER_HEIGHT - 13, color: '#9aa8b9', width: 3 })
+  commands.push({ kind: 'rect', x: 0, y: 0, width: headerWidth, height: headerHeight, fill: '#f5f7fa' })
+  commands.push({ kind: 'rect', x: geometry.rowOutlineGutterWidth, y: geometry.columnOutlineGutterHeight, width: GRID_HEADER_WIDTH, height: GRID_HEADER_HEIGHT, fill: '#eef2f7', stroke: '#dfe5ee' })
+  commands.push({ kind: 'line', x1: headerWidth - 13, y1: headerHeight - 5, x2: headerWidth - 5, y2: headerHeight - 13, color: '#9aa8b9', width: 3 })
   for (const line of geometry.outlineBracketLines(viewport)) commands.push({ kind: 'line', x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2, color: '#8593a5', width: 1 })
-  if (geometry.frozenRows) { const y = GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: GRID_HEADER_WIDTH, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
-  if (geometry.frozenColumns) { const x = GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: GRID_HEADER_HEIGHT, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
+  if (geometry.frozenRows) { const y = headerHeight + geometry.rows.offset(geometry.frozenRows) * z; commands.push({ kind: 'line', x1: headerWidth, y1: y, x2: viewport.width, y2: y, color: '#9eacbf', width: 2 }) }
+  if (geometry.frozenColumns) { const x = headerWidth + geometry.columns.offset(geometry.frozenColumns) * z; commands.push({ kind: 'line', x1: x, y1: headerHeight, x2: x, y2: viewport.height, color: '#9eacbf', width: 2 }) }
   return { width: viewport.width, height: viewport.height, background: '#ffffff', commands }
 }
 
@@ -319,42 +324,44 @@ function borderEdge(raw: unknown): { style: string; color: string } | undefined 
 }
 
 function transformOverlayCommand(command: DrawCommand, viewport: GridViewport): DrawCommand {
+  const { width: headerWidth, height: headerHeight } = gridViewportHeaders(viewport)
   const transformRect = (rect: RenderRect): RenderRect => ({
-    x: GRID_HEADER_WIDTH + (rect.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-    y: GRID_HEADER_HEIGHT + (rect.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
+    x: headerWidth + (rect.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y: headerHeight + (rect.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     width: rect.width * viewport.zoom,
     height: rect.height * viewport.zoom,
   })
   const clip = command.clip ? transformRect(command.clip) : undefined
-  if (command.kind === 'image' && command.matrix) {
+  if (command.matrix) {
     const m = command.matrix
     return { ...command, matrix: { a: m.a * viewport.zoom, b: m.b * viewport.zoom, c: m.c * viewport.zoom, d: m.d * viewport.zoom,
-      e: GRID_HEADER_WIDTH + (m.e - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-      f: GRID_HEADER_HEIGHT + (m.f - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop }, ...(clip ? { clip } : {}) }
+      e: headerWidth + (m.e - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+      f: headerHeight + (m.f - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop }, ...(clip ? { clip } : {}) }
   }
-  if (command.kind === 'rect') return { ...command, ...transformRect(command), strokeWidth: command.strokeWidth === undefined ? undefined : command.strokeWidth * viewport.zoom, ...(clip ? { clip } : {}) }
+  const clips = { ...(clip ? { clip } : {}), ...(command.localClip ? { localClip: transformRect(command.localClip) } : {}) }
+  if (command.kind === 'rect') return { ...command, ...transformRect(command), strokeWidth: command.strokeWidth === undefined ? undefined : command.strokeWidth * viewport.zoom, ...clips }
   if (command.kind === 'line') return {
     ...command,
-    x1: GRID_HEADER_WIDTH + (command.x1 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-    y1: GRID_HEADER_HEIGHT + (command.y1 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
-    x2: GRID_HEADER_WIDTH + (command.x2 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-    y2: GRID_HEADER_HEIGHT + (command.y2 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
+    x1: headerWidth + (command.x1 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y1: headerHeight + (command.y1 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
+    x2: headerWidth + (command.x2 - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y2: headerHeight + (command.y2 - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     width: command.width === undefined ? undefined : command.width * viewport.zoom,
-    ...(clip ? { clip } : {}),
+    ...clips,
   }
   if (command.kind === 'polygon') return {
     ...command,
-    points: command.points.map((point) => ({ x: GRID_HEADER_WIDTH + (point.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-      y: GRID_HEADER_HEIGHT + (point.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop })),
-    ...(clip ? { clip } : {}),
+    points: command.points.map((point) => ({ x: headerWidth + (point.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+      y: headerHeight + (point.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop })),
+    ...clips,
   }
   if (command.kind === 'text') return {
     ...command,
-    x: GRID_HEADER_WIDTH + (command.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
-    y: GRID_HEADER_HEIGHT + (command.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
+    x: headerWidth + (command.x - GRID_HEADER_WIDTH) * viewport.zoom - viewport.scrollLeft,
+    y: headerHeight + (command.y - GRID_HEADER_HEIGHT) * viewport.zoom - viewport.scrollTop,
     font: command.font.replace(/(\d+(?:\.\d+)?)px/g, (_match, size: string) => `${Number(size) * viewport.zoom}px`),
     maxWidth: command.maxWidth === undefined ? undefined : command.maxWidth * viewport.zoom,
-    ...(clip ? { clip } : {}),
+    ...clips,
   }
-  return { ...command, ...transformRect(command), ...(clip ? { clip } : {}) }
+  return { ...command, ...transformRect(command), ...clips }
 }

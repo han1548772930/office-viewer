@@ -4,8 +4,10 @@ import { COMPUTE_PROTOCOL_VERSION, isRecord } from './protocol.ts'
 import type { ComputeOutput, ComputeTask, ComputeWorkerEvent, ComputeWorkerRequest } from './protocol.ts'
 import { estimateTaskMemory, taskViews, validateTask } from './tasks.ts'
 import { loadComputeWasm } from './wasm.worker.ts'
-import type { LoadedComputeWasm, WasmAggregate, WasmChartResult, WasmIndexResult, WasmStepper } from './wasm.worker.ts'
+import type { LoadedComputeWasm, WasmAggregate, WasmChartResult, WasmIndexResult, WasmSlicerMemberResult, WasmStepper } from './wasm.worker.ts'
 import { readChartStatisticsOutput } from './chart-results.ts'
+import { readSlicerMembersOutput } from './slicer-member-results.ts'
+import { prepareSlicerTextRanks } from './slicer-member.worker.ts'
 import {
   matchesWasmTaskControl, readBoundaryCopyStats, requireIndependentOutput, requireMatchingWasmResult,
   requireWasmTaskControl, WasmProtocolError,
@@ -40,6 +42,9 @@ function isIndexResult(value: unknown): value is WasmIndexResult {
 function isChartResult(value: unknown): value is WasmChartResult {
   return isRecord(value) && ['copy_values', 'copy_indices', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
 }
+function isSlicerMemberResult(value: unknown): value is WasmSlicerMemberResult {
+  return isRecord(value) && ['copy_indices', 'copy_has_data', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
+}
 interface Calculated { output: ComputeOutput; boundary: BoundaryCopyStats; buffers: ArrayBuffer[] }
 
 async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: WasmTaskControl): Promise<Calculated> {
@@ -60,6 +65,41 @@ async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: 
   // Large creation/copy steps remain cancellable by the client's kill/recreate.
   await module.compute_yield()
   checkCancellation(context)
+  if (task.kind === 'slicerMembers') {
+    await prepareSlicerTextRanks(task, async () => { checkCancellation(context); await module.compute_yield(); checkCancellation(context) })
+    checkCancellation(context)
+    const candidate: unknown = module.create_slicer_members(task.values, task.states, task.textIds, task.availability,
+      task.textOffsets, task.textBytes, task.textRanks, { context, params: task.params })
+    if (!isStepper(candidate)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '成员查询缺少协议 2 步进接口')
+    try {
+      let done = false
+      while (!done) {
+        checkCancellation(context)
+        done = candidate.step(16_384)
+        progress(candidate.progress())
+        await module.compute_yield()
+      }
+      checkCancellation(context)
+      const result: unknown = candidate.finish()
+      if (!isSlicerMemberResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '成员查询缺少协议 2 结果所有权接口')
+      try {
+        const indices = result.copy_indices(), hasData = result.copy_has_data()
+        if (!(indices instanceof Uint32Array) || !(hasData instanceof Uint8Array)) {
+          throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '成员查询必须返回源行及可用性 TypedArray')
+        }
+        const indexBuffer = requireIndependentOutput(indices, loaded.memory), dataBuffer = requireIndependentOutput(hasData, loaded.memory)
+        const metadata = requireMatchingWasmResult(result.metadata(), context)
+        if (metadata.indexLength !== indices.length || metadata.byteLength !== indices.byteLength + hasData.byteLength) {
+          throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '成员窗口与 WASM 元数据长度不匹配')
+        }
+        const output = readSlicerMembersOutput({ kind: 'slicerMembers', indices, hasData, total: metadata.total,
+          dateCount: metadata.dateCount, minDate: metadata.minDate, maxDate: metadata.maxDate }, task.params)
+        if (!output) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '成员窗口或日期边界与请求不匹配')
+        progress(1, true)
+        return { output, boundary: readBoundaryCopyStats(metadata.transfer), buffers: [indexBuffer, dataBuffer] }
+      } finally { result.free() }
+    } finally { candidate.free() }
+  }
   if (task.kind === 'aggregate') {
     const accumulator: unknown = module.create_numeric_aggregate(task.values, task.states, context)
     if (!isAggregate(accumulator)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '聚合任务缺少协议 2 步进接口')
@@ -154,12 +194,13 @@ async function handle(request: ComputeWorkerRequest): Promise<void> {
     const { output, boundary, buffers } = await calculate(wasm, request.task, context)
     checkCancellation(context)
     const outputBytes = output.kind === 'aggregate' ? 0 : output.kind === 'chartStatistics'
-      ? output.values.byteLength + output.indices.byteLength : output.indices.byteLength
+      ? output.values.byteLength + output.indices.byteLength : output.kind === 'slicerMembers'
+      ? output.indices.byteLength + output.hasData.byteLength : output.indices.byteLength
     scope.postMessage({ type: 'result', context, engineVersion: wasm.module.compute_version(), output, metrics: {
       elapsedMs: performance.now() - started, ...memory, boundary,
       transport: { inputTransfers: taskViews(request.task).length, inputBytes: memory.inputBytes,
         outputTransfers: buffers.length, outputBytes,
-        structuredResultMessages: output.kind === 'aggregate' || output.kind === 'chartStatistics' ? 1 : 0 },
+        structuredResultMessages: output.kind === 'aggregate' || output.kind === 'chartStatistics' || output.kind === 'slicerMembers' ? 1 : 0 },
     } }, buffers)
   } catch (error) {
     const failure = normalizeComputeError(error)
@@ -177,7 +218,8 @@ scope.addEventListener('message', (event) => {
       void handle({ type: 'init', moduleUrl: data.moduleUrl, protocolVersion: data.protocolVersion }); return
     }
     if (data.type !== 'run' && data.type !== 'cancel') throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求必须使用协议 2')
-    if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter' && data.context.kind !== 'chartStatistics')) {
+    if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter'
+      && data.context.kind !== 'chartStatistics' && data.context.kind !== 'slicerMembers')) {
       throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求的计算域无效')
     }
     context = requireWasmTaskControl(data.context, data.context.kind)

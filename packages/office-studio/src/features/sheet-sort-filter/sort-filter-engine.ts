@@ -1,25 +1,10 @@
-import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet } from '../../domain/model'
+import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator,
+  SheetSortCriterion } from '../../domain/model'
 import { sheetRowHeight, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
-
-export type SheetSortDirection = 'ascending' | 'descending'
-export interface SheetSortCriterion { column: number; direction: SheetSortDirection }
-export type SheetFilterConditionOperator = 'equals' | 'doesNotEqual' | 'greaterThan' | 'greaterThanOrEqual' |
-  'lessThan' | 'lessThanOrEqual' | 'between' | 'notBetween' | 'contains' | 'doesNotContain' |
-  'beginsWith' | 'endsWith' | 'isBlank' | 'isNotBlank' | 'isError'
-export interface SheetValueFilter { kind: 'values'; selectedItems: CellScalar[] }
-export interface SheetConditionFilter {
-  kind: 'condition'
-  operator: SheetFilterConditionOperator
-  value?: CellScalar
-  secondValue?: CellScalar
-  caseSensitive?: boolean
-}
-export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter
-export interface SheetAutoFilter {
-  range: CellRange
-  columns: Record<number, SheetFilterCriteria>
-  filteredRows: number[]
-}
+import { compilePivotRecordSelection, normalizePivotRecordSelection } from '../pivot/services/pivot-filter-predicate.ts'
+import { sheetCellRecordValue } from '../sheet-workbench/sheet-record-value.ts'
+export type { SheetSortDirection, SheetSortCriterion, SheetFilterConditionOperator, SheetValueFilter, SheetConditionFilter,
+  SheetFilterCriteria, SheetAutoFilter } from '../../domain/model.ts'
 type FilteredSpreadsheetSheet = SpreadsheetSheet & { autoFilter?: SheetAutoFilter }
 
 export interface SortRangeOptions { hasHeader?: boolean; locale?: string }
@@ -57,6 +42,16 @@ export function setFilterCriteria(sheet: FilteredSpreadsheetSheet, column: numbe
   refreshAutoFilter(sheet)
 }
 
+/** Derive source UI state with the same native cell/error and condition semantics as row filtering. */
+export function compileSheetCellFilterCriteria(criteria: SheetFilterCriteria): (cell: SpreadsheetCell | undefined) => boolean {
+  const normalized = normalizeCriteria(criteria)
+  if (normalized.kind === 'values' && normalized.recordSelection) {
+    const matches = compilePivotRecordSelection(normalized.recordSelection)
+    return cell => matches(cell?.value ?? null, sheetCellRecordValue(cell, normalized.recordDate1904))
+  }
+  return cell => matchesCriteria(readCellValue(cell), normalized)
+}
+
 export function clearFilter(sheet: FilteredSpreadsheetSheet, column?: number): void {
   const filter = sheet.autoFilter
   if (!filter) return
@@ -73,8 +68,9 @@ export function refreshAutoFilter(sheet: FilteredSpreadsheetSheet): number[] {
   if (!filter) return []
   normalizeAutoFilterRange(filter.range, sheet)
   const hidden: number[] = []
+  const predicates = Object.entries(filter.columns).map(([column, criteria]) => ({ column: Number(column), matches: compileSheetCellFilterCriteria(criteria) }))
   for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
-    const visible = Object.entries(filter.columns).every(([column, criteria]) => matchesCriteria(readCellValue(sheet.cells[cellKey(row, Number(column))]), criteria))
+    const visible = predicates.every(({ column, matches }) => matches(sheet.cells[cellKey(row, column)]))
     if (!visible) hidden.push(row)
   }
   filter.filteredRows = hidden
@@ -209,7 +205,7 @@ export function readCellValue(cell: SpreadsheetCell | undefined): CellScalar | {
 }
 
 function matchesCriteria(value: CellScalar | { error: string } | null, criteria: SheetFilterCriteria): boolean {
-  if (criteria.kind === 'values') return criteria.selectedItems.some((item) => sameFilterValue(value, item))
+  if (criteria.kind === 'values') return criteria.selectedItems.some((item) => sameFilterValue(value, item)) !== (criteria.selectionMode === 'exclude')
   return matchesCondition(value, criteria)
 }
 
@@ -242,7 +238,11 @@ function normalizeCriteria(criteria: SheetFilterCriteria): SheetFilterCriteria {
   if (!criteria || (criteria.kind !== 'values' && criteria.kind !== 'condition')) throw new TypeError('Invalid filter criteria')
   if (criteria.kind === 'values') {
     if (!Array.isArray(criteria.selectedItems)) throw new TypeError('Value filter needs a selectedItems array')
-    return { kind: 'values', selectedItems: [...criteria.selectedItems] }
+    if (criteria.selectionMode !== undefined && criteria.selectionMode !== 'include' && criteria.selectionMode !== 'exclude') throw new TypeError('Invalid value filter selection mode')
+    if (criteria.recordDate1904 !== undefined && typeof criteria.recordDate1904 !== 'boolean') throw new TypeError('Invalid record calendar context')
+    return { kind: 'values', selectedItems: [...criteria.selectedItems], ...(criteria.selectionMode === 'exclude' ? { selectionMode: 'exclude' as const } : {}),
+      ...(criteria.recordSelection ? { recordSelection: normalizePivotRecordSelection(criteria.recordSelection) } : {}),
+      ...(criteria.recordDate1904 !== undefined ? { recordDate1904: criteria.recordDate1904 } : {}) }
   }
   const operators: SheetFilterConditionOperator[] = ['equals', 'doesNotEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual', 'between', 'notBetween', 'contains', 'doesNotContain', 'beginsWith', 'endsWith', 'isBlank', 'isNotBlank', 'isError']
   if (!operators.includes(criteria.operator)) throw new TypeError(`Unsupported filter operator: ${criteria.operator}`)

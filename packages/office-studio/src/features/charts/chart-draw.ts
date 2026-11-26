@@ -45,6 +45,7 @@ import { resolveChartAreaLineStyle } from './chart-line-and-area'
 import { chartLinePointsConnected, chartLineSegment } from './chart-line-path'
 import { chartCanvasBoxplotBindings, chartCanvasParetoMark, chartCanvasPieSliceMark, chartCanvasSeriesMark, chartCanvasSeriesBindings, tagChartCanvasElementCommands, withChartCanvasElement, type ChartCanvasElement } from './chart-element-interaction'
 import type { ChartEditPanelAxis } from './chart-edit-panel-route'
+import { pivotChartCategoryAxis } from './chart-pivot-axis-layout.ts'
 
 export { drawChartSector } from './chart-sector-draw'
 
@@ -156,6 +157,7 @@ function drawAxes(commands: DrawCommand[], data: ChartData, chart: ChartModel, l
   line('yAxis', 'axis', horizontal ? { x: plot.x, y: plot.y + plot.height } : { x: plot.x, y: plot.y },
     horizontal ? { x: plot.x + plot.width, y: plot.y + plot.height } : { x: plot.x, y: plot.y + plot.height }, yAxis.line, axisColor)
   const categories = layout.categories
+  const pivotAxis = pivotChartCategoryAxis(data, chart, layout.frame, plot, color)
   if (layout.dateAxis) commands.push(...chartDateAxisCommands(chart, layout, color, theme))
   else if (numericX) for (const value of chartAxisTicks(layout.xMin!, layout.xMax!, xAxis)) {
     const ratio = chartAxisRatio(value, layout.xMin!, layout.xMax!, xAxis), coordinate = horizontal ? plot.y + ratio * plot.height : plot.x + ratio * plot.width
@@ -178,10 +180,11 @@ function drawAxes(commands: DrawCommand[], data: ChartData, chart: ChartModel, l
       const start = horizontal ? { x: plot.x + zero * plot.width, y: coordinate } : { x: coordinate, y: plot.y + (1 - zero) * plot.height }
       line('xAxis', 'tick', start, { x: start.x - (horizontal ? length : 0), y: start.y + (horizontal ? 0 : length) }, xAxis.tick, axisColor)
     }
-    if (xAxis.label?.visible !== false) label('xAxis', { kind: 'text', x: horizontal ? plot.x - 8 : plot.x + ratio * plot.width, y: horizontal ? plot.y + ratio * plot.height : plot.y + plot.height + 14,
+    if (!pivotAxis && xAxis.label?.visible !== false) label('xAxis', { kind: 'text', x: horizontal ? plot.x - 8 : plot.x + ratio * plot.width, y: horizontal ? plot.y + ratio * plot.height : plot.y + plot.height + 14,
       text: category, font: chartFont({ ...chart.options?.appearance?.font, ...xAxis.label }, 10), color: xAxis.label?.color ?? color, align: horizontal ? 'right' : 'center', baseline: 'middle', rotation: xAxis.label?.rotate,
       maxWidth: horizontal ? Math.max(1, plot.x - layout.frame.x - 12) : Math.max(1, plot.width / Math.max(1, categories.length) - 4) })
   })
+  if (pivotAxis) commands.push(...pivotAxis.labels.map(label => label.command))
   if (layout.rightMin !== undefined && layout.rightMax !== undefined) {
     const axis = chart.options?.rightYAxis ?? { scaleType: 'linear' }
     line('rightYAxis', 'axis', horizontal ? { x: plot.x, y: plot.y } : { x: plot.x + plot.width, y: plot.y },

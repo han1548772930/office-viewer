@@ -31,6 +31,7 @@ import type { ChartTitleKind } from './chart-titles'
 import { hitChartPlotArea, type ChartCanvasPlotAreaTarget } from './chart-plot-area-interaction'
 import { ChartNativeElementIndex } from './echarts-element-interaction'
 import type { ChartCanvasElement, ChartCanvasElementRuntime, ChartCanvasElementTarget } from './chart-element-interaction'
+import { ChartNativePivotAxisIndex, pivotChartAxisGraphicLabels, type PivotChartCanvasAxisTarget } from './echarts-pivot-axis-interaction.ts'
 
 echarts.use([
   BarChart, BoxplotChart, CandlestickChart, FunnelChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart, SunburstChart, TreemapChart,
@@ -84,6 +85,7 @@ interface ChartEntry {
   elementRuntime?: ChartCanvasElementRuntime
   elementOption?: EChartsOption
   elements?: ChartNativeElementIndex
+  pivotAxis?: ChartNativePivotAxisIndex
 }
 
 /** Owns the raster surfaces used by spreadsheet chart draw commands. */
@@ -172,6 +174,8 @@ export class EChartsCanvasRenderer {
       entry.elementRuntime = officeChartElements
       entry.elementOption = paintedOption
       entry.elements = officeChartElements ? new ChartNativeElementIndex(entry.instance, paintedOption, officeChartElements, size.width, size.height) : undefined
+      const pivotLabels = pivotChartAxisGraphicLabels(paintedOption)
+      entry.pivotAxis = pivotLabels.size ? new ChartNativePivotAxisIndex(entry.instance, pivotLabels, size.width, size.height) : undefined
       entry.legendSelection = legendSelection
       entry.legendScrollDataIndex = legendScrollDataIndex
       entry.legendRecoverySignature = undefined
@@ -202,6 +206,10 @@ export class EChartsCanvasRenderer {
     return this.charts.get(chartId)?.elements?.target(element)
   }
   getElementTargets(chartId: string): ChartCanvasElementTarget[] { return this.charts.get(chartId)?.elements?.list() ?? [] }
+
+  getPivotAxisHit(chartId: string, point?: ChartVector): PivotChartCanvasAxisTarget | undefined { return this.charts.get(chartId)?.pivotAxis?.hit(point) }
+  getPivotAxisTarget(chartId: string, key: string): PivotChartCanvasAxisTarget | undefined { return this.charts.get(chartId)?.pivotAxis?.target(key) }
+  getPivotAxisTargets(chartId: string): PivotChartCanvasAxisTarget[] { return this.charts.get(chartId)?.pivotAxis?.list() ?? [] }
 
   /** Borrowed surface: copy synchronously before any await, resize or disposal. */
   getImageFrame(chartId: string): EChartsCanvasFrame | undefined {

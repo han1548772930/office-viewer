@@ -12,7 +12,22 @@ export { SHEET_DRAWING_PLUGIN, SheetImageSourceTypes, workbookWithPublicSheetIma
 export { prepareWorkbookSheetImageInput, type SheetImageInputPreparationOptions } from './features/sheet-images/sheet-image-input-preparation.ts'
 export { prepareSheetImageFiles, prepareSheetImageUrl, prepareSheetImageResources } from './features/sheet-images/sheet-image-io.ts'
 export { prepareSheetClipboardHtmlImages, type SheetClipboardImagePreparationOptions } from './features/sheet-images/sheet-image-html-preparation.ts'
-export { SHEET_IMAGE_OBJECT_COMMANDS, type SheetImageObjectClipboard } from './features/sheet-images/sheet-image-object-clipboard.ts'
+export { SHEET_IMAGE_OBJECT_COMMANDS, sheetImageObjectClipboardFromHtml, type SheetImageObjectClipboard } from './features/sheet-images/sheet-image-object-clipboard.ts'
+export { SHEET_DRAWING_ALIGN_TYPES } from './domain/sheet-drawings.ts'
+export type { SheetDrawingAlignType, SheetDrawingMoveDirection, SheetDrawingLeafKind, SheetDrawingKind, SheetDrawingLeafRef, SheetDrawingGroupRef, SheetDrawingRef,
+  SheetDrawingMatrix, SheetDrawingAffineGeometry, SheetDrawingGroup, SheetDrawingState, SheetDrawingShapeDTO } from './domain/sheet-drawings.ts'
+export { DRAWING_AFFINE_IDENTITY, normalizeDrawingAffineMatrix, normalizeDrawingAffineGeometry, multiplyDrawingAffine,
+  invertDrawingAffine, drawingAffinePoint, drawingAffineBounds, drawingAffineFrame, drawingAffineWithFrame, drawingAffineFromFrame } from './domain/drawing-affine.ts'
+export type { DrawingAffineMatrix, DrawingAffineGeometry, DrawingAffineBounds } from './domain/drawing-affine.ts'
+export { chartDrawingWorldPoint, chartDrawingViewportPoint, chartDrawingViewportBounds, chartDrawingLocalPoint, chartDrawingLocalDelta,
+  chartDrawingOutlineCommands, chartDrawingKeyboardTranslation } from './features/charts/chart-drawing-affine.ts'
+export type { ChartDrawingProjection, ChartDrawingViewport } from './features/charts/chart-drawing-affine.ts'
+export { SHEET_DRAWING_GROUP_COMMAND_IDS, DRAWING_GROUP_MENU, DRAWING_ARRANGE_MENU, DRAWING_ALIGN_MENU, drawingPaintOrder, drawingHitOrder,
+  planDrawingAlign, planDrawingMove, sheetDrawingMoveDirectionForKey, planDrawingGroup, planDrawingUngroup, planDrawingArrange, planDrawingGroupTransform, planDrawingSelectionTransform, applyDrawingTransaction } from './features/drawing-groups/index.ts'
+export type { SheetDrawingAlignRequest, SheetDrawingMoveRequest } from './features/drawing-groups/index.ts'
+export type { SheetDrawingArrangeType, SheetDrawingScene, SheetDrawingObject, SheetDrawingTransaction, SheetDrawingPlanResult } from './features/drawing-groups/index.ts'
+export type { SheetDrawingCommandId, SheetDrawingCommandInput, SheetDrawingCommandParams, SheetDrawingPublicRef, SheetDrawingPublicGroupUpdate } from './api/sheet-drawing-commands.ts'
+export type { SlicerCommandContext } from './api/slicer-command-context.ts'
 export { SheetDrawingAnchorTypes } from './domain/sheet-images.ts'
 export type { SheetImageResource, SheetCellImage, SheetFloatingImage, SheetBackgroundImage, SheetDrawingAnchorType,
   SheetImageAnchor, SheetImageCellMarker, SheetImageBounds, SheetImagePlacement, SheetImagePlacementInput, SheetImageSourceRect } from './domain/sheet-images.ts'
@@ -56,7 +71,11 @@ export { FDocumentImage } from './api/document-images'
 export type { DocumentImageInsertOptions, DocumentImageData, DocumentImageTextRange } from './api/document-images'
 export { DOCUMENT_IMAGE_PUBLIC_COMMANDS } from './api/document-image-commands'
 export type { DocumentImageCommandBase, DocumentImageOperationRequest, DocumentImagePublicInsertRequest, DocumentImageTransformItem,
-  DocumentImagePublicTransformRequest, DocumentImagePublicWrappingRequest, DocumentImagePublicArrangeRequest, DocumentImagePublicRemoveRequest } from './api/document-image-commands'
+  DocumentImagePublicTransformRequest, DocumentImagePublicWrappingRequest, DocumentImagePublicArrangeRequest, DocumentImagePublicRemoveRequest,
+  DocumentImagePublicAlignRequest, DocumentImagePublicBatchTransformRequest } from './api/document-image-commands'
+export { DOCUMENT_IMAGE_ALIGN_TYPES, documentImageBatchMembers, documentImageBatchBounds } from './features/document/images/document-image-batch'
+export type { DocumentImageAlign, DocumentImageBatchTransform, DocumentImageBatchMember, DocumentImageBatchUpdate } from './features/document/images/document-image-batch'
+export type { DocumentImageGeometryReadOptions, DocumentImageLayoutRead } from './api/document-image-layout'
 export type { DocumentImageEditor, DocumentImageEditorHandle, DocumentImageEditorTarget } from './api/document-image-editors'
 export type { DocumentImagePosition, DocumentImageWrappingStyle, DocumentImagePatch, DocumentImageArrange, DocumentImageSourceRect } from './features/document/images/document-image-model'
 export { DOCUMENT_LATEX_PUBLIC_COMMANDS } from './api/document-latex-commands'
@@ -93,12 +112,15 @@ export { CONTENT_HISTORY_COMMANDS, CONTENT_HISTORY_COMMAND_IDS, ContentHistoryCa
 export {
   FBlob,
   FChart,
+  FSheetPivotChart,
   ChartConfigBuilder,
+  PivotChartConfigBuilder,
   FDocument,
   FDocumentContentControl,
   FDocumentParagraph,
   FDocumentTextRange,
   FSheetSlicer,
+  FSheetTimeline,
   FPivotTable,
   FRange,
   FSelection,
@@ -132,6 +154,8 @@ export {
   type PivotTableAnchorInfo,
   type SlicerInfo,
 } from './api/facade'
+export { FSheetSlicerBuilder, FSheetTimelineBuilder } from './api/slicer-builders.ts'
+export type { FLinkedSheetSlicerBuilder, FBoundSheetSlicerBuilder, FLinkedSheetTimelineBuilder, FBoundSheetTimelineBuilder } from './api/slicer-builders.ts'
 export { FEventName, EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type EventDeliveryError, type Disposable } from './api/events'
 export { SET_SHEET_SELECTIONS_OPERATION, SELECT_SHEET_RANGE_COMMAND, MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND,
   type SheetSelectionOperationRequest, type SheetSelectionShortcutRequest } from './api/sheet-selection-commands.ts'
@@ -245,6 +269,10 @@ export * from './domain/model'
 export { cloneModel } from './domain/serialization'
 export {
   getPivotSourceFields,
+  getPivotShowDataAs,
+  getPivotShowDataAsBaseItems,
+  calculatePivotReport,
+  PivotOutputConflictError,
   getPivotTableAtCell,
   pivotDrillDown,
   pivotFieldIds,
@@ -253,6 +281,7 @@ export {
   refreshPivotTable,
   setPivotField,
   setPivotFieldSetting,
+  setPivotShowDataAs,
   setPivotLabelFilter,
   setPivotOptions,
   setPivotSort,
@@ -263,15 +292,79 @@ export {
   setPivotExcelDateGroup,
   setPivotManualGroups,
 } from './features/pivot/services/pivot-engine'
+export { applyPivotChartEdit, createPivotChartReport, getPivotChartReport, getPivotChartConfiguredField, getPivotChartFieldItems, getPivotChartShowDataAsBaseItems, PivotChartEditError,
+  type PivotChartFieldsConfig, type PivotChartFieldSetting, type PivotChartReportEdit } from './features/pivot/services/pivot-chart-engine.ts'
+export { PIVOT_CHART_COMMANDS, type PivotChartCommandContext, type PivotChartConfigureInput, type PivotChartInfo,
+  type PivotChartInsertInfo, type PivotChartInsertOptions, type LinkedPivotChartInfo, type PivotChartSourceSpec, type PivotChartTableReference } from './features/pivot/services/pivot-chart-api-types.ts'
+export { PIVOT_SHOW_DATA_AS_RULES, getPivotShowDataAsRule, getPivotShowDataAsBaseFieldIds, type PivotShowDataAsRule } from './features/pivot/services/pivot-show-data-as.ts'
+export { assertPivotReportReadPermission, assertPivotReportEditPermission } from './features/pivot/services/pivot-report-permissions.ts'
+export { synchronizeLinkedPivotChartReports } from './features/pivot/services/pivot-chart-report-lifecycle.ts'
+export { getPivotAxisState, getPivotCollapse, getPivotCollapseItems, setPivotCollapse, setPivotCollapseInfo, setPivotCategoryLevel, stepPivotCategoryLevel } from './features/pivot/services/pivot-engine.ts'
+export { getPivotChartAxisState, getPivotChartCollapseItems } from './features/pivot/services/pivot-chart-engine.ts'
+export { PIVOT_HIERARCHY_COMMANDS, type PivotChartHierarchyTarget, type PivotReportHierarchyTarget } from './features/pivot/services/pivot-hierarchy-api-types.ts'
+export type { PivotAxisArea, PivotAxisFieldState, PivotAxisState } from './features/pivot/services/pivot-axis-state.ts'
+export { normalizePivotChartControls, pivotChartControls } from './features/pivot/services/pivot-chart-controls.ts'
+export { PIVOT_CHART_FIELD_COMMANDS } from './features/pivot/services/pivot-chart-field-command-types.ts'
+export type { PivotChartFieldCommandTarget, PivotChartFieldCommandParams, PivotChartFieldCommandInput } from './features/pivot/services/pivot-chart-field-command-types.ts'
+export type { PivotReportCommandContext, PivotReportCommandTarget } from './features/pivot/services/pivot-report-api-types.ts'
+export { getPivotValuesPosition, setPivotValuesPosition, getPivotSourceAvailableRows } from './features/pivot/services/pivot-engine.ts'
+export { getPivotValuesLayout, normalizePivotValuesPosition, normalizePivotValuePositionInput, PIVOT_VALUE_POSITIONS } from './features/pivot/services/pivot-values-position.ts'
+export type { PivotValuesPositionState } from './features/pivot/services/pivot-values-position.ts'
+export { normalizePivotDateFilterInput, normalizePivotLabelConditionInput } from './features/pivot/services/pivot-filter-api.ts'
+export { PIVOT_REPORT_FILTER_COMMANDS } from './api/pivot-filter-commands.ts'
+export type { PivotReportManualFilterInput, PivotReportDateFilterInput, PivotReportLabelConditionInput } from './api/pivot-filter-commands.ts'
+export type { PivotDateFilterInput, PivotDateFilterApiInfo, PivotDateFilterCode, PivotLabelConditionInput,
+  PivotLabelConditionApiInfo, PivotLabelConditionCode } from './features/pivot/services/pivot-filter-api.ts'
+export { getPivotDateFilter, getPivotLabelConditionFilter, getPivotManualFilterItemState, getPivotFieldFilterCapabilities,
+  getPivotGroupedFieldItems, getPivotSourceRecordSelection, setPivotDateFilter, setPivotLabelConditionFilter, setPivotSourceMemberFilter } from './features/pivot/services/pivot-engine.ts'
+export type { PivotChartControls } from './domain/model.ts'
+export type { PivotChartAxisMetadata } from './features/charts/chart-pivot-axis.ts'
 export {
   clearSlicerFilter,
   createSlicer,
   getSlicer,
   getSlicerItems,
+  readSlicerItemState,
+  readSlicerRecordSelection,
+  readSlicerSelection,
   removeSlicer,
   setSlicerItems,
+  setSlicerItemStates,
+  setSlicerRecordSelection,
   setSlicerTimelineRange,
+  setSlicerConnections,
 } from './features/slicer/slicer-engine'
+export { getSlicerConnections, getSlicerConnectionCandidates, getSlicerCache, getSlicerSourceValues, getSlicerSourceRecords,
+  getSlicerSourceRecordValues, getSlicerSourceCellRange, getSlicerTableNativeFilter, planSlicerConnections, SlicerConnectionError } from './features/slicer/slicer-connections.ts'
+export { normalizeSlicerCacheOptions, normalizeSlicerCacheOptionsPatch, readSlicerCacheOptions, patchSlicerCacheOptions,
+  effectiveSlicerCacheOptions, applySlicerCacheItemOptions, createSlicerMemberComparator } from './features/slicer/slicer-cache-options.ts'
+export { normalizeSlicerSettingsPatch, readSlicerSettings } from './features/slicer/slicer-settings.ts'
+export type { SheetSlicerSettings } from './features/slicer/slicer-settings.ts'
+export { SLICER_PUBLIC_COMMANDS, normalizeSheetSlicerAnchor, normalizeSheetSlicerPlacement, normalizeSheetSlicerSource,
+  normalizeSheetSlicerInfo, normalizeSheetTimelineInfo, resolveSheetSlicerSource, readSheetSlicerInfo, readSheetTimelineInfo,
+  readSheetSlicerSource, readSheetSlicerDrawing, sheetSlicerCacheDefinition, sheetTimelineCacheDefinition } from './features/slicer/slicer-public-info.ts'
+export type { ISheetSlicerInfo, ISheetTimelineInfo, ISheetSlicerDrawing, SheetSlicerAnchorSpec, SheetSlicerSourceSpec,
+  SheetTimelineSourceSpec, SheetSlicerPlacement, SlicerCacheDefinition, ITimelineCacheDefinition, TimelinePresentationPatch } from './features/slicer/slicer-public-info.ts'
+export { normalizeTimelineSettingsPatch, readTimelineSettings } from './features/slicer/timeline-settings.ts'
+export type { SheetTimelineSettings, TimelineSettingsInputPatch } from './features/slicer/timeline-settings.ts'
+export { TimelinePublicLevel, TimelineDateFilterOperator } from './domain/timeline-filters.ts'
+export type { ITimelineRange, ITimelineDateCondition, TimelineDateFilterState } from './domain/timeline-filters.ts'
+export { normalizeTimelineLevel, toTimelinePublicLevel, normalizeTimelineDateRange, effectiveTimelineDateRange,
+  compileTimelineSerialRange, compileTimelineRange, normalizeTimelineDateCondition, compileTimelineSerialCondition,
+  compileTimelineCondition, timelineConditionIntersectsPeriod, timelineDateConditionToPivot, timelineDateConditionFromPivot } from './features/slicer/timeline-date-filter.ts'
+export { timelinePeriodRange, timelineFilterStateFromLegacy } from './features/slicer/timeline-periods.ts'
+export { readTimelineFilterState, readTimelineDateRange, readTimelineDateCondition, setTimelineDateRange,
+  setTimelineDateCondition, updateTimelineCacheState, applyTimelineReportFilter } from './features/slicer/timeline-filter.ts'
+export { slicerMemberViewport } from './features/slicer/slicer-member-viewport.ts'
+export { SlicerCanvasDataCache } from './features/slicer/slicer-canvas-data.ts'
+export type { SlicerCanvasDataOwner, SlicerCanvasDataLoader, SlicerCanvasMemberWindow, SlicerCanvasDataState,
+  SlicerCanvasDataOptions } from './features/slicer/slicer-canvas-data.ts'
+export { timelineCanvasSelectionRange, timelineCanvasHandleRange } from './features/slicer/slicer-canvas-gesture.ts'
+export { RecordValueType, FilterSelectionMode, getRecordValueKey, normalizeRecordValue, normalizeRecordSelection, compileRecordSelection } from './domain/record-value.ts'
+export type { RecordValue, RecordSelection, PivotRecordValue } from './domain/record-value.ts'
+export { SlicerMemberQueryService, SlicerMemberQueryError, normalizeSlicerMemberWindowRequest } from './features/slicer/slicer-member-query.ts'
+export type { ISheetSlicerItemsRequest, ISlicerSourceMemberWindow, ISlicerDisplayMemberWindow, ISlicerSourceMetadata, SlicerDisplayMember,
+  SlicerMemberQueryOptions, SlicerMemberQueryMetrics } from './features/slicer/slicer-member-query.ts'
 export {
   clearFilter,
   expandVisibleSortOrder,
@@ -374,7 +467,19 @@ export { ChartAxisTargets, ChartAxisTitleAlignments, ChartAxisPointerTargets, Ch
   chartAxisPointerValues, clearChartAxisPointer,
   type ChartAxisTarget, type ChartAxisPointerTarget, type ChartSeriesClearTarget, type ChartAllSeriesStyleTarget } from './features/charts/chart-cartesian-api.ts'
 export { chartDateSerial, prepareChartDateData, supportsChartDateAxis } from './features/charts/chart-date-axis.ts'
-export { createSparklineGroupPatches, createSparklineSpec, translateSparklineForMove, type SparklineGroupRequest } from './features/sparkline/sparkline-model.ts'
-export { createSparklineCommands, parseSparklineRange, readSparklineValues, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
+export { createSparklineGroupPatches, createSparklineSpec, createSparklinePlacementPatches, normalizeSparklineSpec, createSparklineGroupId,
+  translateSparklineForMove, resolveSparklineSettings, mergeSparklineSettings, sparklineSettingsInput, readSparklineGroups,
+  planSparklineMutation, assertSparklineGroupConsistency, SPARKLINE_POINT_ORDER, SPARKLINE_THEMES } from './features/sparkline/sparkline-model.ts'
+export type { SparklineGroupRequest, SparklineSettingsInput, ResolvedSparklineSettings, SparklinePointName, SparklineTheme,
+  SparklineExtremumMode, SparklinePlacementRequest, SparklineGroupInfo, SparklineMutationRequest, SparklineMutationPlan,
+  SparklineMutationOptions } from './features/sparkline/sparkline-model.ts'
+export { SET_SPARKLINES_COMMAND, normalizeSparklinePatches, assertSparklineReadPermission, assertSparklineMutationPermission,
+  applySparklinePatches } from './features/sparkline/sparkline-command.ts'
+export type { SparklineMutationContext, SparklineCommandParams } from './features/sparkline/sparkline-command.ts'
+export { createSparklineCommands, parseSparklineRange, readSparklineValues, readSparklineSamples, sparklineCommandsForCell } from './features/sparkline/sparkline-render.ts'
+export type { SparklineRenderContext, SparklineExtrema, SparklineSample } from './features/sparkline/sparkline-render.ts'
+export { parseSparklineReference, parseSparklineRangeList, sparklineCellAddress, sparklineRangeString,
+  sparklineSheetQualifier, shiftSparklineReference } from './features/sparkline/sparkline-reference.ts'
+export type { SparklineAddress, SparklineReference } from './features/sparkline/sparkline-reference.ts'
 export { default as SparklinePanel } from './components/spreadsheet/SparklinePanel.vue'
 

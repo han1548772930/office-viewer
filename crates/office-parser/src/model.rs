@@ -248,6 +248,9 @@ impl ParserDiagnostics {
         if workbook.sheets.iter().flat_map(|sheet| &sheet.cells).any(|cell| cell.sparkline.is_some()) {
             diagnostics.capabilities.push("sparklines".into());
         }
+        if workbook.sheets.iter().any(|sheet| sheet.outline.is_some()) {
+            diagnostics.capabilities.push("sheetOutlines".into());
+        }
         if !workbook.pivot_tables.is_empty() {
             diagnostics.capabilities.push("pivotTables".into());
         }
@@ -439,6 +442,9 @@ pub struct SheetPayload {
     pub hidden_columns: Vec<u16>,
     pub row_hidden_spans: Vec<AxisSpanPayload<bool>>,
     pub column_hidden_spans: Vec<AxisSpanPayload<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<office_io_common::sheet_outline_source::SheetOutlineState>,
+    pub source_outline: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_filter: Option<crate::sheet_filter_import::AutoFilterState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -643,23 +649,7 @@ pub struct CellPayload {
     pub sparkline: Option<SparklinePayload>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SparklinePayload {
-    #[serde(rename = "type")]
-    pub sparkline_type: String,
-    pub source_range: String,
-    pub color: String,
-    pub negative_color: Option<String>,
-    pub high_point_color: Option<String>,
-    pub low_point_color: Option<String>,
-    pub empty_cells: String,
-    pub axis: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-}
+pub use office_io_common::sparkline_io::SparklineSpec as SparklinePayload;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

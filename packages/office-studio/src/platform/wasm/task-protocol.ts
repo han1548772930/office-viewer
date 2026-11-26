@@ -2,7 +2,7 @@
  * Version changes are coordinated source changes; older artifacts are rejected.
  */
 export const WASM_PROTOCOL_VERSION = 2 as const
-export const WASM_TASK_KINDS = ['parse', 'export', 'aggregate', 'sort', 'filter', 'chartStatistics', 'layout'] as const
+export const WASM_TASK_KINDS = ['parse', 'export', 'aggregate', 'sort', 'filter', 'chartStatistics', 'slicerMembers', 'layout'] as const
 export type WasmTaskKind = typeof WASM_TASK_KINDS[number]
 
 export interface WasmTaskBudget {

@@ -3,7 +3,7 @@ import type { CellRange } from '../../domain/model.ts'
 import type { DrawCommand, RenderRect } from '../../rendering/contracts.ts'
 import { drawingAffineBounds, drawingAffinePoint, invertDrawingAffine, multiplyDrawingAffine, type DrawingAffineMatrix } from '../../domain/drawing-affine.ts'
 import { intersectRect } from '../../rendering/geometry.ts'
-import { cellAddress, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
+import { cellAddress, type GridViewport, type SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
 import { patchSheetFloatingImage, sheetImageFootprint, sheetImageFrame, sheetImageLocalFrameDelta, sheetImageWorldFrameDelta,
   sheetImageNormalizedCrop, sheetImageRotatedBounds, sheetImageWithFrame } from './sheet-image-placement.ts'
 
@@ -42,15 +42,15 @@ export function sheetImageRotationPoint(rect: RenderRect, rotation = 0, matrix?:
 export function sheetImagePaneLayouts(geometry: SpreadsheetGeometry, viewport: GridViewport, images = geometry.sheet.images ?? []): SheetImagePaneLayout[] {
   return images.flatMap(image => geometry.panes(viewport).flatMap(pane => {
     if (!pane.clip.width || !pane.clip.height) return []
-    const frozenX = geometry.frozenColumns > 0 && pane.clip.x === GRID_HEADER_WIDTH
-    const frozenY = geometry.frozenRows > 0 && pane.clip.y === GRID_HEADER_HEIGHT
+    const frozenX = geometry.frozenColumns > 0 && pane.clip.x === geometry.headerWidth
+    const frozenY = geometry.frozenRows > 0 && pane.clip.y === geometry.headerHeight
     const frame = sheetImageFrame(image, geometry)
     if (frame.width <= 0 || frame.height <= 0) return []
-    let rect = { x: GRID_HEADER_WIDTH + frame.left * viewport.zoom - (frozenX ? 0 : viewport.scrollLeft),
-      y: GRID_HEADER_HEIGHT + frame.top * viewport.zoom - (frozenY ? 0 : viewport.scrollTop),
+    let rect = { x: geometry.headerWidth + frame.left * viewport.zoom - (frozenX ? 0 : viewport.scrollLeft),
+      y: geometry.headerHeight + frame.top * viewport.zoom - (frozenY ? 0 : viewport.scrollTop),
       width: frame.width * viewport.zoom, height: frame.height * viewport.zoom }
     const affine = image.drawingGeometry, matrix = affine ? multiplyDrawingAffine({ a: viewport.zoom, b: 0, c: 0, d: viewport.zoom,
-      e: GRID_HEADER_WIDTH - (frozenX ? 0 : viewport.scrollLeft), f: GRID_HEADER_HEIGHT - (frozenY ? 0 : viewport.scrollTop) }, affine.matrix) : undefined
+      e: geometry.headerWidth - (frozenX ? 0 : viewport.scrollLeft), f: geometry.headerHeight - (frozenY ? 0 : viewport.scrollTop) }, affine.matrix) : undefined
     if (affine) rect = { x: 0, y: 0, width: affine.width, height: affine.height }
     const footprint = matrix ? drawingAffineBounds({ width: rect.width, height: rect.height, matrix })
       : sheetImageRotatedBounds({ left: rect.x, top: rect.y, width: rect.width, height: rect.height }, image.rotation),

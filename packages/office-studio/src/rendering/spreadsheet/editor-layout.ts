@@ -1,6 +1,6 @@
 import type { RenderRect } from '../contracts'
 import { intersectRect } from '../geometry.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, type GridRange, type GridViewport, type SpreadsheetGeometry } from './layout.ts'
+import { parseAddress, type GridRange, type GridViewport, type SpreadsheetGeometry } from './layout.ts'
 import { SHEET_SELECTION_HANDLE_SIZE, SHEET_SELECTION_STROKE_WIDTH } from './selection.ts'
 
 export interface CellEditorLayout {
@@ -21,10 +21,10 @@ export function createCellEditorLayout(geometry: SpreadsheetGeometry, address: s
   const merge = geometry.mergeAt(point.row, point.column)
   const row = merge?.startRow ?? point.row, column = merge?.startColumn ?? point.column
   const cellRect = geometry.cellRect(row, column, viewport)
-  const frozenRight = Math.min(viewport.width, GRID_HEADER_WIDTH + geometry.columns.offset(geometry.frozenColumns) * viewport.zoom)
-  const frozenBottom = Math.min(viewport.height, GRID_HEADER_HEIGHT + geometry.rows.offset(geometry.frozenRows) * viewport.zoom)
-  const x = column < geometry.frozenColumns ? GRID_HEADER_WIDTH : frozenRight
-  const y = row < geometry.frozenRows ? GRID_HEADER_HEIGHT : frozenBottom
+  const frozenRight = Math.min(viewport.width, geometry.headerWidth + geometry.columns.offset(geometry.frozenColumns) * viewport.zoom)
+  const frozenBottom = Math.min(viewport.height, geometry.headerHeight + geometry.rows.offset(geometry.frozenRows) * viewport.zoom)
+  const x = column < geometry.frozenColumns ? geometry.headerWidth : frozenRight
+  const y = row < geometry.frozenRows ? geometry.headerHeight : frozenBottom
   const right = column < geometry.frozenColumns ? frozenRight : viewport.width
   const bottom = row < geometry.frozenRows ? frozenBottom : viewport.height
   const pane = { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) }

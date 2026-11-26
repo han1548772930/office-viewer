@@ -51,6 +51,7 @@ import { chartTitleCommands, chartTitleGeometry, isChartTitleTextCommand, type C
 import { createChartPlotAreaTarget, type ChartCanvasPlotAreaTarget } from './chart-plot-area-interaction'
 import { resolveChartAreaLineStyle } from './chart-line-and-area'
 import { chartCanvasCommandElement, chartCanvasNativeElementRuntime, chartCanvasNativePointOrder, chartCanvasParetoLineRuntimeId, chartCanvasRuntimeSeriesId, type ChartCanvasElementRuntime } from './chart-element-interaction'
+import { pivotChartCategoryAxis, pivotChartCategoryAxisDepth, readPivotChartAxisCommand } from './chart-pivot-axis-layout.ts'
 
 export type ChartEChartsPointerRuntime = ChartAxisPointerRuntime | ChartSankeyPointerRuntime | ChartTreemapPointerRuntime | ChartSunburstPointerRuntime | ChartChordPointerRuntime | ChartRelationPointerRuntime
 
@@ -81,13 +82,14 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
   const localChart = { ...chart, position: { x: 0, y: 0 } }
   const officeChartKey = JSON.stringify([localChart, theme, Boolean(data.date1904)])
   const pointerEnabled = supportsChartAxisPointer(chart) && data.categories.length > 0 && data.series.length > 0
-  const frame = chartPlotFrame(localChart, derived.boxes ?? data.series, chartLegendDataCount(data, chart)), grid = {
+  const pivotCategoryDepth = pivotChartCategoryAxisDepth(data, chart)
+  const frame = chartPlotFrame(localChart, derived.boxes ?? data.series, chartLegendDataCount(data, chart), pivotCategoryDepth), grid = {
     left: frame.plot.x, right: Math.max(0, chart.size.width - frame.plot.x - frame.plot.width),
     // chartPlotFrame already reserves automatic label/title bands; authored bounds are exact.
     top: frame.plot.y, bottom: Math.max(0, chart.size.height - frame.plot.y - frame.plot.height), containLabel: false,
   }
   const automaticFrame = chart.options?.plotArea ? chartPlotFrame({ ...localChart, options: { ...localChart.options, plotArea: undefined } },
-    derived.boxes ?? data.series, chartLegendDataCount(data, chart)) : frame
+    derived.boxes ?? data.series, chartLegendDataCount(data, chart), pivotCategoryDepth) : frame
   const officeChartPlotArea = createChartPlotAreaTarget(chart.type, frame.frame, frame.plot, automaticFrame.plot, !!chart.options?.plotArea)
   if (!data.categories.length || !data.series.length || descriptor.family === 'gauge' && !data.series[0]!.values.some(Number.isFinite) || requiresGraphicChart(chart, data, derived.boxes, derived.pareto?.cumulativePercent)) {
     const originalLayout = layoutDerivedChartData(derived, localChart, palette)
@@ -147,6 +149,7 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     ...(dates || chart.type === 'candlestick' ? { min: sharedLayout!.min, max: sharedLayout!.max } : {}) }
   const baseAxis = dates ? dateCategoryAxis(dates, chart.xAxis, axisColor, splitLineColor, inheritedFont)
     : categoryAxis(data.categories, chart.xAxis, axisColor, splitLineColor, inheritedFont)
+  if (pivotCategoryDepth) baseAxis.axisLabel = { ...baseAxis.axisLabel, show: false }
   const secondAxis: ChartAxisOptions = chart.options?.rightYAxis ?? { scaleType: 'linear' }
   const secondaryValueAxis = { ...numericAxis(secondAxis, axisColor, splitLineColor, horizontal ? 'x' : 'y', false, inheritedFont),
     ...(dates ? { min: sharedLayout!.rightMin, max: sharedLayout!.rightMax } : {}) }
@@ -188,6 +191,12 @@ export function chartEChartsOption(workbook: WorkbookModel, chart: ChartModel, t
     const previousLegend = option.legend
     Object.assign(option, special)
     if (special.legend && previousLegend && !Array.isArray(previousLegend) && !Array.isArray(special.legend)) option.legend = { ...previousLegend, ...special.legend }
+  }
+  const pivotCategoryAxis = pivotChartCategoryAxis(data, localChart, frame.frame, frame.plot, color)
+  if (pivotCategoryAxis) {
+    const current = option.graphic
+    option.graphic = { elements: [...(!Array.isArray(current) ? current?.elements ?? [] : []),
+      ...chartGraphics(pivotCategoryAxis.labels.map(label => label.command), `${chart.id}:pivot-category-axis`, 500)] }
   }
   if (pointerRuntime?.mode === 'graphic' && pointerRuntime.geometry.heatmap) {
     option.graphic = { elements: chartGraphics(pointerRuntime.geometry.heatmap.legend.commands, `${chart.id}:heatmap-legend`) }
@@ -344,10 +353,11 @@ export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset 
   return commands.map((command, index): NonNullable<GraphicComponentOption['elements']>[number] => {
     const titleLayout = isChartTitleTextCommand(command) ? command.chartTitle : undefined
     const canvasElement = chartCanvasCommandElement(command)
+    const pivotAxisLabel = readPivotChartAxisCommand(command)
     const id = titleLayout ? `${chartId}:title:${titleLayout.kind}:${titleLayout.lineIndex}` : `${chartId}-${index}`
-    const common = { id, silent: !titleLayout && !canvasElement, z: titleLayout ? 10_000 + index : index + zOffset,
-      ...(titleLayout || canvasElement ? { cursor: 'pointer', info: { ...(titleLayout ? { chartElementHit: { kind: titleLayout.kind }, chartTitle: titleLayout } : {}),
-        ...(canvasElement ? { officeChartElement: canvasElement } : {}) } } : {}) }
+    const common = { id, silent: !titleLayout && !canvasElement && !pivotAxisLabel, z: titleLayout ? 10_000 + index : index + zOffset,
+      ...(titleLayout || canvasElement || pivotAxisLabel ? { cursor: 'pointer', info: { ...(titleLayout ? { chartElementHit: { kind: titleLayout.kind }, chartTitle: titleLayout } : {}),
+        ...(canvasElement ? { officeChartElement: canvasElement } : {}), ...(pivotAxisLabel ? { officePivotAxisLabel: pivotAxisLabel } : {}) } } : {}) }
     let element: NonNullable<GraphicComponentOption['elements']>[number]
     if (command.kind === 'rect') element = { ...common, type: 'rect', shape: { x: command.x, y: command.y, width: command.width, height: command.height }, style: { fill: command.fill, stroke: command.stroke, lineWidth: command.strokeWidth ?? 1 } }
     else if (command.kind === 'line') element = { ...common, type: 'line', shape: { x1: command.x1, y1: command.y1, x2: command.x2, y2: command.y2 }, style: { stroke: command.color, lineWidth: command.width ?? 1 } }
@@ -356,7 +366,7 @@ export function chartGraphics(commands: DrawCommand[], chartId: string, zOffset 
       style: { text: command.text, font: command.font, fill: command.color, align: command.align ?? 'left', verticalAlign: command.baseline === 'middle' ? 'middle' : command.baseline === 'bottom' ? 'bottom' : 'top',
         ...(command.maxWidth === undefined || titleLayout && command.rotation ? {} : { width: command.maxWidth, overflow: 'truncate' as const }) } }
     else throw new TypeError('图表几何不能携带位图，请使用图表位图适配层。')
-    return command.clip ? { type: 'group', id: `${id}-clip`, silent: !titleLayout && !canvasElement, children: [element],
+    return command.clip ? { type: 'group', id: `${id}-clip`, silent: !titleLayout && !canvasElement && !pivotAxisLabel, children: [element],
       clipPath: { type: 'rect', shape: { x: command.clip.x, y: command.clip.y, width: command.clip.width, height: command.clip.height } } } : element
   })
 }

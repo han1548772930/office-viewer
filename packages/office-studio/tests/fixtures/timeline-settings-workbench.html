@@ -1,0 +1,96 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred Timeline settings workbench</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}</style></head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FSheetTimeline } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { setSheetDrawingSelection, getSheetDrawingSelection } from '/packages/office-studio/src/api/sheet-drawing-selection.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { timelineSettingsUiWorkbook, timelineUiIds as ids } from './timeline-settings-ui-fixture.mjs'
+import { timelineReportTotals } from './timeline-filter-fixture.mjs'
+
+// Real Ant/Canvas/Facade/date-source/history fixture; deferred and never started for this draft.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const commands = [], notices = [], pending = [], originals = { settings: FSheetTimeline.prototype.updateSettings,
+  presentation: FSheetTimeline.prototype.updatePresentation, range: FSheetTimeline.prototype.setDateRange, bounds: FSheetTimeline.prototype.getDateBounds }
+let app, stopView, originalExecute
+const json = value => JSON.parse(JSON.stringify(value)), studio = () => slot.value, book = () => FOffice.newAPI(studio()).getActiveWorkbook()
+const model = () => studio().getWorkbookModel(book().getId()), unitId = () => book().getId()
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id], timelines = {}, controlErrors = []
+  for (const control of book().getTimelines()) {
+    const id = control.getId()
+    timelines[id] = { settings: control.getSettings(), range: control.getDateRange(), condition: control.getDateCondition() }
+    try { timelines[id].info = control.getInfo() }
+    catch (error) { controlErrors.push({ id, message: error instanceof Error ? error.message : String(error) }) }
+  }
+  return { model: json(value), timelines: json(timelines), revision: studio().getWorkbookRevision(value.id), userId: studio().currentUserId,
+    selection: json(getSheetDrawingSelection(studio(), value.id, value.activeSheetId)), totals: timelineReportTotals(value), controlErrors,
+    history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0, dirty: studio().editor.history.isDirty(value.id) }, commands: json(commands), notices: json(notices) }
+}
+async function release() {
+  pending.splice(0).forEach(entry => entry.resolve())
+  FSheetTimeline.prototype.updateSettings = originals.settings; FSheetTimeline.prototype.updatePresentation = originals.presentation
+  FSheetTimeline.prototype.setDateRange = originals.range; FSheetTimeline.prototype.getDateBounds = originals.bounds
+  if (slot.value && originalExecute) slot.value.executeCommand = originalExecute
+  originalExecute = undefined
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'
+  slot.value = new OfficeStudio({ workbook: options.model ?? timelineSettingsUiWorkbook(options), currentUserId: options.currentUserId ?? 'local-user' })
+  originalExecute = studio().executeCommand
+  view.value = toExcelWorkbookView(model())
+  stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => {
+    const patch = event.params?.patch, range = event.params?.range, condition = event.params?.condition
+    commands.push({ id: event.id, params: json(event.params ?? {}), patchKeys: patch ? Object.keys(patch) : [],
+      clearedKeys: patch ? Object.keys(patch).filter(key => patch[key] === undefined) : [], rangeKeys: range ? Object.keys(range) : [], conditionKeys: condition ? Object.keys(condition) : [] })
+  })
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)),
+    }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+window.timelineSettingsFixture = { ids, mount, state,
+  async select(id = ids.primary) { const control = book().getTimeline(id).getModel(); setSheetDrawingSelection(studio(), unitId(), control.hostSheetId, [{ kind: 'timeline', id }]); await settled(); return state() },
+  async clearSelection() { setSheetDrawingSelection(studio(), unitId(), model().activeSheetId, []); await settled(); return state() },
+  async updateSettings(id, patch) { const accepted = await book().getTimeline(id).updateSettings(patch); await settled(); return { accepted, ...state() } },
+  async setRange(id, range) { const accepted = await book().getTimeline(id).setDateRange(range); await settled(); return { accepted, ...state() } },
+  async setCondition(id, condition) { const accepted = await originalExecute.call(studio(), 'sheet.command.set-timeline-date-condition', { unitId: unitId(), slicerId: id, condition }); await settled(); return { accepted, ...state() } },
+  async bounds(id = ids.primary) { return book().getTimeline(id).getDateBounds() },
+  async changeSource() { book().getSheetBySheetId(ids.source).getRange('F4').setValue(11); await settled(); return state() },
+  async removeDateSource() { book().getSheetBySheetId(ids.source).getRange('E4:E14').setValues(Array.from({ length: 11 }, () => ['not a date'])); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(unitId()); await settled(); return state() },
+  async switchUser(id = 'peer') { Object.defineProperty(studio(), 'currentUserId', { configurable: true, value: id }); await settled(); return state() },
+  async switchSheet(id = ids.other) { book().setActiveSheet(id); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId, dark: dark.value, variant: variant.value }) },
+  delay(kind) {
+    const method = kind === 'settings' ? 'updateSettings' : kind === 'presentation' ? 'updatePresentation' : kind === 'range' ? 'setDateRange' : kind === 'bounds' ? 'getDateBounds' : undefined
+    if (method) FSheetTimeline.prototype[method] = async function(...args) { await new Promise(resolve => pending.push({ kind, resolve })); return originals[kind].apply(this, args) }
+    else if (kind === 'condition' || kind === 'clear') {
+      const execute = originalExecute
+      studio().executeCommand = async function(id, params) {
+        if (id === (kind === 'condition' ? 'sheet.command.set-timeline-date-condition' : 'sheet.command.set-timeline-date-range')) await new Promise(resolve => pending.push({ kind, resolve }))
+        return execute.call(this, id, params)
+      }
+    }
+  },
+  pending(kind) { return pending.filter(entry => entry.kind === kind).length },
+  async release(kind, index = 0) {
+    const entry = pending.filter(entry => entry.kind === kind)[index], position = pending.indexOf(entry)
+    if (position >= 0) pending.splice(position, 1)[0].resolve()
+    await settled(); return state()
+  },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

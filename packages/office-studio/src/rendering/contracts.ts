@@ -4,7 +4,14 @@ import type { SheetDrawingLeafRef } from '../domain/sheet-drawings.ts'
 /** All scene coordinates are CSS pixels. The surface applies device pixel ratio. */
 export interface RenderRect { x: number; y: number; width: number; height: number }
 /** A drawing owner supplies its content; the worksheet owns the common stacking order. */
-export interface DrawingCommandOwner { drawingRef?: SheetDrawingLeafRef; drawingOverlay?: boolean }
+export interface DrawingCommandOwner {
+  drawingRef?: SheetDrawingLeafRef
+  drawingOverlay?: boolean
+  /** Maps local command CSS pixels into the scene; clip is always in scene coordinates. */
+  matrix?: DrawingAffineMatrix
+  /** Applied in local coordinates before matrix. Useful for a rotated or sheared control's content. */
+  localClip?: RenderRect
+}
 export interface RectCommand extends RenderRect, DrawingCommandOwner { kind: 'rect'; fill: string; stroke?: string; strokeWidth?: number; clip?: RenderRect }
 export interface LineCommand extends DrawingCommandOwner { kind: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; width?: number; clip?: RenderRect }
 export interface PolygonCommand extends DrawingCommandOwner { kind: 'polygon'; points: Array<{ x: number; y: number }>; fill: string; clip?: RenderRect }
@@ -17,8 +24,7 @@ export interface ImageCommand extends RenderRect, DrawingCommandOwner {
   rotation?: number
   flipX?: boolean
   flipY?: boolean
-  /** Applied after the local frame, rotation and flips; preserves group shear as well as rigid transforms. */
-  matrix?: DrawingAffineMatrix
+  /** The inherited matrix is applied after the image's local rotation and flips. */
 }
 export type DrawCommand = RectCommand | LineCommand | PolygonCommand | TextCommand | ImageCommand
 export interface RenderScene { width: number; height: number; background?: string; commands: DrawCommand[] }

@@ -4,10 +4,13 @@ import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { RibbonEditorFocusScopeKey } from '../platform/ribbon/ribbon-popup-scope'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme.ts'
-import { Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
+import { Alert, Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import { FOffice, type FChart } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ApiSheetSelection } from '../api/events.ts'
+import { SPARKLINE_PUBLIC_COMMANDS } from '../api/sparkline-public-commands.ts'
+import { sparklineApiRangeReference } from '../api/sparklines.ts'
+import { sparklinePanelOwnerCurrent, type SparklinePanelOwner } from '../features/sparkline/sparkline-panel-state.ts'
 import { MOVE_SHEET_SELECTION_ENTER_TAB_COMMAND } from '../api/sheet-selection-commands.ts'
 import { COPY_WORKSHEET_COMMAND, planWorksheetCopy, type CopyWorksheetCommandInput } from '../features/sheet-workbench/sheet-worksheet-copy.ts'
 import { WORKSHEET_LIFECYCLE_COMMANDS, planWorksheetLifecycle, type WorksheetLifecycleCommandId, type WorksheetLifecycleCommandInput } from '../features/sheet-workbench/sheet-worksheet-lifecycle.ts'
@@ -34,7 +37,9 @@ import type { RibbonVariant } from '../platform/ribbon/ribbon-schema'
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import SheetFormulaBar from './spreadsheet/SheetFormulaBar.vue'
 import SheetFooter from './spreadsheet/SheetFooter.vue'
-import { createSheetRibbon } from './spreadsheet/sheet-ribbon'
+import { createSheetRibbon, type SlicerRibbonControlState } from './spreadsheet/sheet-ribbon'
+import { canConfigurePanelSlicer } from '../features/slicer/slicer-panel-state'
+import { slicerPanelOwnerCurrent, type SlicerPanelOwner } from '../features/slicer/slicer-panel-owner'
 import { calculateSelectionStatistics, frozenPaneCountsForSelection, normalizeSheetViewState, parseSheetAddress, validateSheetName, type SheetViewState } from '../features/sheet-workbench/sheet-workbench'
 import { normalizeSheetSelection, type SheetSelectionState } from '../features/sheet-workbench/sheet-selection.ts'
 import { planSheetSelectionShortcut, SheetSelectionDirections, type SheetSelectionShortcutKey } from '../features/sheet-workbench/sheet-selection-navigation.ts'
@@ -76,6 +81,16 @@ import SheetRangeThemeDialog from './spreadsheet/SheetRangeThemeDialog.vue'
 import { useSheetRangeTheme } from './spreadsheet/use-sheet-range-theme.ts'
 import { OPEN_SHEET_RANGE_THEME_OPERATION, SHEET_RANGE_THEME_COMMANDS } from '../features/sheet-workbench/sheet-range-theme-command.ts'
 import { useSheetImages } from './spreadsheet/use-sheet-images.ts'
+import { useSheetDrawings } from './spreadsheet/use-sheet-drawings.ts'
+import { useSheetDrawingSelection } from './spreadsheet/use-sheet-drawing-selection.ts'
+import { reconcileWorkbookDrawingStates } from '../features/sheet-drawings/sheet-drawing-model-lifecycle.ts'
+import type { SheetDrawingAffineGeometry, SheetDrawingRef } from '../domain/sheet-drawings.ts'
+import { createSheetDrawingScene } from '../features/sheet-drawings/sheet-drawing-host.ts'
+import { drawingPaintOrder } from '../features/drawing-groups/index.ts'
+import { drawingAffineBounds, type DrawingAffineGeometry } from '../domain/drawing-affine.ts'
+import { sheetClipboardObjectRange } from '../features/sheet-workbench/sheet-clipboard-object-geometry.ts'
+import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, sheetOutlineHeaderExtents } from '../rendering/spreadsheet/layout.ts'
+import { canViewProtectedRanges } from '../features/sheet-protection/range-protection.ts'
 import SheetImagePickerDialog from './spreadsheet/SheetImagePickerDialog.vue'
 import SheetImageEditorDialog from './spreadsheet/SheetImageEditorDialog.vue'
 import SheetImageSaveDialog from './spreadsheet/SheetImageSaveDialog.vue'
@@ -97,11 +112,18 @@ import { SHEET_FORMAT_PAINTER_COMMAND_IDS } from '../features/sheet-workbench/sh
 import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts'
 import { applySheetConditionalFormatsCommand, SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from '../features/conditional-formatting/conditional-format-command.ts'
-import { CHANGE_SHEET_OUTLINE_COMMAND, getCollapsedOutlineIndexes, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
+import { CHANGE_SHEET_OUTLINE_COMMAND, getSheetOutlineHiddenSpans, getSheetOutlineUpdate, type ChangeSheetOutlineInput, type SheetOutlineAction, type SheetOutlineOperation } from '../features/sheet-outline/sheet-outline.ts'
+import { SHEET_OUTLINE_COMMAND_IDS, sheetOutlineCommandInput } from '../features/sheet-outline/sheet-outline-command.ts'
+import SheetOutlineActionDialog from '../features/sheet-outline/SheetOutlineActionDialog.vue'
+import SheetOutlineSettingsDialog from '../features/sheet-outline/SheetOutlineSettingsDialog.vue'
+import { useSheetOutlineWorkbench, sheetOutlineCommandForShortcut, OPEN_SHEET_OUTLINE_SETTINGS_OPERATION } from './spreadsheet/use-sheet-outline-workbench.ts'
 import { createOfficeTranslator, createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18n/office-i18n.ts'
 import { createSheetReplacePatches, findSheetMatches, nextSheetMatchIndex, type SheetFindBy, type SheetFindDirection, type SheetFindScope } from '../features/sheet-find-replace/sheet-find-replace.ts'
 import { convertTextToNumber } from '../features/sheet-workbench/text-to-number.ts'
 import { resolveSlicerBounds } from '../features/slicer/slicer-drawing.ts'
+import { slicerControlItemStates } from '../features/slicer/slicer-control-selection.ts'
+import { useSlicerCanvasData } from '../features/slicer/use-slicer-canvas-data.ts'
+import type { SlicerCommandContext } from '../api/slicer-command-context.ts'
 import type { SheetFillCommitContext } from '../features/sheet-workbench/sheet-fill-gesture.ts'
 import { canSetSheetHyperlink, normalizeExternalSheetHyperlink, parseSheetHyperlinkTarget, SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND } from '../features/sheet-workbench/sheet-hyperlink.ts'
 
@@ -245,6 +267,7 @@ watch(() => props.studio, () => { cancelEdit() }, { flush: 'sync' })
 const selecting = ref(false)
 const formulaInput = ref<InstanceType<typeof SheetFormulaBar> | null>(null)
 const spreadsheetCanvas = ref<InstanceType<typeof SpreadsheetCanvas> | null>(null)
+const chartOverlay = ref<InstanceType<typeof ChartOverlay> | null>(null)
 const displayPreference = useWorkbenchDisplay()
 const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
 const zoom = ref<number>(displayPreference?.value.zoom ?? 100)
@@ -273,7 +296,6 @@ watch(() => displayPreference?.value.zoom, value => {
 })
 const chartCommands = ref<DrawCommand[]>([])
 const focusedChartId = ref<string | null>(null)
-const chartPointerOrigin = ref<{ x: number; y: number } | null>(null)
 const hyperlinkDialogOpen = ref(false)
 const hyperlinkTarget = ref('')
 const hyperlinkDisplay = ref('')
@@ -289,6 +311,7 @@ const pivotPanelOpen = ref(false)
 const pivotSource = ref('')
 const slicerPanelOpen = ref(false)
 const slicerKind = ref<'slicer' | 'timeline'>('slicer')
+const slicerPanelSection = ref<'settings' | 'styles' | 'connections'>('settings')
 const selectedSlicerId = ref('')
 const dataPanelOpen = ref(false)
 const dataPanelMode = ref<'filter' | 'sort'>('filter')
@@ -307,6 +330,12 @@ const worksheetProtectionSheetId = ref<string | null>(null)
 const protectionStartNew = ref(false)
 const sparklinePanelOpen = ref(false)
 const sparklineTargetRange = ref('A1')
+interface SparklineWorkbenchContext {
+  key: number; studio: OfficeStudio; workbookId: string; sheetId: string; targetRange: string; targetRanges: string[]
+  setOpen(open: boolean): void; applied(): void; closed(owner?: SparklinePanelOwner): void
+}
+let sparklineContextSequence = 0
+const sparklineContext = shallowRef<SparklineWorkbenchContext>()
 const customNumberFormatOpen = ref(false)
 const numberFormatPreview = ref<SheetNumberFormatPreview>()
 const sheetSidebarWidth = ref(384)
@@ -324,29 +353,16 @@ let sortController: AbortController | undefined
 const chartWorkbook = computed(() => workbook.value as ExcelWorkbookChartView)
 const sheetCharts = computed(() => (workbook.value.charts ?? []).filter(chart => chart.sheetId === activeSheetId.value))
 const focusedChart = computed(() => sheetCharts.value.find(chart => chart.id === focusedChartId.value) ?? null)
-const slicerControls = computed(() => {
-  const sheet = getChartWorksheet(activeSheetId.value)
-  return (workbook.value.slicers ?? []).filter(model => model.hostSheetId === activeSheetId.value).flatMap((model): Array<{ model: SlicerModel; items: string[] }> => {
-    try {
-      const control = sheet?.getSlicer(model.id)
-      if (!control) return []
-      const pivot = workbook.value.pivotTables?.find(candidate => candidate.id === model.pivotTableId)
-      const table = workbook.value.tables?.find(candidate => candidate.id === model.tableId)
-      const tableColumn = table ? table.range.startCol + table.columns.findIndex(column => column.id === model.sourceFieldId) : -1
-      const selectedItems = model.tableId
-        ? table?.autoFilter?.columns[tableColumn]
-        : pivot?.fields.find(field => field.id === model.sourceFieldId && field.area !== 'value')?.selectedItems
-      const normalizedSelection = Array.isArray(selectedItems)
-        ? selectedItems
-        : selectedItems?.kind === 'values'
-          ? selectedItems.selectedItems.map(value => value == null ? '' : String(value))
-          : undefined
-      return [{ model: { ...model, selectedItems: normalizedSelection ? [...normalizedSelection] : undefined }, items: control.getItems() }]
-    } catch { return [] }
-  })
-})
-
 const activeSheet = computed(() => availableSheets.value.find((sheet) => sheet.id === activeSheetId.value && sheet.visible !== false) ?? availableSheets.value.find(sheet => sheet.visible !== false))
+const { context: outlineContext, actionRequest: outlineActionRequest, settingsRequest: outlineSettingsRequest,
+  actionOpen: outlineActionOpen, settingsOpen: outlineSettingsOpen, uiOpen: outlineUiOpen, openSettings: openOutlineSettings, run: runOutlineAlias } = useSheetOutlineWorkbench({
+  state: () => ({ studio: props.studio, unitId: workbook.value.id ?? 'standalone-workbook', sheetId: activeSheetId.value, sheet: activeSheet.value,
+    ranges: selectedRanges.value.map(range => ({ startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn,
+      ...(range.rangeType === undefined ? {} : { rangeType: range.rangeType }) })), userId: userId.value, active: workbenchActive.value }),
+  apply: input => runOutlineCommand(input.action, input),
+  refresh: () => { const model = workbook.value.id && props.studio?.getWorkbookModel(workbook.value.id); if (model) { workbook.value = toExcelWorkbookView(model); commitHistory() } },
+  focus: () => { if (!editingKey.value) spreadsheetCanvas.value?.focus() },
+})
 const { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, chartEditorBusy, chartError, chartEditorError,
   chartInsertContext, chartEditorContext, chartEditorRoute, chartEditorRouteKey, pivotChartContext, chartEditorChart, chartSourceRevision, chartEditorSheet, chartEditorSheets, chartInsertSheets,
   openInsertChart, openChartEditor, openPivotChart } = useSheetChartPanels({
@@ -363,6 +379,11 @@ const { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, c
 const activeDate1904 = computed(() => resolveSheetDate1904(activeSheet.value, workbook.value))
 const activeRenderSheet = computed(() => activeSheet.value
   ? { ...activeSheet.value, date1904: activeDate1904.value } : undefined)
+const sheetViewportHeaders = computed(() => sheetOutlineHeaderExtents(activeRenderSheet.value?.outline))
+const slicerCanvasData = useSlicerCanvasData({ studio: () => props.studio, unitId: () => workbook.value.id,
+  sheetId: () => activeSheetId.value, sheet: () => activeRenderSheet.value, view: () => workbook.value,
+  active: () => workbenchActive.value && (!props.studio || props.studio.activeWorkbookId === workbook.value.id && props.studio.editor.state.activeKind === 'workbook') })
+const slicerControls = computed(() => slicerCanvasData.controls.value.map(control => ({ ...control, styleOwner: workbook.value })))
 const translate = computed(() => createOfficeTranslator(officeLocale.value))
 function t(key: string, fallback: string) { return translate.value(`sheet.${key}`, fallback) }
 const activeCell = computed(() => {
@@ -564,19 +585,63 @@ const { pending: imagePickerPending, editor: imageEditorPending, saving: imageSa
   crop: (id, input) => spreadsheetCanvas.value?.operateImageCrop(id, input) ?? { handled: false },
 })
 const imageUiOpen = computed(() => Boolean(imagePickerPending.value || imageEditorPending.value || imageSavePending.value))
-function selectImage(id?: string, additive = false, preserve = false): void {
-  if (id && additive) selectedImageIds.value = selectedImageIds.value.includes(id) ? selectedImageIds.value.filter(current => current !== id) : [...selectedImageIds.value, id]
-  else if (id && preserve && selectedImageIds.value.includes(id)) selectedImageIds.value = [...selectedImageIds.value.filter(current => current !== id), id]
-  else selectedImageId.value = id
-  if (id) { focusedChartId.value = null; selectedSlicerId.value = '' }
+const drawingWorkbook = computed(() => applyExcelWorkbookView(createBlankWorkbook(workbook.value.name), workbook.value))
+function drawingPermissionRange(frame: DrawingAffineGeometry) {
+  const bounds = drawingAffineBounds(frame)
+  return sheetClipboardObjectRange(drawingWorkbook.value, activeSheetId.value,
+    { ...bounds, left: bounds.left + GRID_HEADER_WIDTH, top: bounds.top + GRID_HEADER_HEIGHT })
 }
-function selectSlicer(id: string): void { selectedSlicerId.value = id; if (id) { selectedImageId.value = undefined; focusedChartId.value = null } }
-function selectChart(id: string | null): void { focusedChartId.value = id; if (id) { selectedImageId.value = undefined; selectedSlicerId.value = '' } }
+function canViewDrawing(ref: SheetDrawingRef): boolean {
+  const object = drawingScene.value?.objects.find(object => object.ref.kind === ref.kind && object.ref.id === ref.id), sheet = activeSheet.value
+  return !!object && object.available !== false && !!sheet && canViewWorksheetProtection(sheet, userId.value)
+    && canViewProtectedRanges(sheet, [drawingPermissionRange(object.geometry)], userId.value)
+}
+const drawingSelection = useSheetDrawingSelection({
+  studio: () => props.studio, unitId: () => workbook.value.id, sheetId: () => activeSheetId.value, active: () => workbenchActive.value,
+  scene: () => activeSheet.value ? createSheetDrawingScene(drawingWorkbook.value, activeSheetId.value, {
+    canEdit: (_ref, frame) => canEditWorksheetProtection(activeSheet.value!, userId.value)
+      && canViewProtectedRanges(activeSheet.value!, [drawingPermissionRange(frame)], userId.value)
+      && canEditProtectedRanges(activeSheet.value!, [drawingPermissionRange(frame)], userId.value),
+  }) : undefined,
+  nativeSelection: () => [...selectedImageIds.value.map(id => ({ kind: 'image' as const, id })),
+    ...(focusedChartId.value ? [{ kind: 'chart' as const, id: focusedChartId.value }] : []),
+    ...(selectedSlicerId.value ? [{ kind: workbook.value.slicers?.find(slicer => slicer.id === selectedSlicerId.value)?.type ?? 'slicer', id: selectedSlicerId.value }] : [])],
+  applyNative: refs => {
+    selectedImageIds.value = refs.every(ref => ref.kind === 'image') ? refs.map(ref => ref.id) : []
+    focusedChartId.value = refs.length === 1 && refs[0]?.kind === 'chart' ? refs[0].id : null
+    selectedSlicerId.value = refs.length === 1 && (refs[0]?.kind === 'slicer' || refs[0]?.kind === 'timeline') ? refs[0].id : ''
+  },
+})
+const selectedDrawingRefs = drawingSelection.refs, drawingScene = drawingSelection.scene
+const drawingOrder = computed(() => drawingScene.value ? drawingPaintOrder(drawingScene.value) : undefined)
+function selectDrawing(ref?: SheetDrawingRef, additive = false, preserve = false): void { drawingSelection.select(ref, additive, preserve) }
+function routeChartDrawingEvent(event: MouseEvent, chartId: string): boolean { return spreadsheetCanvas.value?.routeDrawingEvent(event, chartId) ?? false }
+function routeCanvasChartEvent(event: MouseEvent | KeyboardEvent, chartId: string, pane: { scrollLeft: number; scrollTop: number; headerWidth?: number; headerHeight?: number }): void {
+  if (event instanceof KeyboardEvent) chartOverlay.value?.routeCanvasKeydown(event, chartId)
+  else chartOverlay.value?.routeCanvasEvent(event, chartId, pane)
+}
+const { runDrawingCommand, error: drawingError } = useSheetDrawings({
+  studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
+  selection: () => selectedDrawingRefs.value, select: refs => drawingSelection.set(refs), userId: () => userId.value,
+  active: () => workbenchActive.value, finishEdit,
+  blocked: () => Boolean(editComposing.value || imageUiOpen.value || rangeThemePending.value || cellShiftPending.value || axisSizePending.value || mergeRequest.value || painterRequest.value),
+  prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
+  changed: options => { if (options?.current && !options.current()) return; clearPainterSession(); if (!options?.current || options.current()) commitHistory({ ...options, prepared: true }) },
+  notify: message => emit('notify', { type: 'error', message }), focus: () => spreadsheetCanvas.value?.focus(),
+})
+function selectImage(id?: string, additive = false, preserve = false): void {
+  selectDrawing(id ? { kind: 'image', id } : undefined, additive, preserve)
+}
+function selectSlicer(id: string): void { selectDrawing(id ? { kind: workbook.value.slicers?.find(slicer => slicer.id === id)?.type ?? 'slicer', id } : undefined) }
+function selectChart(id: string | null): void { selectDrawing(id ? { kind: 'chart', id } : undefined) }
 function prepareAxisWorkbookView(view: DomainExcelWorkbookView, previous: DomainExcelWorkbookView): DomainExcelWorkbookView {
   const next = view.calculationMode === 'manual' ? view
     : recalculateSheetViewFormulas(view, undefined, { numberFormatLocale: officeRegion.value }).workbook
   refreshWorkbookViewAutoRowHeights(next, previous, { measure: props.studio?.sheetTextMeasure ?? measureSpreadsheetText, region: officeRegion.value })
-  return next
+  const baseline = applyExcelWorkbookView(createBlankWorkbook(previous.name), previous),
+    candidate = applyExcelWorkbookView(createBlankWorkbook(next.name), next)
+  reconcileWorkbookDrawingStates(baseline, candidate)
+  return toExcelWorkbookView(candidate)
 }
 const { runAxisVisibilityCommand } = useSheetAxisVisibility({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
@@ -724,6 +789,21 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
   focus: () => { if (!editingKey.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
   notify: message => emit('notify', { type: 'error', message }),
 })
+const slicerRibbonControl = computed<SlicerRibbonControlState | undefined>(() => {
+  const refs = selectedDrawingRefs.value, studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value
+  const ref = refs.length === 1 ? refs[0] : undefined
+  if (!ref || (ref.kind !== 'slicer' && ref.kind !== 'timeline') || !studio || !unitId || !workbenchActive.value) return undefined
+  const control = workbook.value.slicers?.find(control => control.id === ref.id && control.type === ref.kind && control.hostSheetId === sheetId)
+  if (!control) return undefined
+  return { id: control.id, type: control.type, style: control.style, styleOwner: workbook.value, supportsConnections: !control.tableId,
+    revision: studio.getWorkbookRevision(unitId), canConfigure: canConfigurePanelSlicer(studio, { workbookId: unitId, sheetId }, control.id) }
+})
+let previousSlicerRibbonTab = 'home'
+watch(() => slicerRibbonControl.value?.id, (id, previous) => {
+  if (id && !previous) { if (activeTab.value !== 'slicer-format') previousSlicerRibbonTab = activeTab.value; activeTab.value = 'slicer-format' }
+  if (!id && activeTab.value === 'slicer-format') activeTab.value = previousSlicerRibbonTab
+})
+watch(activeTab, id => { if (id !== 'slicer-format') previousSlicerRibbonTab = id })
 const ribbonTabs = computed(() => createSheetRibbon({
   clipboardCapabilities: clipboardCapabilities.value,
   region: officeRegion.value,
@@ -740,7 +820,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   canMerge: canMerge.value, canUnmerge: canUnmerge.value,
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
-  pivotChartAvailable: Boolean(props.studio && workbook.value.pivotTables?.length),
+  pivotChartAvailable: Boolean(props.studio && workbook.value.id && activeSheet.value),
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   validationPanelOpen: validationPanelOpen.value,
   quickValidationEditable: canEditValidationSelection.value,
@@ -753,6 +833,9 @@ const ribbonTabs = computed(() => createSheetRibbon({
   wrapStrategy: selectionFormat.value.wrapStrategy ?? null,
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
   outlineSummaryLeft: activeSheet.value?.outline?.summaryLeft ?? false,
+  outlineContext: outlineContext.value,
+  outlineSettingsAvailable: Boolean(props.studio && workbook.value.id),
+  slicerControl: slicerRibbonControl.value,
 }, createRibbonTranslator(officeLocale.value, 'sheet')))
 const formulaValue = computed(() => editingKey.value ? editValue.value : sheetCellInputText(activeCell.value, activeDate1904.value, officeRegion.value))
 const searchMatches = computed(() => findSheetMatches(availableSheets.value, activeSheetId.value, {
@@ -1075,71 +1158,108 @@ function getChartWorksheet(sheetId: string) {
   return FOffice.newAPI(props.studio).getWorkbook(workbook.value.id)?.getSheetBySheetId(sheetId) ?? null
 }
 
-function getSlicer(id: string) { return getChartWorksheet(activeSheet.value?.id ?? '')?.getSlicer(id) ?? null }
+function getSlicer(id: string) { return getChartWorksheet(activeSheet.value?.id ?? '')?.getSlicerControl(id) ?? null }
 
 async function refreshSlicerView() {
   if (!props.studio || !workbook.value.id) return
   const model = props.studio.getWorkbookModel(workbook.value.id)
   if (model) {
     workbook.value = toExcelWorkbookView(model)
-    commitHistory()
+    commitHistory({ prepared: true })
   }
 }
 
-async function updateSlicerPresentation(id: string, patch: import('../features/slicer/slicer-engine').SlicerPresentationPatch) {
-  try { await getSlicer(id)?.updatePresentation(patch); await refreshSlicerView() }
-  catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '切片器更新失败' }) }
-}
-
-async function handleSlicerItem(payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean }) {
-  const control = getSlicer(payload.slicerId)
-  if (!control) return
-  const items = control.getItems()
-  const info = control.getInfo()
-  let selected = info.selectedItems == null ? [...items] : [...info.selectedItems]
-  if (payload.shiftKey && payload.anchorIndex !== undefined) {
-    const first = Math.max(0, Math.min(payload.anchorIndex, payload.index))
-    const last = Math.min(items.length - 1, Math.max(payload.anchorIndex, payload.index))
-    selected = items.slice(first, last + 1)
-  } else if (payload.ctrlKey || payload.metaKey || payload.multiSelect) {
-    selected = selected.includes(payload.value) ? selected.filter(value => value !== payload.value) : [...selected, payload.value]
-  } else selected = [payload.value]
+async function applySlicerChange(id: string, change: (control: NonNullable<ReturnType<typeof getSlicer>>, context: SlicerCommandContext) => Promise<unknown>, expectedRevision?: number): Promise<void> {
+  const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheet.value?.id, user = userId.value
+  if (!studio || !unitId || !sheetId || !workbenchActive.value) return
+  const current = () => props.studio === studio && workbook.value.id === unitId && activeSheet.value?.id === sheetId && userId.value === user
+    && workbenchActive.value && studio.currentUserId === user && studio.activeWorkbookId === unitId && studio.editor.state.activeKind === 'workbook'
+    && studio.getWorkbookModel(unitId)?.activeSheetId === sheetId
+  if (!current()) return
   try {
-    await control.setItems(selected.length === items.length ? null : selected)
-    await refreshSlicerView()
-  } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '切片器筛选失败' }) }
+    const control = FOffice.newAPI(studio).getWorkbook(unitId)?.getSheetBySheetId(sheetId)?.getSlicerControl(id)
+    if (!control) throw new Error('切片器所属的工作簿、工作表或对象已被删除。')
+    const accepted = await change(control, { host: 'workbench', expectedRevision: expectedRevision ?? studio.getWorkbookRevision(unitId) })
+    if (accepted === false) throw new Error('切片器操作未能提交。')
+    if (!current()) return
+    const model = studio.getWorkbookModel(unitId)
+    if (model) {
+      applyExternalWorkbook(toExcelWorkbookView(model))
+      commitHistory({ prepared: true, current })
+    }
+  } catch (error) { if (current()) emit('notify', { type: 'error', message: error instanceof Error ? error.message : '切片器更新失败' }) }
+}
+async function updateSlicerPresentation(id: string, patch: import('../features/slicer/slicer-engine').SlicerPresentationPatch, expectedRevision?: number) {
+  await applySlicerChange(id, (control, context) => control.updatePresentation(patch, context), expectedRevision)
 }
 
-async function clearSlicer(id: string) {
-  try { await getSlicer(id)?.clearFilter(); await refreshSlicerView() }
-  catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '清除筛选失败' }) }
+async function handleSlicerItem(payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean; expectedRevision?: number }) {
+  await applySlicerChange(payload.slicerId, async (control, context) => {
+    const state = slicerControlItemStates(control.getItemLabels(), control.getItemState(), payload)
+    if (!await control.setItemStates(state.checkedItems, state.partialItems, context)) throw new Error('切片器成员选择未能提交。')
+  }, payload.expectedRevision)
 }
 
-async function setSlicerTimelineRange(payload: { slicerId: string; start: number; end: number; level: import('../domain/model').TimelineLevel }) {
-  try { await getSlicer(payload.slicerId)?.setTimelineRange({ start: payload.start, end: payload.end, level: payload.level }); await refreshSlicerView() }
-  catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '时间线筛选失败' }) }
+async function clearSlicer(id: string, expectedRevision?: number) {
+  await applySlicerChange(id, (control, context) => control.clearFilter(context), expectedRevision)
 }
 
-function openSlicerSettings(id: string) { selectSlicer(id); slicerPanelOpen.value = true }
-function openSlicerPanel(kind: 'slicer' | 'timeline') { selectedSlicerId.value = ''; slicerKind.value = kind; slicerPanelOpen.value = true }
+function requestSlicerWindow(payload: { slicerId: string; start: number; count: number; expectedRevision?: number }): void {
+  const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheet.value?.id
+  if (!studio || !unitId || !sheetId || !workbenchActive.value || studio.isDisposed || studio.activeWorkbookId !== unitId
+    || studio.editor.state.activeKind !== 'workbook' || studio.getWorkbookModel(unitId)?.activeSheetId !== sheetId
+    || payload.expectedRevision !== undefined && payload.expectedRevision !== studio.getWorkbookRevision(unitId)) return
+  slicerCanvasData.request(payload.slicerId, payload.start, payload.count)
+}
+
+async function setSlicerTimelineRange(payload: { slicerId: string; range: import('../domain/timeline-filters.ts').ITimelineRange; expectedRevision?: number }) {
+  await applySlicerChange(payload.slicerId, (control, context) => getChartWorksheet(control.subUnitId)?.getTimeline(control.id)?.setDateRange(payload.range, context)
+    ?? Promise.resolve(false), payload.expectedRevision)
+}
+
+function openSlicerSettings(id: string) { selectSlicer(id); slicerPanelSection.value = 'settings'; slicerPanelOpen.value = true }
+function openSlicerConnections(id: string) {
+  const control = getSlicer(id)?.getModel()
+  if (!control || control.tableId) return
+  selectSlicer(id); slicerPanelSection.value = 'connections'; slicerPanelOpen.value = true
+}
+function openSlicerPanel(kind: 'slicer' | 'timeline') { selectedSlicerId.value = ''; slicerPanelSection.value = 'settings'; slicerKind.value = kind; slicerPanelOpen.value = true }
+function slicerRibbonIntentId(params: unknown): string | undefined {
+  if (typeof params !== 'object' || !params || !('slicerId' in params) || typeof params.slicerId !== 'string') return undefined
+  return slicerRibbonControl.value?.id === params.slicerId ? params.slicerId : undefined
+}
 async function handleSlicerPanelChanged(id: string) { selectedSlicerId.value = id; await refreshSlicerView() }
+function handleSlicerPanelClosed(owner?: SlicerPanelOwner): void {
+  if (!owner) return
+  void nextTick(() => {
+    if (props.studio !== owner.studio || workbook.value.id !== owner.target.workbookId || activeSheetId.value !== owner.target.sheetId
+      || !slicerPanelOwnerCurrent(owner, true) || !workbenchActive.value || slicerPanelOpen.value || editingKey.value || editComposing.value
+      || imageUiOpen.value || rangeThemePending.value || cellShiftPending.value || mergeRequest.value || painterRequest.value) return
+    spreadsheetCanvas.value?.focus()
+  })
+}
 function moveSlicer(payload: { slicerId: string; left: number; top: number }) {
-  const info = getSlicer(payload.slicerId)?.getInfo()
+  const info = getSlicer(payload.slicerId)?.getModel()
   if (!info || info.lockedPosition || !activeSheet.value) return
   const bounds = resolveSlicerBounds(info, new SpreadsheetGeometry(activeSheet.value))
   void updateSlicerPresentation(payload.slicerId, { layout: { ...bounds, left: payload.left, top: payload.top } })
 }
 function resizeSlicer(payload: { slicerId: string; width: number; height: number }) {
-  const info = getSlicer(payload.slicerId)?.getInfo()
+  const info = getSlicer(payload.slicerId)?.getModel()
   if (!info || info.lockedPosition || !activeSheet.value) return
   const bounds = resolveSlicerBounds(info, new SpreadsheetGeometry(activeSheet.value))
   const height = info.drawing?.keepRatio ? payload.width * bounds.height / bounds.width : payload.height
   void updateSlicerPresentation(payload.slicerId, { layout: { ...bounds, width: payload.width, height } })
 }
-function scrollSlicerTo(payload: { slicerId: string; position: number }) {
-  const info = getSlicer(payload.slicerId)?.getInfo()
+function transformSlicer(payload: { slicerId: string; geometry: SheetDrawingAffineGeometry; expectedRevision?: number }) {
+  const control = getSlicer(payload.slicerId)
+  if (!control || control.getModel().lockedPosition) return
+  void updateSlicerPresentation(payload.slicerId, { drawingGeometry: payload.geometry }, payload.expectedRevision)
+}
+function scrollSlicerTo(payload: { slicerId: string; position: number; expectedRevision?: number }) {
+  const info = getSlicer(payload.slicerId)?.getModel()
   if (!info) return
-  void updateSlicerPresentation(payload.slicerId, info.type === 'timeline' ? { scrollPosition: payload.position } : { startItem: payload.position })
+  void updateSlicerPresentation(payload.slicerId, info.type === 'timeline' ? { scrollPosition: payload.position } : { startItem: payload.position }, payload.expectedRevision)
 }
 
 async function updateChartLayout(payload: { chartId: string; patch: Partial<Pick<ChartModel, 'position' | 'size'>> }) {
@@ -1165,26 +1285,6 @@ async function applyChartChange(chartId: string, change: (chart: FChart) => Prom
   }
 }
 
-function rememberChartPointer(event: PointerEvent): void {
-  if (!(event.target instanceof Element) || !event.target.closest('.chart-hitbox')) {
-    chartPointerOrigin.value = null
-    return
-  }
-  chartPointerOrigin.value = { x: event.clientX, y: event.clientY }
-}
-
-function focusChartFromOverlay(event: MouseEvent): void {
-  if (!(event.target instanceof Element) || !event.target.closest('.chart-hitbox')) return
-  const origin = chartPointerOrigin.value
-  chartPointerOrigin.value = null
-  if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 5) return
-  const root = event.currentTarget
-  if (!(root instanceof HTMLElement)) return
-  const hitbox = event.target.closest<HTMLElement>('.chart-hitbox')
-  const chart = sheetCharts.value.find(chart => chart.id === hitbox?.dataset.chartId)
-  if (!chart) return
-  selectChart(chart.id)
-}
 function openFocusedChartPanel(target: ChartObjectTarget, route?: ChartEditPanelRoute): boolean {
   const studio = props.studio
   if (!studio || !workbenchActive.value || workbook.value.id !== target.unitId || activeSheet.value?.id !== target.sheetId
@@ -1335,7 +1435,7 @@ function selectCell(key: string, extend = false, keepHidden = false) {
 
 function beginEdit(key = selectedKey.value, initialValue?: string, target: 'cell' | 'formula' = 'cell', focusEditor = true) {
   if (imageUiOpen.value) return
-  selectedImageId.value = undefined
+  drawingSelection.set([])
   const sheet = activeSheet.value
   const unitId = workbook.value.id
   const address = sheet ? parseSheetAddress(key, sheet) : undefined
@@ -1525,7 +1625,7 @@ function moveSelectionForShortcut(key: SheetSelectionShortcutKey, shift = false)
 }
 
 function handleGridKeydown(event: KeyboardEvent) {
-  if (imageUiOpen.value) return
+  if (imageUiOpen.value || outlineUiOpen.value) return
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   const target = event.target as HTMLElement | null
   if (!target?.closest('.spreadsheet-canvas')) return
@@ -1559,6 +1659,8 @@ function handleGridKeydown(event: KeyboardEvent) {
   }
   if (handleClipboardKeydown(event)) return
   if (handleFillKeydown(event)) return
+  const outlineShortcut = sheetOutlineCommandForShortcut(event, typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform))
+  if (outlineShortcut) { event.preventDefault(); void executeRibbon(outlineShortcut); return }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     void executeRibbon('sheet.operation.insert-hyperlink')
@@ -2084,7 +2186,7 @@ function scrollToSelected() {
 
 function startCellSelection(key: string, event: MouseEvent) {
   if (imageUiOpen.value) return
-  selectedImageId.value = undefined
+  drawingSelection.set([])
   if (!finishEdit()) return
   resetHeaderSelection()
   const [column, row] = splitKey(key)
@@ -2104,7 +2206,7 @@ function startCellSelection(key: string, event: MouseEvent) {
 
 function selectHeader(hit: GridHit, event: PointerEvent) {
   if (imageUiOpen.value) return
-  selectedImageId.value = undefined
+  drawingSelection.set([])
   if (!finishEdit()) return
   const sheet = activeSheet.value
   if (!sheet) return
@@ -2281,12 +2383,31 @@ function openPivotPanel() {
   pivotPanelOpen.value = true
 }
 
-function openPivotChartPanel(): void {
-  if (!workbook.value.pivotTables?.length) {
-    emit('notify', { type: 'info', message: '请先创建数据透视表。' })
-    return
-  }
-  openPivotChart()
+function openPivotChartPanel(params?: Record<string, unknown>): boolean {
+  const studio = props.studio, sheetId = activeSheet.value?.id, unitId = workbook.value.id
+  if (!studio || !sheetId || !unitId || params?.unitId && params.unitId !== unitId
+    || params?.subUnitId && params.subUnitId !== sheetId || params?.sheetId && params.sheetId !== sheetId) return false
+  const model = studio.getWorkbookModel(unitId)
+  if (!model) return false
+  const requestedChartId = typeof params?.pivotChartId === 'string' ? params.pivotChartId : typeof params?.chartId === 'string' ? params.chartId : undefined
+  const ref = selectedDrawingRefs.value.length === 1 ? selectedDrawingRefs.value[0] : undefined
+  const selectedChart = model.charts?.find(chart => chart.id === (requestedChartId ?? (ref?.kind === 'chart' ? ref.id : undefined)) && chart.sheetId === sheetId && (chart.pivotTableId || chart.ownedPivot))
+  if (requestedChartId && !selectedChart) return false
+  const initialFieldId = typeof params?.fieldId === 'string' ? params.fieldId : undefined
+  if (initialFieldId && (!selectedChart || !FOffice.newAPI(studio).getWorkbook(unitId)?.getPivotChartById(selectedChart.id)?.getFieldSetting(initialFieldId))) return false
+  const range = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
+  const sourceRange = range ? { startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn } : undefined
+  const pivotTableId = typeof params?.pivotTableId === 'string' ? params.pivotTableId : model.pivotTables?.find(pivot => {
+    const output = pivot.outputRange
+    return pivot.anchor.subUnitId === sheetId && sourceRange && output && sourceRange.startRow >= output.startRow && sourceRange.startRow <= output.endRow
+      && sourceRange.startCol >= output.startCol && sourceRange.startCol <= output.endCol
+  })?.id
+  return openPivotChart({ chartId: selectedChart?.id, pivotTableId, initialFieldId,
+    sourceKind: params?.mode === 'chartOnly' ? 'range' : pivotTableId ? 'pivotTable' : 'range', sourceSheetId: sheetId, sourceRange })
+}
+
+function openPivotChartFieldSettings(chartId: string, fieldId: string): boolean {
+  return openPivotChartPanel({ pivotChartId: chartId, fieldId })
 }
 
 function openDataPanel(mode: 'filter' | 'sort'): void {
@@ -2389,10 +2510,44 @@ function onConditionalFormattingClosed(): void {
       && !validationPanelOpen.value && !hyperlinkDialogOpen.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
   })
 }
-function openSparklinePanel(): void {
-  const bounds = selectionBounds(selectedRanges.value)
-  sparklineTargetRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
-  sparklinePanelOpen.value = true
+function openSparklinePanel(params?: unknown): void {
+  const studio = props.studio, sheet = activeSheet.value, unitId = workbook.value.id
+  if (!studio || !sheet || !unitId || !workbenchActive.value) return
+  if (params !== undefined && (!params || typeof params !== 'object' || Array.isArray(params))) throw new TypeError('迷你图面板上下文无效。')
+  const input = params as { sheetId?: string; ranges?: import('../api/events.ts').ApiRange[]; expectedRevision?: number } | undefined
+  if (input?.sheetId !== undefined && input.sheetId !== sheet.id || input?.expectedRevision !== undefined && input.expectedRevision !== studio.getWorkbookRevision(unitId)) throw new Error('迷你图右键目标已更改，请重新打开。')
+  const ranges = input?.ranges ? input.ranges.map(range => sparklineApiRangeReference(studio, unitId, sheet.id, range, true)) : selectedRanges.value.map(rangeNotation)
+  const targets = ranges.length ? ranges : [selectedKey.value]
+  sparklineTargetRange.value = targets[0]!
+  const context: SparklineWorkbenchContext = { key: ++sparklineContextSequence, studio, workbookId: unitId, sheetId: sheet.id,
+    targetRange: targets[0]!, targetRanges: [...targets],
+    setOpen(open) { if (sparklineContext.value === context) sparklinePanelOpen.value = open },
+    applied() {
+      if (sparklineContext.value !== context || props.studio !== studio || !workbenchActive.value || activeSheetId.value !== context.sheetId) return
+      const model = studio.getWorkbookModel(unitId)
+      if (model) { workbook.value = toExcelWorkbookView(model); commitHistory({ prepared: true, syncSelection: false }) }
+    },
+    closed(owner) {
+      if (sparklineContext.value !== context || sparklinePanelOpen.value) return
+      sparklineContext.value = undefined
+      if (!owner || !sparklinePanelOwnerCurrent(owner, true)) return
+      void nextTick(() => { if (!sparklineContext.value && workbenchActive.value && props.studio === studio && !editingKey.value
+        && !imageUiOpen.value && !conditionalFormattingOpen.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value
+        && sparklinePanelOwnerCurrent(owner, true)) spreadsheetCanvas.value?.focus() })
+    },
+  }
+  sparklineContext.value = context; sparklinePanelOpen.value = true
+}
+function removeContextSparklines(params?: unknown): void {
+  const studio = props.studio, sheet = activeSheet.value, unitId = workbook.value.id
+  if (!studio || !sheet || !unitId || !workbenchActive.value) return
+  if (params !== undefined && (!params || typeof params !== 'object' || Array.isArray(params))) throw new TypeError('迷你图删除上下文无效。')
+  const input = params as { sheetId?: string; ranges?: import('../api/events.ts').ApiRange[]; expectedRevision?: number; isSingle?: boolean } | undefined
+  if (input?.sheetId !== undefined && input.sheetId !== sheet.id) throw new Error('迷你图右键目标已更改。')
+  const changed = studio.executeCommandSync(SPARKLINE_PUBLIC_COMMANDS.remove, { targetInfo: { unitId, subUnitId: sheet.id }, ranges: input?.ranges,
+    isSingle: input?.isSingle ?? false, expectedRevision: input?.expectedRevision ?? studio.getWorkbookRevision(unitId),
+    historyGeneration: studio.editor.history.captureSavepoint(unitId).generation, expectedUserId: studio.currentUserId, host: 'workbench' })
+  if (changed) { const model = studio.getWorkbookModel(unitId); if (model) { workbook.value = toExcelWorkbookView(model); commitHistory({ prepared: true, syncSelection: false }) } }
 }
 function changeOutline(axis: 'row' | 'column', operation: SheetOutlineOperation): void {
   const range = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
@@ -2401,22 +2556,25 @@ function changeOutline(axis: 'row' | 'column', operation: SheetOutlineOperation)
   const end = axis === 'row' ? range.endRow : range.endColumn
   runOutlineCommand({ kind: operation, axis, start, end })
 }
-function runOutlineCommand(action: SheetOutlineAction): void {
+function runOutlineCommand(action: SheetOutlineAction, context?: Pick<ChangeSheetOutlineInput, 'expectedRevision' | 'expectedHistoryGeneration' | 'expectedUserId' | 'host'>): void {
   const sheet = activeSheet.value
   if (!sheet) return
   try {
     const unitId = workbook.value.id
     if (props.studio && unitId && props.studio.getWorkbookModel(unitId)) {
-      if (!props.studio.executeCommandSync<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, { unitId, sheetId: sheet.id, action })) return
+      if (!props.studio.executeCommandSync<ChangeSheetOutlineInput, boolean>(CHANGE_SHEET_OUTLINE_COMMAND, { unitId, sheetId: sheet.id, action,
+        expectedRevision: context?.expectedRevision ?? props.studio.getWorkbookRevision(unitId),
+        expectedHistoryGeneration: context?.expectedHistoryGeneration ?? props.studio.editor.history.captureSavepoint(unitId).generation,
+        expectedUserId: context?.expectedUserId ?? userId.value, host: context?.host ?? 'workbench' })) return
       const model = props.studio.getWorkbookModel(unitId)
       if (model) workbook.value = toExcelWorkbookView(model)
     } else {
       const outline = getSheetOutlineUpdate(sheet, action, userId.value)
       if (!outline) return
-      const outlineHiddenRows = [...getCollapsedOutlineIndexes({ count: sheet.rowCount, groups: outline.groups.filter(group => group.axis === 'row') })]
-      const outlineHiddenColumns = [...getCollapsedOutlineIndexes({ count: sheet.columnCount, groups: outline.groups.filter(group => group.axis === 'column') })]
+      const outlineHiddenRowSpans = getSheetOutlineHiddenSpans(outline, 'row', sheet.rowCount)
+      const outlineHiddenColumnSpans = getSheetOutlineHiddenSpans(outline, 'column', sheet.columnCount)
       workbook.value = { ...workbook.value, sheets: workbook.value.sheets.map(candidate => candidate.id === sheet.id
-        ? { ...candidate, outline, outlineHiddenRows, outlineHiddenColumns }
+        ? { ...candidate, outline, outlineHiddenRowSpans, outlineHiddenColumnSpans, outlineHiddenRows: undefined, outlineHiddenColumns: undefined }
         : candidate) }
     }
     commitHistory()
@@ -2498,6 +2656,10 @@ async function executeRibbon(commandId: string, params?: unknown) {
   if (SHEET_FILL_COMMAND_IDS.some(id => id === commandId)) { runFillCommand(commandId, params); return }
   if (SHEET_FONT_FORMAT_COMMAND_IDS.includes(commandId) && runInlineFontFormatCommand(commandId, params)) return
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
+  if ((SHEET_OUTLINE_COMMAND_IDS as readonly string[]).includes(commandId)) {
+    try { runOutlineAlias(commandId, params) } catch (error) { emit('notify', { type: 'warning', message: error instanceof Error ? error.message : '大纲操作失败。' }) }
+    return
+  }
   const commands: Record<string, () => void | Promise<void>> = {
     'sheet.command.undo': undo, 'sheet.command.redo': redo,
     'sheet.command.set-calculation-mode': () => {
@@ -2522,14 +2684,29 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.insert-hyperlink': openHyperlinkDialog,
     'sheet.operation.open-pivot': openPivotPanel,
     'sheet.operation.open-pivot-chart': openPivotChartPanel,
+    'sheet.operation.open-pivot-chart-panel': openPivotChartPanel,
     'sheet.operation.open-slicer': () => openSlicerPanel('slicer'),
     'sheet.operation.open-timeline': () => openSlicerPanel('timeline'),
+    'sheet.operation.open-slicer-settings-dialog': () => { const id = slicerRibbonIntentId(params); if (id) openSlicerSettings(id) },
+    'sheet.operation.open-slicer-connections-dialog': () => { const id = slicerRibbonIntentId(params); if (id) openSlicerConnections(id) },
+    'sheet.command.update-slicer-presentation': async () => {
+      const id = slicerRibbonIntentId(params)
+      if (!id || typeof params !== 'object' || !params || !('patch' in params) || !('expectedRevision' in params)) return
+      const patch = params.patch, revision = params.expectedRevision
+      if (typeof patch !== 'object' || !patch || Object.keys(patch).some(key => key !== 'style') || !('style' in patch)
+        || patch.style !== undefined && typeof patch.style !== 'string' || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) return
+      await updateSlicerPresentation(id, { style: patch.style }, revision)
+    },
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
     'sheet.operation.open-data-validation': openDataValidationPanel,
     'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
     'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
     'sheet.operation.open-conditional-formatting': openConditionalFormattingPanel,
-    'sheet.operation.open-sparkline': openSparklinePanel,
+    'sheet.operation.open-sparkline': () => openSparklinePanel(params),
+    'sheet.operation.open-sparkline-selector': () => openSparklinePanel(params),
+    'sheet.operation.open-sparkline-panel': () => openSparklinePanel(params),
+    [SPARKLINE_PUBLIC_COMMANDS.remove]: () => removeContextSparklines(params),
+    [OPEN_SHEET_OUTLINE_SETTINGS_OPERATION]: () => { openOutlineSettings() },
     'sheet.operation.open-custom-number-format': openNumberFormatPanel,
     [OPEN_SHEET_RANGE_THEME_OPERATION]: () => openRangeThemeDialog(params),
     'sheet.operation.open.numfmt.panel': openNumberFormatPanel,
@@ -2555,20 +2732,24 @@ async function executeRibbon(commandId: string, params?: unknown) {
     'sheet.operation.outline-group-columns': () => changeOutline('column', 'group'),
     'sheet.operation.outline-toggle-columns': () => changeOutline('column', 'toggle'),
     'sheet.operation.outline-remove-columns': () => changeOutline('column', 'remove'),
+    'sheet.operation.outline-collapse-rows': () => changeOutline('row', 'collapse'),
+    'sheet.operation.outline-expand-rows': () => changeOutline('row', 'expand'),
+    'sheet.operation.outline-collapse-columns': () => changeOutline('column', 'collapse'),
+    'sheet.operation.outline-expand-columns': () => changeOutline('column', 'expand'),
     'sheet.operation.outline-summary-position': () => {
       if (typeof params !== 'object' || params === null || !('axis' in params) || !('atStart' in params)) return
       const value = params as { axis?: unknown; atStart?: unknown }
-      if ((value.axis === 'row' || value.axis === 'column') && typeof value.atStart === 'boolean') runOutlineCommand({ kind: 'summary-position', axis: value.axis, atStart: value.atStart })
+      if ((value.axis === 'row' || value.axis === 'column') && typeof value.atStart === 'boolean') runOutlineCommand({ kind: 'summary-position', axis: value.axis, atStart: value.atStart }, sheetOutlineCommandInput(params))
     },
     'sheet.operation.outline-toggle-group': () => {
       if (typeof params !== 'object' || params === null || !('axis' in params) || !('groupId' in params)) return
       const value = params as { axis?: unknown; groupId?: unknown }
-      if ((value.axis === 'row' || value.axis === 'column') && typeof value.groupId === 'string') runOutlineCommand({ kind: 'toggle-group', axis: value.axis, groupId: value.groupId })
+      if ((value.axis === 'row' || value.axis === 'column') && typeof value.groupId === 'string') runOutlineCommand({ kind: 'toggle-group', axis: value.axis, groupId: value.groupId }, sheetOutlineCommandInput(params))
     },
     'sheet.operation.outline-set-level': () => {
       if (typeof params !== 'object' || params === null || !('axis' in params) || !('level' in params)) return
       const value = params as { axis?: unknown; level?: unknown }
-      if ((value.axis === 'row' || value.axis === 'column') && typeof value.level === 'number' && Number.isSafeInteger(value.level)) runOutlineCommand({ kind: 'set-level', axis: value.axis, level: value.level })
+      if ((value.axis === 'row' || value.axis === 'column') && typeof value.level === 'number' && Number.isSafeInteger(value.level)) runOutlineCommand({ kind: 'set-level', axis: value.axis, level: value.level }, sheetOutlineCommandInput(params))
     },
     'sheet.operation.open-function': () => openFunctionPanel(typeof params === 'string' ? params : undefined),
     'sheet.operation.insert-function': () => {
@@ -2768,24 +2949,30 @@ onActivated(() => { workbenchActive.value = true })
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
     <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :keep-edit-focus="keepCellEditFocus" :prepare-fill="prepareCanvasFillGesture"
       :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
-      :sheet="activeRenderSheet" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
-      :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'"
+      :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges"
+      :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :workbook-id="workbook.id"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
+      :workbook-history-generation="studio && workbook.id ? studio.editor.history.captureSavepoint(workbook.id).generation : undefined"
       :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview"
       :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :fill-options="sheetFillOptions" :clipboard-capabilities="clipboardCapabilities"
       :paste-options-capabilities="clipboardPasteOptionsCapabilities"
       :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
-      :selected-image-id="selectedImageId" :selected-image-ids="selectedImageIds" :image-interaction-blocked="imageUiOpen || Boolean(rangeThemePending || cellShiftPending || axisSizePending || mergeRequest || painterRequest)"
+      :drawing-scene="drawingScene" :selected-drawing-refs="selectedDrawingRefs"
+      @select-drawing="selectDrawing" @drawing-command="runDrawingCommand" @chart-event="routeCanvasChartEvent"
+      :selected-image-id="selectedImageId" :selected-image-ids="selectedImageIds" :image-interaction-blocked="imageUiOpen || outlineUiOpen || Boolean(rangeThemePending || cellShiftPending || axisSizePending || mergeRequest || painterRequest)"
       @select-image="selectImage" @edit-image="openImageEditor" @save-image="saveImage" @image-command="runImageCommand"
       @select-cell="startCellSelection" @extend-selection="extendCellSelection" @extend-header-selection="extendHeaderSelection"
       @selection-end="finishCanvasSelection" @fill-selection="fillSelection" @refill-selection="refillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit"
       @input-event="handleCellNativeInput" @editor-keydown="handleGridKeydown" @copy="handleSheetCopy" @cut="event => handleSheetCopy(event, true)" @paste="handleSheetPaste" @resize-axis="resizeAxis"
       @context-command="executeSheetContextCommand" @open-hyperlink="openCellHyperlink" @select-slicer="selectSlicer"
       @slicer-item="handleSlicerItem" @slicer-clear="clearSlicer" @slicer-range="setSlicerTimelineRange" @slicer-scroll-to="scrollSlicerTo"
-      @slicer-level="({ slicerId, level }) => updateSlicerPresentation(slicerId, { level })" @slicer-settings="openSlicerSettings"
-      @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" />
-        <ChartOverlay v-if="activeSheet" :studio="props.studio" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" :active="workbenchActive" :restore-focus-allowed="!rangeThemePending && !cellShiftPending && !imageUiOpen" :open-chart-editor="openFocusedChartPanel"
-          @pointerdown.capture="rememberChartPointer" @click.capture="focusChartFromOverlay" @select-chart="selectChart" @object-change="handleChartObjectChange"
+      @slicer-window="requestSlicerWindow" @slicer-retry="slicerCanvasData.retry"
+      @slicer-level="({ slicerId, level, expectedRevision }) => updateSlicerPresentation(slicerId, { level }, expectedRevision)" @slicer-settings="openSlicerSettings" @slicer-connections="openSlicerConnections"
+      @slicer-move="moveSlicer" @slicer-resize="resizeSlicer" @slicer-geometry="transformSlicer" />
+        <ChartOverlay v-if="activeSheet" ref="chartOverlay" :studio="props.studio" :workbook="chartWorkbook" :active-sheet-id="activeSheet.id" :zoom="zoom" :active="workbenchActive" :header-width="sheetViewportHeaders.width" :header-height="sheetViewportHeaders.height" :restore-focus-allowed="!rangeThemePending && !cellShiftPending && !imageUiOpen && !outlineUiOpen && !pivotChartPanelOpen && !chartEditorOpen && !chartModalOpen" :open-chart-editor="openFocusedChartPanel" :open-pivot-chart-settings="openPivotChartFieldSettings"
+          :selected-drawing-refs="selectedDrawingRefs" :drawing-order="drawingOrder" :drawing-visible="canViewDrawing" :route-drawing-event="routeChartDrawingEvent"
+          @drawing-command="runDrawingCommand"
+          @select-chart="selectChart" @object-change="handleChartObjectChange"
           @overlay-commands="chartCommands = $event" @update-chart="updateChartLayout" @remove-chart="removeChart" />
       </SplitterPanel>
       <SplitterPanel class="sheet-context-panel" :size="sheetSidebarOpen ? sheetSidebarWidth : 0" :min="sheetSidebarOpen ? 280 : 0" :max="800" :resizable="sheetSidebarOpen">
@@ -2793,6 +2980,7 @@ onActivated(() => { workbenchActive.value = true })
         <SheetDataValidationPanel v-else-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" :initial-rule-id="validationPanelRuleId" :canvas-ranges="selectedModelRanges()" :can-add="canEditValidationSelection" @add="applyQuickDataValidation('add-default')" @applied="refreshValidationView" />
       </SplitterPanel>
     </Splitter>
+    <Alert v-if="drawingError" type="error" :title="drawingError" show-icon closable @close="drawingError = ''" />
 
     <ChartEditorPanel v-if="chartEditorContext" :key="chartEditorContext.key" :open="chartEditorOpen" :chart="chartEditorChart" :sheet="chartEditorSheet" :sheets="chartEditorSheets" :source-revision="chartSourceRevision" :load-source="chartEditorContext.loadSource" :load-statistics="chartEditorContext.loadStatistics" :route="chartEditorRoute" :route-key="chartEditorRouteKey" :navigation-current="chartEditorContext.navigationCurrent" :date1904="activeDate1904" :busy="chartEditorBusy" :error="chartEditorError" @update:open="chartEditorContext.setOpen" @apply="chartEditorContext.apply" @closed="chartEditorContext.closed" />
     <ChartInsertDialog v-if="chartInsertContext" :key="chartInsertContext.key" :open="chartModalOpen" :config="chartInsertContext.config" :sheets="chartInsertSheets" :host-sheet-id="chartInsertContext.sheetId" :source-revision="chartSourceRevision" :load-source="chartInsertContext.loadSource" :load-statistics="chartInsertContext.loadStatistics" :date1904="activeDate1904" :busy="chartInsertBusy" :error="chartError" @update:open="chartInsertContext.setOpen" @apply="chartInsertContext.apply" @closed="chartInsertContext.closed" />
@@ -2839,13 +3027,20 @@ onActivated(() => { workbenchActive.value = true })
     <SheetMergeConfirmationDialog :request="painterRequest" :error="painterError" @confirm="confirmPainter" @cancel="cancelPainterConfirmation" @closed="afterPainterClose" />
     <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :sheet-order="workbook.sheets.map(sheet => sheet.id)" :workbook-id="workbook.id" :revision="studio?.getWorkbookRevision(workbook.id)" :history-generation="studio?.editor.history.captureSavepoint(workbook.id).generation" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @move="moveSheet" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
-    <PivotChartPanel v-if="pivotChartContext" :key="pivotChartContext.key" :open="pivotChartPanelOpen" :studio="pivotChartContext.studio" :workbook-id="pivotChartContext.unitId" :sheet-id="pivotChartContext.sheetId" @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
-    <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" />
+    <PivotChartPanel v-if="pivotChartContext" :key="pivotChartContext.key" :open="pivotChartPanelOpen" :studio="pivotChartContext.studio" :workbook-id="pivotChartContext.unitId" :sheet-id="pivotChartContext.sheetId"
+      :chart-id="pivotChartContext.chartId" :pivot-table-id="pivotChartContext.pivotTableId" :source-kind="pivotChartContext.sourceKind" :source-sheet-id="pivotChartContext.sourceSheetId" :source-range="pivotChartContext.sourceRange" :initial-field-id="pivotChartContext.initialFieldId"
+      @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @owner-change="pivotChartContext.ownerChanged" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
+    <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen" :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
-    <SparklinePanel v-if="sparklinePanelOpen && activeSheet && studio && workbook.id" :open="sparklinePanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :target-range="sparklineTargetRange" @update:open="sparklinePanelOpen = $event" />
+    <SheetOutlineActionDialog v-if="outlineActionRequest" :key="outlineActionRequest.key" :open="outlineActionOpen" :studio="outlineActionRequest.studio" :workbook-id="outlineActionRequest.workbookId" :sheet-id="outlineActionRequest.sheetId" :ranges="outlineActionRequest.ranges" :operation="outlineActionRequest.operation"
+      @update:open="outlineActionRequest.setOpen" @changed="outlineActionRequest.changed" />
+    <SheetOutlineSettingsDialog v-if="outlineSettingsRequest" :key="outlineSettingsRequest.key" :open="outlineSettingsOpen" :studio="outlineSettingsRequest.studio" :workbook-id="outlineSettingsRequest.workbookId" :sheet-id="outlineSettingsRequest.sheetId"
+      @update:open="outlineSettingsRequest.setOpen" @changed="outlineSettingsRequest.changed" />
+    <SparklinePanel v-if="sparklineContext" :key="sparklineContext.key" :open="sparklinePanelOpen" :studio="sparklineContext.studio" :workbook-id="sparklineContext.workbookId" :sheet-id="sparklineContext.sheetId" :target-range="sparklineContext.targetRange" :target-ranges="sparklineContext.targetRanges"
+      @update:open="sparklineContext.setOpen" @applied="sparklineContext.applied" @closed="sparklineContext.closed" />
   </section>
   </ConfigProvider>
 </template>

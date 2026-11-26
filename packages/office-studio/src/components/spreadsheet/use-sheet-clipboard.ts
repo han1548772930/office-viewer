@@ -18,7 +18,7 @@ import type { SheetPasteMode } from '../../features/sheet-workbench/sheet-paste.
 import { captureSheetClipboardHost, type SheetClipboardHost, type SheetClipboardHostContext } from './sheet-clipboard-ui-host.ts'
 import { sheetSystemClipboard, sheetSystemClipboardAvailable, type SheetSystemClipboard, type SheetSystemClipboardContent } from './sheet-system-clipboard.ts'
 import { prepareSheetClipboardHtmlImages } from '../../features/sheet-images/sheet-image-html-preparation.ts'
-import { captureSheetImageObjects, planPasteSheetImageObjects, sheetImageObjectClipboardContent, sheetImageObjectClipboardIdFromHtml, sheetImageObjectPasteRanges,
+import { captureSheetImageObjects, planPasteSheetImageObjects, sheetImageObjectClipboardContent, sheetImageObjectClipboardFromHtml, sheetImageObjectClipboardIdFromHtml, sheetImageObjectPasteRanges,
   type SheetImageObjectClipboard } from '../../features/sheet-images/sheet-image-object-clipboard.ts'
 import { sheetClipboardObjectRange } from '../../features/sheet-workbench/sheet-clipboard-object-geometry.ts'
 import { sheetImageClipboardBounds } from '../../features/sheet-images/sheet-image-clipboard.ts'
@@ -80,16 +80,23 @@ export function useSheetClipboard(context: SheetClipboardUiContext) {
   let requestNumber = 0
   let pendingRead: number | undefined
   let imageRead: AbortController | undefined
+  let imageWrite: AbortController | undefined
   let nativePasteMode: SheetPasteMode = 'all'
   const standaloneRecent = shallowRef<StandaloneRecentPaste>()
   const system = context.systemClipboard ?? sheetSystemClipboard
-  function cancelImageRead(): void { imageRead?.abort(); imageRead = undefined }
+  function cancelImageRead(): void { imageRead?.abort(); imageRead = undefined; imageWrite?.abort(); imageWrite = undefined }
+  async function writeClipboard(content: Parameters<SheetSystemClipboard['write']>[0], current: () => boolean): Promise<boolean> {
+    imageWrite?.abort()
+    const controller = new AbortController(); imageWrite = controller
+    try { return await system.write(content, { signal: controller.signal, current }) }
+    finally { if (imageWrite === controller) imageWrite = undefined }
+  }
   async function prepareContent(host: SheetClipboardHost, content: SheetSystemClipboardContent | undefined, task: number): Promise<SheetSystemClipboardContent | undefined> {
     if (!content?.html || !/<img\b/i.test(content.html)) return content
     const token = sheetClipboardIdFromHtml(content.html)
     if (token && clipboardStore().getClipboard(token)) return content
     const imageToken = sheetImageObjectClipboardIdFromHtml(content.html)
-    if (imageToken && clipboardStore().getImageClipboard(imageToken)) return content
+    if (imageToken && (clipboardStore().getImageClipboard(imageToken) || sheetImageObjectClipboardFromHtml(content.html))) return content
     cancelImageRead()
     const controller = new AbortController()
     imageRead = controller; pendingRead = task
@@ -286,7 +293,8 @@ export function useSheetClipboard(context: SheetClipboardUiContext) {
   function imageSource(content: SheetSystemClipboardContent | undefined, clipboardId?: string): SheetImageObjectClipboard | undefined {
     if (content === undefined) return clipboardStore().getImageClipboard(clipboardId)
     const token = content.html ? sheetImageObjectClipboardIdFromHtml(content.html) : undefined
-    return token && (clipboardId === undefined || token === clipboardId) ? clipboardStore().getImageClipboard(token) : undefined
+    return token && (clipboardId === undefined || token === clipboardId)
+      ? clipboardStore().getImageClipboard(token) ?? sheetImageObjectClipboardFromHtml(content.html!) : undefined
   }
   async function pasteFiles(host: SheetClipboardHost, files: readonly File[], task: number): Promise<SheetClipboardPasteResult> {
     if (!host.current() || task !== requestNumber) return stalePaste()
@@ -512,7 +520,8 @@ export function useSheetClipboard(context: SheetClipboardUiContext) {
         const result = copy(host, action.action === 'cut' ? 'sheet.command.cut' : action.formulaOnly ? 'sheet.command.copy-formulas' : 'sheet.command.copy', !!action.formulaOnly, action.action === 'cut')
         if (result.accepted && copyCurrent(host, result, task)) {
           try {
-            if (!await system.write({ ...result, image: result.imageClipboard?.entries.length === 1 ? result.imageClipboard.entries[0]!.image.resource : undefined })
+            if (!await writeClipboard({ ...result, image: result.imageClipboard?.entries.length === 1 ? result.imageClipboard.entries[0]!.image.resource : undefined },
+              () => copyCurrent(host, result, task))
               && host.sameTarget() && task === requestNumber) context.notify({ type: 'info', message: '系统剪贴板不可用，内容已保留在工作台内。' })
           } catch { if (host.sameTarget() && task === requestNumber) context.notify({ type: 'info', message: '系统剪贴板写入失败，内容已保留在工作台内。' }) }
           focusWhenCurrent(host, () => copyCurrent(host, result, task) && host.selectionUnchanged(), task)
@@ -578,8 +587,8 @@ export function useSheetClipboard(context: SheetClipboardUiContext) {
       if (result.accepted && copyCurrent(host, result, task)) {
         event.clipboardData?.setData('text/plain', result.plain)
         event.clipboardData?.setData('text/html', result.html)
-        if (result.imageClipboard?.entries.length === 1) void system.write({ plain: result.plain, html: result.html,
-          image: result.imageClipboard.entries[0]!.image.resource }).catch(() => {
+        if (result.imageClipboard?.entries.length === 1) void writeClipboard({ plain: result.plain, html: result.html,
+          image: result.imageClipboard.entries[0]!.image.resource }, () => copyCurrent(host, result, task)).catch(() => {
           if (copyCurrent(host, result, task)) context.notify({ type: 'info', message: '原生图片剪贴板写入失败，图片已保留在工作台和 HTML 剪贴板中。' })
         })
       }

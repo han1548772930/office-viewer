@@ -2,8 +2,10 @@ import { ComputeError } from './errors.ts'
 import { COMPUTE_LIMITS, isRecord } from './protocol.ts'
 import type { ComputeTask } from './protocol.ts'
 import { estimateChartTaskMemory, validateChartTask } from './chart-tasks.ts'
+import { estimateSlicerMembersMemory, validateSlicerMembersTask } from './slicer-member-tasks.ts'
 
 export function taskViews(task: ComputeTask): Array<Float64Array | Uint8Array | Uint32Array> {
+  if (task.kind === 'slicerMembers') return [task.values, task.states, task.textIds, task.availability, task.textOffsets, task.textBytes, task.textRanks]
   if (task.kind === 'chartStatistics') return [task.values, task.states, task.categoryIds]
   if (task.kind === 'sort') return [task.values, task.states, task.directions]
   if (task.kind === 'filter') return [task.values, task.states, task.operators, task.lower, task.upper]
@@ -11,6 +13,10 @@ export function taskViews(task: ComputeTask): Array<Float64Array | Uint8Array | 
 }
 
 export function estimateTaskMemory(task: ComputeTask): { inputBytes: number; estimatedPeakBytes: number } {
+  if (task.kind === 'slicerMembers') {
+    const { inputBytes, estimatedPeakBytes } = estimateSlicerMembersMemory(task.params)
+    return { inputBytes, estimatedPeakBytes }
+  }
   if (task.kind === 'chartStatistics') {
     const { inputBytes, estimatedPeakBytes } = estimateChartTaskMemory(task.params)
     return { inputBytes, estimatedPeakBytes }
@@ -24,9 +30,22 @@ export function estimateTaskMemory(task: ComputeTask): { inputBytes: number; est
 }
 
 export function validateTask(task: unknown, memoryBudgetBytes: number = COMPUTE_LIMITS.defaultMemoryBudget): asserts task is ComputeTask {
-  if (!isRecord(task) || (task.kind !== 'aggregate' && task.kind !== 'sort' && task.kind !== 'filter' && task.kind !== 'chartStatistics')
+  if (!isRecord(task) || (task.kind !== 'aggregate' && task.kind !== 'sort' && task.kind !== 'filter' && task.kind !== 'chartStatistics' && task.kind !== 'slicerMembers')
     || !(task.values instanceof Float64Array) || !(task.states instanceof Uint8Array)) {
     throw new ComputeError('COMPUTE_INVALID_INPUT', '计算任务必须提供数值及状态 TypedArray')
+  }
+  if (task.kind === 'slicerMembers') {
+    validateSlicerMembersTask(task)
+    for (const view of taskViews(task)) {
+      if (!(view.buffer instanceof ArrayBuffer)) throw new ComputeError('COMPUTE_INVALID_INPUT', '切片器输入必须使用独立的 ArrayBuffer')
+      try { new Uint8Array(view.buffer) } catch { throw new ComputeError('COMPUTE_INVALID_INPUT', '切片器输入缓冲区已被转移') }
+    }
+    const memory = estimateSlicerMembersMemory(task.params)
+    if (!Number.isSafeInteger(memoryBudgetBytes) || memoryBudgetBytes <= 0 || memoryBudgetBytes > 0xffff_ffff
+      || !Number.isSafeInteger(memory.estimatedPeakBytes) || memory.estimatedPeakBytes > memoryBudgetBytes) {
+      throw new ComputeError('COMPUTE_MEMORY_LIMIT', '切片器成员查询预计内存超过配置预算')
+    }
+    return
   }
   if (task.kind === 'chartStatistics') {
     validateChartTask(task)
@@ -74,6 +93,9 @@ export function validateTask(task: unknown, memoryBudgetBytes: number = COMPUTE_
 
 export function cloneTask(task: ComputeTask): ComputeTask {
   const common = { values: task.values.slice(), states: task.states.slice() }
+  if (task.kind === 'slicerMembers') return { kind: 'slicerMembers', ...common, textIds: task.textIds.slice(),
+    availability: task.availability.slice(), textOffsets: task.textOffsets.slice(), textBytes: task.textBytes.slice(),
+    textRanks: task.textRanks.slice(), params: { ...task.params } }
   if (task.kind === 'chartStatistics') return { kind: 'chartStatistics', ...common,
     categoryIds: task.categoryIds.slice(), params: structuredClone(task.params) }
   if (task.kind === 'sort') return { kind: 'sort', ...common, rowCount: task.rowCount, nullsLast: task.nullsLast, directions: task.directions.slice() }

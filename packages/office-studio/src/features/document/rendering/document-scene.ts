@@ -12,10 +12,11 @@ import type { DocumentTableGesturePreview } from '../layout/document-table-inter
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import { appendDocumentContainerDecoration } from './document-container-scene'
 import type { LayoutImage } from '../layout/document-layout-types'
-import { documentImageFrameCorners, type DocumentImageFrame } from '../layout/document-image-layout'
+import { documentImageFrameCorners, documentImageRotationHandle, type DocumentImageFrame } from '../layout/document-image-layout'
 
 export interface DocumentViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
-export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; imageSelection?: DocumentImageFrame; imagePreview?: { imageId: string; rectangle: DocumentImageFrame; wrappingStyle?: LayoutImage['wrappingStyle'] }; imageHandleColor?: string; tocPrimaryColor?: string; formulaErrorColor?: string; tableGesture?: DocumentTableGesturePreview; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; host?: DocumentAuxiliaryBlockHost; selectionModel?: DocumentModel; selectionLayout?: DocumentLayout; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
+export interface DocumentImageScenePreview { imageId: string; page?: number; rectangle: DocumentImageFrame; wrappingStyle?: LayoutImage['wrappingStyle'] }
+export interface DocumentSceneOptions { selection: DocumentSelection; focused: boolean; caretVisible: boolean; composing: boolean; images: Map<string, HTMLImageElement>; imageSelection?: DocumentImageFrame; imageSelections?: DocumentImageFrame[]; imageHandles?: boolean; imagePreview?: DocumentImageScenePreview; imagePreviews?: DocumentImageScenePreview[]; imageHandleColor?: string; tocPrimaryColor?: string; formulaErrorColor?: string; tableGesture?: DocumentTableGesturePreview; searchMatches?: Array<{ target: TextTarget; start: number; end: number }>; host?: DocumentAuxiliaryBlockHost; selectionModel?: DocumentModel; selectionLayout?: DocumentLayout; story?: { location: { page: number; area: 'header' | 'footer' }; selection: { start: number; end: number } } }
 
 export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, viewport: DocumentViewport, options: DocumentSceneOptions): RenderScene {
   const commands: DrawCommand[] = []
@@ -25,8 +26,12 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const y = (value: number) => pageOffsetY + value * scale
   const rect = (source: RenderRect): RenderRect => ({ x: x(source.x), y: y(source.y), width: source.width * scale, height: source.height * scale })
   const visible = (source: RenderRect) => y(source.y + source.height) >= -20 && y(source.y) <= viewport.height + 20 && x(source.x + source.width) >= -20 && x(source.x) <= viewport.width + 20
-  const projectedImage = (image: LayoutImage): LayoutImage => options.imagePreview?.imageId === image.blockId
-    ? { ...image, ...options.imagePreview.rectangle, wrappingStyle: options.imagePreview.wrappingStyle ?? image.wrappingStyle } : image
+  const imagePreviews = new Map([...(options.imagePreview ? [options.imagePreview] : []), ...(options.imagePreviews ?? [])].map(preview => [preview.imageId, preview]))
+  const projectedImage = (image: LayoutImage): LayoutImage => {
+    const preview = imagePreviews.get(image.blockId)
+    return preview && (preview.page === undefined || preview.page === image.page)
+      ? { ...image, ...preview.rectangle, wrappingStyle: preview.wrappingStyle ?? image.wrappingStyle } : image
+  }
   const appendImage = (image: LayoutImage, source: HTMLImageElement, clip: RenderRect) => {
     const width = image.paintWidth ?? image.width, height = image.paintHeight ?? image.height, crop = image.crop
     commands.push({ kind: 'image', x: x(image.x + (image.width - width) / 2), y: y(image.y + (image.height - height) / 2),
@@ -231,14 +236,23 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
   const gesture = options.tableGesture, guideColor = gesture?.available ? `rgba(${primary}, 0.9)` : '#ff4d4f'
   if (gesture?.rectangle) commands.push({ kind: 'rect', ...rect(gesture.rectangle), fill: `rgba(${primary}, 0.08)`, stroke: guideColor, strokeWidth: Math.max(1, scale) })
   if (gesture?.guide) commands.push({ kind: 'line', x1: x(gesture.guide.x1), y1: y(gesture.guide.y1), x2: x(gesture.guide.x2), y2: y(gesture.guide.y2), color: guideColor, width: Math.max(1, scale) })
-  if (options.imageSelection && visible(options.imageSelection)) {
-    const corners = documentImageFrameCorners(options.imageSelection), color = `rgb(${primary})`
+  const imageSelectionColor = `rgb(${primary})`
+  function appendImageOutline(frame: DocumentImageFrame, handles: boolean) {
+    if (!visible(frame)) return
+    const corners = documentImageFrameCorners(frame), color = imageSelectionColor
     for (const [index, point] of corners.entries()) {
       const next = corners[(index + 1) % corners.length]!
       commands.push({ kind: 'line', x1: x(point.x), y1: y(point.y), x2: x(next.x), y2: y(next.y), color, width: 1.5 })
-      commands.push({ kind: 'rect', x: x(point.x) - 4, y: y(point.y) - 4, width: 8, height: 8, fill: options.imageHandleColor ?? '#fff', stroke: color, strokeWidth: 1 })
+      if (handles) commands.push({ kind: 'rect', x: x(point.x) - 4, y: y(point.y) - 4, width: 8, height: 8, fill: options.imageHandleColor ?? '#fff', stroke: color, strokeWidth: 1 })
+    }
+    if (handles) {
+      const rotation = documentImageRotationHandle(frame, viewport.zoom)
+      commands.push({ kind: 'line', x1: x(rotation.stemX), y1: y(rotation.stemY), x2: x(rotation.x), y2: y(rotation.y), color, width: 1 })
+      commands.push({ kind: 'rect', x: x(rotation.x) - 5, y: y(rotation.y) - 5, width: 10, height: 10, fill: options.imageHandleColor ?? '#fff', stroke: color, strokeWidth: 1 })
     }
   }
+  for (const frame of options.imageSelections ?? []) appendImageOutline(frame, false)
+  if (options.imageSelection) appendImageOutline(options.imageSelection, options.imageHandles !== false)
   return { width: viewport.width, height: viewport.height, background: '#eef1f5', commands }
 }
 

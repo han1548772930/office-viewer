@@ -1,9 +1,9 @@
 import { computed, onActivated, onDeactivated, onUnmounted, ref, shallowRef, watch } from 'vue'
-import type { SheetDrawingAffineGeometry, SheetDrawingLeafRef, SheetDrawingRef } from '../../domain/sheet-drawings.ts'
+import type { SheetDrawingAffineGeometry, SheetDrawingAlignType, SheetDrawingLeafRef, SheetDrawingMoveDirection, SheetDrawingRef } from '../../domain/sheet-drawings.ts'
 import type { DrawCommand } from '../../rendering/contracts.ts'
 import type { GridViewport, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
 import { drawingDescendants, drawingGraph, drawingGroupFrame, drawingRefKey, planDrawingGroup, planDrawingSelectionTransform, planDrawingUngroup,
-  SHEET_DRAWING_GROUP_COMMAND_IDS, type SheetDrawingScene, type SheetDrawingTransaction } from '../../features/drawing-groups/index.ts'
+  SHEET_DRAWING_GROUP_COMMAND_IDS, sheetDrawingMoveDirectionForKey, type SheetDrawingScene, type SheetDrawingTransaction } from '../../features/drawing-groups/index.ts'
 import { drawingGroupFrameDelta } from '../../features/drawing-groups/drawing-group-geometry.ts'
 import { hitSheetDrawingFrame, pickSheetDrawing, sheetDrawingGestureFrame, sheetDrawingPaneLayouts, sheetDrawingWorldPoint,
   type SheetDrawingHandle, type SheetDrawingPaneLayout } from '../../features/sheet-drawings/sheet-drawing-viewport.ts'
@@ -16,12 +16,16 @@ interface DrawingCanvasContext {
   revision(): number | undefined
   userId(): string
   blocked(): boolean
+  contentEditing?(): boolean
+  contentControlAt?(ref: SheetDrawingLeafRef, position: { x: number; y: number }, pane: SheetDrawingPaneLayout): boolean
+  keepRatio?(): boolean
   color(): string
   background(): string
   visible(ref: SheetDrawingLeafRef, geometry: SheetDrawingAffineGeometry): boolean
   select(ref?: SheetDrawingRef, additive?: boolean, preserve?: boolean): void
   command(id: string, input: { sheetId: string; selection: SheetDrawingRef[]; expectedSelection?: SheetDrawingRef[]; expectedRevision?: number;
-    frame?: SheetDrawingAffineGeometry; delta?: SheetDrawingAffineGeometry['matrix']; groupId?: string; arrangeType?: 'front' | 'forward' | 'back' | 'backward' }): void
+    frame?: SheetDrawingAffineGeometry; delta?: SheetDrawingAffineGeometry['matrix']; groupId?: string; arrangeType?: 'front' | 'forward' | 'back' | 'backward'; alignType?: SheetDrawingAlignType;
+    direction?: SheetDrawingMoveDirection; step?: 1 | 10 }): void
   focus(): void
   capture(pointerId: number): void
   release(pointerId: number): void
@@ -40,6 +44,7 @@ interface DrawingGesture {
   pointerId: number
   revision?: number
   userId: string
+  keepRatio?: boolean
   transaction?: SheetDrawingTransaction
 }
 export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
@@ -48,7 +53,8 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
   let active = true, disposed = false
   const selection = computed(() => context.selection().map(ref => ({ ...ref })))
   const graph = computed(() => { const scene = context.scene(); return scene ? drawingGraph(scene) : undefined })
-  const sharedControls = computed(() => selection.value.length > 1 || selection.value.some(ref => ref.kind === 'group' || ref.kind === 'shape'))
+  const sharedControls = computed(() => selection.value.length > 1 || selection.value.some(ref =>
+    ref.kind === 'group' || ref.kind === 'shape' || ref.kind === 'slicer' || ref.kind === 'timeline'))
   const frame = computed(() => {
     const index = graph.value
     if (!index || !selection.value.length) return undefined
@@ -93,7 +99,7 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
   }))
   const previewGeometry = computed(() => new Map((gesture.value?.transaction?.geometryChanges ?? []).map(change => [drawingRefKey(change.ref), change.after])))
   const menuPosition = computed(() => {
-    if (context.blocked() || selection.value.length < 2 && !selection.value.some(ref => ref.kind === 'group' || ref.kind === 'shape')) return undefined
+    if (context.blocked() || !sharedControls.value) return undefined
     const layout = layouts.value[0], view = context.viewport()
     return layout ? { left: Math.max(44, Math.min(view.width - 270, Math.max(layout.bounds.x, layout.clip.x))),
       top: Math.max(26, Math.min(view.height - 36, Math.max(layout.bounds.y, layout.clip.y) - 34)) } : undefined
@@ -125,8 +131,12 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
       if (control && selection.value.some(ref => ref.kind === 'group') && !additive && event.button === 0) return start(control.layout)
       return false
     }
+    // Native filter controls retain their Ctrl/Shift semantics. Group frames and outer handles still own transforms.
+    if ((hit.target.kind === 'slicer' || hit.target.kind === 'timeline') && context.contentControlAt?.(hit.target, position, hit.layout)) return false
     if (additive) { context.select(hit.target, true); event.preventDefault(); event.stopPropagation(); context.focus(); return true }
     const selected = selection.value.some(ref => drawingRefKey(ref) === drawingRefKey(hit!.target))
+    // A single filter remains an interactive control; its outer transform handles are handled above.
+    if (selection.value.length <= 1 && (hit.target.kind === 'slicer' || hit.target.kind === 'timeline')) return false
     if (hit.target.kind !== 'group' && hit.target.kind !== 'shape' && !(sharedControls.value && selected)) return false
     context.select(hit.target, false, selected)
     event.preventDefault(); event.stopPropagation(); context.focus()
@@ -138,7 +148,7 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
       error.value = ''
       gesture.value = { scene, signature: JSON.stringify(scene), selection: selection.value.map(ref => ({ ...ref })), frame: before, preview: before,
         start: sheetDrawingWorldPoint(context.viewport(), position, pane), pane, viewport: { ...context.viewport() }, handle,
-        pointerId: event.pointerId, revision: context.revision(), userId: context.userId() }
+        pointerId: event.pointerId, revision: context.revision(), userId: context.userId(), keepRatio: context.keepRatio?.() }
       event.preventDefault(); event.stopPropagation(); context.focus(); context.capture(event.pointerId); context.render(); return true
     }
   }
@@ -147,7 +157,8 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
     if (!state || state.pointerId !== event.pointerId) return false
     if (!current(state)) { cancel(); return true }
     try {
-      const preview = sheetDrawingGestureFrame(state.frame, state.start, sheetDrawingWorldPoint(state.viewport, position, state.pane), state.handle, event),
+      const preview = sheetDrawingGestureFrame(state.frame, state.start, sheetDrawingWorldPoint(state.viewport, position, state.pane), state.handle,
+        { altKey: event.altKey, shiftKey: event.shiftKey || !!state.keepRatio && !!state.handle && state.handle !== 'rotate' }),
         plan = planDrawingSelectionTransform(state.scene, { selection: state.selection, delta: drawingGroupFrameDelta(state.frame, preview) })
       if (plan.status === 'rejected') throw new Error(plan.message)
       gesture.value = { ...state, preview, transaction: plan.status === 'ready' ? plan.transaction : undefined }
@@ -179,15 +190,17 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
     const child = pick(position)
     context.select(child?.target); context.render(); return true
   }
-  function run(id: string, extra: { arrangeType?: 'front' | 'forward' | 'back' | 'backward' } = {}): void {
+  function run(id: string, extra: { arrangeType?: 'front' | 'forward' | 'back' | 'backward'; alignType?: SheetDrawingAlignType } = {}): void {
     const scene = context.scene()
-    if (!scene || !selection.value.length || !editable.value) return
+    if (!active || disposed || !scene || !selection.value.length || !editable.value) return
     cancel()
     context.command(id, { sheetId: scene.sheetId, selection: selection.value.map(ref => ({ ...ref })), expectedSelection: selection.value.map(ref => ({ ...ref })),
       expectedRevision: context.revision(), ...extra })
   }
   function keydown(event: KeyboardEvent): boolean {
-    if (context.blocked() || event.isComposing || event.keyCode === 229 || !sharedControls.value) return false
+    if (!active || disposed || event.defaultPrevented || context.blocked() || event.isComposing || event.keyCode === 229 || !sharedControls.value) return false
+    if (selection.value.length === 1 && context.contentEditing?.() && event.key !== 'Delete' && event.key !== 'Backspace'
+      && !((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g')) return false
     if (event.key === 'Escape') {
       if (gesture.value) cancel()
       else if (editingGroupId.value) { const id = editingGroupId.value; editingGroupId.value = undefined; context.select({ kind: 'group', id }) }
@@ -195,11 +208,11 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
     } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
       if (event.shiftKey ? canUngroup.value : canGroup.value) run(event.shiftKey ? SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup : SHEET_DRAWING_GROUP_COMMAND_IDS.group)
     } else if (event.key === 'Delete' || event.key === 'Backspace') run('sheet.command.remove-sheet-drawings')
-    else if (event.key.startsWith('Arrow') && transformable.value) {
-      const amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0,
-        dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0, scene = context.scene()
-      if (scene) context.command(SHEET_DRAWING_GROUP_COMMAND_IDS.transform, { sheetId: scene.sheetId, selection: selection.value,
-        expectedSelection: selection.value, expectedRevision: context.revision(), delta: { a: 1, b: 0, c: 0, d: 1, e: dx, f: dy } })
+    else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const scene = context.scene(), direction = sheetDrawingMoveDirectionForKey(event.key)
+      if (scene && direction !== undefined && transformable.value && !gesture.value) context.command(SHEET_DRAWING_GROUP_COMMAND_IDS.move, {
+        sheetId: scene.sheetId, selection: selection.value, expectedSelection: selection.value, expectedRevision: context.revision(),
+        direction, step: event.shiftKey ? 10 : 1 })
     } else return false
     event.preventDefault(); event.stopPropagation(); return true
   }
@@ -211,6 +224,7 @@ export function useSheetDrawingCanvas(context: DrawingCanvasContext) {
   onDeactivated(() => { active = false; cancel(); editingGroupId.value = undefined })
   onUnmounted(() => { disposed = true; active = false; cancel() })
   return { commands, selection, sharedControls, editable, transformable, canGroup, canUngroup, menuPosition, previewGeometry, error, editingGroupId,
+    hasGesture: () => !!gesture.value,
     hasControlAt: (position: { x: number; y: number }) => Boolean(hitSheetDrawingFrame(layouts.value, position, transformable.value)?.handle),
     pick, begin, move, end, cancel, selectAt, enterGroup, keydown, run }
 }

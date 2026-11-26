@@ -2,6 +2,9 @@
 import type { RenderDriver, RenderRect, RenderScene, TextCommand } from './contracts'
 import { intersectRect, parseColor } from './geometry'
 import { imageCommandGeometry } from './image-geometry.ts'
+import { multiplyDrawingAffine, type DrawingAffineMatrix } from '../domain/drawing-affine.ts'
+import { clipRenderTexturePolygon, renderLocalClipPolygon, renderLocalViewportBounds, renderProjectedVertices,
+  type RenderPoint } from './affine-command-geometry.ts'
 
 interface TextureEntry { texture: GPUTexture; bindGroup: GPUBindGroup; used: number; bytes: number }
 interface TextMetricsEntry { advance: number; left: number; top: number; right: number; bottom: number }
@@ -113,27 +116,46 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
       frame += 1
       const vertices: number[] = [], batches: Batch[] = []
       const viewport: RenderRect = { x: 0, y: 0, width, height }
+      let commandMatrix: DrawingAffineMatrix | undefined, localClip: RenderPoint[] | undefined
+      const appendBatch = (texture: TextureEntry, clip: RenderRect, start: number, count: number) => {
+        if (!count) return
+        const previous = batches[batches.length - 1]
+        if (previous && previous.texture === texture && previous.clip.x === clip.x && previous.clip.y === clip.y
+          && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += count
+        else batches.push({ texture, clip, start, count })
+      }
+      const affinePolygon = (points: number[], uv: readonly (readonly number[])[], color: string, texture: TextureEntry, clip: RenderRect, opacity: number) => {
+        const projected = renderProjectedVertices(points, uv, commandMatrix), polygon = localClip ? clipRenderTexturePolygon(projected, localClip) : projected
+        if (polygon.length < 3) return
+        const rgba = parseColor(color); rgba[3] *= opacity
+        const start = vertices.length / 8
+        for (let index = 1; index < polygon.length - 1; index++) for (const vertex of [polygon[0]!, polygon[index]!, polygon[index + 1]!]) {
+          vertices.push(vertex.x / width * 2 - 1, 1 - vertex.y / height * 2, vertex.u, vertex.v, ...rgba)
+        }
+        appendBatch(texture, clip, start, vertices.length / 8 - start)
+      }
       const quad = (points: number[], color: string, texture: TextureEntry, clip: RenderRect, opacity = 1, uv = [[0, 0], [1, 0], [1, 1], [0, 1]]) => {
         if (clip.width <= 0 || clip.height <= 0) return
+        if (commandMatrix || localClip) { affinePolygon(points, uv, color, texture, clip, opacity); return }
         const rgba = parseColor(color); rgba[3] *= opacity
         const start = vertices.length / 8
         const indices = [0, 1, 2, 0, 2, 3]
         for (const index of indices) vertices.push(points[index * 2] / width * 2 - 1, 1 - points[index * 2 + 1] / height * 2, uv[index][0], uv[index][1], ...rgba)
-        const previous = batches[batches.length - 1]
-        if (previous && previous.texture === texture && previous.clip.x === clip.x && previous.clip.y === clip.y && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += 6
-        else batches.push({ texture, clip, start, count: 6 })
+        appendBatch(texture, clip, start, 6)
       }
       const triangle = (points: number[], color: string, clip: RenderRect) => {
         if (clip.width <= 0 || clip.height <= 0) return
+        if (commandMatrix || localClip) { affinePolygon(points, [[0, 0], [0, 0], [0, 0]], color, white, clip, 1); return }
         const rgba = parseColor(color)
         const start = vertices.length / 8
         for (const index of [0, 1, 2]) vertices.push(points[index * 2]! / width * 2 - 1, 1 - points[index * 2 + 1]! / height * 2, 0, 0, ...rgba)
-        const previous = batches[batches.length - 1]
-        if (previous && previous.texture === white && previous.clip.x === clip.x && previous.clip.y === clip.y && previous.clip.width === clip.width && previous.clip.height === clip.height) previous.count += 3
-        else batches.push({ texture: white, clip, start, count: 3 })
+        appendBatch(white, clip, start, 3)
       }
       const rect = (r: RenderRect, fill: string, clip: RenderRect, texture = white, opacity = 1) => quad([r.x, r.y, r.x + r.width, r.y, r.x + r.width, r.y + r.height, r.x, r.y + r.height], fill, texture, clip, opacity)
       for (const command of scene.commands) {
+        commandMatrix = command.kind === 'image' ? undefined : command.matrix
+        localClip = renderLocalClipPolygon(command)
+        if (localClip && !localClip.length) continue
         let clip = intersectRect(viewport, command.clip ?? viewport)
         if (clip.width <= 0 || clip.height <= 0) continue
         switch (command.kind) {
@@ -165,7 +187,7 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             const metrics = measureText(command)
             const textWidth = command.maxWidth === undefined ? metrics.advance : Math.min(metrics.advance, command.maxWidth)
             const left = command.x - (command.align === 'center' ? textWidth / 2 : command.align === 'right' ? textWidth : 0)
-            if (command.maxWidth !== undefined && !command.rotation) {
+            if (command.maxWidth !== undefined && !command.rotation && !command.matrix) {
               const x = command.x - (command.align === 'center' ? command.maxWidth / 2 : command.align === 'right' ? command.maxWidth : 0)
               clip = intersectRect(clip, { x, y: 0, width: command.maxWidth, height })
             }
@@ -177,6 +199,10 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             const phaseX = subpixelX - originX
             const radians = (command.rotation ?? 0) * Math.PI / 180
             const cosine = Math.cos(radians), sine = Math.sin(radians)
+            const rotation = { a: cosine, b: sine, c: -sine, d: cosine,
+              e: command.x - command.x * cosine + command.y * sine, f: command.y - command.x * sine - command.y * cosine },
+              transform = command.matrix ? multiplyDrawingAffine(command.matrix, rotation) : command.rotation ? rotation : undefined,
+              tileClip = transform ? renderLocalViewportBounds(clip, transform) : clip
             const rotate = (x: number, y: number): [number, number] => [
               command.x + (x - command.x) * cosine - (y - command.y) * sine,
               command.y + (x - command.x) * sine + (y - command.y) * cosine,
@@ -185,10 +211,10 @@ export async function createWebGPUDriver(canvas: HTMLCanvasElement, onLost: (rea
             const inkLeft = Math.floor(metrics.left * fitScale * scaleX + phaseX), inkRight = Math.ceil(metrics.right * fitScale * scaleX + phaseX)
             const inkTop = Math.floor(metrics.top * scaleY), inkBottom = Math.ceil(metrics.bottom * scaleY)
             const tileSize = Math.min(2048, device.limits.maxTextureDimension2D)
-            const firstX = Math.max(0, Math.floor((Math.floor(clip.x * scaleX) - originX - inkLeft) / tileSize))
-            const lastX = Math.ceil((Math.min(inkRight, Math.ceil((clip.x + clip.width) * scaleX) - originX) - inkLeft) / tileSize)
-            const firstY = Math.max(0, Math.floor((Math.floor(clip.y * scaleY) - originY - inkTop) / tileSize))
-            const lastY = Math.ceil((Math.min(inkBottom, Math.ceil((clip.y + clip.height) * scaleY) - originY) - inkTop) / tileSize)
+            const firstX = Math.max(0, Math.floor((Math.floor(tileClip.x * scaleX) - originX - inkLeft) / tileSize))
+            const lastX = Math.ceil((Math.min(inkRight, Math.ceil((tileClip.x + tileClip.width) * scaleX) - originX) - inkLeft) / tileSize)
+            const firstY = Math.max(0, Math.floor((Math.floor(tileClip.y * scaleY) - originY - inkTop) / tileSize))
+            const lastY = Math.ceil((Math.min(inkBottom, Math.ceil((tileClip.y + tileClip.height) * scaleY) - originY) - inkTop) / tileSize)
             for (let ty = firstY; ty < lastY; ty += 1) for (let tx = firstX; tx < lastX; tx += 1) {
               const x = inkLeft + tx * tileSize, y = inkTop + ty * tileSize
               const tileWidth = Math.min(tileSize, inkRight - x), tileHeight = Math.min(tileSize, inkBottom - y)

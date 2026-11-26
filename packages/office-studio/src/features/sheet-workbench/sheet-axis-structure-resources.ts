@@ -8,6 +8,10 @@ import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
 import { transformSheetImagesForAxisEdit } from '../sheet-images/sheet-image-structure.ts'
 import { sheetClipboardObjectAxes } from './sheet-clipboard-object-geometry.ts'
+import { reconcileSlicerConnectionResources } from '../slicer/slicer-connections-lifecycle.ts'
+import { refreshPivotSourceWorksheetOutputs, transformWorkbookPivotSourceReports } from '../pivot/services/pivot-source-lifecycle.ts'
+import { synchronizeLinkedPivotChartReports } from '../pivot/services/pivot-chart-report-lifecycle.ts'
+import { transformSheetOutlineForAxisEdit } from '../sheet-outline/sheet-outline-structure.ts'
 
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : undefined
@@ -194,10 +198,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
       const ranges = rule.ranges.flatMap(range => transformSheetAxisRange(range, edit))
       return ranges.length ? [{ ...rule, ranges }] : []
     })
-    if (before.outline) sheet.outline = { ...before.outline, groups: before.outline.groups.flatMap(group => group.axis !== edit.axis ? [{ ...group }]
-      : transformSheetAxisRange(edit.axis === 'row' ? { startRow: group.start, endRow: group.end, startCol: 0, endCol: 0 }
-        : { startRow: 0, endRow: 0, startCol: group.start, endCol: group.end }, edit).map((range, index) => ({ ...group,
-        id: index ? `outline-${crypto.randomUUID()}` : group.id, ...sheetRangeAxisInterval(range, edit.axis) }))) }
+    sheet.outline = transformSheetOutlineForAxisEdit(before.outline, edit, before, sheet)
     const insertion = sheetAxisInsertionEdit(edit), count = edit.axis === 'row' ? before.frozenRows : before.frozenCols
     if (insertion && count > insertion.start) {
       const frozen = insertion.kind === 'insert' ? count + insertion.count : count - Math.min(insertion.count, count - insertion.start)
@@ -217,37 +218,34 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
     return tables
   })
   workbook.charts = original.charts?.flatMap(chart => {
-    if ((chart.source.sheetId ?? chart.sheetId) !== target.id || chart.pivotTableId) return [structuredClone(chart)]
+    if ((chart.source.sheetId ?? chart.sheetId) !== target.id || chart.pivotTableId || chart.ownedPivot) return [structuredClone(chart)]
     const next = chartForEdit(chart, edit)
     return next ? [next] : []
   })
   const map = axisMapper(edit)
-  workbook.pivotTables = original.pivotTables?.flatMap(pivot => {
-    const next = structuredClone(pivot)
-    if (pivot.source.subUnitId === target.id && (!original.id || pivot.source.unitId === original.id)) {
-      const range = singleResourceRange(pivot.source.range, edit, '数据透视表数据源')
-      if (!range || range.endRow <= range.startRow) throw new Error('数据透视表数据源需要保留表头和数据行。')
-      next.source.range = range
-      if (edit.axis === 'column') next.fields = next.fields.flatMap(field => { const mapped = map(field.sourceColumn); return mapped === undefined ? [] : [{ ...field, sourceColumn: mapped }] })
-    }
-    if (pivot.anchor.subUnitId === target.id && (!original.id || pivot.anchor.unitId === original.id)) {
-      const anchor = map(edit.axis === 'row' ? pivot.anchor.row : pivot.anchor.col)
-      if (anchor === undefined) throw new Error('删除会移除数据透视表起点，请先移动或删除数据透视表。')
-      if (edit.axis === 'row') next.anchor.row = anchor; else next.anchor.col = anchor
-      if (pivot.outputRange) next.outputRange = singleResourceRange(pivot.outputRange, edit, '数据透视表输出')
-      if (pivot.generatedCellKeys) next.generatedCellKeys = pivot.generatedCellKeys.flatMap(key => {
-        const [row, column] = key.split(':').map(Number), mapped = map(edit.axis === 'row' ? row! : column!)
-        return mapped === undefined ? [] : [edit.axis === 'row' ? `${mapped}:${column}` : `${row}:${mapped}`]
-      })
-    }
-    if (JSON.stringify(pivot) !== JSON.stringify(next)) { next.revision++; next.drillDownMap = {} }
-    return [next]
-  })
+  const pivotTransform = {
+    sheetId: target.id,
+    range: (range: CellRange) => singleResourceRange(range, edit, '透视数据源'),
+    outputRange: (range: CellRange) => singleResourceRange(range, edit, '透视输出'),
+    point: (row: number, col: number) => {
+      const index = map(edit.axis === 'row' ? row : col)
+      return index === undefined ? undefined : edit.axis === 'row' ? { row: index, col } : { row, col: index }
+    },
+    sourceDirty: (range: CellRange) => {
+      const interval = sheetRangeAxisInterval(range, edit.axis)
+      if (edit.kind !== 'move') return interval.end >= (edit.kind === 'copy' ? edit.destination : edit.start)
+      if (edit.destination === edit.start || edit.destination === edit.start + edit.count) return false
+      const start = Math.min(edit.start, edit.destination), end = Math.max(edit.start + edit.count - 1, edit.destination - 1)
+      return interval.start <= end && interval.end >= start
+    },
+    ...(edit.axis === 'column' ? { column: map } : {}),
+  }
+  transformWorkbookPivotSourceReports(original, workbook, pivotTransform)
   const removedTableIds = new Set((original.tables ?? []).filter(table => !workbook.tables?.some(next => next.id === table.id)).map(table => table.id))
   workbook.slicers = original.slicers?.flatMap(slicer => {
     if (slicer.tableId && removedTableIds.has(slicer.tableId)) return []
     const next = structuredClone(slicer)
-    if (slicer.hostSheetId === target.id) {
+    if (slicer.hostSheetId === target.id && slicer.drawing?.anchorType !== 'none') {
       const position = map(edit.axis === 'row' ? slicer.position.row : slicer.position.column)
       if (position !== undefined) { if (edit.axis === 'row') next.position.row = position; else next.position.column = position }
       else { if (edit.axis === 'row') next.position.row = edit.start; else next.position.column = edit.start }
@@ -268,4 +266,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
   const before = original.sheets.find(sheet => sheet.id === target.id)!, after = workbook.sheets.find(sheet => sheet.id === target.id)!
   if (before.images) after.images = transformSheetImagesForAxisEdit(before.images, edit, after,
     { before: sheetClipboardObjectAxes(original, before), after: sheetClipboardObjectAxes(workbook, after) })
+  reconcileSlicerConnectionResources(original, workbook, pivotTransform)
+  refreshPivotSourceWorksheetOutputs(original, workbook)
+  synchronizeLinkedPivotChartReports(original, workbook)
 }

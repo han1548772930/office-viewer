@@ -24,6 +24,8 @@ export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
       for (const command of scene.commands) {
         context.save()
         if (command.clip) { context.beginPath(); context.rect(command.clip.x, command.clip.y, command.clip.width, command.clip.height); context.clip() }
+        if (command.matrix) { const m = command.matrix; context.transform(m.a, m.b, m.c, m.d, m.e, m.f) }
+        if (command.localClip) { const clip = command.localClip; context.beginPath(); context.rect(clip.x, clip.y, clip.width, clip.height); context.clip() }
         switch (command.kind) {
           case 'rect':
             context.fillStyle = command.fill; context.fillRect(command.x, command.y, command.width, command.height)
@@ -54,7 +56,6 @@ export function createCanvas2DDriver(canvas: HTMLCanvasElement): RenderDriver {
             if (!geometry) break
             const dimensions = imageSourceDimensions(command.source), centerX = command.x + command.width / 2, centerY = command.y + command.height / 2
             context.globalAlpha = command.opacity ?? 1
-            if (command.matrix) { const m = command.matrix; context.transform(m.a, m.b, m.c, m.d, m.e, m.f) }
             context.translate(centerX, centerY)
             context.rotate(((command.rotation ?? 0) % 360) * Math.PI / 180)
             context.scale(command.flipX ? -1 : 1, command.flipY ? -1 : 1)

@@ -9,6 +9,8 @@ import type {
   ChartSource,
   ChartType,
   ChartWaterfallStyleTarget,
+  PivotTableModel,
+  PivotChartControls,
   SpreadsheetSheet,
   WorkbookModel,
 } from '../../domain/model'
@@ -39,6 +41,8 @@ import { assertChartSourcePresent } from './chart-source-diagnostic'
 import { chartLegendPatch } from './chart-legend'
 import { drawingAffineFrame, drawingAffineWithFrame, normalizeDrawingAffineGeometry, type DrawingAffineGeometry } from '../../domain/drawing-affine.ts'
 import { GRID_HEADER_WIDTH, GRID_HEADER_HEIGHT } from '../../rendering/spreadsheet/layout.ts'
+import { cloneModel } from '../../domain/serialization.ts'
+import { normalizePivotChartControls } from '../pivot/services/pivot-chart-controls.ts'
 
 export interface ChartConfig {
   type: ChartType
@@ -57,6 +61,8 @@ export interface ChartConfig {
   valueFields?: number[]
   seriesToCategory?: Record<number, number[]>
   pivotTableId?: string
+  ownedPivot?: PivotTableModel
+  controls?: Partial<PivotChartControls>
   xAxis?: Partial<ChartAxisOptions>
   yAxis?: Partial<ChartAxisOptions>
 }
@@ -93,6 +99,7 @@ export interface ChartData {
   sourceNumericFields?: number[]
   visibleFields?: number[]
   syntheticValues?: boolean
+  pivotAxis?: import('./chart-pivot-axis.ts').PivotChartAxisMetadata
   graph?: ChartGraphData
   chord?: ChartChordData
   /** Browser-measured glyphs are placed once by the chart Worker/Rust kernel. */
@@ -171,7 +178,10 @@ const DEFAULT_AXIS: ChartAxisOptions = { scaleType: 'linear' }
 export function createChartDefinition(workbook: WorkbookModel, sheetId: string, config: ChartConfig, id = randomId('chart')): ChartModel {
   const sheet = requireSheet(workbook, sheetId)
   const source = normalizeSource(config.source)
-  if (!config.pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
+  if (config.pivotTableId && config.ownedPivot) throw new TypeError('透视图表不能同时拥有链接和独立报告。')
+  if (config.ownedPivot && (config.ownedPivot.source.unitId !== workbook.id || config.ownedPivot.anchor.unitId !== workbook.id
+    || config.ownedPivot.anchor.subUnitId !== sheetId)) throw new TypeError('独立透视图表报告不属于当前工作簿和宿主。')
+  if (!config.pivotTableId && !config.ownedPivot) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
   const type = config.type
   validateChartType(type)
   const position = config.positionCell === undefined ? normalizeSize(config.position, 'chart position', true)
@@ -199,6 +209,8 @@ export function createChartDefinition(workbook: WorkbookModel, sheetId: string, 
     valueFields: valueFields ?? [],
     ...(config.seriesToCategory ? { seriesToCategory: cloneChartSeriesCategories(config.seriesToCategory) } : {}),
     pivotTableId: config.pivotTableId,
+    ...(config.ownedPivot ? { ownedPivot: cloneModel(config.ownedPivot) } : {}),
+    ...(config.controls !== undefined ? { controls: normalizePivotChartControls(config.controls) } : {}),
     xAxis: cloneChartAxis({ ...DEFAULT_AXIS, ...(config.xAxis ?? {}) }),
     yAxis: cloneChartAxis({ ...DEFAULT_AXIS, ...(config.yAxis ?? {}) }),
     revision: 0,
@@ -223,10 +235,14 @@ export function createChart(workbook: WorkbookModel, sheetId: string, config: Ch
 export function updateChartDefinition(workbook: WorkbookModel, chart: ChartModel, patch: ChartUpdatePatch, records?: ChartRecords): ChartModel {
   const source = patch.source ? normalizeSource(patch.source) : chart.source
   const pivotTableId = Object.prototype.hasOwnProperty.call(patch, 'pivotTableId') ? patch.pivotTableId : chart.pivotTableId
-  const sourceChart = { ...chart, source, pivotTableId, options: mergeChartOptions(chart.options, patch.options) }
+  const ownedPivot = Object.hasOwn(patch, 'ownedPivot') ? patch.ownedPivot : chart.ownedPivot
+  if (pivotTableId && ownedPivot) throw new TypeError('透视图表不能同时拥有链接和独立报告。')
+  if (ownedPivot && (ownedPivot.source.unitId !== workbook.id || ownedPivot.anchor.unitId !== workbook.id
+    || ownedPivot.anchor.subUnitId !== chart.sheetId)) throw new TypeError('独立透视图表报告不属于当前工作簿和宿主。')
+  const sourceChart = { ...chart, source, pivotTableId, ownedPivot, options: mergeChartOptions(chart.options, patch.options) }
   validateChartGradientAuthoring(patch.type ?? chart.type, sourceChart.options, chart.options)
   const sheet = requireSheet(workbook, chart.sheetId)
-  if (!pivotTableId) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
+  if (!pivotTableId && !ownedPivot) validateSourceInSheet(source.range, source.sheetId ? requireSheet(workbook, source.sheetId) : sheet)
   validateChartType(patch.type ?? chart.type)
   const defaults = patch.type !== undefined && patch.type !== chart.type ? convertChartType(sourceChart, patch.type, records) : chart
   const next: ChartModel = {
@@ -235,6 +251,9 @@ export function updateChartDefinition(workbook: WorkbookModel, chart: ChartModel
     ...patch,
     source,
     pivotTableId,
+    ownedPivot: ownedPivot ? cloneModel(ownedPivot) : undefined,
+    ...(Object.hasOwn(patch, 'controls') ? { controls: patch.controls === undefined ? undefined : normalizePivotChartControls(patch.controls) }
+      : chart.controls ? { controls: normalizePivotChartControls(chart.controls) } : {}),
     position: patch.position ? normalizeSize(patch.position, 'chart position', true) : chart.position,
     size: patch.size ? normalizeSize(patch.size, 'chart size', false) : chart.size,
     legend: cloneChartLegend({ ...defaultChartLegend(patch.type ?? chart.type), ...defaults.legend, ...patch.legend }),
@@ -276,7 +295,7 @@ export function updateChart(workbook: WorkbookModel, chart: ChartModel, patch: C
 }
 
 /** Read the current source without interpreting the chart's field roles. */
-export function readChartRecords(workbook: WorkbookModel, chart: Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type'>>): ChartRecords {
+export function readChartRecords(workbook: WorkbookModel, chart: Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type' | 'ownedPivot'>>): ChartRecords {
   const steps = readChartRecordSteps(workbook, chart)
   while (true) { const step = steps.next(); if (step.done) return step.value }
 }

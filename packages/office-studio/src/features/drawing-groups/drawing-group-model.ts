@@ -49,7 +49,7 @@ export function normalizeDrawingObjects(sheetId: string, values: readonly SheetD
     const key = drawingRefKey(ref)
     if (seen.has(key)) throw new SheetDrawingError('id-conflict', 'Duplicate drawing object reference.', ref)
     seen.add(key)
-    for (const name of ['editable', 'groupable', 'transformable', 'available'] as const) {
+    for (const name of ['editable', 'groupable', 'transformable', 'available', 'constrainMovement'] as const) {
       if (raw[name] !== undefined && typeof raw[name] !== 'boolean') throw new SheetDrawingError('invalid-input', 'Invalid drawing capability.', ref)
     }
     if (raw.revision !== undefined && (typeof raw.revision !== 'number' || !Number.isSafeInteger(raw.revision) || raw.revision < 0)) {
@@ -61,6 +61,7 @@ export function normalizeDrawingObjects(sheetId: string, values: readonly SheetD
       ...(raw.groupable === undefined ? {} : { groupable: raw.groupable as boolean }),
       ...(raw.transformable === undefined ? {} : { transformable: raw.transformable as boolean }),
       ...(raw.available === undefined ? {} : { available: raw.available as boolean }),
+      ...(raw.constrainMovement === undefined ? {} : { constrainMovement: raw.constrainMovement as boolean }),
     }
   })
 }

@@ -23,6 +23,7 @@ export function createChartSettingsDraft(source: ChartConfig | ChartModel): Char
     title: source.title, subtitle: source.subtitle, palette: source.palette ? [...source.palette] : undefined,
     categoryField: source.categoryField ?? 0, valueFields: [...(source.valueFields ?? [])],
     seriesToCategory: source.seriesToCategory ? cloneModel(source.seriesToCategory) : {}, pivotTableId: source.pivotTableId,
+    ...(source.ownedPivot ? { ownedPivot: cloneModel(source.ownedPivot) } : {}),
     legend: { visible: true, position: 'bottom', ...cloneModel(source.legend ?? {}) },
     xAxis: { scaleType: 'linear', ...cloneModel(source.xAxis ?? {}) }, yAxis: { scaleType: 'linear', ...cloneModel(source.yAxis ?? {}) },
     options: source.options ? cloneModel(source.options) : {},

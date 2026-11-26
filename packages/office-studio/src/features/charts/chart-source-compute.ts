@@ -1,6 +1,6 @@
 import type { CellScalar, ChartModel, SpreadsheetCell, WorkbookModel } from '../../domain/model'
 import { chartNumber, type ChartRecords } from './chart-data'
-import { readPivotChartSource } from './chart-pivot-data'
+import { readOwnedPivotChartSource, readPivotChartSource } from './chart-pivot-data'
 import { chartSourceVisibility } from './chart-visibility'
 import { formatSheetValue } from '../sheet-workbench/sheet-number-format'
 import { COMPUTE_LIMITS } from '../../compute/protocol.ts'
@@ -9,7 +9,7 @@ import { assertChartSourcePresent } from './chart-source-diagnostic'
 import { assertChartPreparationMemory, CHART_PREPARATION_CHUNK, consumeChartPreparation,
   type ChartComputePreparationContext } from './chart-compute-lifecycle'
 
-export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type' | 'id'>>
+export type ChartRecordSource = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId' | 'options'> & Partial<Pick<ChartModel, 'type' | 'id' | 'ownedPivot'>>
 
 export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Promise<ChartRecords> {
   return consumeChartPreparation(readChartRecordSteps(workbook, chart, context), context)
@@ -19,8 +19,10 @@ export function readChartRecordsAsync(workbook: WorkbookModel, chart: ChartRecor
  * worksheet matrix or additional transpose is retained during preparation. */
 export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecordSource, context: ChartComputePreparationContext = {}): Generator<void, ChartRecords, void> {
   assertChartSourcePresent(workbook, chart)
-  if (chart.pivotTableId) {
-    const source = readPivotChartSource(workbook, chart.pivotTableId)
+  const retainFormatting = chart.type === 'heatmap' || chart.type === 'treemap' || chart.type === 'sunburst'
+  if (chart.pivotTableId || chart.ownedPivot) {
+    if (chart.pivotTableId && chart.ownedPivot) throw new ComputeError('COMPUTE_INVALID_INPUT', '透视图表不能同时拥有链接和独立报告。')
+    const source = chart.ownedPivot ? readOwnedPivotChartSource(workbook, chart.ownedPivot, retainFormatting) : readPivotChartSource(workbook, chart.pivotTableId!, retainFormatting)
     const numericFields = new Set<number>()
     let work = 0
     for (const record of source.records) for (let field = 0; field < source.fields.length; field++) {
@@ -28,7 +30,10 @@ export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecor
       if (++work % CHART_PREPARATION_CHUNK === 0) yield
     }
     return { fields: source.fields, records: source.records, date1904: workbook.date1904, sourceCategoryFields: source.categoryFields,
-      sourceValueFields: source.valueFields, sourceNumericFields: [...numericFields].sort((a, b) => a - b), ...(source.syntheticValues ? { syntheticValues: true } : {}) }
+      sourceValueFields: source.valueFields, sourceNumericFields: [...numericFields].sort((a, b) => a - b),
+      ...(source.formattedRecords ? { formattedRecords: source.formattedRecords } : {}),
+      ...(source.pivotAxis ? { pivotAxis: source.pivotAxis } : {}),
+      ...(source.visibleFields ? { visibleFields: [...source.visibleFields] } : {}), ...(source.syntheticValues ? { syntheticValues: true } : {}) }
   }
   const sheet = workbook.sheets.find(candidate => candidate.id === (chart.source.sheetId ?? chart.sheetId))
   if (!sheet) throw new ComputeError('COMPUTE_INVALID_INPUT', '图表源工作表不存在')
@@ -49,7 +54,6 @@ export function* readChartRecordSteps(workbook: WorkbookModel, chart: ChartRecor
   }
   // Conservative JS reference/row/string allowance, separate from exact
   // TypedArray boundary bytes. Actual heap usage remains a benchmark metric.
-  const retainFormatting = chart.type === 'heatmap' || chart.type === 'treemap' || chart.type === 'sunburst'
   let estimatedBytes = fieldCount * sampleCount * (retainFormatting ? 40 : 24) + sampleCount * (retainFormatting ? 96 : 48) + fieldCount * 64 + 8 * 1024 * 1024
   assertChartPreparationMemory(estimatedBytes, context)
   // Fixed v1.6.0 IChartContext declares true as the historical default.

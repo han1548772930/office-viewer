@@ -8,6 +8,8 @@ import type { ChartSettingsSourceSheet } from '../chart-settings-draft'
 import type { ChartSettingsSourceLoader, ChartSettingsStatisticsLoader } from '../chart-settings-data'
 import { ComputeError } from '../../../compute/errors.ts'
 import { normalizeChartEditPanelRoute, type ChartEditPanelRoute } from '../chart-edit-panel-route'
+import type { PivotChartPanelOpenInput } from '../../pivot/services/pivot-chart-panel-state.ts'
+import { capturePivotChartPanelOwner, pivotChartPanelOwnerCurrent, type PivotChartPanelOwner } from '../../pivot/services/pivot-chart-panel-owner.ts'
 
 type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 
@@ -35,7 +37,12 @@ interface ChartPanelTarget {
 interface ChartPanelReaders { loadSource: ChartSettingsSourceLoader; loadStatistics: ChartSettingsStatisticsLoader }
 interface ChartInsertTarget extends ChartPanelTarget, ChartPanelReaders { config: ChartConfig; apply: (config: ChartConfig) => Promise<void> }
 interface ChartEditorTarget extends ChartPanelTarget, ChartPanelReaders { chartId: string; chart: ChartModel; navigationCurrent: () => boolean; apply: (patch: ChartPatch) => Promise<void> }
-interface PivotChartTarget extends ChartPanelTarget { applied: () => void; setBusy: (busy: boolean) => void }
+interface PivotChartTarget extends ChartPanelTarget, PivotChartPanelOpenInput {
+  owner: PivotChartPanelOwner
+  applied: () => void
+  setBusy: (busy: boolean) => void
+  ownerChanged: (owner: PivotChartPanelOwner) => void
+}
 
 /** Panel callbacks retain their originating unit, even after the workbench switches. */
 export function useSheetChartPanels(host: SheetChartPanelHost) {
@@ -198,24 +205,37 @@ export function useSheetChartPanels(host: SheetChartPanelHost) {
     return true
   }
 
-  function openPivotChart(): void {
-    if (!canOpen()) return
+  function openPivotChart(input: PivotChartPanelOpenInput = {}): boolean {
+    if (!canOpen()) return false
     const captured = target()
-    if (!captured) return
+    if (!captured) return false
+    let owner: PivotChartPanelOwner
+    try { owner = capturePivotChartPanelOwner(captured.studio, captured.unitId, captured.sheetId) }
+    catch (reason) { host.notify(reason instanceof Error ? reason.message : '透视图上下文已过期。'); return false }
     closeChartPanels()
-    const session: PivotChartTarget = { ...captured,
-      setOpen(open) { if (pivotChartContext.value === session && (!open || current(session))) pivotChartPanelOpen.value = open },
+    const session: PivotChartTarget = { ...captured, ...input, sourceRange: input.sourceRange ? { ...input.sourceRange } : undefined, owner,
+      setOpen(open) { if (pivotChartContext.value === session && (!open || current(session) && pivotChartPanelOwnerCurrent(session.owner))) pivotChartPanelOpen.value = open },
       closed() {
         if (pivotChartContext.value !== session || pivotChartPanelOpen.value) return
         pivotChartContext.value = undefined
         pivotChartBusy.value = false
-        restoreFocus(session)
+        if (pivotChartPanelOwnerCurrent(session.owner)) restoreFocus(session)
       },
       setBusy(busy) { if (pivotChartContext.value === session) pivotChartBusy.value = busy },
-      applied() { if (pivotChartContext.value === session && current(session)) refresh(session) },
+      ownerChanged(next) {
+        if (pivotChartContext.value !== session || !current(session) || next.studio !== session.studio
+          || next.unitId !== session.unitId || next.sheetId !== session.sheetId || !pivotChartPanelOwnerCurrent(next)) return
+        session.owner = next
+      },
+      applied() {
+        if (pivotChartContext.value !== session || !current(session) || !pivotChartPanelOwnerCurrent(session.owner, true)) return
+        refresh(session)
+        session.owner = capturePivotChartPanelOwner(session.studio, session.unitId, session.sheetId)
+      },
     }
     pivotChartContext.value = session
     pivotChartPanelOpen.value = true
+    return true
   }
 
   const chartEditorPreview = computed<{ chart: ChartModel | null; error?: string }>(() => {

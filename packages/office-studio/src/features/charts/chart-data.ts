@@ -8,6 +8,7 @@ import { chartMapSteps, chartNumericFieldSteps, chartProjectionSourceBytes } fro
 import { chartHierarchyChartDataSteps, chartHierarchyResultSteps, chartHierarchyValueField } from './chart-hierarchy-data'
 import { chartChordChartDataSteps, chartChordMapping, chartChordResultSteps } from './chart-chord-data'
 import { chartRelationGraphSteps, chartRelationMapping, chartRelationChartDataSteps } from './chart-relation-data'
+import type { PivotChartAxisMetadata } from './chart-pivot-axis.ts'
 export { chartHierarchyData, chartHierarchyDataSteps, chartHierarchyValueField } from './chart-hierarchy-data'
 
 export interface ChartRecords {
@@ -26,6 +27,7 @@ export interface ChartRecords {
   visibleFields?: number[]
   /** Pivot values placed on rows retain the legacy value-field zero shorthand. */
   syntheticValues?: boolean
+  pivotAxis?: PivotChartAxisMetadata
 }
 export type ChartDataBinding = Pick<ChartModel, 'type' | 'categoryField' | 'valueFields' | 'seriesToCategory' | 'options'>
 export interface ChartEdge { source: string; target: string; value: number; sourceIndex?: number; targetIndex?: number }

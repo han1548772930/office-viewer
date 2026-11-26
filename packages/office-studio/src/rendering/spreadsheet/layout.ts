@@ -1,7 +1,8 @@
 import type { ExcelSheetView } from '../../services/excelViewAdapter'
 import type { RenderRect } from '../contracts'
-import { hiddenSheetRows } from '../../features/sheet-workbench/sheet-row-visibility.ts'
+import { hiddenSheetRows, hiddenSheetColumns, sheetAxisViewHiddenSpans } from '../../features/sheet-workbench/sheet-row-visibility.ts'
 import { isSheetCellCoverable } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
+import { getSheetOutlineLevelControls, getSheetOutlineViewModels, type SheetOutlineViewModel } from '../../features/sheet-outline/sheet-outline-view.ts'
 import { effectiveSheetRowSizes, sheetAxisSpanAt, SparseAxisIndex as AxisIndex } from '../../domain/sheet-axis.ts'
 export { SparseAxisIndex as AxisIndex } from '../../domain/sheet-axis.ts'
 
@@ -13,12 +14,27 @@ export type SpreadsheetRenderSheet = ExcelSheetView & {
   outlineHiddenColumns?: number[]
   showGridlines?: boolean
 }
-export interface GridViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number }
+export interface GridViewport { width: number; height: number; scrollLeft: number; scrollTop: number; zoom: number; headerWidth?: number; headerHeight?: number }
 export interface GridRange { startRow: number; startColumn: number; endRow: number; endColumn: number; rangeType?: 0 | 1 | 2 | 3 }
 export type GridHit = { kind: 'cell'; row: number; column: number; key: string } | { kind: 'fill-handle'; range: GridRange } | { kind: 'row'; row: number } | { kind: 'column'; column: number } | { kind: 'all' } | { kind: 'resize-row'; row: number; size: number } | { kind: 'resize-column'; column: number; size: number } | { kind: 'outline-toggle'; axis: 'row' | 'column'; groupId: string; collapsed: boolean } | { kind: 'outline-level'; axis: 'row' | 'column'; level: number }
 export interface OutlineControlRect extends RenderRect { axis: 'row' | 'column'; groupId: string; collapsed: boolean }
+export interface OutlineLevelControlRect extends RenderRect { axis: 'row' | 'column'; level: number; active: boolean }
+export const SHEET_OUTLINE_CONTROL_SIZE = 14
+const OUTLINE_LANE_SIZE = 18
+
+/** Persistent drawing coordinates retain the base header; these fields describe the viewport host. */
+export function gridViewportHeaders(viewport: GridViewport): { width: number; height: number } {
+  return { width: viewport.headerWidth ?? GRID_HEADER_WIDTH, height: viewport.headerHeight ?? GRID_HEADER_HEIGHT }
+}
 export const GRID_HEADER_WIDTH = 44
 export const GRID_HEADER_HEIGHT = 26
+
+export function sheetOutlineHeaderExtents(outline: SpreadsheetRenderSheet['outline']): { width: number; height: number } {
+  const rows = outline ? getSheetOutlineLevelControls(outline, 'row').length : 0
+  const columns = outline ? getSheetOutlineLevelControls(outline, 'column').length : 0
+  return { width: GRID_HEADER_WIDTH + (rows ? rows * OUTLINE_LANE_SIZE + 4 : 0),
+    height: GRID_HEADER_HEIGHT + (columns ? columns * OUTLINE_LANE_SIZE + 4 : 0) }
+}
 
 interface MergeEntry { range: GridRange; order: number }
 interface MergeBand {
@@ -122,8 +138,22 @@ export class SpreadsheetGeometry {
   private readonly contentColumns = new Map<number, number[]>()
   readonly frozenRows: number
   readonly frozenColumns: number
+  readonly headerWidth: number
+  readonly headerHeight: number
+  readonly rowOutlineGutterWidth: number
+  readonly columnOutlineGutterHeight: number
+  private readonly outlineViews: Record<'row' | 'column', SheetOutlineViewModel[]>
+  private readonly outlineLevels: Record<'row' | 'column', ReturnType<typeof getSheetOutlineLevelControls>>
   constructor(sheet: SpreadsheetRenderSheet) {
     this.sheet = sheet
+    this.outlineViews = { row: sheet.outline ? getSheetOutlineViewModels(sheet.outline, 'row', sheet.rowCount) : [],
+      column: sheet.outline ? getSheetOutlineViewModels(sheet.outline, 'column', sheet.columnCount) : [] }
+    this.outlineLevels = { row: sheet.outline ? getSheetOutlineLevelControls(sheet.outline, 'row') : [],
+      column: sheet.outline ? getSheetOutlineLevelControls(sheet.outline, 'column') : [] }
+    this.rowOutlineGutterWidth = this.outlineLevels.row.length ? this.outlineLevels.row.length * OUTLINE_LANE_SIZE + 4 : 0
+    this.columnOutlineGutterHeight = this.outlineLevels.column.length ? this.outlineLevels.column.length * OUTLINE_LANE_SIZE + 4 : 0
+    this.headerWidth = GRID_HEADER_WIDTH + this.rowOutlineGutterWidth
+    this.headerHeight = GRID_HEADER_HEIGHT + this.columnOutlineGutterHeight
     // Parsed Office sheets carry their default axis sizes. The workbench keeps
     // its wider first column only for sheets without an explicit default.
     const defaultRowHeight = sheet.defaultRowHeight ?? 26
@@ -132,8 +162,8 @@ export class SpreadsheetGeometry {
       ? { 0: 152, ...sheet.columnWidths }
       : sheet.columnWidths
     const rowSizes = effectiveSheetRowSizes(sheet)
-    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, rowSizes.sizes, [...hiddenSheetRows(sheet)], rowSizes.spans, sheet.rowHiddenSpans)
-    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, [...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])], sheet.columnWidthSpans, sheet.columnHiddenSpans)
+    this.rows = new AxisIndex(sheet.rowCount, defaultRowHeight, rowSizes.sizes, [...hiddenSheetRows(sheet)], rowSizes.spans, sheetAxisViewHiddenSpans(sheet, 'row'))
+    this.columns = new AxisIndex(sheet.columnCount, defaultColumnWidth, columnWidths, [...hiddenSheetColumns(sheet)], sheet.columnWidthSpans, sheetAxisViewHiddenSpans(sheet, 'column'))
     this.frozenRows = Math.max(0, Math.min(sheet.rowCount, sheet.freeze?.rows ?? 0))
     this.frozenColumns = Math.max(0, Math.min(sheet.columnCount, sheet.freeze?.columns ?? 0))
     this.merges = (sheet.merges ?? []).flatMap(value => { const [a, b] = value.split(':'); const start = parseAddress(a), end = parseAddress(b ?? a); return start && end ? [{ startRow: Math.min(start.row, end.row), startColumn: Math.min(start.column, end.column), endRow: Math.max(start.row, end.row), endColumn: Math.max(start.column, end.column) }] : [] })
@@ -225,8 +255,8 @@ export class SpreadsheetGeometry {
     const endRow = range?.endRow ?? row, endColumn = range?.endColumn ?? column
     const scale = viewport.zoom
     return {
-      x: GRID_HEADER_WIDTH + this.columns.offset(startColumn) * scale - (startColumn < this.frozenColumns ? 0 : viewport.scrollLeft),
-      y: GRID_HEADER_HEIGHT + this.rows.offset(startRow) * scale - (startRow < this.frozenRows ? 0 : viewport.scrollTop),
+      x: this.headerWidth + this.columns.offset(startColumn) * scale - (startColumn < this.frozenColumns ? 0 : viewport.scrollLeft),
+      y: this.headerHeight + this.rows.offset(startRow) * scale - (startRow < this.frozenRows ? 0 : viewport.scrollTop),
       width: (this.columns.offset(endColumn + 1) - this.columns.offset(startColumn)) * scale,
       height: (this.rows.offset(endRow + 1) - this.rows.offset(startRow)) * scale,
     }
@@ -251,46 +281,42 @@ export class SpreadsheetGeometry {
     return {
       scrollLeft: startColumn < this.frozenColumns ? viewport.scrollLeft : reveal(
         viewport.scrollLeft, rect.x, rect.width,
-        GRID_HEADER_WIDTH + this.columns.offset(this.frozenColumns) * viewport.zoom, viewport.width,
-        Math.max(0, GRID_HEADER_WIDTH + this.columns.offset(this.columns.count) * viewport.zoom - viewport.width),
+        this.headerWidth + this.columns.offset(this.frozenColumns) * viewport.zoom, viewport.width,
+        Math.max(0, this.headerWidth + this.columns.offset(this.columns.count) * viewport.zoom - viewport.width),
       ),
       scrollTop: startRow < this.frozenRows ? viewport.scrollTop : reveal(
         viewport.scrollTop, rect.y, rect.height,
-        GRID_HEADER_HEIGHT + this.rows.offset(this.frozenRows) * viewport.zoom, viewport.height,
-        Math.max(0, GRID_HEADER_HEIGHT + this.rows.offset(this.rows.count) * viewport.zoom - viewport.height),
+        this.headerHeight + this.rows.offset(this.frozenRows) * viewport.zoom, viewport.height,
+        Math.max(0, this.headerHeight + this.rows.offset(this.rows.count) * viewport.zoom - viewport.height),
       ),
     }
   }
   hitTest(x: number, y: number, viewport: GridViewport): GridHit | undefined {
     if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) return undefined
     if (!this.rows.count || !this.columns.count) return undefined
-    if (x < GRID_HEADER_WIDTH && y < GRID_HEADER_HEIGHT) {
-      const rowLevel = this.outlineLevelAt('row', x, y)
-      if (rowLevel) return rowLevel
-      const columnLevel = this.outlineLevelAt('column', x, y)
-      if (columnLevel) return columnLevel
-      for (const control of this.outlineToggleRects(viewport)) if (containsPoint(control, x, y)) return { kind: 'outline-toggle', axis: control.axis, groupId: control.groupId, collapsed: control.collapsed }
-      return { kind: 'all' }
+    for (const control of this.outlineLevelRects()) if (containsPoint(control, x, y)) return { kind: 'outline-level', axis: control.axis, level: control.level }
+    for (const control of this.outlineToggleRects(viewport)) if (containsPoint(control, x, y)) return { kind: 'outline-toggle', axis: control.axis, groupId: control.groupId, collapsed: control.collapsed }
+    if (x < this.headerWidth && y < this.headerHeight) {
+      return x >= this.rowOutlineGutterWidth && y >= this.columnOutlineGutterHeight ? { kind: 'all' } : undefined
     }
+    if (x < this.rowOutlineGutterWidth || y < this.columnOutlineGutterHeight) return undefined
     const scale = viewport.zoom
     const frozenWidth = this.columns.offset(this.frozenColumns) * scale, frozenHeight = this.rows.offset(this.frozenRows) * scale
-    const columnOffset = (x - GRID_HEADER_WIDTH + (x >= GRID_HEADER_WIDTH + frozenWidth ? viewport.scrollLeft : 0)) / scale
-    const rowOffset = (y - GRID_HEADER_HEIGHT + (y >= GRID_HEADER_HEIGHT + frozenHeight ? viewport.scrollTop : 0)) / scale
+    const columnOffset = (x - this.headerWidth + (x >= this.headerWidth + frozenWidth ? viewport.scrollLeft : 0)) / scale
+    const rowOffset = (y - this.headerHeight + (y >= this.headerHeight + frozenHeight ? viewport.scrollTop : 0)) / scale
     // AxisIndex.locate deliberately clamps for visible-range queries. A pointer
     // in the unused canvas area must not select that clamped (possibly hidden)
     // final row or column.
-    if (x >= GRID_HEADER_WIDTH && (!Number.isFinite(columnOffset) || columnOffset < 0 || columnOffset >= this.columns.offset(this.columns.count))) return undefined
-    if (y >= GRID_HEADER_HEIGHT && (!Number.isFinite(rowOffset) || rowOffset < 0 || rowOffset >= this.rows.offset(this.rows.count))) return undefined
+    if (x >= this.headerWidth && (!Number.isFinite(columnOffset) || columnOffset < 0 || columnOffset >= this.columns.offset(this.columns.count))) return undefined
+    if (y >= this.headerHeight && (!Number.isFinite(rowOffset) || rowOffset < 0 || rowOffset >= this.rows.offset(this.rows.count))) return undefined
     const column = this.columns.locate(columnOffset)
     const row = this.rows.locate(rowOffset)
-    if (y < GRID_HEADER_HEIGHT) {
-      for (const control of this.outlineToggleRects(viewport)) if (control.axis === 'column' && containsPoint(control, x, y)) return { kind: 'outline-toggle', axis: control.axis, groupId: control.groupId, collapsed: control.collapsed }
+    if (y < this.headerHeight) {
       const rect = this.cellRect(0, column, viewport, false)
       if (Math.abs(x - rect.x - rect.width) < 4) return { kind: 'resize-column', column, size: this.columns.size(column) }
       return { kind: 'column', column }
     }
-    if (x < GRID_HEADER_WIDTH) {
-      for (const control of this.outlineToggleRects(viewport)) if (control.axis === 'row' && containsPoint(control, x, y)) return { kind: 'outline-toggle', axis: control.axis, groupId: control.groupId, collapsed: control.collapsed }
+    if (x < this.headerWidth) {
       const rect = this.cellRect(row, 0, viewport, false)
       if (Math.abs(y - rect.y - rect.height) < 4) return { kind: 'resize-row', row, size: this.rows.size(row) }
       return { kind: 'row', row }
@@ -299,76 +325,89 @@ export class SpreadsheetGeometry {
     const targetRow = merge?.startRow ?? row, targetColumn = merge?.startColumn ?? column
     return { kind: 'cell', row: targetRow, column: targetColumn, key: cellAddress(targetRow, targetColumn) }
   }
+  outlineLevelRects(): OutlineLevelControlRect[] {
+    return (['row', 'column'] as const).flatMap(axis => this.outlineLevels[axis].map(control => ({
+      ...control, x: axis === 'row' ? 2 + (control.level - 1) * OUTLINE_LANE_SIZE : this.rowOutlineGutterWidth + 14,
+      y: axis === 'row' ? this.columnOutlineGutterHeight + 6 : 2 + (control.level - 1) * OUTLINE_LANE_SIZE,
+      width: SHEET_OUTLINE_CONTROL_SIZE, height: SHEET_OUTLINE_CONTROL_SIZE,
+    })))
+  }
   outlineToggleRects(viewport: GridViewport): OutlineControlRect[] {
-    const outline = this.sheet.outline
-    if (!outline) return []
     const rects: OutlineControlRect[] = []
-    const rowGroups = outline.groups.filter(group => group.axis === 'row')
-    for (const group of rowGroups) {
-      const summaryRow = outline.summaryAbove ? group.start - 1 : group.end + 1
-      if (summaryRow < 0 || summaryRow >= this.rows.count || this.rows.size(summaryRow) <= 0) continue
-      const depth = groupDepth(group, rowGroups)
-      const rect = this.cellRect(summaryRow, 0, viewport, false)
-      rects.push({ axis: 'row', groupId: group.id, collapsed: group.collapsed, x: Math.max(1, 2 + depth * 8), y: rect.y + (rect.height - 12) / 2, width: 12, height: 12 })
-    }
-    const columnGroups = outline.groups.filter(group => group.axis === 'column')
-    for (const group of columnGroups) {
-      const summaryColumn = outline.summaryLeft ? group.start - 1 : group.end + 1
-      if (summaryColumn < 0 || summaryColumn >= this.columns.count || this.columns.size(summaryColumn) <= 0) continue
-      const depth = groupDepth(group, columnGroups)
-      const rect = this.cellRect(0, summaryColumn, viewport, false)
-      rects.push({ axis: 'column', groupId: group.id, collapsed: group.collapsed, x: rect.x + rect.width / 2 - 6, y: Math.max(1, GRID_HEADER_HEIGHT - 13 - depth), width: 12, height: 12 })
+    for (const axis of ['row', 'column'] as const) {
+      const index = axis === 'row' ? this.rows : this.columns
+      const header = axis === 'row' ? this.headerHeight : this.headerWidth
+      const extent = axis === 'row' ? viewport.height : viewport.width
+      const frozen = axis === 'row' ? this.frozenRows : this.frozenColumns
+      const scroll = axis === 'row' ? viewport.scrollTop : viewport.scrollLeft
+      for (const view of this.outlineViews[axis]) {
+        let center: number
+        if (view.anchor !== null && index.size(view.anchor) > 0) {
+          center = header + (index.offset(view.anchor) + index.size(view.anchor) / 2) * viewport.zoom
+            - (view.anchor < frozen ? 0 : scroll)
+        } else {
+          const boundary = header + index.offset(view.anchorBoundary) * viewport.zoom
+            - (view.anchorBoundary <= frozen ? 0 : scroll)
+          center = view.summaryAtStart ? boundary + 2 + SHEET_OUTLINE_CONTROL_SIZE / 2
+            : boundary - 2 - SHEET_OUTLINE_CONTROL_SIZE / 2
+          // An outline spanning the whole axis has no adjacent summary cell.
+          // Keep its collapsed boundary reachable even when every detail is hidden.
+          if (view.collapsed) center = Math.max(header + 2 + SHEET_OUTLINE_CONTROL_SIZE / 2, center)
+        }
+        const position = center - SHEET_OUTLINE_CONTROL_SIZE / 2
+        if (position < header || position + SHEET_OUTLINE_CONTROL_SIZE > extent) continue
+        const lane = 2 + (view.depth - 1) * OUTLINE_LANE_SIZE
+        rects.push({ axis, groupId: view.id, collapsed: view.collapsed,
+          x: axis === 'row' ? lane : position, y: axis === 'row' ? position : lane,
+          width: SHEET_OUTLINE_CONTROL_SIZE, height: SHEET_OUTLINE_CONTROL_SIZE })
+      }
     }
     return rects
   }
   outlineBracketLines(viewport: GridViewport): Array<{ axis: 'row' | 'column'; x1: number; y1: number; x2: number; y2: number; groupId: string }> {
-    const outline = this.sheet.outline
-    if (!outline) return []
     const lines: Array<{ axis: 'row' | 'column'; x1: number; y1: number; x2: number; y2: number; groupId: string }> = []
-    const rowGroups = outline.groups.filter(group => group.axis === 'row')
-    for (const group of rowGroups) {
-      const depth = groupDepth(group, rowGroups), x = 17 + depth * 8
-      const first = this.cellRect(group.start, 0, viewport, false), last = this.cellRect(group.end, 0, viewport, false)
-      lines.push({ axis: 'row', groupId: group.id, x1: x, y1: first.y + first.height / 2, x2: x, y2: last.y + last.height / 2 })
-      lines.push({ axis: 'row', groupId: group.id, x1: x, y1: first.y + first.height / 2, x2: x + 4, y2: first.y + first.height / 2 })
-      lines.push({ axis: 'row', groupId: group.id, x1: x, y1: last.y + last.height / 2, x2: x + 4, y2: last.y + last.height / 2 })
-    }
-    const columnGroups = outline.groups.filter(group => group.axis === 'column')
-    for (const group of columnGroups) {
-      const depth = groupDepth(group, columnGroups), y = GRID_HEADER_HEIGHT - 2 - depth * 4
-      const first = this.cellRect(0, group.start, viewport, false), last = this.cellRect(0, group.end, viewport, false)
-      lines.push({ axis: 'column', groupId: group.id, x1: first.x + first.width / 2, y1: y, x2: last.x + last.width / 2, y2: y })
-      lines.push({ axis: 'column', groupId: group.id, x1: first.x + first.width / 2, y1: y, x2: first.x + first.width / 2, y2: y - 4 })
-      lines.push({ axis: 'column', groupId: group.id, x1: last.x + last.width / 2, y1: y, x2: last.x + last.width / 2, y2: y - 4 })
+    for (const axis of ['row', 'column'] as const) {
+      const index = axis === 'row' ? this.rows : this.columns
+      const header = axis === 'row' ? this.headerHeight : this.headerWidth
+      const extent = axis === 'row' ? viewport.height : viewport.width
+      const frozen = axis === 'row' ? this.frozenRows : this.frozenColumns
+      const scroll = axis === 'row' ? viewport.scrollTop : viewport.scrollLeft
+      const frozenEnd = Math.min(extent, header + index.offset(frozen) * viewport.zoom)
+      for (const view of this.outlineViews[axis]) {
+        if (view.collapsed) continue
+        const lane = 9 + (view.depth - 1) * OUTLINE_LANE_SIZE
+        const add = (start: number, end: number, offset: number, low: number, high: number) => {
+          if (end < start || high <= low) return
+          const rawStart = header + index.offset(start) * viewport.zoom - offset
+          const rawEnd = header + index.offset(end + 1) * viewport.zoom - offset
+          const first = Math.max(low, rawStart), last = Math.min(high, rawEnd)
+          if (last <= first) return
+          const line = (a: number, b: number, tick = false) => lines.push({ axis, groupId: view.id,
+            x1: axis === 'row' ? lane : a, y1: axis === 'row' ? a : lane,
+            x2: axis === 'row' ? lane + (tick ? 4 : 0) : b, y2: axis === 'row' ? b : lane + (tick ? 4 : 0) })
+          line(first, last)
+          if (rawStart >= low && start === view.start) line(first, first, true)
+          if (rawEnd <= high && end === view.end) line(last, last, true)
+        }
+        add(view.start, Math.min(view.end, frozen - 1), 0, header, frozenEnd)
+        add(Math.max(view.start, frozen), view.end, scroll, frozenEnd, extent)
+      }
     }
     return lines
   }
-  private outlineLevelAt(axis: 'row' | 'column', x: number, y: number): GridHit | undefined {
-    const groups = this.sheet.outline?.groups.filter(group => group.axis === axis) ?? []
-    if (!groups.length) return undefined
-    const maxLevel = Math.max(...groups.map(group => groupDepth(group, groups))) + 2
-    const level = Math.floor((x - 1) / 12) + 1
-    const inBand = axis === 'row' ? y >= 1 && y < 13 : y >= 13 && y < 25
-    if (!inBand || level > maxLevel) return undefined
-    return { kind: 'outline-level', axis, level }
-  }
   panes(viewport: GridViewport): Array<{ rows: number[]; columns: number[]; clip: RenderRect }> {
-    const z = viewport.zoom, fw = Math.max(0, Math.min(viewport.width - GRID_HEADER_WIDTH, this.columns.offset(this.frozenColumns) * z)), fh = Math.max(0, Math.min(viewport.height - GRID_HEADER_HEIGHT, this.rows.offset(this.frozenRows) * z))
-    const frozenRows = this.rows.visible(0, (viewport.height - GRID_HEADER_HEIGHT) / z, 0, this.frozenRows)
-    const frozenColumns = this.columns.visible(0, (viewport.width - GRID_HEADER_WIDTH) / z, 0, this.frozenColumns)
-    const rows = this.rows.visible((viewport.scrollTop + fh) / z, (viewport.scrollTop + viewport.height - GRID_HEADER_HEIGHT) / z, this.frozenRows)
-    const columns = this.columns.visible((viewport.scrollLeft + fw) / z, (viewport.scrollLeft + viewport.width - GRID_HEADER_WIDTH) / z, this.frozenColumns)
+    const z = viewport.zoom, fw = Math.max(0, Math.min(viewport.width - this.headerWidth, this.columns.offset(this.frozenColumns) * z)), fh = Math.max(0, Math.min(viewport.height - this.headerHeight, this.rows.offset(this.frozenRows) * z))
+    const frozenRows = this.rows.visible(0, (viewport.height - this.headerHeight) / z, 0, this.frozenRows)
+    const frozenColumns = this.columns.visible(0, (viewport.width - this.headerWidth) / z, 0, this.frozenColumns)
+    const rows = this.rows.visible((viewport.scrollTop + fh) / z, (viewport.scrollTop + viewport.height - this.headerHeight) / z, this.frozenRows)
+    const columns = this.columns.visible((viewport.scrollLeft + fw) / z, (viewport.scrollLeft + viewport.width - this.headerWidth) / z, this.frozenColumns)
     return [
-      { rows, columns, clip: { x: GRID_HEADER_WIDTH + fw, y: GRID_HEADER_HEIGHT + fh, width: viewport.width - GRID_HEADER_WIDTH - fw, height: viewport.height - GRID_HEADER_HEIGHT - fh } },
-      { rows: frozenRows, columns, clip: { x: GRID_HEADER_WIDTH + fw, y: GRID_HEADER_HEIGHT, width: viewport.width - GRID_HEADER_WIDTH - fw, height: fh } },
-      { rows, columns: frozenColumns, clip: { x: GRID_HEADER_WIDTH, y: GRID_HEADER_HEIGHT + fh, width: fw, height: viewport.height - GRID_HEADER_HEIGHT - fh } },
-      { rows: frozenRows, columns: frozenColumns, clip: { x: GRID_HEADER_WIDTH, y: GRID_HEADER_HEIGHT, width: fw, height: fh } },
+      { rows, columns, clip: { x: this.headerWidth + fw, y: this.headerHeight + fh, width: viewport.width - this.headerWidth - fw, height: viewport.height - this.headerHeight - fh } },
+      { rows: frozenRows, columns, clip: { x: this.headerWidth + fw, y: this.headerHeight, width: viewport.width - this.headerWidth - fw, height: fh } },
+      { rows, columns: frozenColumns, clip: { x: this.headerWidth, y: this.headerHeight + fh, width: fw, height: viewport.height - this.headerHeight - fh } },
+      { rows: frozenRows, columns: frozenColumns, clip: { x: this.headerWidth, y: this.headerHeight, width: fw, height: fh } },
     ].map(pane => ({ ...pane, clip: { ...pane.clip, width: Math.max(0, pane.clip.width), height: Math.max(0, pane.clip.height) } }))
   }
-}
-
-function groupDepth(group: { start: number; end: number }, groups: readonly { start: number; end: number }[]): number {
-  return groups.filter(parent => parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end)).length
 }
 
 function containsPoint(rect: RenderRect, x: number, y: number): boolean {

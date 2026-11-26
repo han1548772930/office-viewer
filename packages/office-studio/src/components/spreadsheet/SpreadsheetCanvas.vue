@@ -4,6 +4,7 @@ import { Alert, AutoComplete, Button, Dropdown, Input, Tooltip, theme } from 'an
 import type { RenderBackend, RenderSurface } from '../../rendering/contracts'
 import type { DrawCommand } from '../../rendering/contracts'
 import type { CellRange, TimelineLevel } from '../../domain/model'
+import type { ITimelineRange } from '../../domain/timeline-filters.ts'
 import { createRenderSurface } from '../../rendering/createRenderSurface'
 import type { GridHit, GridRange, GridViewport, SpreadsheetRenderSheet } from '../../rendering/spreadsheet/layout'
 import { cellAddress, GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH, parseAddress, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout'
@@ -13,7 +14,7 @@ import { createCellEditorLayout, hitCellEditorFillHandle } from '../../rendering
 import { createSheetRichTextEditorScene, hitSheetRichTextEditor, hitSheetRichTextEditorPosition, moveSheetRichTextEditorCaret,
   sheetRichTextEditorCaret, sheetRichTextEditorWord, type SheetRichTextEditorCaretAffinity } from '../../rendering/spreadsheet/rich-text-editor.ts'
 import { clampSheetRichTextEditorScroll, stepSheetRichTextEditorDragScroll } from '../../rendering/spreadsheet/rich-text-editor-scroll.ts'
-import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
+import type { ExcelCellView, ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import { sheetViewCellAt } from '../../services/excelViewAdapter.ts'
 import { fillPreviewRange, hitSelectionFillHandle, SHEET_SELECTION_STROKE_WIDTH, sheetRangeDashedOutlineCommands } from '../../rendering/spreadsheet/selection'
 import { detectSheetFillDownEndRow, type SheetFillApplyType } from '../../features/sheet-workbench/sheet-fill.ts'
@@ -36,10 +37,18 @@ import { layoutSheetCellText, sheetCellTextFont } from '../../features/sheet-wor
 import { layoutSheetCellRichText } from '../../features/sheet-workbench/sheet-cell-rich-text-layout.ts'
 import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
 import { ChevronDown, ClipboardPaste, Minus, Plus } from 'lucide-vue-next'
-import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit } from '../../features/slicer/slicer-renderer'
+import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, slicerObjectLocalPoint,
+  timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit, type SlicerObjectLayout } from '../../features/slicer/slicer-renderer'
+import { captureSlicerCanvasGesture, canResumeSlicerCanvasGesture, slicerCanvasGestureDelta, slicerCanvasGestureGeometry,
+  slicerCanvasScrollOffset, timelineCanvasSelectionRange, timelineCanvasHandleRange, type SlicerCanvasGesture } from '../../features/slicer/slicer-canvas-gesture.ts'
+import { slicerControlPaneLayouts, slicerControlTabIndex, type SlicerControlPaneLayout } from '../../features/slicer/slicer-control-overlay.ts'
+import SlicerControlOverlay from './SlicerControlOverlay.vue'
+import { resolveSlicerRenderProfile, type SlicerRenderProfile } from '../../features/slicer/slicer-style-rendering.ts'
 import SheetContextMenu from './SheetContextMenu.vue'
 import SheetFillOptions from './SheetFillOptions.vue'
-import { sheetContextStructureTarget } from './sheet-context-menu.ts'
+import { sheetContextStructureTarget, type SheetContextMenuContext } from './sheet-context-menu.ts'
+import type { SheetOutlineCommandInput } from '../../features/sheet-outline/sheet-outline-command.ts'
+import { sparklineContextCapability } from '../../features/sparkline/sparkline-context-menu.ts'
 import { sheetAxisVisibilityTargetHasHidden } from '../../features/sheet-workbench/sheet-axis-visibility.ts'
 import { OfficeTranslatorKey, useOfficeRegion } from '../../i18n/office-i18n'
 import { SHEET_CLIPBOARD_COMMANDS } from '../../features/sheet-workbench/sheet-clipboard.ts'
@@ -51,7 +60,7 @@ import { sheetImagePlacement } from '../../features/sheet-images/sheet-image-pla
 import { SHEET_IMAGE_CROP_PRESETS } from '../../features/sheet-images/sheet-image-crop.ts'
 import { SHEET_IMAGE_ALIGN_OPERATIONS, SHEET_IMAGE_ALIGN_PRESETS } from '../../features/sheet-images/sheet-image-selection.ts'
 import type { SheetDrawingAffineGeometry, SheetDrawingLeafRef, SheetDrawingRef } from '../../domain/sheet-drawings.ts'
-import { drawingPaintOrder, DRAWING_ARRANGE_MENU, DRAWING_GROUP_MENU, SHEET_DRAWING_GROUP_COMMAND_IDS, type SheetDrawingScene } from '../../features/drawing-groups/index.ts'
+import { drawingPaintOrder, DRAWING_ALIGN_MENU, DRAWING_ARRANGE_MENU, DRAWING_GROUP_MENU, SHEET_DRAWING_GROUP_COMMAND_IDS, type SheetDrawingScene } from '../../features/drawing-groups/index.ts'
 import { sheetDrawingGeometryRange } from '../../features/sheet-drawings/sheet-drawing-viewport.ts'
 import { useSheetDrawingCanvas } from './use-sheet-drawing-canvas.ts'
 import type { SheetDrawingCommandInput } from '../../api/sheet-drawing-commands.ts'
@@ -59,7 +68,7 @@ import type { SheetDrawingCommandInput } from '../../api/sheet-drawing-commands.
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ sheet: SpreadsheetRenderSheet; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -82,21 +91,25 @@ const emit = defineEmits<{
   (event: 'open-hyperlink', key: string): void
   (event: 'backend-change', backend: RenderBackend, reason?: string): void
   (event: 'select-slicer', slicerId: string): void
-  (event: 'slicer-item', payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean }): void
-  (event: 'slicer-clear', slicerId: string): void
-  (event: 'slicer-range', payload: { slicerId: string; start: number; end: number; level: TimelineLevel }): void
-  (event: 'slicer-scroll-to', payload: { slicerId: string; position: number }): void
-  (event: 'slicer-level', payload: { slicerId: string; level: TimelineLevel }): void
+  (event: 'slicer-item', payload: { slicerId: string; value: string; index: number; anchorIndex?: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; multiSelect: boolean; expectedRevision?: number }): void
+  (event: 'slicer-clear', slicerId: string, expectedRevision?: number): void
+  (event: 'slicer-range', payload: { slicerId: string; range: ITimelineRange; expectedRevision?: number }): void
+  (event: 'slicer-window', payload: { slicerId: string; start: number; count: number; expectedRevision?: number }): void
+  (event: 'slicer-retry', slicerId: string): void
+  (event: 'slicer-scroll-to', payload: { slicerId: string; position: number; expectedRevision?: number }): void
+  (event: 'slicer-level', payload: { slicerId: string; level: TimelineLevel; expectedRevision?: number }): void
   (event: 'slicer-settings', slicerId: string): void
+  (event: 'slicer-connections', slicerId: string): void
   (event: 'slicer-move', payload: { slicerId: string; left: number; top: number }): void
   (event: 'slicer-resize', payload: { slicerId: string; width: number; height: number }): void
+  (event: 'slicer-geometry', payload: { slicerId: string; geometry: SheetDrawingAffineGeometry; expectedRevision?: number }): void
   (event: 'select-image', imageId?: string, additive?: boolean, preserve?: boolean): void
   (event: 'edit-image', imageId: string, row?: number, column?: number): void
   (event: 'save-image', imageId: string): void
   (event: 'image-command', commandId: string, input: SheetImageCommandInput): void
   (event: 'select-drawing', ref?: SheetDrawingRef, additive?: boolean, preserve?: boolean): void
   (event: 'drawing-command', commandId: string, input: SheetDrawingCommandInput): void
-  (event: 'chart-event', eventValue: MouseEvent | KeyboardEvent, chartId: string, view: { scrollLeft: number; scrollTop: number }): void
+  (event: 'chart-event', eventValue: MouseEvent | KeyboardEvent, chartId: string, view: { scrollLeft: number; scrollTop: number; headerWidth?: number; headerHeight?: number }): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
 // The synchronous callback also owns "no session" while Vue is still flushing the previous props.
@@ -104,20 +117,37 @@ const inputSessionId = () => props.inputContext ? props.inputContext().sessionId
 const nativeInput = createSheetCellNativeInputBridge({ host: 'cell', sessionId: inputSessionId,
   value: () => props.inputContext?.().value ?? props.editValue, contains: element => Boolean(root.value?.contains(element) && element.closest('.canvas-cell-input')),
   emit: event => emit('input-event', event) })
-const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100 })
+const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
+const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollTop: 0, zoom: props.zoom / 100,
+  headerWidth: geometry.value.headerWidth, headerHeight: geometry.value.headerHeight })
 const fillPreview = ref<GridRange>()
 const fillHandleHovered = ref(false)
 const headerDrag = ref<(SheetAxisHeaderMoveSource & { pointerStart: number; moved: boolean; copy: boolean; destination?: number; allowed: boolean; revision?: number })>()
-const geometry = computed(() => new SpreadsheetGeometry(props.sheet))
 const region = useOfficeRegion()
-const slicerLayouts = computed(() => slicerObjectLayouts(geometry.value, props.slicers ?? [], props.sheet.date1904 ?? false, region.value))
+const slicerScrollPreviews = ref(new Map<string, number>())
+const slicerLayouts = computed(() => slicerObjectLayouts(geometry.value, props.slicers ?? [], props.sheet.date1904 ?? false,
+  region.value, drawingCanvas.previewGeometry.value, slicerScrollPreviews.value))
+const slicerControlPanes = computed(() => slicerControlPaneLayouts(geometry.value, viewport.value, slicerLayouts.value,
+  props.drawingScene, drawingCanvas.previewGeometry.value, drawingVisible))
+const slicerTheme = computed(() => ({ background: token.value.colorBgContainer, text: token.value.colorText,
+  secondaryFill: token.value.colorFillSecondary, mutedText: token.value.colorTextTertiary }))
+const slicerStyleProfiles = computed(() => new Map<string, SlicerRenderProfile>(slicerLayouts.value.map(layout => [`${layout.model.type}:${layout.id}`,
+  resolveSlicerRenderProfile(layout.styleOwner ?? {}, layout.model.type, layout.model.style, slicerTheme.value)])))
+function slicerProfile(layout: SlicerObjectLayout): SlicerRenderProfile {
+  return slicerStyleProfiles.value.get(`${layout.model.type}:${layout.id}`)
+    ?? resolveSlicerRenderProfile(layout.styleOwner ?? {}, layout.model.type, layout.model.style, slicerTheme.value)
+}
 const timelineMenuId = ref('')
+const slicerMenuPaneKey = ref('')
+const slicerContentId = ref('')
 const focusedSlicerItems = ref(new Map<string, number>())
 const focusedTimelinePeriods = ref(new Map<string, number>())
 const scene = computed(() => {
   const selectionCommands: DrawCommand[] = []
   const selected = slicerLayouts.value.find(({ id }) => id === props.selectedSlicerId)
-  if (selected) selectionCommands.push({ kind: 'rect', ...selected.rect, fill: 'transparent', stroke: '#246bfd', strokeWidth: 2 })
+  if (selected && !drawingCanvas.sharedControls.value) selectionCommands.push({ kind: 'rect', ...selected.rect,
+    matrix: selected.matrix, localClip: selected.rect, drawingRef: { kind: selected.model.type, id: selected.id },
+    fill: 'transparent', stroke: token.value.colorPrimary, strokeWidth: 2 })
   const overlays = (props.overlayCommands ?? []).flatMap(command => {
     if (!command.drawingRef) return [command]
     const object = props.drawingScene?.objects.find(object => object.ref.kind === command.drawingRef?.kind && object.ref.id === command.drawingRef.id)
@@ -126,7 +156,20 @@ const scene = computed(() => {
     return command.kind === 'image' && command.drawingRef.kind === 'chart' && preview ? [{ ...command, x: 0, y: 0,
       width: preview.width, height: preview.height, matrix: { ...preview.matrix, e: preview.matrix.e + GRID_HEADER_WIDTH, f: preview.matrix.f + GRID_HEADER_HEIGHT } }] : [command]
   })
-  const result = createSpreadsheetScene(geometry.value, viewport.value, { region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange, selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value, formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined, formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter || props.selectedImageId || props.selectedDrawingRefs?.length), searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, drawingOrder: drawingOrder.value, overlayCommands: [...overlays, ...slicerObjectDrawCommands(slicerLayouts.value, { timelineMenuId: timelineMenuId.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value, focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value, onIconReady: queueRender }), ...selectionCommands], crosshairHighlight: props.crosshairHighlight, ...imageCanvas.sceneOptions.value })
+  const result = createSpreadsheetScene(geometry.value, viewport.value, {
+    region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange,
+    selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value,
+    formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined,
+    formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter || props.selectedImageId || props.selectedDrawingRefs?.length),
+    searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, drawingOrder: drawingOrder.value,
+    sparklineContext: { sheets: props.sparklineSheets, canReadSource: (sheet, range) =>
+      canViewWorksheetProtection(sheet, props.currentUserId ?? 'local-user') && canViewProtectedRanges(sheet, [range], props.currentUserId ?? 'local-user') },
+    overlayCommands: [...overlays, ...slicerObjectDrawCommands(slicerLayouts.value.filter(layout =>
+      drawingVisible({ kind: layout.model.type, id: layout.id }, layout.geometry)), { controlUI: 'antd', theme: slicerTheme.value,
+      styleProfiles: slicerStyleProfiles.value, selectedSlicerId: props.selectedSlicerId, multiSelect: multiSelect.value,
+      focusedItems: focusedSlicerItems.value, focusedPeriods: focusedTimelinePeriods.value }), ...selectionCommands],
+    crosshairHighlight: props.crosshairHighlight, ...imageCanvas.sceneOptions.value,
+  })
   result.commands.push(...drawingCanvas.commands.value)
   const drag = headerDrag.value
   result.commands.push(...sheetHeaderDragCommands(geometry.value, viewport.value, drag?.moved ? {
@@ -144,23 +187,45 @@ const selectedCellText = computed(() => {
   const preview = position ? sheetNumberFormatPreviewPatternAt(props.numberFormatPreview, position.row, position.column) : undefined
   return displayCell(position ? sheetViewCellAt(props.sheet, position.row, position.column) : undefined, props.sheet.date1904, region.value, preview)
 })
-const outlineToggleRects = computed(() => geometry.value.outlineToggleRects(viewport.value))
-const outlineLevelButtons = computed(() => {
-  const outline = props.sheet.outline
-  if (!outline) return []
-  return (['row', 'column'] as const).flatMap(axis => {
-    const groups = outline.groups.filter(group => group.axis === axis)
-    if (!groups.length) return []
-    const maxDepth = Math.max(...groups.map(group => groups.filter(parent =>
-      parent.start <= group.start && parent.end >= group.end && (parent.start < group.start || parent.end > group.end),
-    ).length)) + 1
-    return Array.from({ length: maxDepth }, (_, index) => ({
-      axis, level: index + 1, left: 1 + index * 12, top: axis === 'row' ? 1 : 13,
-      label: `${axis === 'row' ? '行' : '列'}大纲级别 ${index + 1}`,
-    }))
+function outlineOwner(): SheetOutlineCommandInput {
+  return { unitId: props.workbookId ?? 'standalone-workbook', subUnitId: props.sheet.id, host: 'workbench',
+    expectedRevision: props.workbookRevision, expectedHistoryGeneration: props.workbookHistoryGeneration,
+    expectedUserId: props.currentUserId ?? 'local-user' }
+}
+function outlineOwnerCurrent(owner: SheetOutlineCommandInput): boolean {
+  return owner.unitId === (props.workbookId ?? 'standalone-workbook') && owner.subUnitId === props.sheet.id
+    && owner.expectedRevision === props.workbookRevision && owner.expectedHistoryGeneration === props.workbookHistoryGeneration
+    && owner.expectedUserId === (props.currentUserId ?? 'local-user')
+}
+function canChangeOutline(axis: 'row' | 'column', groupId?: string): boolean {
+  const userId = props.currentUserId ?? 'local-user'
+  if (!active || disposed || props.editingKey || composing.value || props.imageInteractionBlocked || props.formatPainter
+    || !canEditWorksheetProtection(props.sheet, userId)) return false
+  const groups = props.sheet.outline?.groups.filter(group => group.axis === axis && (!groupId || group.id === groupId)) ?? []
+  return groups.length > 0 && canEditProtectedRanges(props.sheet, groups.map(group => axis === 'row'
+    ? { startRow: group.start, endRow: group.end, startCol: 0, endCol: props.sheet.columnCount - 1 }
+    : { startRow: 0, endRow: props.sheet.rowCount - 1, startCol: group.start, endCol: group.end }), userId)
+}
+const outlineToggleRects = computed(() => geometry.value.outlineToggleRects(viewport.value).map(control => ({
+  ...control, owner: outlineOwner(), disabled: !canChangeOutline(control.axis, control.groupId),
+  label: `${control.axis === 'row' ? '行' : '列'}分组${control.collapsed ? '展开' : '折叠'}`,
+})))
+const outlineLevelButtons = computed(() => geometry.value.outlineLevelRects().map(control => ({
+  ...control, owner: outlineOwner(), disabled: !canChangeOutline(control.axis),
+  label: `${control.axis === 'row' ? '行' : '列'}大纲级别 ${control.level}`,
+})))
+function changeOutlineControl(control: (typeof outlineToggleRects.value)[number]): void {
+  if (control.disabled || !outlineOwnerCurrent(control.owner) || !canChangeOutline(control.axis, control.groupId)) return
+  emit('context-command', 'sheet.command.set-dimension-outline-collapsed', {
+    ...control.owner, outlineId: control.groupId, collapsed: !control.collapsed,
   })
-})
-const fullSize = computed(() => ({ width: `${GRID_HEADER_WIDTH + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`, height: `${GRID_HEADER_HEIGHT + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
+}
+function changeOutlineLevel(control: (typeof outlineLevelButtons.value)[number]): void {
+  if (control.disabled || !outlineOwnerCurrent(control.owner) || !canChangeOutline(control.axis)) return
+  emit('context-command', 'sheet.command.set-outline-level', { ...control.owner, axis: control.axis, level: control.level })
+}
+const fullSize = computed(() => ({ width: `${geometry.value.headerWidth + geometry.value.columns.offset(props.sheet.columnCount) * props.zoom / 100}px`,
+  height: `${geometry.value.headerHeight + geometry.value.rows.offset(props.sheet.rowCount) * props.zoom / 100}px` }))
 const editedCell = computed(() => {
   const position = props.editingKey ? parseAddress(props.editingKey) : undefined
   return position ? sheetViewCellAt(props.sheet, position.row, position.column) : undefined
@@ -343,6 +408,16 @@ const drawingCanvas = useSheetDrawingCanvas({
   scene: () => props.drawingScene, geometry: () => geometry.value, viewport: () => viewport.value,
   selection: () => props.selectedDrawingRefs ?? [], revision: () => props.workbookRevision, userId: () => props.currentUserId ?? 'local-user',
   blocked: () => Boolean(props.editingKey || composing.value || props.formatPainter || props.imageInteractionBlocked),
+  contentEditing: () => props.selectedDrawingRefs?.length === 1 && ['slicer', 'timeline'].includes(props.selectedDrawingRefs[0]!.kind)
+    && slicerContentId.value === props.selectedDrawingRefs[0]?.id,
+  contentControlAt: (ref, position, pane) => {
+    const layout = slicerLayouts.value.find(layout => layout.id === ref.id && layout.model.type === ref.kind)
+    if (!layout) return false
+    const content = drawingContentPoint(position, undefined, pane), hit = hitTestSlicerObjects([layout], content.x, content.y)
+    return !!hit && !['move', 'resize', 'body', 'timelineMenu'].includes(hit.type)
+  },
+  keepRatio: () => props.selectedDrawingRefs?.length === 1 && !!props.slicers?.find(control => control.model.id === props.selectedDrawingRefs[0]?.id
+    && control.model.type === props.selectedDrawingRefs[0]?.kind)?.model.drawing?.keepRatio,
   color: () => token.value.colorPrimary, background: () => token.value.colorBgContainer, visible: drawingVisible,
   select: (ref, additive, preserve) => emit('select-drawing', ref, additive, preserve), command: (id, input) => emit('drawing-command', id, input),
   focus: () => root.value?.focus({ preventScroll: true }), capture: id => root.value?.setPointerCapture(id),
@@ -366,33 +441,80 @@ const imageCanvas = useSheetImageCanvas({
   remove: id => emit('image-command', SHEET_IMAGE_COMMANDS.remove, { sheetId: props.sheet.id, imageId: id, expectedRevision: props.workbookRevision }),
   removeMany: imageIds => emit('image-command', SHEET_IMAGE_COMMANDS.remove, { sheetId: props.sheet.id, imageIds, expectedRevision: props.workbookRevision }),
   updateBatch: (images, expectedRevision) => emit('image-command', SHEET_IMAGE_COMMANDS.updateBatch, { sheetId: props.sheet.id, images, expectedRevision }),
+  nudge: (ids, direction, step, expectedRevision) => {
+    if (!props.drawingScene) return false
+    emit('drawing-command', SHEET_DRAWING_GROUP_COMMAND_IDS.move, { sheetId: props.sheet.id,
+      selection: ids.map(id => ({ kind: 'image', id })), expectedSelection: props.selectedDrawingRefs ? [...props.selectedDrawingRefs] : undefined,
+      expectedRevision, direction, step })
+    return true
+  },
   crop: (id, input) => emit('image-command', id, { ...input, sheetId: props.sheet.id, expectedRevision: props.workbookRevision }),
   render: queueRender,
 })
 const imageSelectionIds = computed(() => props.selectedImageIds ?? (props.selectedImageId ? [props.selectedImageId] : []))
 const multipleImagesSelected = computed(() => imageSelectionIds.value.length > 1)
 const drawingContextOpen = ref(false), drawingContextPosition = ref({ x: 0, y: 0 })
+const drawingContextPopupClass = `sheet-drawing-context-popup-${pasteOptionsOwner}`
+function closeDrawingContextMenu(): void {
+  const focused = document.activeElement, host = root.value, sheet = props.sheet,
+    revision = props.workbookRevision, selection = JSON.stringify(props.selectedDrawingRefs)
+  drawingContextOpen.value = false
+  if (!(focused instanceof Element) || !focused.closest(`.${drawingContextPopupClass}`)) return
+  void nextTick(() => {
+    if (drawingContextOpen.value || !active || disposed || props.editingKey || props.imageInteractionBlocked
+      || root.value !== host || props.sheet !== sheet || props.workbookRevision !== revision
+      || JSON.stringify(props.selectedDrawingRefs) !== selection) return
+    const current = document.activeElement
+    if (current === document.body || current instanceof Element && current.closest(`.${drawingContextPopupClass}`)) focus()
+  })
+}
+function onDrawingContextOpenChange(open: boolean): void {
+  if (open) drawingContextOpen.value = true
+  else closeDrawingContextMenu()
+}
+function onDrawingContextKeydown(event: KeyboardEvent): void {
+  if (!drawingContextOpen.value || event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return
+  event.preventDefault(); event.stopPropagation(); closeDrawingContextMenu()
+}
+const drawingContextPopup = (node: VNode) => h('div', { onKeydownCapture: onDrawingContextKeydown }, [node])
 const drawingGroupMenu = computed(() => ({ items: DRAWING_GROUP_MENU.items.map(item => ({ key: item.contentCommandId, label: item.label,
   disabled: item.action === 'group' ? !drawingCanvas.canGroup.value : !drawingCanvas.canUngroup.value })),
   onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(String(key)) }))
 const drawingArrangeMenu = computed(() => ({ items: DRAWING_ARRANGE_MENU.items.map(item => ({ key: item.action, label: item.label, disabled: !drawingCanvas.editable.value })),
   onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(`arrange:${key}`) }))
+const drawingAlignEnabled = computed(() => drawingCanvas.transformable.value && (props.selectedDrawingRefs?.length ?? 0) > 1)
+const drawingAlignMenu = computed(() => ({ items: DRAWING_ALIGN_MENU.items.map(item => ({ key: `align:${item.alignType}`, label: item.label, disabled: !drawingAlignEnabled.value })),
+  onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(String(key)) }))
+const drawingMenuSlicer = computed(() => {
+  const refs = props.selectedDrawingRefs ?? [], ref = refs.length === 1 ? refs[0] : undefined
+  if (!ref || (ref.kind !== 'slicer' && ref.kind !== 'timeline')) return undefined
+  return props.slicers?.find(control => control.model.id === ref.id && control.model.type === ref.kind)?.model
+})
 const drawingContextMenu = computed(() => ({ selectable: false, items: [
+  ...(drawingMenuSlicer.value ? [{ key: 'slicer:settings', label: drawingMenuSlicer.value.type === 'timeline' ? '时间线设置' : '切片器设置', disabled: !drawingCanvas.editable.value },
+    ...(!drawingMenuSlicer.value.tableId ? [{ key: 'slicer:connections', label: '报表连接', disabled: !drawingCanvas.editable.value }] : [])] : []),
   { key: 'group', label: '组合', children: drawingGroupMenu.value.items },
   { key: 'arrange', label: '排列', children: DRAWING_ARRANGE_MENU.items.map(item => ({ key: `arrange:${item.action}`, label: item.label, disabled: !drawingCanvas.editable.value })) },
+  { key: 'align', label: '对齐', children: drawingAlignMenu.value.items },
   { key: 'remove', label: '删除', danger: true, disabled: !drawingCanvas.editable.value },
 ], onClick: ({ key }: { key: string | number }) => chooseDrawingMenu(String(key)) }))
 function chooseDrawingMenu(key: string): void {
-  drawingContextOpen.value = false
-  if (key === 'remove') drawingCanvas.run('sheet.command.remove-sheet-drawings')
+  closeDrawingContextMenu()
+  if (key === 'slicer:settings' && drawingMenuSlicer.value && drawingCanvas.editable.value) emit('slicer-settings', drawingMenuSlicer.value.id)
+  else if (key === 'slicer:connections' && drawingMenuSlicer.value && !drawingMenuSlicer.value.tableId && drawingCanvas.editable.value) emit('slicer-connections', drawingMenuSlicer.value.id)
+  else if (key === 'remove') drawingCanvas.run('sheet.command.remove-sheet-drawings')
   else if (key === SHEET_DRAWING_GROUP_COMMAND_IDS.group && drawingCanvas.canGroup.value) drawingCanvas.run(key)
   else if (key === SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup && drawingCanvas.canUngroup.value) drawingCanvas.run(key)
   else if (key.startsWith('arrange:')) {
     const item = DRAWING_ARRANGE_MENU.items.find(item => `arrange:${item.action}` === key)
     if (item) drawingCanvas.run(SHEET_DRAWING_GROUP_COMMAND_IDS.arrange, { arrangeType: item.action })
+  } else if (key.startsWith('align:') && drawingAlignEnabled.value) {
+    const item = DRAWING_ALIGN_MENU.items.find(item => `align:${item.alignType}` === key)
+    if (item) drawingCanvas.run(SHEET_DRAWING_GROUP_COMMAND_IDS.align, { alignType: item.alignType })
   }
 }
-watch([() => props.sheet, () => props.workbookRevision, () => props.selectedDrawingRefs, () => props.imageInteractionBlocked], () => { drawingContextOpen.value = false }, { flush: 'sync' })
+watch([() => props.sheet, () => props.workbookRevision, () => props.selectedDrawingRefs, () => props.imageInteractionBlocked,
+  () => props.editingKey, () => props.currentUserId, viewport], () => { drawingContextOpen.value = false }, { flush: 'sync' })
 const imageArrangeMenu = computed(() => ({ items: [{ key: '0', label: '上移一层' }, { key: '1', label: '下移一层' },
   { key: '2', label: '置于顶层' }, { key: '3', label: '置于底层' }], onClick: (info: { key: string | number }) => {
   const arrangeType = Number(info.key)
@@ -419,6 +541,7 @@ const surfaceError = ref('')
 const contextMenuOpen = ref(false)
 const contextMenuHit = ref<GridHit | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
+const contextMenuOutline = ref<SheetContextMenuContext['outline']>()
 const contextMenuSelection = computed(() => props.selectedRanges?.at(-1))
 const contextImageRanges = computed<CellRange[]>(() => {
   const hit = contextMenuHit.value, ranges = props.selectedRanges ?? []
@@ -438,6 +561,15 @@ const contextCellImage = computed(() => {
   const merge = geometry.value.mergeAt(hit.row, hit.column), row = merge?.startRow ?? hit.row, column = merge?.startColumn ?? hit.column
   const image = props.sheet.cells[cellAddress(row, column)]?.image
   return image && canViewProtectedRanges(props.sheet, [{ startRow: row, endRow: row, startCol: column, endCol: column }], props.currentUserId ?? 'local-user') ? { id: image.id, row, column } : undefined
+})
+const contextSparkline = computed(() => {
+  const hit = contextMenuHit.value
+  if (!contextMenuOpen.value || !hit || hit.kind !== 'cell' && hit.kind !== 'row' && hit.kind !== 'column') return undefined
+  const primary = hit.kind === 'cell' ? hit.key : props.selectedKey
+  const ranges = contextImageRanges.value
+  const capability = sparklineContextCapability(props.sheet, ranges, primary, props.currentUserId ?? 'local-user', props.sparklineSheets)
+  return capability.visible ? { ranges: ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol, sheetId: props.sheet.id })),
+    primary, canEdit: capability.canEdit, canDelete: capability.canDelete, expectedRevision: props.workbookRevision } : undefined
 })
 const contextCellImagePositions = computed(() => Object.entries(props.sheet.cells).flatMap(([key, cell]) => {
   const point = cell.image && parseAddress(key)
@@ -508,7 +640,8 @@ let richTextScrollFrame = 0, richTextScrollTime: number | undefined
 let editorAffinityOffset: number | undefined
 let preferredEditorX: number | undefined
 let painterDoubleClickUntil = 0
-let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; startPoint: { x: number; y: number }; pane?: { frozenX: boolean; frozenY: boolean } } | undefined
+let slicerPress: { hit: SlicerCanvasHit; start: SlicerCanvasHit; gesture: SlicerCanvasGesture;
+  pane?: { frozenX: boolean; frozenY: boolean } } | undefined
 const slicerAnchor = new Map<string, number>()
 const multiSelect = ref(new Set<string>())
 let lastPointer: { x: number; y: number } | undefined
@@ -520,8 +653,8 @@ function draw() {
   surface.render(scene.value)
   if ((dragging || fillDrag?.moved || headerDrag.value?.moved || headerSelectionDrag) && lastPointer && scroller.value) {
     const axis = headerDrag.value?.axis ?? headerSelectionDrag?.axis
-    const dx = axis === 'row' ? 0 : lastPointer.x < GRID_HEADER_WIDTH ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
-    const dy = axis === 'column' ? 0 : lastPointer.y < GRID_HEADER_HEIGHT ? -16 : lastPointer.y > viewport.value.height - 16 ? 16 : 0
+    const dx = axis === 'row' ? 0 : lastPointer.x < geometry.value.headerWidth ? -16 : lastPointer.x > viewport.value.width - 16 ? 16 : 0
+    const dy = axis === 'column' ? 0 : lastPointer.y < geometry.value.headerHeight ? -16 : lastPointer.y > viewport.value.height - 16 ? 16 : 0
     if (dx || dy) {
       const oldLeft = scroller.value.scrollLeft, oldTop = scroller.value.scrollTop
       scroller.value.scrollBy(dx, dy)
@@ -530,7 +663,7 @@ function draw() {
         if (axis) updateHeaderGesture(lastPointer)
         else if (fillDrag) updateFillDragTarget(lastPointer)
         else {
-          const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, lastPointer.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, lastPointer.y)), viewport.value)
+          const hit = geometry.value.hitTest(Math.max(geometry.value.headerWidth + 1, Math.min(viewport.value.width - 1, lastPointer.x)), Math.max(geometry.value.headerHeight + 1, Math.min(viewport.value.height - 1, lastPointer.y)), viewport.value)
           if (hit?.kind === 'cell') emit('extend-selection', hit.key)
         }
         queueRender()
@@ -577,16 +710,215 @@ function drawingContentPoint(position: { x: number; y: number }, hit?: DrawingHi
   return slicerObjectContentPoint(position.x, position.y, pane ? { ...viewport.value,
     scrollLeft: pane.frozenX ? 0 : viewport.value.scrollLeft, scrollTop: pane.frozenY ? 0 : viewport.value.scrollTop } : viewport.value)
 }
+function slicerGestureContext(controlId = props.selectedSlicerId) {
+  return { unitId: props.slicers?.find(control => control.model.id === controlId)?.model.unitId,
+    sheetId: props.sheet.id, revision: props.workbookRevision, userId: props.currentUserId ?? 'local-user', viewport: viewport.value }
+}
+function currentSlicerGesture(press: NonNullable<typeof slicerPress>): boolean {
+  return active && !disposed && !props.editingKey && !composing.value && !props.imageInteractionBlocked && !props.formatPainter
+    && props.selectedSlicerId === press.start.id
+    && (!props.drawingScene || props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.id === press.start.id
+      && props.selectedDrawingRefs[0]?.kind === press.gesture.layout.model.type)
+    && canResumeSlicerCanvasGesture(press.gesture, slicerLayouts.value.find(layout => layout.id === press.start.id), slicerGestureContext())
+}
+let slicerLevelPress: SlicerCanvasGesture | undefined
+let slicerLevelPaneKey = ''
+let slicerMenuGesture: SlicerCanvasGesture | undefined
+let slicerAntScrollPress: { gesture: SlicerCanvasGesture; pane?: SlicerControlPaneLayout; pointerId?: number; part: 'track' | 'thumb' } | undefined
+function slicerControlEditable(layout: SlicerObjectLayout): boolean {
+  const userId = props.currentUserId ?? 'local-user'
+  return active && !disposed && !props.editingKey && !composing.value && !props.imageInteractionBlocked && !props.formatPainter
+    && drawingVisible({ kind: layout.model.type, id: layout.id }, layout.geometry)
+    && canEditWorksheetProtection(props.sheet, userId) && canEditProtectedRanges(props.sheet, [sheetDrawingGeometryRange(geometry.value, layout.geometry)], userId)
+}
+function activateSlicerControl(id: string): SlicerObjectLayout | undefined {
+  const layout = slicerLayouts.value.find(layout => layout.id === id)
+  if (!layout || !slicerControlEditable(layout)) return undefined
+  if (props.selectedSlicerId !== id) emit('select-slicer', id)
+  slicerContentId.value = id
+  return layout
+}
+function currentSlicerControl(gesture: SlicerCanvasGesture): boolean {
+  const layout = slicerLayouts.value.find(layout => layout.id === gesture.layout.id)
+  return !!layout && slicerControlEditable(layout) && props.selectedSlicerId === layout.id
+    && (!props.drawingScene || props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.kind === layout.model.type
+      && props.selectedDrawingRefs[0]?.id === layout.id)
+    && canResumeSlicerCanvasGesture(gesture, layout, slicerGestureContext(layout.id))
+}
+function restoreSlicerControlFocus(gesture: SlicerCanvasGesture): void {
+  void nextTick(() => {
+    const current = slicerGestureContext(gesture.layout.id)
+    if (active && !disposed && !props.editingKey && !props.imageInteractionBlocked && !props.formatPainter
+      && current.unitId === gesture.unitId && current.sheetId === gesture.sheetId && current.userId === gesture.userId
+      && props.selectedSlicerId === gesture.layout.id && (current.revision === gesture.revision
+        || gesture.revision !== undefined && current.revision === gesture.revision + 1)) root.value?.focus({ preventScroll: true })
+  })
+}
+function beginSlicerAntControl(payload: { id: string; event: PointerEvent; pane: SlicerControlPaneLayout }): SlicerCanvasGesture | undefined {
+  if (payload.event.button !== 0 || gesturePointerId !== undefined || drawingCanvas.hasGesture() || imageCanvas.hasGesture() || !root.value || !active || disposed) return undefined
+  const position = point(payload.event)
+  if (drawingCanvas.begin(position, payload.event)) return undefined
+  const hit = drawingCanvas.pick(position)
+  if (props.drawingScene && (!hit || hit.leaf.id !== payload.id || hit.leaf.kind !== payload.pane.layout.model.type)) return undefined
+  const layout = activateSlicerControl(payload.id)
+  if (!layout) return undefined
+  return captureSlicerCanvasGesture(layout, drawingContentPoint(position, undefined, payload.pane.pane), slicerGestureContext(layout.id))
+}
+function beginSlicerLevel(payload: { id: string; event: PointerEvent; pane: SlicerControlPaneLayout }): void {
+  if (timelineMenuId.value && timelineMenuId.value !== payload.id) closeSlicerLevel()
+  slicerLevelPress = beginSlicerAntControl(payload)
+  slicerLevelPaneKey = slicerLevelPress ? payload.pane.key : ''
+}
+function toggleSlicerLevel(payload: { id: string; event: MouseEvent }): void {
+  const layout = slicerLayouts.value.find(layout => layout.id === payload.id), pointer = slicerLevelPress
+  slicerLevelPress = undefined
+  if (!layout || !slicerControlEditable(layout)) return
+  const gesture = payload.event.detail === 0
+    ? captureSlicerCanvasGesture(layout, { x: layout.bounds.x, y: layout.bounds.y }, slicerGestureContext(layout.id)) : pointer
+  if (!gesture || !currentSlicerControl(gesture)) return
+  if (timelineMenuId.value === layout.id) closeSlicerLevel(true)
+  else {
+    const pane = payload.event.detail === 0 ? slicerControlPanes.value.find(pane => pane.layout.id === layout.id
+      && slicerControlTabIndex(slicerControlPanes.value, pane, layout.level) === 0) : slicerControlPanes.value.find(pane => pane.key === slicerLevelPaneKey)
+    if (!pane) return
+    slicerMenuGesture = gesture; slicerMenuPaneKey.value = pane.key; timelineMenuId.value = layout.id
+  }
+}
+function closeSlicerLevel(restoreFocus = false): void {
+  const gesture = slicerMenuGesture
+  slicerMenuGesture = undefined; timelineMenuId.value = ''; slicerMenuPaneKey.value = ''
+  if (restoreFocus && gesture) restoreSlicerControlFocus(gesture)
+}
+function onSlicerMenuOutsidePointer(event: PointerEvent): void {
+  if (!active || disposed || !timelineMenuId.value) return
+  const target = event.composedPath().find(node => node instanceof Element)
+  const trigger = target instanceof Element ? target.closest('[data-slicer-control="level"]') : null
+  const owned = event.composedPath().some(node => node instanceof Element && (
+    node.getAttribute('data-slicer-popup') === timelineMenuId.value
+    || !!trigger && node.getAttribute('data-slicer-id') === timelineMenuId.value
+      && node.getAttribute('data-slicer-pane') === slicerMenuPaneKey.value))
+  if (!owned) closeSlicerLevel()
+}
+function chooseSlicerLevel(payload: { id: string; level: TimelineLevel }): void {
+  const gesture = slicerMenuGesture, current = gesture?.layout.id === payload.id && currentSlicerControl(gesture)
+  closeSlicerLevel()
+  if (!gesture || !current) return
+  emit('slicer-level', { slicerId: payload.id, level: payload.level, expectedRevision: gesture.revision })
+  restoreSlicerControlFocus(gesture)
+}
+function cancelSlicerAntScroll(): void {
+  slicerAntScrollPress = undefined; slicerScrollPreviews.value = new Map()
+}
+function leaveSlicerAntScroll(id: string): void {
+  const press = slicerAntScrollPress
+  if (press?.gesture.layout.id === id && press.pointerId === undefined) cancelSlicerAntScroll()
+}
+function beginSlicerAntScroll(payload: { id: string; event: PointerEvent; pane: SlicerControlPaneLayout }): void {
+  closeSlicerLevel()
+  const gesture = beginSlicerAntControl(payload)
+  if (!gesture || !root.value || !gesture.layout.scrollbar || gesture.layout.maxScrollOffset <= 0) return
+  const local = gesture.localStartPoint, thumb = gesture.layout.scrollThumb,
+    part = thumb && local.x >= thumb.x && local.x <= thumb.x + thumb.width && local.y >= thumb.y && local.y <= thumb.y + thumb.height ? 'thumb' : 'track'
+  slicerAntScrollPress = { gesture, pane: payload.pane, pointerId: payload.event.pointerId, part }
+  gesturePointerId = payload.event.pointerId
+  root.value.focus({ preventScroll: true })
+  root.value.setPointerCapture(payload.event.pointerId)
+  slicerScrollPreviews.value = new Map(slicerScrollPreviews.value).set(`${gesture.layout.model.type}:${gesture.layout.id}`,
+    slicerCanvasScrollOffset(gesture, gesture.startPoint, part))
+}
+function previewSlicerAntScroll(payload: { id: string; value: number }): void {
+  if (!Number.isFinite(payload.value)) return
+  let press = slicerAntScrollPress
+  if (press?.gesture.layout.id !== payload.id) {
+    const layout = activateSlicerControl(payload.id)
+    if (!layout) return
+    press = { gesture: captureSlicerCanvasGesture(layout, { x: layout.bounds.x, y: layout.bounds.y }, slicerGestureContext(layout.id)), part: 'track' }
+    slicerAntScrollPress = press
+  }
+  if (!currentSlicerControl(press.gesture)) { clearPointerGesture(); return }
+  const layout = press.gesture.layout, step = layout.model.type === 'timeline' ? 1 : Math.max(1, layout.model.columnCount ?? 1),
+    offset = Math.min(layout.maxScrollOffset, Math.max(0, Math.round(payload.value / step) * step))
+  slicerScrollPreviews.value = new Map(slicerScrollPreviews.value).set(`${layout.model.type}:${layout.id}`, offset)
+}
+function finishSlicerAntScroll(payload: { id: string; value: number }): void {
+  const press = slicerAntScrollPress
+  if (!press || press.gesture.layout.id !== payload.id) return
+  const current = currentSlicerControl(press.gesture), layout = press.gesture.layout,
+    step = layout.model.type === 'timeline' ? 1 : Math.max(1, layout.model.columnCount ?? 1),
+    offset = Math.min(layout.maxScrollOffset, Math.max(0, Math.round(payload.value / step) * step))
+  cancelSlicerAntScroll()
+  if (!current || !Number.isFinite(offset)) return
+  const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? [], position = layout.model.type === 'timeline'
+    ? timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, offset, layout.timeline) : offset
+  if (position !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position, expectedRevision: press.gesture.revision })
+  if (press.pane) restoreSlicerControlFocus(press.gesture)
+}
+function onSlicerAntScrollMove(event: PointerEvent): boolean {
+  const press = slicerAntScrollPress
+  if (!press || press.pointerId !== event.pointerId || !press.pane) return false
+  if (!currentSlicerControl(press.gesture)) { clearPointerGesture(); return true }
+  const content = drawingContentPoint(point(event), undefined, press.pane.pane), offset = slicerCanvasScrollOffset(press.gesture, content, press.part)
+  slicerScrollPreviews.value = new Map(slicerScrollPreviews.value).set(`${press.gesture.layout.model.type}:${press.gesture.layout.id}`, offset)
+  event.preventDefault(); return true
+}
+function onSlicerAntScrollUp(event: PointerEvent): boolean {
+  const press = slicerAntScrollPress
+  if (!press || press.pointerId !== event.pointerId) return false
+  if (event.type === 'pointerup') onSlicerAntScrollMove(event)
+  const offset = slicerScrollPreviews.value.get(`${press.gesture.layout.model.type}:${press.gesture.layout.id}`) ?? press.gesture.layout.scrollOffset
+  gesturePointerId = undefined
+  press.pointerId = undefined
+  if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
+  if (event.type === 'pointerup') finishSlicerAntScroll({ id: press.gesture.layout.id, value: offset })
+  else cancelSlicerAntScroll()
+  return true
+}
+function slicerKeyboardAction(payload: { id: string; action: 'clear' | 'multiSelect' | 'item' | 'period'; event: MouseEvent; value?: string; index?: number }): void {
+  const layout = activateSlicerControl(payload.id)
+  if (!layout) return
+  if (payload.action === 'clear') emit('slicer-clear', layout.id, props.workbookRevision)
+  else if (payload.action === 'multiSelect') {
+    const next = new Set(multiSelect.value); next.has(layout.id) ? next.delete(layout.id) : next.add(layout.id); multiSelect.value = next
+  } else if (payload.action === 'item' && payload.value !== undefined && payload.index !== undefined) {
+    focusedSlicerItems.value = new Map(focusedSlicerItems.value).set(layout.id, payload.index)
+    emit('slicer-item', { slicerId: layout.id, value: payload.value, index: payload.index, anchorIndex: slicerAnchor.get(layout.id),
+      ctrlKey: payload.event.ctrlKey, metaKey: payload.event.metaKey, shiftKey: payload.event.shiftKey, multiSelect: multiSelect.value.has(layout.id), expectedRevision: props.workbookRevision })
+    if (!payload.event.shiftKey) slicerAnchor.set(layout.id, payload.index)
+  } else if (payload.action === 'period') {
+    const period = layout.periods.find(period => period.period.key === payload.index)?.period
+    if (period) {
+      focusedTimelinePeriods.value = new Map(focusedTimelinePeriods.value).set(layout.id, period.key)
+      emit('slicer-range', { slicerId: layout.id, range: timelineCanvasSelectionRange(layout.model, period, period, props.sheet.date1904 ?? false), expectedRevision: props.workbookRevision })
+    }
+  }
+}
+function cancelSlicerControl(id: string): void {
+  const menuOnly = timelineMenuId.value === id
+  const gesture = slicerMenuGesture ?? slicerAntScrollPress?.gesture
+  closeSlicerLevel(); clearPointerGesture()
+  if (!menuOnly && props.selectedSlicerId === id) slicerContentId.value = ''
+  if (gesture) restoreSlicerControlFocus(gesture)
+  else root.value?.focus({ preventScroll: true })
+}
+function resetSlicerInteraction() {
+  slicerLevelPress = undefined; slicerLevelPaneKey = ''; slicerMenuGesture = undefined; slicerMenuPaneKey.value = ''; cancelSlicerAntScroll()
+  slicerContentId.value = ''; timelineMenuId.value = ''
+  focusedSlicerItems.value = new Map(); focusedTimelinePeriods.value = new Map()
+  slicerAnchor.clear(); multiSelect.value = new Set()
+}
 function emitChartEvent(event: MouseEvent, hit: DrawingHit): void {
-  emit('chart-event', event, hit.leaf.id, { scrollLeft: hit.layout.frozenX ? 0 : viewport.value.scrollLeft, scrollTop: hit.layout.frozenY ? 0 : viewport.value.scrollTop })
+  emit('chart-event', event, hit.leaf.id, { scrollLeft: hit.layout.frozenX ? 0 : viewport.value.scrollLeft, scrollTop: hit.layout.frozenY ? 0 : viewport.value.scrollTop,
+    headerWidth: geometry.value.headerWidth, headerHeight: geometry.value.headerHeight })
 }
 /** Native chart hitboxes are an input bridge. Common Canvas order decides which drawing receives the event. */
 function routeDrawingEvent(event: MouseEvent, chartId: string): boolean {
   if (!props.drawingScene || !root.value || !active || disposed) return false
   const position = point(event), hit = drawingCanvas.pick(position), controls = drawingCanvas.hasControlAt(position) || imageCanvas.hasControlAt(position),
+    sharedSelection = drawingCanvas.sharedControls.value && !!hit && props.selectedDrawingRefs?.some(ref => ref.kind === hit.target.kind && ref.id === hit.target.id),
     additive = event.type === 'pointerdown' && (event.ctrlKey || event.metaKey || event.shiftKey
       && !(props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.kind === 'chart' && props.selectedDrawingRefs[0].id === chartId))
-  if (!controls && !additive && hit?.leaf.kind === 'chart' && hit.leaf.id === chartId && hit.target.kind === 'chart') return false
+  if (!controls && !additive && !sharedSelection && hit?.leaf.kind === 'chart' && hit.leaf.id === chartId && hit.target.kind === 'chart'
+    && !hit.layout.frozenX && !hit.layout.frozenY) return false
   event.preventDefault(); event.stopPropagation()
   if (event.type === 'pointerdown' && event instanceof PointerEvent) onPointerDown(event)
   else if (event.type === 'pointermove' && event instanceof PointerEvent) onPointerMove(event)
@@ -734,8 +1066,8 @@ function updateFillDragTarget(position: { x: number; y: number }): void {
   }
   fillDrag.moved ||= Math.hypot(position.x - fillDrag.startPosition.x, position.y - fillDrag.startPosition.y) >= 3
   if (!fillDrag.moved) return
-  const hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)),
-    Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
+  const hit = geometry.value.hitTest(Math.max(geometry.value.headerWidth + 1, Math.min(viewport.value.width - 1, position.x)),
+    Math.max(geometry.value.headerHeight + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   if (hit?.kind !== 'cell') return
   fillDrag.target = { row: hit.row, column: hit.column }
   fillPreview.value = fillPreviewRange(fillDrag.source, fillDrag.target)
@@ -773,9 +1105,12 @@ function onEditorFillPointerDown(event: PointerEvent): void {
   })
 }
 function onPointerDown(event: PointerEvent) {
-  if (gesturePointerId !== undefined || !active || disposed) return
+  if (gesturePointerId !== undefined || drawingCanvas.hasGesture() || imageCanvas.hasGesture() || !active || disposed) return
   if ((event.target as HTMLElement).closest('input, textarea')) return
+  closeSlicerLevel()
   const position = point(event)
+  const selectedControl = props.selectedDrawingRefs?.length === 1 ? props.selectedDrawingRefs[0] : undefined
+  if (selectedControl && drawingCanvas.hasControlAt(position)) { slicerContentId.value = ''; timelineMenuId.value = '' }
   if (drawingCanvas.begin(position, event)) return
   if (imageCanvas.begin(position, event)) {
     event.preventDefault(); event.stopPropagation(); root.value?.focus({ preventScroll: true })
@@ -787,13 +1122,17 @@ function onPointerDown(event: PointerEvent) {
     root.value?.focus({ preventScroll: true }); emitChartEvent(event, drawingHit); return
   }
   const content = drawingContentPoint(position, drawingHit)
-  const slicerHit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  const slicerHit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y)
   if (slicerHit) {
     if (event.button !== 0) return
     event.preventDefault()
     event.stopPropagation()
     root.value?.focus({ preventScroll: true })
     emit('select-slicer', slicerHit.id)
+    const layout = slicerLayouts.value.find(layout => layout.id === slicerHit.id)
+    if (!layout) return
+    if (!slicerControlEditable(layout)) return
+    slicerContentId.value = slicerHit.type === 'move' || slicerHit.type === 'resize' ? '' : slicerHit.id
     if (slicerHit.type === 'item') {
       const next = new Map(focusedSlicerItems.value)
       next.set(slicerHit.id, slicerHit.index)
@@ -804,7 +1143,7 @@ function onPointerDown(event: PointerEvent) {
       next.set(slicerHit.id, slicerHit.index)
       focusedTimelinePeriods.value = next
     }
-    slicerPress = { hit: slicerHit, start: slicerHit, startPoint: content, pane: drawingHit?.layout }
+    slicerPress = { hit: slicerHit, start: slicerHit, gesture: captureSlicerCanvasGesture(layout, content, slicerGestureContext(layout.id)), pane: drawingHit?.layout }
     gesturePointerId = event.pointerId
     root.value?.setPointerCapture(event.pointerId)
     return
@@ -832,9 +1171,11 @@ function onPointerDown(event: PointerEvent) {
     lastPointer = position
     if (root.value) root.value.style.cursor = 'crosshair'
   } else if (hit.kind === 'outline-toggle') {
-    emit('context-command', 'sheet.operation.outline-toggle-group', { axis: hit.axis, groupId: hit.groupId })
+    const control = outlineToggleRects.value.find(control => control.axis === hit.axis && control.groupId === hit.groupId)
+    if (control) changeOutlineControl(control)
   } else if (hit.kind === 'outline-level') {
-    emit('context-command', 'sheet.operation.outline-set-level', { axis: hit.axis, level: hit.level })
+    const control = outlineLevelButtons.value.find(control => control.axis === hit.axis && control.level === hit.level)
+    if (control) changeOutlineLevel(control)
   } else if (hit.kind === 'resize-column' || hit.kind === 'resize-row') {
     resizeDrag = { axis: hit.kind === 'resize-column' ? 'column' : 'row', index: hit.kind === 'resize-column' ? hit.column : hit.row, size: hit.size, origin: hit.kind === 'resize-column' ? position.x : position.y }
   } else if (hit.kind === 'cell') {
@@ -857,6 +1198,7 @@ function onPointerDown(event: PointerEvent) {
   root.value?.setPointerCapture(event.pointerId)
 }
 function onPointerMove(event: PointerEvent) {
+  if (onSlicerAntScrollMove(event)) return
   if (drawingCanvas.move(point(event), event)) return
   if (imageCanvas.move(point(event), event)) return
   if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
@@ -866,13 +1208,14 @@ function onPointerMove(event: PointerEvent) {
     if (drawingHit?.leaf.kind === 'chart' && drawingHit.target.kind === 'chart') { emitChartEvent(event, drawingHit); return }
     if (drawingHit?.target.kind === 'group' || drawingHit?.target.kind === 'shape') { if (root.value) root.value.style.cursor = 'move'; return }
   }
-  const position = point(event), hit = geometry.value.hitTest(Math.max(GRID_HEADER_WIDTH + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(GRID_HEADER_HEIGHT + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
+  const position = point(event), hit = geometry.value.hitTest(Math.max(geometry.value.headerWidth + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(geometry.value.headerHeight + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
   if (pendingFillPress) { pendingFillPress.position = position; return }
   if (headerDrag.value || headerSelectionDrag) { updateHeaderGesture(position, event.ctrlKey || event.metaKey); return }
   if (slicerPress && ['period', 'timelineStart', 'timelineEnd', 'scroll'].includes(slicerPress.start.type)) {
+    if (!currentSlicerGesture(slicerPress)) { clearPointerGesture(); return }
     const content = drawingContentPoint(position, undefined, slicerPress.pane)
-    const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+    const hit = hitTestSlicerObjects([slicerPress.gesture.layout], content.x, content.y)
     if (hit?.id === slicerPress.hit.id) slicerPress.hit = hit
     return
   }
@@ -889,6 +1232,7 @@ function onPointerMove(event: PointerEvent) {
   }
 }
 function onPointerUp(event: PointerEvent) {
+  if (onSlicerAntScrollUp(event)) return
   if (drawingCanvas.end(point(event), event)) { clearPointerGesture(); return }
   if (imageCanvas.end(point(event), event)) { clearPointerGesture(); return }
   if (gesturePointerId !== event.pointerId) return
@@ -915,78 +1259,78 @@ function onPointerUp(event: PointerEvent) {
   if (slicerPress) {
     const press = slicerPress
     slicerPress = undefined
-    if (!canceled) {
+    if (!canceled && currentSlicerGesture(press)) {
       const position = point(event)
       const content = drawingContentPoint(position, undefined, press.pane)
-      const hit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
-      if (timelineMenuId.value && hit?.type !== 'timelineMenu' && hit?.type !== 'timelineLevel') timelineMenuId.value = ''
+      const localContent = slicerObjectLocalPoint(press.gesture.layout, content)
+      const hit = hitTestSlicerObjects([press.gesture.layout], content.x, content.y)
+      if (timelineMenuId.value && hit?.type !== 'timelineLevel') closeSlicerLevel()
       if (press.start.type === 'move' || press.start.type === 'resize') {
-        const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
-        const dx = content.x - press.startPoint.x
-        const dy = content.y - press.startPoint.y
+        const layout = press.gesture.layout
+        const dx = content.x - press.gesture.startPoint.x
+        const dy = content.y - press.gesture.startPoint.y
         if (layout && !layout.model.lockedPosition && (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)) {
-          if (press.start.type === 'move') emit('slicer-move', { slicerId: layout.id, left: Math.max(0, layout.rect.x + dx), top: Math.max(0, layout.rect.y + dy) })
-          else emit('slicer-resize', { slicerId: layout.id, width: Math.max(80, layout.rect.width + dx), height: Math.max(48, layout.rect.height + dy) })
+          const next = slicerCanvasGestureGeometry(press.gesture, content, press.start.type)
+          if (props.drawingScene) emit('drawing-command', SHEET_DRAWING_GROUP_COMMAND_IDS.transform, { sheetId: props.sheet.id,
+            selection: [{ kind: layout.model.type, id: layout.id }], expectedSelection: props.selectedDrawingRefs ? [...props.selectedDrawingRefs] : undefined,
+            expectedRevision: press.gesture.revision, delta: slicerCanvasGestureDelta(layout.geometry, next) })
+          else emit('slicer-geometry', { slicerId: layout.id, geometry: next, expectedRevision: press.gesture.revision })
         }
       } else if (press.start.type === 'scroll' && press.start.part === 'thumb') {
         const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
         if (layout && layout.scrollbar && layout.scrollThumb) {
-          const delta = layout.model.type === 'timeline' ? content.x - press.startPoint.x : content.y - press.startPoint.y
+          const delta = layout.model.type === 'timeline' ? localContent.x - press.gesture.localStartPoint.x : localContent.y - press.gesture.localStartPoint.y
           const trackLength = layout.model.type === 'timeline' ? layout.scrollbar.width - layout.scrollThumb.width : layout.scrollbar.height - layout.scrollThumb.height
           const position = trackLength > 0 ? clampOffset(layout.scrollOffset + delta / trackLength * layout.maxScrollOffset, layout.maxScrollOffset) : 0
           if (layout.model.type === 'timeline') {
             const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
-            const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position)
-            if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial })
-          } else emit('slicer-scroll-to', { slicerId: layout.id, position })
+            const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position, layout.timeline)
+            if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial, expectedRevision: press.gesture.revision })
+          } else emit('slicer-scroll-to', { slicerId: layout.id, position, expectedRevision: press.gesture.revision })
         }
       } else if (hit?.id === press.start.id) {
-        if (press.start.type === 'clear' && hit.type === 'clear') emit('slicer-clear', hit.id)
+        if (press.start.type === 'clear' && hit.type === 'clear') emit('slicer-clear', hit.id, press.gesture.revision)
         else if (press.start.type === 'multiSelect' && hit.type === 'multiSelect') {
           const next = new Set(multiSelect.value)
           next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id)
           multiSelect.value = next
         } else if (press.start.type === 'item' && hit.type === 'item') {
-          emit('slicer-item', { slicerId: hit.id, value: hit.value, index: hit.index, anchorIndex: slicerAnchor.get(hit.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(hit.id) })
+          emit('slicer-item', { slicerId: hit.id, value: hit.value, index: hit.index, anchorIndex: slicerAnchor.get(hit.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(hit.id), expectedRevision: press.gesture.revision })
           if (!event.shiftKey) slicerAnchor.set(hit.id, hit.index)
         } else if (press.start.type === 'period' && hit.type === 'period') {
           const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
           const first = Math.min(press.start.index, hit.index), last = Math.max(press.start.index, hit.index)
           const periods = layout?.periods.filter(({ period }) => period.key >= first && period.key <= last).sort((a, b) => a.period.key - b.period.key)
-          if (periods?.length && layout) emit('slicer-range', { slicerId: hit.id, start: periods[0]!.period.start, end: periods[periods.length - 1]!.period.end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+          if (periods?.length && layout) emit('slicer-range', { slicerId: hit.id,
+            range: timelineCanvasSelectionRange(layout.model, periods[0]!.period, periods[periods.length - 1]!.period, props.sheet.date1904 ?? false), expectedRevision: press.gesture.revision })
         } else if ((press.start.type === 'timelineStart' || press.start.type === 'timelineEnd') && (hit.type === 'period' || hit.type === 'timelineStart' || hit.type === 'timelineEnd')) {
           const layout = slicerLayouts.value.find(({ id }) => id === press.start.id)
-          const period = hit.type === 'period' ? hit.period : layout?.periods.find(({ selected }) => selected)?.period
-          if (layout && period) {
-            const current = layout.model.timelineRange
-            const start = press.start.type === 'timelineStart' ? period.start : Number(current?.start ?? period.start)
-            const end = press.start.type === 'timelineEnd' ? period.end : Number(current?.end ?? period.end)
-            if (start <= end) emit('slicer-range', { slicerId: layout.id, start, end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+          const period = hit.type === 'period' ? hit.period : layout?.periods.find(({ rect }) => localContent.x >= rect.x && localContent.x < rect.x + rect.width)?.period
+          if (layout && period && Math.abs(localContent.x - press.gesture.localStartPoint.x) >= 1) {
+            const range = timelineCanvasHandleRange(layout.model, period, press.start.type === 'timelineStart' ? 'start' : 'end', props.sheet.date1904 ?? false)
+            if (range) emit('slicer-range', { slicerId: layout.id, range, expectedRevision: press.gesture.revision })
           }
         } else if (press.start.type === 'timelineLevel' && hit.type === 'timelineLevel') {
-          timelineMenuId.value = timelineMenuId.value === hit.id ? '' : hit.id
-          queueRender()
-        } else if (press.start.type === 'timelineMenu' && hit.type === 'timelineMenu') {
-          const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
-          const index = layout?.menu?.findIndex(rect => content.y >= rect.y && content.y <= rect.y + rect.height) ?? -1
-          const levels: TimelineLevel[] = ['year', 'quarter', 'month', 'day']
-          if (index >= 0 && layout) emit('slicer-level', { slicerId: hit.id, level: levels[index]! })
-          timelineMenuId.value = ''
+          if (timelineMenuId.value === hit.id) closeSlicerLevel(true)
+          else {
+            const pane = slicerControlPanes.value.find(pane => pane.layout.id === hit.id
+              && (!press.pane || pane.pane.frozenX === press.pane.frozenX && pane.pane.frozenY === press.pane.frozenY))
+            if (pane) { slicerMenuGesture = press.gesture; slicerMenuPaneKey.value = pane.key; timelineMenuId.value = hit.id }
+          }
           queueRender()
         } else if (press.start.type === 'scroll' && hit.type === 'scroll' && press.start.part === 'track') {
           const layout = slicerLayouts.value.find(({ id }) => id === hit.id)
           if (layout && layout.scrollbar) {
-            const coordinate = layout.model.type === 'timeline' ? content.x - layout.scrollbar.x : content.y - layout.scrollbar.y
+            const coordinate = layout.model.type === 'timeline' ? localContent.x - layout.scrollbar.x : localContent.y - layout.scrollbar.y
             const extent = layout.model.type === 'timeline' ? layout.scrollbar.width : layout.scrollbar.height
             const position = clampOffset(Math.round(coordinate / Math.max(1, extent) * layout.maxScrollOffset), layout.maxScrollOffset)
             if (layout.model.type === 'timeline') {
               const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
-              const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position)
-              if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial })
-            } else emit('slicer-scroll-to', { slicerId: layout.id, position })
+              const serial = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, position, layout.timeline)
+              if (serial !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position: serial, expectedRevision: press.gesture.revision })
+            } else emit('slicer-scroll-to', { slicerId: layout.id, position, expectedRevision: press.gesture.revision })
           }
         }
-        else if (press.start.type === 'timelineMenu' && hit.type === 'timelineMenu') emit('slicer-settings', hit.id)
       }
     }
     if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
@@ -1024,6 +1368,9 @@ function onPointerUp(event: PointerEvent) {
   if (root.value?.hasPointerCapture(event.pointerId)) root.value.releasePointerCapture(event.pointerId)
 }
 function clearPointerGesture() {
+  slicerPress = undefined
+  slicerLevelPress = undefined
+  cancelSlicerAntScroll()
   drawingCanvas.cancel()
   imageCanvas.cancel()
   const pointerId = gesturePointerId
@@ -1057,7 +1404,7 @@ function onDoubleClick(event: MouseEvent) {
   if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
   if (imageCanvas.editAt(p)) { event.preventDefault(); event.stopPropagation(); return }
   const content = drawingContentPoint(p, drawingHit)
-  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y)
   if (slicerHit) { emit('slicer-settings', slicerHit.id); return }
   const source = hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, p.x, p.y)
   if (source) {
@@ -1091,13 +1438,21 @@ function onContextMenu(event: MouseEvent) {
   if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
   if (imageCanvas.selectAt({ x: localX, y: localY })) { contextMenuOpen.value = false; return }
   const content = drawingContentPoint({ x: localX, y: localY }, drawingHit)
-  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  const slicerHit = hitTestSlicerObjects(slicerLayouts.value, content.x, content.y)
   if (slicerHit) { emit('select-slicer', slicerHit.id); emit('slicer-settings', slicerHit.id); return }
   const actual = geometry.value.hitTest(localX, localY, viewport.value)
   const hit = actual?.kind === 'resize-row' ? { kind: 'row' as const, row: actual.row }
     : actual?.kind === 'resize-column' ? { kind: 'column' as const, column: actual.column } : actual
   if (!hit) { contextMenuOpen.value = false; return }
   contextMenuHit.value = hit
+  contextMenuOutline.value = undefined
+  if (hit.kind === 'row' || hit.kind === 'column') {
+    const axis = hit.kind === 'row' ? 'row' : 'column', target = sheetContextStructureTarget(hit, { sheetId: props.sheet.id,
+      rowCount: props.sheet.rowCount, columnCount: props.sheet.columnCount, selectedRanges: props.selectedRanges }, axis)
+    contextMenuOutline.value = { context: { unitId: props.workbookId ?? 'standalone-workbook', sheetId: props.sheet.id, sheet: props.sheet,
+      userId: props.currentUserId ?? 'local-user', selections: target.params.ranges.map(range => ({ ...range, rangeType: axis === 'row' ? 1 : 2 })) },
+      owner: outlineOwner() }
+  }
   contextMenuPosition.value = { x: event.clientX, y: event.clientY }
   contextMenuOpen.value = true
 }
@@ -1217,7 +1572,7 @@ function onWheel(event: WheelEvent) {
   const drawingHit = drawingCanvas.pick(position)
   if (drawingHit?.leaf.kind === 'chart') { emitChartEvent(event, drawingHit); return }
   const content = drawingContentPoint(position, drawingHit)
-  const hit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y, timelineMenuId.value)
+  const hit = hitTestSlicerObjects(drawingHit ? slicerLayouts.value.filter(layout => layout.id === drawingHit.leaf.id) : slicerLayouts.value, content.x, content.y)
   if (!hit) return
   event.preventDefault()
   const layout = slicerLayouts.value.find(item => item.id === hit.id)
@@ -1225,17 +1580,37 @@ function onWheel(event: WheelEvent) {
   if (layout.model.type === 'timeline') {
     const step = Math.max(1, Math.round(Math.abs(event.deltaY) / 100))
     const items = props.slicers?.find(control => control.model.id === layout.id)?.items ?? []
-    const position = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, layout.scrollOffset + Math.sign(event.deltaY) * step)
-    if (position !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position })
+    const position = timelineSerialAtOffset(items, layout.model.level ?? 'month', props.sheet.date1904 ?? false, layout.scrollOffset + Math.sign(event.deltaY) * step, layout.timeline)
+    if (position !== undefined) emit('slicer-scroll-to', { slicerId: layout.id, position, expectedRevision: props.workbookRevision })
   } else {
     const columns = Math.max(1, layout.model.columnCount ?? 1)
     const step = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, layout.model.rowHeight ?? 24))) * columns
-    emit('slicer-scroll-to', { slicerId: layout.id, position: clampOffset(layout.scrollOffset + Math.sign(event.deltaY) * step, layout.maxScrollOffset) })
+    emit('slicer-scroll-to', { slicerId: layout.id, position: clampOffset(layout.scrollOffset + Math.sign(event.deltaY) * step, layout.maxScrollOffset), expectedRevision: props.workbookRevision })
   }
 }
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
-  if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && drawingCanvas.sharedControls.value && !event.isComposing && event.keyCode !== 229) {
+  if (!active || disposed || event.defaultPrevented) return
+  if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (slicerAntScrollPress || slicerMenuGesture || slicerLevelPress)) {
+    event.preventDefault(); event.stopPropagation(); cancelSlicerControl(props.selectedSlicerId ?? ''); return
+  }
+  if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && slicerPress) {
+    slicerContentId.value = ''; timelineMenuId.value = ''
+    event.preventDefault(); event.stopPropagation(); clearPointerGesture(); return
+  }
+  const selectedControl = props.selectedDrawingRefs?.length === 1 && ['slicer', 'timeline'].includes(props.selectedDrawingRefs[0]!.kind)
+    ? props.selectedDrawingRefs[0] : undefined
+  if (selectedControl && !props.editingKey && !event.isComposing && event.keyCode !== 229 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if ((event.key === 'Enter' || event.key === ' ') && slicerContentId.value !== selectedControl.id) {
+      slicerContentId.value = selectedControl.id
+      event.preventDefault(); event.stopPropagation(); queueRender(); return
+    }
+    if (event.key === 'Escape' && slicerContentId.value === selectedControl.id && timelineMenuId.value !== selectedControl.id) {
+      slicerContentId.value = ''; event.preventDefault(); event.stopPropagation(); queueRender(); return
+    }
+  }
+  if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && !event.ctrlKey && !event.metaKey && !event.altKey
+    && drawingCanvas.sharedControls.value && !event.isComposing && event.keyCode !== 229) {
     const menu = drawingCanvas.menuPosition.value
     if (menu) { event.preventDefault(); event.stopPropagation(); drawingContextPosition.value = { x: menu.left, y: menu.top + 34 }; drawingContextOpen.value = true; return }
   }
@@ -1243,7 +1618,8 @@ function onKeydown(event: KeyboardEvent) {
   if (imageCanvas.keydown(event)) return
   const selectedChart = props.selectedDrawingRefs?.length === 1 && props.selectedDrawingRefs[0]?.kind === 'chart' ? props.selectedDrawingRefs[0] : undefined
   if (selectedChart && !props.editingKey && !props.imageInteractionBlocked) {
-    emit('chart-event', event, selectedChart.id, { scrollLeft: viewport.value.scrollLeft, scrollTop: viewport.value.scrollTop })
+    emit('chart-event', event, selectedChart.id, { scrollLeft: viewport.value.scrollLeft, scrollTop: viewport.value.scrollTop,
+      headerWidth: geometry.value.headerWidth, headerHeight: geometry.value.headerHeight })
     if (event.defaultPrevented) return
   }
   if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (fillDrag || pendingFillPress || headerDrag.value || headerSelectionDrag)) {
@@ -1263,35 +1639,35 @@ function onKeydown(event: KeyboardEvent) {
     else if (event.key === 'ArrowRight') next += 1
     else if (event.key === 'ArrowLeft') next -= 1
     else if (event.key === 'Home') next = 0
-    else if (event.key === 'End') next = layout.items.at(-1)!.index
+    else if (event.key === 'End') next = layout.totalItemCount - 1
     else if (event.key === 'Enter' || event.key === ' ') {
       const item = layout.items.find(candidate => candidate.index === current)
       if (item) {
-        emit('slicer-item', { slicerId: layout.id, value: item.value, index: item.index, anchorIndex: slicerAnchor.get(layout.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(layout.id) })
+        emit('slicer-item', { slicerId: layout.id, value: item.value, index: item.index, anchorIndex: slicerAnchor.get(layout.id), ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, multiSelect: multiSelect.value.has(layout.id), expectedRevision: props.workbookRevision })
         if (!event.shiftKey) slicerAnchor.set(layout.id, item.index)
       }
       event.preventDefault(); event.stopPropagation(); return
     } else if (event.key === 'Escape') { multiSelect.value.delete(layout.id); event.preventDefault(); event.stopPropagation(); queueRender(); return }
     else return
-    const bounded = Math.min(layout.items.at(-1)!.index, Math.max(0, next))
+    const bounded = Math.min(layout.totalItemCount - 1, Math.max(0, next))
     if (bounded < visible[0]! || bounded > visible.at(-1)!) {
       const startItem = bounded > visible.at(-1)! ? Math.max(0, bounded - layout.visibleCount + columns) : Math.floor(bounded / columns) * columns
-      emit('slicer-scroll-to', { slicerId: layout.id, position: startItem })
+      emit('slicer-scroll-to', { slicerId: layout.id, position: startItem, expectedRevision: props.workbookRevision })
     }
     focusedSlicerItems.value = new Map(focusedSlicerItems.value).set(layout.id, bounded)
   } else {
     const periods = layout.periods
-    if (event.key === 'Escape' && timelineMenuId.value === layout.id) { timelineMenuId.value = ''; event.preventDefault(); queueRender(); return }
+    if (event.key === 'Escape' && timelineMenuId.value === layout.id) { closeSlicerLevel(true); event.preventDefault(); queueRender(); return }
     if (!periods.length) return
     const current = focusedTimelinePeriods.value.get(layout.id) ?? periods[0]!.period.key
     if (timelineMenuId.value === layout.id) {
       const levels: TimelineLevel[] = ['year', 'quarter', 'month', 'day']
       const index = levels.indexOf(layout.model.level ?? 'month')
-      if (event.key === 'Enter' || event.key === ' ') emit('slicer-level', { slicerId: layout.id, level: levels[index]! })
-      else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') emit('slicer-level', { slicerId: layout.id, level: levels[Math.min(3, index + 1)]! })
-      else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') emit('slicer-level', { slicerId: layout.id, level: levels[Math.max(0, index - 1)]! })
+      if (event.key === 'Enter' || event.key === ' ') chooseSlicerLevel({ id: layout.id, level: levels[index]! })
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') chooseSlicerLevel({ id: layout.id, level: levels[Math.min(3, index + 1)]! })
+      else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') chooseSlicerLevel({ id: layout.id, level: levels[Math.max(0, index - 1)]! })
       else return
-      timelineMenuId.value = ''; event.preventDefault(); event.stopPropagation(); queueRender(); return
+      closeSlicerLevel(); event.preventDefault(); event.stopPropagation(); queueRender(); return
     }
     if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       const delta = event.key === 'ArrowRight' ? 1 : -1
@@ -1302,7 +1678,7 @@ function onKeydown(event: KeyboardEvent) {
       focusedTimelinePeriods.value = new Map(focusedTimelinePeriods.value).set(layout.id, period.key)
     } else if (event.key === 'Enter' || event.key === ' ') {
       const period = periods.find(item => item.period.key === current)?.period
-      if (period) emit('slicer-range', { slicerId: layout.id, start: period.start, end: period.end, level: layout.model.selectionLevel ?? layout.model.level ?? 'month' })
+      if (period) emit('slicer-range', { slicerId: layout.id, range: timelineCanvasSelectionRange(layout.model, period, period, props.sheet.date1904 ?? false), expectedRevision: props.workbookRevision })
     } else return
   }
   event.preventDefault(); event.stopPropagation(); queueRender()
@@ -1344,6 +1720,11 @@ function ensureVisible(address: string) {
 function focus() { root.value?.focus({ preventScroll: true }) }
 defineExpose({ focusEditor, insertEditorText, ensureVisible, focus, getBackend: () => surface?.backend, operateImageCrop: imageCanvas.operateImageCrop, routeDrawingEvent })
 watch(scene, queueRender)
+watch([() => props.workbookId, () => props.sheet.id, () => props.workbookRevision, () => props.workbookHistoryGeneration, () => props.currentUserId], () => { contextMenuOpen.value = false; contextMenuOutline.value = undefined })
+watch(() => [geometry.value.headerWidth, geometry.value.headerHeight] as const, ([headerWidth, headerHeight]) => {
+  viewport.value = { ...viewport.value, headerWidth, headerHeight }
+  void nextTick(() => { resize(); ensureVisible(props.selectedKey) })
+}, { flush: 'sync' })
 watch(fullSize, () => { void nextTick(resize) })
 watch(() => props.zoom, () => { viewport.value = { ...viewport.value, zoom: props.zoom / 100 }; void nextTick(() => { resize(); ensureVisible(props.selectedKey) }) })
 watch([() => props.editingKey, () => props.editSessionId], ([key]) => {
@@ -1376,13 +1757,39 @@ watch(useMultilineEditor, () => {
 })
 watch(() => props.sheet.id, () => {
   pasteOptionsOpen.value = false
+  resetSlicerInteraction()
   clearPointerGesture()
   void nextTick(restoreViewport)
+}, { flush: 'sync' })
+watch([() => props.slicers?.[0]?.model.unitId, () => props.currentUserId], () => {
+  resetSlicerInteraction()
+  clearPointerGesture()
+}, { flush: 'sync' })
+watch(() => slicerLayouts.value.filter(layout => layout.model.type === 'slicer' && !layout.dataStatus?.error
+  && layout.items.length < Math.min(layout.visibleCount, Math.max(0, layout.totalItemCount - layout.scrollOffset)))
+  .map(layout => ({ slicerId: layout.id, start: layout.scrollOffset, count: layout.visibleCount, expectedRevision: props.workbookRevision })),
+  requests => { for (const request of requests) emit('slicer-window', request) }, { immediate: true, flush: 'post' })
+watch([() => props.selectedSlicerId, () => props.selectedDrawingRefs?.map(ref => `${ref.kind}:${ref.id}`).join('|'),
+  () => props.editingKey, () => props.imageInteractionBlocked, () => props.formatPainter], () => {
+  const ref = props.selectedDrawingRefs?.length === 1 ? props.selectedDrawingRefs[0] : undefined
+  if (props.editingKey || props.imageInteractionBlocked || props.formatPainter || slicerContentId.value !== props.selectedSlicerId
+    || props.selectedDrawingRefs && (!ref || !['slicer', 'timeline'].includes(ref.kind) || ref.id !== slicerContentId.value)) {
+    slicerContentId.value = ''; closeSlicerLevel()
+  }
+  if (slicerPress && !currentSlicerGesture(slicerPress)) clearPointerGesture()
+  if (slicerAntScrollPress && !currentSlicerControl(slicerAntScrollPress.gesture)) clearPointerGesture()
+  if (slicerMenuGesture && !currentSlicerControl(slicerMenuGesture)) closeSlicerLevel()
+}, { flush: 'sync' })
+watch(viewport, () => {
+  if (slicerPress && !currentSlicerGesture(slicerPress) || slicerAntScrollPress && !currentSlicerControl(slicerAntScrollPress.gesture)) clearPointerGesture()
+  if (slicerMenuGesture && !currentSlicerControl(slicerMenuGesture)) closeSlicerLevel()
+  if (slicerLevelPress && !currentSlicerControl(slicerLevelPress)) slicerLevelPress = undefined
 }, { flush: 'sync' })
 watch([() => props.sheet, () => props.workbookRevision, () => props.editingKey, () => props.editSessionId], () => {
   // The synchronous commit updates these props together. Validate its acknowledgement after that flush.
   if (pendingFillPress && pendingFillPress.origin.sheetId === props.sheet.id) return
   clearPointerGesture()
+  if (slicerMenuGesture && !currentSlicerControl(slicerMenuGesture)) closeSlicerLevel()
 }, { flush: 'sync' })
 watch([() => props.selectedKey, () => props.selectedRanges], () => {
   const current = fillGestureContext()
@@ -1396,6 +1803,7 @@ watch([pasteOptionsPosition, () => props.pasteOptions], () => { pasteOptionsOpen
 onMounted(async () => {
   if (!canvasHost.value) return
   document.addEventListener('focusin', onPasteOptionsFocusIn, true)
+  document.addEventListener('pointerdown', onSlicerMenuOutsidePointer, true)
   // Layout and navigation must be ready while the GPU adapter/pipeline is
   // still loading. Otherwise early name-box/keyboard navigation uses a 1px
   // viewport and silently fails to scroll to the selected cell.
@@ -1413,13 +1821,15 @@ onMounted(async () => {
 onActivated(() => { active = true; void nextTick(restoreViewport) })
 onDeactivated(() => {
   pasteOptionsOpen.value = false
+  drawingContextOpen.value = false
+  resetSlicerInteraction()
   sheetViews.set(props.sheet.id, { left: viewport.value.scrollLeft, top: viewport.value.scrollTop })
   active = false
   cancelAnimationFrame(frame); frame = 0
   clearPointerGesture()
   surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
-onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.removeEventListener('focusin', onPasteOptionsFocusIn, true); clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
+onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingContextOpen.value = false; resetSlicerInteraction(); document.removeEventListener('focusin', onPasteOptionsFocusIn, true); document.removeEventListener('pointerdown', onSlicerMenuOutsidePointer, true); clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>
 
 <template>
@@ -1436,22 +1846,34 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
     @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
     <div ref="canvasHost" class="canvas-surface" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }" />
+    <SlicerControlOverlay v-for="pane in slicerControlPanes" :key="pane.key" :pane="pane" :panes="slicerControlPanes"
+      :profile="slicerProfile(pane.layout)" :colors="slicerProfile(pane.layout).palette" :disabled="!slicerControlEditable(pane.layout)"
+      :menu-open="timelineMenuId === pane.layout.id && slicerMenuPaneKey === pane.key" :multi-selected="multiSelect.has(pane.layout.id)"
+      :focused-item="focusedSlicerItems.get(pane.layout.id)" :focused-period="focusedTimelinePeriods.get(pane.layout.id)"
+      @native-pointer="onPointerDown" @activate="activateSlicerControl" @keyboard-action="slicerKeyboardAction"
+      @level-pointer="beginSlicerLevel" @level-toggle="toggleSlicerLevel" @level-change="chooseSlicerLevel"
+      @level-close="id => { if (timelineMenuId === id && slicerMenuPaneKey === pane.key) closeSlicerLevel(true) }"
+      @scroll-pointer="beginSlicerAntScroll" @scroll-change="previewSlicerAntScroll" @scroll-complete="finishSlicerAntScroll"
+      @scroll-leave="leaveSlicerAntScroll" @cancel="cancelSlicerControl" @retry="id => emit('slicer-retry', id)" />
     <div v-if="drawingCanvas.menuPosition.value" class="sheet-drawing-float-menu" role="toolbar" aria-label="绘图组合工具"
       :style="{ left: `${drawingCanvas.menuPosition.value.left}px`, top: `${drawingCanvas.menuPosition.value.top}px`, background: token.colorBgElevated, borderColor: token.colorBorder }"
       @pointerdown.stop @dblclick.stop @contextmenu.prevent.stop @keydown.stop>
+      <Tooltip v-if="drawingMenuSlicer" :title="drawingMenuSlicer.type === 'timeline' ? '时间线设置' : '切片器设置'"><Button size="small" :disabled="!drawingCanvas.editable.value" @click="chooseDrawingMenu('slicer:settings')">设置</Button></Tooltip>
+      <Tooltip v-if="drawingMenuSlicer && !drawingMenuSlicer.tableId" title="报表连接"><Button size="small" :disabled="!drawingCanvas.editable.value" @click="chooseDrawingMenu('slicer:connections')">报表连接</Button></Tooltip>
       <Dropdown :trigger="['click']" :menu="drawingGroupMenu" :auto-focus="false" destroy-on-hidden>
         <Button size="small" :disabled="!drawingCanvas.canGroup.value && !drawingCanvas.canUngroup.value" aria-label="组合或取消组合">组合</Button>
       </Dropdown>
       <Dropdown :trigger="['click']" :menu="drawingArrangeMenu" :auto-focus="false" destroy-on-hidden>
         <Button size="small" :disabled="!drawingCanvas.editable.value" aria-label="排列绘图对象">排列</Button>
       </Dropdown>
-      <Dropdown v-if="multipleImagesSelected && imageSelectionIds.length === selectedDrawingRefs?.length" :trigger="['click']" :menu="imageAlignMenu" :auto-focus="false" destroy-on-hidden>
-        <Button size="small" :disabled="!imageCanvas.selectedEditable.value" aria-label="对齐图片">对齐</Button>
+      <Dropdown :trigger="['click']" :menu="drawingAlignMenu" :auto-focus="false" destroy-on-hidden>
+        <Button size="small" :disabled="!drawingAlignEnabled" aria-label="对齐绘图对象">对齐</Button>
       </Dropdown>
       <Tooltip title="删除当前选择的绘图对象"><Button size="small" danger :disabled="!drawingCanvas.editable.value" @click="chooseDrawingMenu('remove')">删除</Button></Tooltip>
     </div>
     <div v-if="drawingContextOpen" class="sheet-drawing-context-anchor" :style="{ left: `${drawingContextPosition.x}px`, top: `${drawingContextPosition.y}px` }">
-      <Dropdown :trigger="[]" :open="drawingContextOpen" :menu="drawingContextMenu" auto-focus destroy-on-hidden @update:open="drawingContextOpen = $event">
+      <Dropdown :trigger="[]" :open="drawingContextOpen" :menu="drawingContextMenu" :classes="{ root: drawingContextPopupClass }"
+        :popup-render="drawingContextPopup" auto-focus destroy-on-hidden @update:open="onDrawingContextOpenChange">
         <span aria-hidden="true" />
       </Dropdown>
     </div>
@@ -1487,32 +1909,18 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
         </Button>
       </Tooltip>
     </Dropdown>
-    <Button
-      v-for="control in outlineToggleRects"
-      :key="`outline-${control.axis}-${control.groupId}`"
-      class="outline-control outline-toggle"
-      :style="{ left: `${control.x}px`, top: `${control.y}px` }"
-      type="default"
-      size="small"
-      :aria-label="`${control.axis === 'row' ? '行' : '列'}分组${control.collapsed ? '展开' : '折叠'}`"
-      :title="`${control.axis === 'row' ? '行' : '列'}分组${control.collapsed ? '展开' : '折叠'}`"
-      @pointerdown.stop
-      @click.stop="emit('context-command', 'sheet.operation.outline-toggle-group', { axis: control.axis, groupId: control.groupId })"
-    >
-      <component :is="control.collapsed ? Plus : Minus" :size="10" aria-hidden="true" />
-    </Button>
-    <Button
-      v-for="control in outlineLevelButtons"
-      :key="`outline-${control.axis}-level-${control.level}`"
-      class="outline-control outline-level"
-      :style="{ left: `${control.left}px`, top: `${control.top}px` }"
-      type="default"
-      size="small"
-      :aria-label="control.label"
-      :title="control.label"
-      @pointerdown.stop
-      @click.stop="emit('context-command', 'sheet.operation.outline-set-level', { axis: control.axis, level: control.level })"
-    >{{ control.level }}</Button>
+    <Tooltip v-for="control in outlineToggleRects" :key="`outline-${control.axis}-${control.groupId}`" :title="control.label">
+      <Button class="outline-control outline-toggle" :style="{ left: `${control.x}px`, top: `${control.y}px` }"
+        type="default" size="small" :aria-label="control.label" :aria-expanded="!control.collapsed" :disabled="control.disabled"
+        @pointerdown.stop @keydown.stop @dblclick.stop @click.stop="changeOutlineControl(control)">
+        <component :is="control.collapsed ? Plus : Minus" :size="10" aria-hidden="true" />
+      </Button>
+    </Tooltip>
+    <Tooltip v-for="control in outlineLevelButtons" :key="`outline-${control.axis}-level-${control.level}`" :title="control.label">
+      <Button class="outline-control outline-level" :style="{ left: `${control.x}px`, top: `${control.y}px` }"
+        :type="control.active ? 'primary' : 'default'" size="small" :aria-label="control.label" :aria-pressed="control.active" :disabled="control.disabled"
+        @pointerdown.stop @keydown.stop @dblclick.stop @click.stop="changeOutlineLevel(control)">{{ control.level }}</Button>
+    </Tooltip>
     <AutoComplete v-if="editingKey" :key="editSessionId ?? editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @select="onAutoCompleteSelect" @blur="onEditorBlur" @keydown.stop="onInputKeydown">
       <Input.TextArea v-if="useMultilineEditor" :rows="1" :auto-size="false" :change-on-composing="true" :styles="editTextAreaStyles" :wrap="sheetCellWrapStrategy(editedCell) === 'wrap' ? 'soft' : 'off'" variant="borderless" spellcheck="false" aria-label="单元格编辑" @change="onTextAreaChange" />
     </AutoComplete>
@@ -1544,6 +1952,8 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
       :can-structure-columns="canStructureColumns"
       :can-visibility-rows="canVisibilityRows"
       :can-visibility-columns="canVisibilityColumns"
+      :sparkline="contextSparkline"
+      :outline="contextMenuOutline"
       @command="(commandId, params) => emit('context-command', commandId, params)"
     />
   </div>
@@ -1557,9 +1967,10 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; document.re
 .canvas-surface { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .sheet-paste-options { position: absolute; z-index: 4; display: inline-flex; align-items: center; justify-content: center; gap: 2px; width: 44px; height: 24px; padding: 0 4px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); border-color: var(--sheet-canvas-border); }
 .sheet-paste-options:focus-visible { outline: 2px solid var(--sheet-canvas-primary); outline-offset: 1px; }
-.outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 12px; height: 12px; min-width: 12px; min-height: 12px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
+.outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 14px; height: 14px; min-width: 14px; min-height: 14px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
 .outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
-.outline-level { font-size: 8px; }
+.outline-level { font-size: 9px; }
+.outline-level.ant-btn-primary { color: var(--sheet-canvas-background); background: var(--sheet-canvas-primary); border-color: var(--sheet-canvas-primary); }
 .canvas-cell-input { position: absolute; z-index: 3; display: block; box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; background: transparent; user-select: text; touch-action: auto; }
 .canvas-cell-input :deep(.ant-select-input) { height: 100%; }
 .canvas-cell-input :deep(.ant-select-content) { height: 100%; min-height: 0; }

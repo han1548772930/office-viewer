@@ -2,6 +2,7 @@ import type { SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { mapFormulaReferenceAreas, mapFormulaSheetQualifiers } from '../formula/formula-reference-areas.ts'
 import { normalizeSheetHyperlinkTarget, parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
+import { renamePivotSourceWorksheet } from '../pivot/services/pivot-source-lifecycle.ts'
 
 export interface WorksheetReferenceChange {
   sheetId: string
@@ -149,6 +150,5 @@ export function rewriteWorkbookWorksheetReferences(candidate: WorkbookModel, ori
     rebindWorksheetScopedNames(sheet.metadata, original.sheets, candidate.sheets, rewrite, change)
   }
   rebindWorksheetScopedNames(candidate.metadata, original.sheets, candidate.sheets, rewrite, change)
-  for (const pivot of candidate.pivotTables ?? []) if (pivot.source.unitId === candidate.id && pivot.source.subUnitId === change.sheetId
-    && change.newName !== undefined) pivot.source.sheetName = change.newName
+  if (change.newName !== undefined) renamePivotSourceWorksheet(original, candidate, change.sheetId, change.newName)
 }

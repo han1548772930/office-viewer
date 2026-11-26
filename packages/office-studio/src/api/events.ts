@@ -6,6 +6,9 @@ import type { SheetCellShiftEdit } from '../domain/sheet-cell-shift.ts'
 import type { SheetCellShiftConfirmationRequest } from '../features/sheet-workbench/sheet-cell-shift-command.ts'
 import type { SheetSelectionCell } from '../features/sheet-workbench/sheet-selection.ts'
 import type { DocumentInputSession } from '../features/document/model/document-input-session.ts'
+import type { FWorkbook, FWorksheet } from './facade.ts'
+import type { ISparklineGroup } from '../features/sparkline/sparkline-api-types.ts'
+import type { SheetSelectionRange } from '../features/sheet-workbench/sheet-selection.ts'
 
 export interface Disposable {
   dispose(): void
@@ -28,6 +31,9 @@ export interface ApiEventMap {
   BeforeSheetNameChange: { workbookId: string; sheetId: string; oldName: string; newName: string; cancel?: boolean }
   SheetNameChanged: { workbookId: string; sheetId: string; oldName: string; newName: string }
   SheetValueChanged: { workbookId: string; sheetId: string; ranges: ApiRange[] }
+  SheetSparklineChanged: { workbook: FWorkbook; worksheet: FWorksheet; sparklines: ISparklineGroup[] }
+  SheetOutlineActionDialogRequested: { unitId: string; sheetId: string; ranges: SheetSelectionRange[]; operation: 'group' | 'remove';
+    expectedRevision: number; expectedHistoryGeneration: number; expectedUserId: string }
   SheetDimensionsChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; automatic: boolean; ranges: ApiRange[] }
   SheetStructureChanged: { workbookId: string; sheetId: string; edits: Array<SheetAxisEdit | SheetCellShiftEdit> }
   SheetCellShiftConfirmationRequested: SheetCellShiftConfirmationRequest
@@ -41,6 +47,10 @@ export interface ApiEventMap {
   BeforePivotTableChange: { unitId: string; subUnitId: string; pivotTableId: string; commandId: string; cancel?: boolean }
   PivotTableChanged: { unitId: string; subUnitId: string; pivotTableId: string; revision: number }
   PivotTableRendered: { unitId: string; subUnitId: string; pivotTableId: string; revision: number; outputRange?: { startRow: number; startCol: number; endRow: number; endCol: number } }
+  BeforePivotChartChange: { unitId: string; subUnitId: string; pivotChartId: string; commandId: string; cancel?: boolean }
+  PivotChartAdded: { unitId: string; subUnitId: string; pivotChartId: string; sourceKind: 'range' | 'pivotTable' }
+  PivotChartChanged: { unitId: string; subUnitId: string; pivotChartId: string; revision: number; reportRevision: number }
+  PivotChartRemoved: { unitId: string; subUnitId: string; pivotChartId: string }
   BeforeSlicerChange: { unitId: string; hostSheetId: string; slicerId: string; commandId: string; cancel?: boolean }
   SlicerAdded: { unitId: string; hostSheetId: string; slicerId: string; type: 'slicer' | 'timeline' }
   SlicerChanged: { unitId: string; hostSheetId: string; slicerId: string; revision: number }
@@ -64,6 +74,8 @@ export class FEventName {
   readonly BeforeSheetNameChange = 'BeforeSheetNameChange'
   readonly SheetNameChanged = 'SheetNameChanged'
   readonly SheetValueChanged = 'SheetValueChanged'
+  readonly SheetSparklineChanged = 'SheetSparklineChanged'
+  readonly SheetOutlineActionDialogRequested = 'SheetOutlineActionDialogRequested'
   readonly SheetDimensionsChanged = 'SheetDimensionsChanged'
   readonly SheetStructureChanged = 'SheetStructureChanged'
   readonly SheetCellShiftConfirmationRequested = 'SheetCellShiftConfirmationRequested'
@@ -77,6 +89,10 @@ export class FEventName {
   readonly BeforePivotTableChange = 'BeforePivotTableChange'
   readonly PivotTableChanged = 'PivotTableChanged'
   readonly PivotTableRendered = 'PivotTableRendered'
+  readonly BeforePivotChartChange = 'BeforePivotChartChange'
+  readonly PivotChartAdded = 'PivotChartAdded'
+  readonly PivotChartChanged = 'PivotChartChanged'
+  readonly PivotChartRemoved = 'PivotChartRemoved'
   readonly BeforeSlicerChange = 'BeforeSlicerChange'
   readonly SlicerAdded = 'SlicerAdded'
   readonly SlicerChanged = 'SlicerChanged'
@@ -104,6 +120,7 @@ export interface EventDeliveryError<K extends PropertyKey = PropertyKey> { event
 
 export class EventHub<TEvents extends object> {
   private readonly listeners = new Map<keyof TEvents, Set<Listener<never>>>()
+  hasListeners(event: keyof TEvents): boolean { return Boolean(this.listeners.get(event)?.size) }
 
   addEvent<K extends keyof TEvents>(event: K, listener: Listener<TEvents[K]>): Disposable {
     const listeners = this.listeners.get(event) ?? new Set<Listener<never>>()

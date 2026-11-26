@@ -3,9 +3,9 @@ import { parseCellKey } from '../../services/excelViewAdapter.ts'
 import { presentSheetCellNumber } from './sheet-number-presentation.ts'
 import { sheetCellShrinkToFit, sheetCellTextRotation, sheetCellWrapStrategy } from './sheet-cell-layout.ts'
 import { layoutSheetCellText, layoutSheetStackedText, rotatedSheetTextSize, sheetCellTextFont, sheetCellTextIndent, type SheetTextMeasure } from './sheet-cell-text-layout.ts'
-import { hiddenSheetRows, isSheetRowVisible } from './sheet-row-visibility.ts'
+import { hiddenSheetRows, hiddenSheetColumns, isSheetRowVisible, isSheetColumnVisible } from './sheet-row-visibility.ts'
 import { positionSheetNumberFormatRuns } from './number-format-render.ts'
-import { sheetColumnWidth, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
+import { sheetColumnWidth } from '../../domain/sheet-axis.ts'
 import { layoutSheetCellRichText } from './sheet-cell-rich-text-layout.ts'
 
 export interface SheetAutoFitOptions {
@@ -28,15 +28,15 @@ export function calculateSheetAxisAutoFit(sheet: ExcelSheetView, axis: 'row' | '
   const count = axis === 'row' ? sheet.rowCount : sheet.columnCount
   if (!Number.isSafeInteger(index) || index < 0 || index >= count) throw new RangeError('自动适应的行列目标无效。')
   const hiddenRows = options.hiddenRows ?? hiddenSheetRows(sheet)
-  const hiddenColumns = options.hiddenColumns ?? new Set([...(sheet.hiddenColumns ?? []), ...(sheet.outlineHiddenColumns ?? [])])
-  const widthOfColumn = options.columnWidth ?? (column => sheetColumnWidth(sheet, column))
+  const hiddenColumns = options.hiddenColumns ?? hiddenSheetColumns(sheet)
+  const widthOfColumn = options.columnWidth ?? (column => isSheetColumnVisible(sheet, column, hiddenColumns) ? sheetColumnWidth(sheet, column) : 0)
   let maximum = axis === 'row' ? sheet.defaultRowHeight ?? 26 : 2
   let hasContent = false
   for (const [key, cell] of options.entries ?? Object.entries(sheet.cells)) {
     const position = parseCellKey(key)
     if (!position || position.row < 0 || position.col < 0 || position.row >= sheet.rowCount || position.col >= sheet.columnCount
       || (axis === 'row' ? position.row : position.col) !== index
-      || hiddenColumns.has(position.col) || sheetAxisSpanAt(sheet.columnHiddenSpans, position.col)?.value || axis === 'row' && widthOfColumn(position.col) <= 0
+      || !isSheetColumnVisible(sheet, position.col, hiddenColumns) || axis === 'row' && widthOfColumn(position.col) <= 0
       || axis === 'column' && !isSheetRowVisible(sheet, position.row, hiddenRows)) continue
     const merge = options.mergeAt?.(position.row, position.col)
     if (merge && (axis === 'column' || merge.startRow !== position.row || merge.startColumn !== position.col || merge.endRow > merge.startRow)) continue

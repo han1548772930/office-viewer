@@ -1,0 +1,124 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deferred PivotChart Canvas field controls</title>
+<style>html,body,#app{height:100%;margin:0;overflow:hidden}</style></head><body><div id="app"></div><script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio, FOffice, FSheetPivotChart } from '/packages/office-studio/src/index.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { getSheetDrawingSelection, setSheetDrawingSelection } from '/packages/office-studio/src/api/sheet-drawing-selection.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { pivotChartFieldButtonsIds as ids, pivotChartFieldButtonsWorkbook, pivotChartFieldButtonField } from './pivot-chart-field-buttons-fixture.mjs'
+import { pivotValuesUiWorkbook } from './pivot-values-ui-fixture.mjs'
+import { calculatePivotReport } from '/packages/office-studio/src/features/pivot/services/pivot-engine.ts'
+import { getPivotChartReport } from '/packages/office-studio/src/features/pivot/services/pivot-chart-engine.ts'
+
+// Uses the production Workbench/ChartOverlay route, real APIs and real content history.
+// Member/edit gates call their original methods when released. No hook or browser has run.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const commands = [], notices = [], pendingMembers = [], pendingEdits = []
+const originalMembers = FSheetPivotChart.prototype.getFieldItems, originalEdit = FSheetPivotChart.prototype.applyReportEdit
+const originalDate = FSheetPivotChart.prototype.setDateFilter, originalLabel = FSheetPivotChart.prototype.setLabelConditionFilter
+let app, stopView, currentChartId = ids.owned
+const json = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+const studio = () => slot.value, facade = () => FOffice.newAPI(studio()), book = () => facade().getActiveWorkbook()
+const model = () => studio().getWorkbookModel(book().getId()), pivot = (id = currentChartId) => book().getPivotChartById(id)
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id]
+  let data, valuesPosition, reportMatrix
+  try { data = pivot().getData() } catch { data = undefined }
+  try { valuesPosition = pivot().getValuesPosition(); reportMatrix = calculatePivotReport(value, getPivotChartReport(value, value.charts.find(chart => chart.id === currentChartId))).values } catch { valuesPosition = undefined; reportMatrix = undefined }
+  return { model: json(value), chartId: currentChartId, revision: studio().getWorkbookRevision(value.id), userId: studio().currentUserId,
+    generation: studio().editor.history.captureSavepoint(value.id).generation, data: json(data), valuesPosition: json(valuesPosition), reportMatrix: json(reportMatrix),
+    selection: json(getSheetDrawingSelection(studio(), value.id, value.activeSheetId)),
+    history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0, dirty: studio().editor.history.isDirty(value.id) },
+    commands: json(commands), notices: json(notices) }
+}
+function restoreEdits() {
+  FSheetPivotChart.prototype.applyReportEdit = originalEdit; FSheetPivotChart.prototype.setDateFilter = originalDate
+  FSheetPivotChart.prototype.setLabelConditionFilter = originalLabel
+}
+function restoreMethods() { FSheetPivotChart.prototype.getFieldItems = originalMembers; restoreEdits() }
+async function release() {
+  restoreMethods(); pendingMembers.splice(0).forEach(value => value.resolve()); pendingEdits.splice(0).forEach(value => value.resolve())
+  app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled()
+}
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; dark.value = options.dark ?? false; variant.value = options.variant ?? 'classic'
+  slot.value = new OfficeStudio({ workbook: options.model ?? (options.valuesUi ? pivotValuesUiWorkbook(options) : pivotChartFieldButtonsWorkbook(options)), currentUserId: options.currentUserId ?? 'local-user' })
+  currentChartId = options.chartId ?? ids.owned; view.value = toExcelWorkbookView(model())
+  stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)) }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); await selectChart(currentChartId); return state()
+}
+async function selectChart(id = ids.owned) {
+  currentChartId = id; const chart = pivot(id).getInfo(); book().setActiveSheet(chart.sheetId)
+  setSheetDrawingSelection(studio(), book().getId(), chart.sheetId, [{ kind: 'chart', id }]); view.value = toExcelWorkbookView(model()); await settled(); return state()
+}
+window.pivotChartFieldButtonsFixture = { ids, mount, state, selectChart,
+  field(name, area, chartId = currentChartId) { return json(pivotChartFieldButtonField(model(), chartId, name, area)) },
+  async changeSource(value = 11) { book().getSheetBySheetId(ids.source).getRange('E4').setValue(value); await settled(); return state() },
+  async sourceCell(address, value) { book().getSheetBySheetId(ids.source).getRange(address).setValue(value); await settled(); return state() },
+  async switchSheet(id = ids.other) { book().setActiveSheet(id); view.value = toExcelWorkbookView(model()); await settled(); return state() },
+  async changeUserWhilePending(userId = 'peer') { Object.defineProperty(studio(), 'currentUserId', { value: userId, configurable: true }); await settled(); return state() },
+  async clearHistory() { studio().editor.history.clear(book().getId()); await settled(); return state() },
+  async setControls(controls) { const result = await pivot().setControls(controls); await settled(); return { result, ...state() } },
+  async conditionFilter() {
+    const row = pivotChartFieldButtonField(model(), currentChartId, 'Region', 'row'), value = pivotChartFieldButtonField(model(), currentChartId, 'Amount', 'value')
+    await pivot().applyReportEdit({ type: 'setOptions', options: { allowMultipleFilters: true } })
+    await pivot().setValueFilter(row.id, { operator: 'valueGreaterThanOrEqual', expected: 50, valueFieldId: value.id })
+    await pivot().setLabelManualFilter(row.id, ['South'])
+    await pivot().setLabelConditionFilter(row.id, { operator: 'captionEqual', expected: 'South' })
+    await settled(); return state()
+  },
+  async dateFilter(filter, chartId = currentChartId) {
+    const field = pivotChartFieldButtonField(model(), chartId, 'Date', 'filter'), result = await pivot(chartId).setDateFilter(field.id, filter)
+    await settled(); return { result, ...state() }
+  },
+  async labelCondition(filter, chartId = currentChartId, name = 'Region') {
+    const field = pivotChartFieldButtonField(model(), chartId, name), result = await pivot(chartId).setLabelConditionFilter(field.id, filter)
+    await settled(); return { result, ...state() }
+  },
+  async setOptions(options) { const result = await pivot().applyReportEdit({ type: 'setOptions', options }); await settled(); return { result, ...state() } },
+  async valuesPosition(position, index = -1) { const result = await pivot().updateValuePosition(position, index); await settled(); return { result, ...state() } },
+  async appearance(value, layout = 'classic') { dark.value = value; variant.value = layout; await settled(); return state() },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId, chartId: currentChartId, dark: dark.value, variant: variant.value }) },
+  delayMembers() {
+    FSheetPivotChart.prototype.getFieldItems = async function(...args) {
+      await new Promise(resolve => pendingMembers.push({ chartId: this.getId(), fieldId: args[0], resolve })); return originalMembers.apply(this, args)
+    }
+  },
+  pendingMembers() { return pendingMembers.map(({ chartId, fieldId }) => ({ chartId, fieldId })) },
+  async releaseMember(index = 0, restore = true) {
+    if (restore) FSheetPivotChart.prototype.getFieldItems = originalMembers
+    pendingMembers.splice(index, 1)[0]?.resolve(); await settled(); return state()
+  },
+  delayEdits() {
+    FSheetPivotChart.prototype.applyReportEdit = async function(...args) {
+      await new Promise(resolve => pendingEdits.push({ chartId: this.getId(), edit: json(args[0]), resolve })); return originalEdit.apply(this, args)
+    }
+    FSheetPivotChart.prototype.setDateFilter = async function(...args) {
+      await new Promise(resolve => pendingEdits.push({ chartId: this.getId(), edit: { type: 'setDateFilter', fieldId: args[0], filter: json(args[1]) }, resolve }))
+      return originalDate.apply(this, args)
+    }
+    FSheetPivotChart.prototype.setLabelConditionFilter = async function(...args) {
+      await new Promise(resolve => pendingEdits.push({ chartId: this.getId(), edit: { type: 'setLabelConditionFilter', fieldId: args[0], filter: json(args[1]) }, resolve }))
+      return originalLabel.apply(this, args)
+    }
+  },
+  pendingEdits() { return pendingEdits.map(({ chartId, edit }) => ({ chartId, edit })) },
+  async releaseEdit(index = 0, restore = true) {
+    if (restore) restoreEdits()
+    pendingEdits.splice(index, 1)[0]?.resolve(); await settled(); return state()
+  },
+  async dispose() { await release() },
+}
+await mount()
+</script></body></html>

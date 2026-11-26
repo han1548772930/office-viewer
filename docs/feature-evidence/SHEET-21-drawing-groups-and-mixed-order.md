@@ -4,7 +4,7 @@
 
 本批属于 SHEET-21「形状及绘图（含 Pro 目标）」中的组合、取消组合、混合层级、选区变换和删除子项；不将这些子项计为整个 SHEET-21 已完成。完整形状、连接器、文本及 Pro 目录仍在项目目标内。全工作台入口清点继续以 [顶部完整清单](TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md)、[Sheets 固定版源码清点](SHEET-RIBBON-SOURCE-INVENTORY-2026-11-21.md) 和 [功能对齐表](../UNIVER_FEATURE_PARITY.md) 为准。
 
-本子任务新增 12 个实现文件、4 个契约草稿文件（**45 个 `test` 声明**）、1 个模型夹具和本文，共 18 个文件。中央模型、共享仿射数学、Canvas、ExcelWorkbench、Facade、包导出及工作表复制由主任务负责，不纳入这 18 个文件。
+原子任务新增 12 个实现文件、4 个契约草稿文件（**45 个 `test` 声明**）、1 个模型夹具和本文，共 18 个文件。中央模型、共享仿射数学、Canvas、ExcelWorkbench、Facade、包导出及工作表复制由主任务负责，不纳入这 18 个文件。后续主任务的共享选区/八项对齐/作者 affine/最终轴生命周期接线，以及固定 move-drawing/实际 skeleton 边界/1000ms 连续历史，初批 53 条、当前共 82 条新草稿及实际工作台夹具见[绘图工作台增量证据](SHEET-21-drawing-workbench-affine.md)，均未运行。
 
 本阶段遵从已有执行约束，仅进行了源码阅读、搜索、编辑和人工静态审阅。**没有运行测试、类型检查、构建、Vite/dev、浏览器、Rust/Cargo/WASM、服务、性能基准或 `git diff --check`**。测试声明、入口登记和 JSON 草稿均不能作为浏览器或 Office 文件验收证据。
 
@@ -64,7 +64,7 @@ root/member 均从底到顶，每个引用恰好一个父容器。typed kind 区
 | image | 用 `sheetImageDrawingGeometry` 和真实稀疏轴投影；用 `sheetImageWithDrawingGeometry` 发布；保留资源、源内 flip、替代文本和归一化 crop，更新兼容锚点 |
 | chart | legacy position 减表头后读取；发布完整 drawingGeometry，兼容 position 写 AABB + 表头；保留 source/options/local size；native 正向变换 revision + 1，反向恢复原 guard revision并拒绝后续新内容 |
 | shape | 读取/写回 `SheetDrawingShapeDTO.geometry`；source/style/text/metadata 仍属于 shape 作者 |
-| slicer/timeline | 使用 `resolveSlicerBounds` 和真实轴；参与混合顺序和显式删除；完整 affine 尚未接线，当前 `groupable:false / transformable:false`，是待补缺口 |
+| slicer/timeline | 后续已接完整 author affine、真实 final axes、native command/history/事件、Ant 控件和混合组；`groupable/transformable` 已开放，lockedPosition 仍阻止变换，折叠 Both 保留作者但临时不可用。来源与 98/182 未运行草稿见[切片器增量](SHEET-25-slicer-timeline-affine.md) |
 
 隐藏行列可能把 legacy Both 图片或无绝对布局的控制压为零尺寸。宿主保留原资源/锚点，提供仅供 state 的 1px 可逆 placeholder 并标记 `available:false`；调用方的 available callback 不能覆盖原生不可用状态。**绘制仍必须读取原生对象，不能画此 placeholder**。恢复显示后重新投影原锚点；选中不可用叶时组合/变换明确拒绝，排列或删除可以保留正确引用生命周期。
 
@@ -80,7 +80,7 @@ API 捕获 workbook 实例、revision、历史 generation、用户与选区；�
 
 [sheet-drawing-selection.ts](../../packages/office-studio/src/api/sheet-drawing-selection.ts) 按 API / workbook / worksheet 缓存选区；非活动宿主不能写另一工作台，替换 owner 后旧 dispose 不能清新 owner。辅助选区记录按真实 content history 的 generation/revision 索引，并按保留的 undo/redo 条目裁剪；它不建立第二份内容历史。实际内容 Undo/Redo 仍由 OfficeStudio 快照事务统一承担。
 
-主任务在 `api/office-studio.ts` 已接 registrar，已有图片 arrangement handler 委托本 runner，避免重复注册。Canvas 已声明 drawingScene/typed selection 并引入共享绘图交互；ExcelWorkbench 状态供给、Facade、包出口、工作表 copy ID 映射及中央 native lifecycle 接线属于主任务文件，以主任务最终代码和后续验证为准。**本文没有把 props/入口声明计为实际浏览器编辑闭环**。
+主任务在 `api/office-studio.ts` 已接 registrar，已有图片 arrangement handler 委托本 runner，避免重复注册。后续已接 ExcelWorkbench scene/typed selection/完整顺序、Canvas 与 ChartOverlay 输入路由、七项 FWorksheet wrapper 和包出口，工作表复制也使用 typed subtree ID 映射；最终 native lifecycle 在 filter/auto-height 后执行并拟合祖先组框。新增八项对齐走 `sheet.command.align-sheet-drawings`，固定叶 operation ID 前缀已修正为 `sheet.operation`；方向键走固定 `sheet.command.move-drawing` 并复用实际 skeleton 边界和连续快照历史。具体文件、状态和未运行草稿见[工作台证据](SHEET-21-drawing-workbench-affine.md)。**这些接线仍不作为实际浏览器编辑闭环的通过证据**。
 
 实现差异：本项目用 Vue/Pinia 的应用状态、独立模型/planner 和原生 workbook 事务替代上游 DrawingManager/JSON1 mutation。上游 groupBaseBound 与 child 更新由其服务分解；本地以现有叶世界几何为权威，公开 group DTO 中 parent.transform 可作为目标 frame，ungroup 的 parent/children 作为结构快照身份检查，不重复应用其子 transform。全部上游 DTO 字段、operation 和 `SHEET_DRAWING_PLUGIN` 导入转换尚未做完整兼容验收。
 
@@ -99,10 +99,10 @@ API 捕获 workbook 实例、revision、历史 generation、用户与选区；�
 ## 尚未验收与仍需实现
 
 - 浏览器中混合选择、组内编辑、拖动/缩放/旋转/错切、多层嵌套、freeze/zoom、命中顺序、键盘 Delete、退出组及焦点恢复；Canvas2D/WebGPU 两后端与权限裁剪均未验收。
-- 本子任务没有新增可替换 UI 控件。主任务的 Canvas 浮条、菜单和编辑覆盖层仍需核对统一 `antdv-next`、主题 token、弹层主题、焦点及 IME；本文不代替该 UI 验收。
+- 原子任务没有新增可替换 UI 控件。后续主任务的 Canvas 浮条/右键、图表输入桥/手柄及工作台夹具已静态核对为 `antdv-next`，使用 ConfigProvider/token；popup Escape/回焦和手柄 IME/修饰键保护已落盘。主题、焦点及 Windows 原生 IME 仍未运行验收，见[工作台证据](SHEET-21-drawing-workbench-affine.md)。
 - 完整 shape 作者能力（Pro 预设、箭头、连接器、路径/文本编辑等）不由本批 DTO/几何接线自动完成；仍按完整 SHEET-21 目标继续实现与验收。
-- slicer/timeline 的完整仿射变换及六类对象组合缺口仍需补齐；目前拒绝不可保真变换的状态不能成为最终永久禁用入口。
-- 完整组对象 clipboard/API/UI 未接线；纯模型 complete subtree copy recipe 不等于已实现组剪贴板。工作表复制接线由主任务负责，仍需真实 undo/redo 和保存重开验证。
+- slicer/timeline affine 与五类 leaf/组已补入[切片器增量](SHEET-25-slicer-timeline-affine.md)；[Pro 多目标连接](SHEET-25-slicer-connections.md)及其 UI/生命周期也已落盘，均未运行。Office major-axis、真实 UI/文件、完整交叉筛选成员状态/Pro API 和全部直接编辑仍需实现/验收。临时不可用或权限/位置锁拒绝不能缩减完整目标。
+- 完整组对象 clipboard 未接线；纯模型 complete subtree copy recipe 不等于已实现组剪贴板。组操作 API/UI 和工作表复制映射已由主任务接入，真实 undo/redo、保存重开及组剪贴板仍需实现或验证。
 - XLSX/DOCX/OOXML 等实际 Office 解析/写出、嵌套组和完整 affine 映射、crop/flip/资源及未知源数据保真未跑样本；JSON 草稿不能代替 Office 往返。没有依赖 Univer Server、Exchange 或商业 SDK。
 - 大对象集合的主线程规划、命中/布局、Worker/Rust/WASM 路径选择、取消和内存生命周期尚无同数据集基准。本文没有声称性能改善、零拷贝或达到首屏/滚动/编辑/内存目标，WASM 与真实性能仍标「未验收」。
 

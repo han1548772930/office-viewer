@@ -1,6 +1,5 @@
 import type { SheetBackgroundImage, SheetImageResource } from '../../domain/sheet-images.ts'
 import type { GridViewport, SpreadsheetGeometry } from '../../rendering/spreadsheet/layout.ts'
-import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '../../rendering/spreadsheet/layout.ts'
 import { decodeSheetImageSource, prepareSheetImageResources, prepareSheetImageUrl } from './sheet-image-io.ts'
 
 interface Entry { resource?: SheetImageResource; controller: AbortController; source?: HTMLImageElement; bytes: number }
@@ -73,10 +72,10 @@ export class SheetImageRenderCache {
       if (!pane.clip.width || !pane.clip.height) continue
       const pattern = context.createPattern(image, 'repeat')
       if (!pattern) continue
-      const frozenX = geometry.frozenColumns > 0 && pane.clip.x === GRID_HEADER_WIDTH
-      const frozenY = geometry.frozenRows > 0 && pane.clip.y === GRID_HEADER_HEIGHT
+      const frozenX = geometry.frozenColumns > 0 && pane.clip.x === geometry.headerWidth
+      const frozenY = geometry.frozenRows > 0 && pane.clip.y === geometry.headerHeight
       pattern.setTransform({ a: config.scaleX * viewport.zoom, d: config.scaleY * viewport.zoom,
-        e: GRID_HEADER_WIDTH - (frozenX ? 0 : viewport.scrollLeft), f: GRID_HEADER_HEIGHT - (frozenY ? 0 : viewport.scrollTop) })
+        e: geometry.headerWidth - (frozenX ? 0 : viewport.scrollLeft), f: geometry.headerHeight - (frozenY ? 0 : viewport.scrollTop) })
       context.fillStyle = pattern; context.fillRect(pane.clip.x, pane.clip.y, pane.clip.width, pane.clip.height)
     }
     this.backgroundKey = signature

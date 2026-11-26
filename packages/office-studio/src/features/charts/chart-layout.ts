@@ -23,11 +23,12 @@ import { chartHeatmapCellRect, chartHeatmapExtent, chartHeatmapFieldNames, chart
 import { chartHasLegend, chartLegendDataCount, chartLegendGeometry } from './chart-legend'
 import { chartTitleGeometry } from './chart-titles'
 import { chartChordLayout, chartRelationLayout, chartSankeyLayout, chartSunburstLayout, chartTreemapLayout, chartWordCloudLayout } from './chart-special-layout'
+import { pivotChartCategoryAxisBand, pivotChartCategoryAxisDepth } from './chart-pivot-axis-layout.ts'
 
 export type ChartPlotFrameSource = Pick<ChartConfig, 'type' | 'position' | 'size' | 'title' | 'subtitle' | 'options' | 'legend' | 'xAxis' | 'yAxis'>
 export type ChartPlotSourceSeries = readonly { field: number; name: string; sourceName?: string; values?: readonly (number | null)[] }[]
 
-export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries, legendCount?: number): { frame: RenderRect; plot: RenderRect } {
+export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: ChartPlotSourceSeries, legendCount?: number, pivotCategoryDepth = 0): { frame: RenderRect; plot: RenderRect } {
   const descriptor = resolveChartType(chart.type)
   const axes = ['line', 'column', 'bar', 'area', 'scatter', 'bubble', 'combination', 'waterfall', 'pareto', 'heatmap', 'boxplot', 'candlestick', 'histogram', 'radar'].includes(descriptor.family)
   const frame = { x: chart.position.x, y: chart.position.y, width: chart.size.width, height: chart.size.height }
@@ -45,10 +46,14 @@ export function chartPlotFrame(chart: ChartPlotFrameSource, sourceSeries?: Chart
     : Object.values(chart.options?.series ?? {}).some(style => style.rightAxis) || chart.options?.namedSeries?.some(entry => entry.style.rightAxis) || chart.options?.allSeriesStyle?.rightAxis))
   const horizontal = descriptor.family === 'bar', sideAxis = (horizontal ? chart.xAxis : chart.yAxis) ?? {}, bottomAxis = (horizontal ? chart.yAxis : chart.xAxis) ?? {}
   const rightAxis = chart.options?.rightYAxis ?? { scaleType: 'linear' }
+  const hierarchyBand = pivotChartCategoryAxisBand({ options: chart.options, xAxis: chart.xAxis ?? {} })
+  const extraLevels = Math.max(0, pivotCategoryDepth - 1)
   const left = (axes ? 54 + chartAxisTitleSpace(chart, sideAxis) : 14) + (legend.position === 'left' ? sideLegend : 0) + titles.left
+    + (horizontal ? Math.min(frame.width * 0.5, extraLevels * hierarchyBand.columnWidth) : 0)
   const right = (secondary && !horizontal ? 54 + chartAxisTitleSpace(chart, rightAxis) : 12) + (legend.position === 'right' ? sideLegend : 0) + titles.right
   const top = 12 + titles.top + topLegend + (secondary && horizontal ? 40 + chartAxisTitleSpace(chart, rightAxis) : 0)
   const bottom = (axes ? 40 + chartAxisTitleSpace(chart, bottomAxis) : 14) + bottomLegend + titles.bottom
+    + (horizontal ? 0 : Math.min(frame.height * 0.5, extraLevels * hierarchyBand.lineHeight))
   return { frame, plot: { x: frame.x + left, y: frame.y + top, width: Math.max(1, frame.width - left - right), height: Math.max(1, frame.height - top - bottom) } }
 }
 
@@ -68,7 +73,8 @@ export function layoutChartData(data: ChartData, chart: ChartModel, computed?: C
 }
 
 export function layoutDerivedChartData(derived: ChartDerivedData, chart: ChartModel, palette = chartPalette(chart)): ChartLayout {
-  const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series, chartLegendDataCount(data, chart))
+  const data = derived.data, descriptor = resolveChartType(chart.type), { frame, plot } = chartPlotFrame(chart, derived.boxes ?? data.series,
+    chartLegendDataCount(data, chart), pivotChartCategoryAxisDepth(data, chart))
   if (derived.waterfallLayout) return layoutChartWaterfall(data, chart, derived.waterfallLayout, frame, plot, palette)
   if (descriptor.family === 'relation') {
     const relation = chartRelationLayout(data, chart, plot), source = data.series[0]

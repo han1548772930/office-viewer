@@ -2,7 +2,7 @@ import type { ChartModel, WorkbookModel } from '../../domain/model'
 import { ComputeError } from '../../compute/errors'
 
 export const CHART_SOURCE_NOT_FOUND = 'chart.source-not-found' as const
-export type ChartSourceIdentity = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId'> & Partial<Pick<ChartModel, 'id'>>
+export type ChartSourceIdentity = Pick<ChartModel, 'sheetId' | 'source' | 'pivotTableId'> & Partial<Pick<ChartModel, 'id' | 'ownedPivot'>>
 export interface ChartSourceNotFoundDiagnostic {
   code: typeof CHART_SOURCE_NOT_FOUND; sourceSheetId: string; hostSheetId: string; chartId?: string
 }
@@ -18,7 +18,7 @@ export class ChartSourceNotFoundError extends ComputeError {
  * a previously prepared snapshot can never replace a missing source sheet. */
 export function chartSourceNotFoundDiagnostic(workbook: WorkbookModel, chart: ChartSourceIdentity): ChartSourceNotFoundDiagnostic | undefined {
   if (chart.pivotTableId) return undefined
-  const sourceSheetId = chart.source.sheetId ?? chart.sheetId
+  const sourceSheetId = chart.ownedPivot?.source.subUnitId ?? chart.source.sheetId ?? chart.sheetId
   return workbook.sheets.some(sheet => sheet.id === sourceSheetId) ? undefined
     : { code: CHART_SOURCE_NOT_FOUND, sourceSheetId, hostSheetId: chart.sheetId, ...(chart.id ? { chartId: chart.id } : {}) }
 }

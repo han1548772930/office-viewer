@@ -1,18 +1,21 @@
 import type { OfficeStudio } from './office-studio.ts'
 import type { ApiEventMap, Disposable } from './events.ts'
 import type { CellRange, WorkbookModel } from '../domain/model.ts'
-import type { SheetDrawingAffineGeometry, SheetDrawingKind, SheetDrawingMatrix, SheetDrawingRef } from '../domain/sheet-drawings.ts'
+import { SHEET_DRAWING_ALIGN_TYPES, type SheetDrawingAlignType, type SheetDrawingAffineGeometry, type SheetDrawingKind, type SheetDrawingMatrix, type SheetDrawingMoveDirection, type SheetDrawingRef } from '../domain/sheet-drawings.ts'
 import { drawingAffineFromFrame, multiplyDrawingAffine, normalizeDrawingAffineGeometry } from '../domain/drawing-affine.ts'
 import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '../rendering/spreadsheet/layout.ts'
 import { canViewProtectedRanges } from '../features/sheet-protection/range-protection.ts'
 import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { resolveSheetRangeCommandTarget } from './sheet-range-editor-commands.ts'
-import { cloneDrawingRef, drawingGraph, drawingRefKey, normalizeDrawingRef, planDrawingArrange, planDrawingGroup, planDrawingGroupTransform,
-  planDrawingSelectionTransform, planDrawingUngroup, SHEET_DRAWING_GROUP_COMMAND_IDS, SheetDrawingError } from '../features/drawing-groups/index.ts'
+import { cloneDrawingRef, drawingGraph, drawingRefKey, normalizeDrawingRef, planDrawingAlign, planDrawingArrange, planDrawingGroup, planDrawingGroupTransform,
+  planDrawingMove, planDrawingSelectionTransform, planDrawingUngroup, SHEET_DRAWING_GROUP_COMMAND_IDS, SheetDrawingError } from '../features/drawing-groups/index.ts'
 import type { SheetDrawingArrangeType, SheetDrawingPlanResult, SheetDrawingScene, SheetDrawingTransaction } from '../features/drawing-groups/index.ts'
 import { applySheetDrawingTransaction, createSheetDrawingScene, removeSheetDrawings, sheetDrawingRefAffectedRanges,
   sheetDrawingTransactionAffectedRanges } from '../features/sheet-drawings/sheet-drawing-host.ts'
-import { clearSheetDrawingSelections, getSheetDrawingSelection, setSheetDrawingSelection } from './sheet-drawing-selection.ts'
+import { clearSheetDrawingSelections, getSheetDrawingSelection, getSheetDrawingSelectionGeneration, setSheetDrawingSelection } from './sheet-drawing-selection.ts'
+import { sheetDrawingMoveExtent } from '../features/sheet-drawings/sheet-drawing-move.ts'
+import { SheetDrawingMoveHistory, type SheetDrawingMoveHistoryContext } from '../features/drawing-groups/drawing-move-history.ts'
+import type { HistorySavepoint } from '../platform/history/history-types.ts'
 import { assertChartObjectAction } from '../features/charts/chart-object-commands.ts'
 import type { ChartObjectTarget } from '../features/charts/chart-object-commands.ts'
 
@@ -36,6 +39,9 @@ export interface SheetDrawingCommandInput {
   frame?: SheetDrawingAffineGeometry
   delta?: SheetDrawingMatrix
   arrangeType?: SheetDrawingArrangeType | 0 | 1 | 2 | 3
+  alignType?: SheetDrawingAlignType
+  direction?: SheetDrawingMoveDirection
+  step?: 1 | 10
   zOrder?: number
   expectedRevision?: number
   expectedHistoryGeneration?: number
@@ -49,11 +55,18 @@ const labels: Record<SheetDrawingCommandId, string> = {
   [SHEET_DRAWING_GROUP_COMMAND_IDS.group]: '组合绘图', [SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup]: '取消组合',
   [SHEET_DRAWING_GROUP_COMMAND_IDS.transform]: '变换绘图', [SHEET_DRAWING_GROUP_COMMAND_IDS.arrange]: '排列绘图',
   [SHEET_DRAWING_GROUP_COMMAND_IDS.remove]: '删除绘图',
+  [SHEET_DRAWING_GROUP_COMMAND_IDS.align]: '对齐绘图',
+  [SHEET_DRAWING_GROUP_COMMAND_IDS.move]: '移动绘图',
 }
 interface SelectionSnapshot { sheetId: string; refs: SheetDrawingRef[] }
 const selectionHistory = new WeakMap<OfficeStudio, Map<string, Map<string, SelectionSnapshot>>>()
 const selectionKey = (generation: number, revision: number) => generation + ':' + revision
 const refSet = (refs: readonly SheetDrawingRef[]) => JSON.stringify(refs.map(drawingRefKey).sort())
+const moveHistories = new WeakMap<OfficeStudio, SheetDrawingMoveHistory>()
+function moveHistoryFor(api: OfficeStudio): SheetDrawingMoveHistory {
+  const history = moveHistories.get(api) ?? new SheetDrawingMoveHistory()
+  moveHistories.set(api, history); return history
+}
 
 function valueRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(label + '必须是对象。')
@@ -105,6 +118,18 @@ export function sheetDrawingCommandInput(value: unknown): SheetDrawingCommandInp
   if (raw.arrangeType !== undefined) {
     if (!['front', 'forward', 'back', 'backward', 0, 1, 2, 3].includes(raw.arrangeType as string | number)) throw new TypeError('绘图排列方式无效。')
     input.arrangeType = raw.arrangeType as SheetDrawingCommandInput['arrangeType']
+  }
+  if (raw.alignType !== undefined) {
+    if (!(Object.values(SHEET_DRAWING_ALIGN_TYPES) as readonly unknown[]).includes(raw.alignType)) throw new TypeError('绘图对齐方式无效。')
+    input.alignType = raw.alignType as SheetDrawingAlignType
+  }
+  if (raw.direction !== undefined) {
+    if (raw.direction !== 0 && raw.direction !== 1 && raw.direction !== 2 && raw.direction !== 3) throw new TypeError('绘图移动方向无效。')
+    input.direction = raw.direction
+  }
+  if (raw.step !== undefined) {
+    if (raw.step !== 1 && raw.step !== 10) throw new TypeError('绘图移动步长无效。')
+    input.step = raw.step
   }
   if (raw.zOrder !== undefined) { if (typeof raw.zOrder !== 'number') throw new TypeError('绘图层级必须是数值。'); input.zOrder = raw.zOrder }
   if (raw.host !== undefined) { const host = valueRecord(raw.host, '绘图宿主'); input.host = { unitId: id(host.unitId), sheetId: id(host.sheetId) } }
@@ -169,19 +194,20 @@ function pruneSelectionHistory(api: OfficeStudio, unitId: string): Map<string, S
   return snapshots
 }
 function rememberSelection(api: OfficeStudio, unitId: string, before: SheetDrawingScene, after: SheetDrawingScene,
-  beforeRefs: readonly SheetDrawingRef[], afterRefs: readonly SheetDrawingRef[], beforeHistoryRevision: number): void {
+  beforeRefs: readonly SheetDrawingRef[], afterRefs: readonly SheetDrawingRef[], beforeHistoryRevision: number, committed: HistorySavepoint): void {
   const units = selectionHistory.get(api) ?? new Map<string, Map<string, SelectionSnapshot>>(), snapshots = units.get(unitId) ?? new Map<string, SelectionSnapshot>()
   selectionHistory.set(api, units); units.set(unitId, snapshots)
-  const current = api.editor.history.captureSavepoint(unitId)
-  snapshots.set(selectionKey(current.generation, beforeHistoryRevision), { sheetId: before.sheetId, refs: beforeRefs.map(cloneDrawingRef) })
-  snapshots.set(selectionKey(current.generation, current.revision), { sheetId: after.sheetId, refs: afterRefs.map(cloneDrawingRef) })
+  snapshots.set(selectionKey(committed.generation, beforeHistoryRevision), { sheetId: before.sheetId, refs: beforeRefs.map(cloneDrawingRef) })
+  snapshots.set(selectionKey(committed.generation, committed.revision), { sheetId: after.sheetId, refs: afterRefs.map(cloneDrawingRef) })
   // Match the real content history's retained revisions, including its 100-entry cap and discarded redo branches.
   pruneSelectionHistory(api, unitId)
 }
 
-/** This runner owns grouping, ungrouping, affine selection transforms, removals and delegated mixed arrangement. */
+/** Shared drawing edits, keyboard moves and timed history use the same guarded native-owner runner. */
 export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingCommandId, params?: SheetDrawingCommandParams): boolean {
   if (!Object.values(SHEET_DRAWING_GROUP_COMMAND_IDS).includes(command)) throw new TypeError('未知绘图命令。')
+  const moveHistory = moveHistoryFor(api)
+  if (command !== SHEET_DRAWING_GROUP_COMMAND_IDS.move) moveHistory.clear()
   const publicBatch = Array.isArray(params) ? params.map(value => {
     const raw = valueRecord(value, '组合更新'), parent = publicRef(raw.parent)
     if (parent.drawingType !== undefined && parent.drawingType !== 'group' && parent.drawingType !== 6) throw new TypeError('组合父项的 drawingType 必须是 group。')
@@ -195,6 +221,8 @@ export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingC
   const input = publicBatch ? sheetDrawingCommandInput({ unitId: firstUpdate?.parent.unitId ?? firstUpdate?.children[0]?.unitId,
     subUnitId: firstUpdate?.parent.subUnitId ?? firstUpdate?.children[0]?.subUnitId }) : sheetDrawingCommandInput(params)
   if (input.frame !== undefined && input.delta !== undefined) throw new TypeError('需要且只能指定目标 frame 或世界 delta。')
+  if (input.alignType !== undefined && command !== SHEET_DRAWING_GROUP_COMMAND_IDS.align) throw new TypeError('alignType 仅适用于对齐绘图。')
+  if ((input.direction !== undefined || input.step !== undefined) && command !== SHEET_DRAWING_GROUP_COMMAND_IDS.move) throw new TypeError('direction / step 仅适用于移动绘图。')
   if ((input.frame !== undefined || input.delta !== undefined) && command !== SHEET_DRAWING_GROUP_COMMAND_IDS.group && command !== SHEET_DRAWING_GROUP_COMMAND_IDS.transform) {
     throw new TypeError('frame / delta 仅适用于组合或变换绘图。')
   }
@@ -234,6 +262,12 @@ export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingC
       return [resolvePublicRef(before, child)]
     }) : undefined
   const initialSelection = supplied ? [...new Map(supplied.map(ref => [drawingRefKey(ref), ref])).values()] : selectedRefs(api, target.unitId, before, input, command)
+  const moveContext = (): SheetDrawingMoveHistoryContext => ({ unitId: target.unitId, sheetId: target.sheetId, userId,
+    selectionKey: refSet(initialSelection), selectionGeneration: getSheetDrawingSelectionGeneration(api, target.unitId),
+    contentRevision: api.getWorkbookRevision(target.unitId), savepoint: api.editor.history.captureSavepoint(target.unitId),
+    savedRevision: api.editor.history.units[target.unitId]!.savedRevision, now: Date.now() })
+  const amendment = command === SHEET_DRAWING_GROUP_COMMAND_IDS.move
+    ? moveHistory.amendment(moveContext(), receipt => api.editor.history.canAmend(target.unitId, receipt)) : undefined
   if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.transform && input.groupId !== undefined && refSet(initialSelection) !== refSet([{ kind: 'group', id: input.groupId }])) {
     throw new TypeError('groupId 与实际绘图选择不一致。')
   }
@@ -284,6 +318,12 @@ export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingC
     const arrangeType = typeof input.arrangeType === 'number' ? (['forward', 'backward', 'front', 'back'] as const)[input.arrangeType] : input.arrangeType
     if (input.zOrder !== undefined && arrangeType !== undefined || input.zOrder === undefined && arrangeType === undefined) throw new TypeError('需要且只能指定一个排列方式或层级。')
     apply(planDrawingArrange(before, input.zOrder === undefined ? { selection, arrangeType: arrangeType! } : { selection, zOrder: input.zOrder }))
+  } else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.align) {
+    if (input.alignType === undefined) throw new TypeError('需要指定绘图对齐方式。')
+    apply(planDrawingAlign(before, { selection, alignType: input.alignType }))
+  } else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.move) {
+    if (input.direction === undefined) throw new TypeError('需要指定绘图移动方向。')
+    apply(planDrawingMove(before, { selection, direction: input.direction, step: input.step, extent: sheetDrawingMoveExtent(target.workbook, target.sheetId) }))
   } else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.transform) {
     if ((input.frame === undefined) === (input.delta === undefined)) throw new TypeError('需要且只能指定目标 frame 或世界 delta。')
     const transform = input.frame === undefined ? { delta: input.delta! } : { frame: input.frame }
@@ -303,24 +343,46 @@ export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingC
     expectedRevision: revision, snapshot: JSON.stringify(target.workbook.charts?.find(chart => chart.sheetId === target.sheetId && chart.id === ref.id)) })
   assertCurrent()
   const removedSlicers = (target.workbook.slicers ?? []).filter(slicer => slicer.hostSheetId === target.sheetId && removedRefs.some(ref => ref.id === slicer.id && ref.kind === slicer.type))
-  for (const slicer of removedSlicers) {
-    const event: ApiEventMap['BeforeSlicerChange'] = { unitId: target.unitId, hostSheetId: target.sheetId, slicerId: slicer.id, commandId: 'sheet.command.remove-slicer' }
+  const changedSlicerKeys = new Set(transactions.flatMap(transaction => transaction.geometryChanges)
+    .filter(change => change.ref.kind === 'slicer' || change.ref.kind === 'timeline').map(change => drawingRefKey(change.ref))),
+    changedSlicers = (target.workbook.slicers ?? []).filter(slicer => slicer.hostSheetId === target.sheetId && changedSlicerKeys.has(drawingRefKey({ kind: slicer.type, id: slicer.id })))
+  for (const slicer of [...removedSlicers, ...changedSlicers]) {
+    const event: ApiEventMap['BeforeSlicerChange'] = { unitId: target.unitId, hostSheetId: target.sheetId, slicerId: slicer.id,
+      commandId: removedSlicers.includes(slicer) ? 'sheet.command.remove-slicer' : command }
     api.events.emit('BeforeSlicerChange', event)
-    if (event.cancel) throw new Error('切片器删除已取消。')
+    if (event.cancel) throw new Error('切片器绘图修改已取消。')
+    assertCurrent()
   }
   assertCurrent()
   const after = createSheetDrawingScene(candidate, target.sheetId)
+  let committed: HistorySavepoint | undefined
+  let slicerEvents: ApiEventMap['SlicerChanged'][] = []
   const changed = api.commitWorkbook(target.unitId, labels[command], model => {
     assertCurrent()
     if (JSON.stringify(createSheetDrawingScene(model, target.sheetId)) !== JSON.stringify(before)) throw new SheetDrawingError('stale-object', '绘图模型在发布前已更改。')
     if (removed) removeSheetDrawings(model, target.sheetId, initialSelection)
     else for (const transaction of transactions) applySheetDrawingTransaction(model, target.sheetId, transaction)
   }, { preserveStyleInheritance: true, recalculate: false, expectedRevision: revision, expectedHistoryGeneration: historyGeneration,
-    prepareView: model => { assertCurrent(); toExcelWorkbookView(model) } })
-  if (changed) {
-    rememberSelection(api, target.unitId, before, after, initialSelection, selection, historySavepoint.revision)
-    setSheetDrawingSelection(api, target.unitId, target.sheetId, selection)
-    for (const slicer of removedSlicers) api.events.emit('SlicerRemoved', { unitId: target.unitId, hostSheetId: target.sheetId, slicerId: slicer.id })
+    ...(amendment ? { amend: amendment } : {}), onHistoryCommitted: receipt => { committed = { ...receipt } },
+    prepareView: model => {
+      assertCurrent(); toExcelWorkbookView(model)
+      slicerEvents = (model.slicers ?? []).filter(slicer => slicer.hostSheetId === target.sheetId
+        && changedSlicerKeys.has(drawingRefKey({ kind: slicer.type, id: slicer.id })))
+        .map(slicer => ({ unitId: target.unitId, hostSheetId: target.sheetId, slicerId: slicer.id, revision: slicer.revision }))
+    } })
+  const publishedCurrent = () => !!committed && !api.isDisposed && api.getWorkbookRevision(target.unitId) === revision + 1
+    && !input.signal?.aborted && api.currentUserId === userId
+    && (!input.host || api.activeWorkbookId === target.unitId && api.editor.state.activeKind === 'workbook'
+      && api.getWorkbookModel(target.unitId)?.activeSheetId === target.sheetId)
+    && api.editor.history.captureSavepoint(target.unitId).generation === committed.generation
+    && api.editor.history.captureSavepoint(target.unitId).revision === committed.revision
+  if (changed && committed) {
+    rememberSelection(api, target.unitId, before, after, initialSelection, selection, historySavepoint.revision, committed)
+    if (publishedCurrent()) setSheetDrawingSelection(api, target.unitId, target.sheetId, selection)
+    if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.move && publishedCurrent()
+      && refSet(getSheetDrawingSelection(api, target.unitId, target.sheetId)) === refSet(selection)) moveHistory.remember(moveContext())
+    for (const slicer of removedSlicers) api.publishObserverEvent('SlicerRemoved', () => ({ unitId: target.unitId, hostSheetId: target.sheetId, slicerId: slicer.id }))
+    for (const event of slicerEvents) api.publishObserverEvent('SlicerChanged', () => ({ ...event }))
   }
   return changed
 }
@@ -328,8 +390,11 @@ export function runSheetDrawingCommand(api: OfficeStudio, command: SheetDrawingC
 /** Arrangement is already registered by the image host; it delegates to runSheetDrawingCommand. */
 export function registerSheetDrawingCommands(api: OfficeStudio): Disposable {
   const registrations = [SHEET_DRAWING_GROUP_COMMAND_IDS.group, SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup,
-    SHEET_DRAWING_GROUP_COMMAND_IDS.transform, SHEET_DRAWING_GROUP_COMMAND_IDS.remove]
-    .map(command => api.registerCommand<SheetDrawingCommandParams | undefined, boolean>(command, params => runSheetDrawingCommand(api, command, params)))
+    SHEET_DRAWING_GROUP_COMMAND_IDS.transform, SHEET_DRAWING_GROUP_COMMAND_IDS.remove, SHEET_DRAWING_GROUP_COMMAND_IDS.align, SHEET_DRAWING_GROUP_COMMAND_IDS.move]
+    .map(command => api.registerCommand<SheetDrawingCommandParams | undefined, boolean>(command, params => {
+      try { return runSheetDrawingCommand(api, command, params) }
+      catch (error) { moveHistories.get(api)?.clear(); throw error }
+    }))
   const restore = (event: { unitId: string; kind: 'workbook' | 'document'; label?: string }) => {
     if (event.kind !== 'workbook' || !Object.values(labels).includes(event.label ?? '')) return
     const workbook = api.getWorkbookModel(event.unitId)
@@ -341,11 +406,16 @@ export function registerSheetDrawingCommands(api: OfficeStudio): Disposable {
     }
   }
   const undo = api.events.addEvent('Undo', restore), redo = api.events.addEvent('Redo', restore)
+  const commands = api.events.addEvent('CommandExecuted', event => { if (event.id !== SHEET_DRAWING_GROUP_COMMAND_IDS.move) moveHistories.get(api)?.clear() })
+  const beforeUndo = api.events.addEvent('BeforeUndo', () => moveHistories.get(api)?.clear())
+  const beforeRedo = api.events.addEvent('BeforeRedo', () => moveHistories.get(api)?.clear())
   const disposed = api.events.addEvent('WorkbookDisposed', event => {
     clearSheetDrawingSelections(api, event.workbookId); selectionHistory.get(api)?.delete(event.workbookId)
+    moveHistories.get(api)?.clear()
   })
   return { dispose: () => {
-    registrations.forEach(registration => registration.dispose()); undo.dispose(); redo.dispose(); disposed.dispose()
+    registrations.forEach(registration => registration.dispose()); undo.dispose(); redo.dispose(); commands.dispose(); beforeUndo.dispose(); beforeRedo.dispose(); disposed.dispose()
+    moveHistories.delete(api)
     clearSheetDrawingSelections(api); selectionHistory.delete(api)
   } }
 }

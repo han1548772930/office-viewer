@@ -97,7 +97,7 @@ test('timeline keeps February 28, Excel February 29 and March 1 as separate whol
   try {
     const id = await panel.insertPanelSlicer(studio, target, { pivotTableId: pivot.getPivotTableId(), sourceFieldId: '0', type: 'timeline' })
     const timeline = output.getSlicer(id)
-    assert.deepEqual(timeline.getItems(), ['1', '59', '59.75', '60', '60.75', '61'])
+    assert.deepEqual(timeline.getItemLabels(), ['1', '59', '59.75', '60', '60.75', '61'])
     await panel.applyPanelTimelineRange(studio, target, id, { start: '1900-02-28', end: '1900-02-28', level: 'day' })
     assert.deepEqual(timeline.getInfo().selectedItems, ['59', '59.75'])
     await panel.applyPanelTimelineRange(studio, target, id, { start: '1900-02-29', end: '1900-02-29', level: 'day' })
@@ -177,7 +177,7 @@ test('multiple slicers intersect, distinguish no selection from clear and surviv
     restored = new api.OfficeStudio({ workbook: saved })
     const reopened = api.FOffice.newAPI(restored).getActiveWorkbook()
     assert.deepEqual(reopened.getSlicer(regionId).getInfo().selectedItems, ['East'])
-    assert.deepEqual(reopened.getSlicer(regionId).getItems(), ['East', 'West', 'North'])
+    assert.deepEqual(reopened.getSlicer(regionId).getItemLabels(), ['East', 'North', 'West'])
     assert.equal(reopened.getPivotTables()[0].getData().at(-1).at(-1), 100)
     await panel.removePanelSlicer(studio, target, regionId)
     assert.equal(workbook.getSlicer(regionId), null)
@@ -216,7 +216,7 @@ test('table slicer filters mixed scalar and blank values without replacing works
     })
     const slicer = await sheet.insertSlicer({ tableId: 'table-categories', sourceFieldId: withTable.tables[0].columns[0].id, type: 'slicer' })
 
-    assert.deepEqual(slicer.getItems(), ['Alpha', '', '4', 'false'])
+    assert.deepEqual(slicer.getItemLabels(), ['', '4', 'Alpha', 'false'])
     await panel.applyPanelSlicerItems(studio, { workbookId: workbook.getId(), sheetId: sheet.getSheetId() }, slicer.getId(), ['Alpha', '', '4'])
     const filteredModel = studio.getWorkbookModel(workbook.getId())
     const tableFilter = filteredModel.tables.find(({ id }) => id === 'table-categories').autoFilter
@@ -376,9 +376,10 @@ test('slicers sharing a source field mirror filter state and workbook drawing an
     assert.deepEqual(bounds(), absolute)
 
     await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { arrange: 'front' })
-    assert.ok(first.getInfo().drawing.zIndex > second.getInfo().drawing.zIndex)
+    const order = () => studio.getWorkbookModel(workbook.getId()).sheets.find(sheet => sheet.id === output.getSheetId()).drawingState.rootOrder.map(ref => `${ref.kind}:${ref.id}`)
+    assert.ok(order().indexOf(`slicer:${first.getId()}`) > order().indexOf(`slicer:${second.getId()}`))
     await panel.applyPanelSlicerPresentation(studio, target, first.getId(), { arrange: 'back' })
-    assert.ok(first.getInfo().drawing.zIndex < second.getInfo().drawing.zIndex)
+    assert.ok(order().indexOf(`slicer:${first.getId()}`) < order().indexOf(`slicer:${second.getId()}`))
   } finally { studio.dispose() }
 })
 
@@ -396,7 +397,7 @@ test('slicer canvas uses Pro pixel defaults, continuous timeline periods, and ma
     assert.deepEqual(periods.map(({ label }) => label), ['1月', '2月', '3月'])
     const sheetView = api.toExcelWorkbookView(studio.getWorkbookModel(workbook.getId())).sheets.find(sheet => sheet.id === output.getSheetId())
     const geometry = new layoutApi.SpreadsheetGeometry(sheetView)
-    const controls = [slicer, timeline].map(control => ({ model: control.getInfo(), items: control.getItems() }))
+    const controls = [slicer, timeline].map(control => ({ model: control.getInfo(), items: control.getItemLabels() }))
     const layouts = renderer.slicerObjectLayouts(geometry, controls, false)
     assert.deepEqual(layouts.map(({ rect }) => rect), [
       { x: 200, y: 200, width: 220, height: 280 },

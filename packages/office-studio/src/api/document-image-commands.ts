@@ -1,17 +1,19 @@
 import type { OfficeStudio } from './office-studio'
 import { FDocument } from './facade'
-import { getDocumentImage, insertDocumentImage, documentImageLegalSelection, type DocumentImageInsertOptions } from './document-images'
+import { getDocumentImage, insertDocumentImage, documentImageLegalSelection, alignDocumentImages, transformDocumentImages, type DocumentImageInsertOptions } from './document-images'
 import { requestDocumentImageEditorOpen, type DocumentImageEditorMode, type DocumentImageEditorTarget } from './document-image-editors'
 import { documentSegmentIdForHost } from './document-segments'
 import type { DocumentImageObjectCommand } from '../features/document/commands/document-image-commands'
 import { normalizeDocumentImagePosition, documentImageCropFromSourceRect, DOCUMENT_IMAGE_WRAPPING_STYLES, type DocumentImageSourceRect,
   type DocumentImagePosition, type DocumentImageWrappingStyle, type DocumentImagePatch } from '../features/document/images/document-image-model'
 import { cloneModel } from '../domain/serialization'
+import type { DocumentImageAlign, DocumentImageBatchTransform } from '../features/document/images/document-image-batch'
 
 export const DOCUMENT_IMAGE_PUBLIC_COMMANDS = {
   insert: 'doc.command.insert-float-image', transform: 'doc.command.update-drawing-doc-transform',
   wrapping: 'doc.command.update-doc-drawing-wrapping-style', arrange: 'doc.command.set-drawing-arrange', remove: 'doc.command.remove-drawing',
   edit: 'doc.operation.edit-doc-image', crop: 'doc.operation.crop-image', replace: 'doc.operation.replace-image',
+  align: 'doc.command.align-doc-images', batchTransform: 'doc.command.transform-doc-images',
 } as const
 export interface DocumentImageCommandBase { unitId?: string; subUnitId?: string; segmentId?: string; expectedRevision?: number; expectedHistoryGeneration?: number }
 export interface DocumentImageOperationRequest extends DocumentImageCommandBase { imageId?: string; drawingId?: string; paragraphMenuPlacement?: 'below' }
@@ -25,6 +27,8 @@ export interface DocumentImagePublicTransformRequest extends DocumentImageComman
 export interface DocumentImagePublicWrappingRequest extends DocumentImageCommandBase { drawings: Array<{ drawingId: string }>; wrappingStyle: DocumentImageWrappingStyle }
 export interface DocumentImagePublicArrangeRequest extends DocumentImageCommandBase { drawingIds: string[]; arrangeType?: 0 | 1 | 2 | 3; zOrder?: number }
 export interface DocumentImagePublicRemoveRequest extends DocumentImageCommandBase { drawings: Array<{ drawingId: string; unitId?: string; subUnitId?: string; drawingType?: number }> }
+export interface DocumentImagePublicAlignRequest extends DocumentImageCommandBase { drawingIds: string[]; alignType: DocumentImageAlign; preferredPage?: number }
+export interface DocumentImagePublicBatchTransformRequest extends DocumentImageCommandBase { drawingIds: string[]; transform: DocumentImageBatchTransform; preferredPage?: number }
 
 function commandDocument(api: OfficeStudio, input: DocumentImageCommandBase): FDocument {
   if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -63,6 +67,14 @@ export function resolveDocumentImageEditorTarget(document: FDocument, request: D
 }
 
 export function registerDocumentImageCommands(api: OfficeStudio): void {
+  api.registerCommand<DocumentImagePublicAlignRequest, boolean>(DOCUMENT_IMAGE_PUBLIC_COMMANDS.align, input => {
+    const document = commandDocument(api, input)
+    return alignDocumentImages(document, drawingIds(input.drawingIds), input.alignType, segment(document, input), { preferredPage: input.preferredPage })
+  })
+  api.registerCommand<DocumentImagePublicBatchTransformRequest, boolean>(DOCUMENT_IMAGE_PUBLIC_COMMANDS.batchTransform, input => {
+    const document = commandDocument(api, input)
+    return transformDocumentImages(document, drawingIds(input.drawingIds), input.transform, segment(document, input), { preferredPage: input.preferredPage })
+  })
   api.registerCommand<DocumentImagePublicInsertRequest | undefined, Promise<boolean>>(DOCUMENT_IMAGE_PUBLIC_COMMANDS.insert, async input => {
     const request = input ?? {}, document = commandDocument(api, request)
     const segmentId = request.segmentId !== undefined || request.subUnitId !== undefined ? segment(document, request) : undefined

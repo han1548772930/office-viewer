@@ -1,9 +1,14 @@
 import type { CellRange, CellScalar, ChartAxisOptions, PivotFieldModel, PivotTableModel, SheetAutoFilter,
-  SheetFilterCriteria, SheetTableModel, SlicerModel } from '../../domain/model.ts'
+  SheetFilterCriteria, SheetSlicerConnections, SheetTableModel, SlicerCacheModel, SlicerModel } from '../../domain/model.ts'
 import { validateSlicerDrawing } from '../slicer/slicer-drawing.ts'
+import { drawingAffineBounds, normalizeDrawingAffineGeometry } from '../../domain/drawing-affine.ts'
+import { GRID_HEADER_HEIGHT, GRID_HEADER_WIDTH } from '../../rendering/spreadsheet/layout.ts'
+import { chartDrawingWorldBounds } from '../charts/chart-drawing-affine.ts'
 import { assertSheetCommandRanges, sheetRangeContainsCell, sheetRangesEqual } from './sheet-range-command.ts'
 import { sheetClipboardBoundsContain, type SheetClipboardObjectBounds } from './sheet-clipboard-object-geometry.ts'
 import type { SheetClipboardLocation, SheetClipboardWorkbookResources } from './sheet-clipboard-types.ts'
+import { samePivotSource, sourceFieldId } from '../slicer/slicer-connections.ts'
+import { isChartType } from '../charts/chart-catalog.ts'
 
 export const SHEET_CLIPBOARD_RESOURCE_BUDGET = 100_000
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
@@ -42,6 +47,35 @@ export function assertSheetClipboardResourceBindings(
 ): void {
   const tables = new Map((available.tables ?? []).map(table => [table.id, table]))
   const pivots = new Map((available.pivotTables ?? []).map(pivot => [pivot.id, pivot]))
+  const controls = new Map((available.slicerCaches ?? []).map(cache => [cache.id, cache]))
+  const sourceCaches = new Map((available.pivotCaches ?? []).map(cache => [cache.id, cache]))
+  for (const cache of resources.slicerCaches ?? []) {
+    if (cache.source.kind === 'table') continue
+    const definition = cache.source, sourceCache = sourceCaches.get(definition.pivotCacheId)
+    if (!sourceCache && requireResolved) throw new TypeError('剪贴板切片器缺少共享透视来源缓存。')
+    if (sourceCache && sourceCache.source.unitId !== cache.unitId) throw new TypeError('剪贴板透视缓存不属于切片器工作簿。')
+    if (sourceCache?.fields && !sourceCache.fields.some(field => field.id === definition.sourceFieldId)) {
+      throw new TypeError('剪贴板切片器锁定的来源字段不存在。')
+    }
+    const check = (pivot: PivotTableModel | undefined): void => {
+      if (!pivot) { if (requireResolved) throw new TypeError('剪贴板切片器缺少完整连接报告。'); return }
+      if (pivot.source.unitId !== cache.unitId || (pivot.pivotCacheId ?? pivot.source.pivotCacheId) !== definition.pivotCacheId
+        || sourceCache && !samePivotSource(sourceCache.source, pivot.source)
+        || !pivot.fields.some(field => field.area !== 'value' && sourceFieldId(pivot, field) === definition.sourceFieldId)) {
+        throw new TypeError('剪贴板连接报告的共享来源或字段无效。')
+      }
+    }
+    for (const ref of cache.connections?.pivotTables ?? []) {
+      const pivot = pivots.get(ref.pivotTableId)
+      if (pivot && pivot.anchor.subUnitId !== ref.subUnitId) throw new TypeError('剪贴板透视连接宿主无效。')
+      check(pivot)
+    }
+    for (const ref of cache.connections?.ownedPivotCharts ?? []) {
+      const chart = available.charts?.find(chart => chart.id === ref.pivotChartId)
+      if (chart && (chart.sheetId !== ref.subUnitId || !chart.ownedPivot || chart.pivotTableId)) throw new TypeError('剪贴板独立透视图连接无效。')
+      check(chart?.ownedPivot)
+    }
+  }
   for (const chart of resources.charts ?? []) {
     if (!chart.pivotTableId) continue
     const pivot = pivots.get(chart.pivotTableId)
@@ -54,6 +88,19 @@ export function assertSheetClipboardResourceBindings(
     }
   }
   for (const slicer of resources.slicers ?? []) {
+    if (slicer.cacheId) {
+      const cache = controls.get(slicer.cacheId)
+      if (!cache) { if (requireResolved) throw new TypeError('剪贴板切片器缺少共享控件缓存。'); continue }
+      if (cache.unitId !== slicer.unitId || cache.type !== slicer.type || (cache.source.kind === 'table' ? cache.source.columnId : cache.source.sourceFieldId) !== slicer.sourceFieldId) {
+        throw new TypeError('剪贴板切片器与共享缓存不一致。')
+      }
+      if (cache.source.kind === 'pivot') continue
+      const definition = cache.source, table = tables.get(definition.tableId)
+      if (!table) { if (requireResolved) throw new TypeError('剪贴板切片器缺少表格来源。'); continue }
+      if (table.sheetId !== definition.subUnitId || !table.columns.some(column => column.id === definition.columnId)
+        || slicer.tableId !== undefined && slicer.tableId !== definition.tableId) throw new TypeError('剪贴板切片器共享表格来源无效。')
+      continue
+    }
     if (slicer.tableId) {
       const table = tables.get(slicer.tableId)
       if (!table) {
@@ -67,8 +114,15 @@ export function assertSheetClipboardResourceBindings(
         if (requireResolved) throw new TypeError('剪贴板切片器缺少其透视数据源。')
         continue
       }
-      if (pivot.source.unitId !== slicer.unitId || !pivot.fields.some(field => field.id === slicer.sourceFieldId && field.area !== 'value')) {
+      if (pivot.source.unitId !== slicer.unitId || !pivot.fields.some(field => sourceFieldId(pivot, field) === slicer.sourceFieldId && field.area !== 'value')) {
         throw new TypeError('剪贴板切片器的透视字段绑定无效。')
+      }
+    } else if (slicer.ownedPivotChartId) {
+      const chart = available.charts?.find(chart => chart.id === slicer.ownedPivotChartId)
+      if (!chart?.ownedPivot) { if (requireResolved) throw new TypeError('剪贴板切片器缺少独立透视图来源。'); continue }
+      if (chart.pivotTableId || chart.ownedPivot.source.unitId !== slicer.unitId
+        || !chart.ownedPivot.fields.some(field => field.area !== 'value' && sourceFieldId(chart.ownedPivot!, field) === slicer.sourceFieldId)) {
+        throw new TypeError('剪贴板切片器的独立透视图字段无效。')
       }
     }
   }
@@ -77,6 +131,8 @@ export function assertSheetClipboardResourceBindings(
 function assertSourceResources(resources: SheetClipboardWorkbookResources, context: SheetClipboardResourceValidationContext): void {
   const { source, rows, columns, sourceOrigin, sourceBounds } = context
   assertSheetCommandRanges([source.range])
+  if ((resources.slicerCaches ?? []).some(cache => cache.unitId !== source.unitId)
+    || (resources.pivotCaches ?? []).some(cache => cache.source.unitId !== source.unitId)) throw new TypeError('剪贴板共享缓存不属于复制源工作簿。')
   for (const table of resources.tables ?? []) {
     if (table.sheetId !== source.sheetId || !contains(source.range, table.range)
       || !fullyRepresented(columns, table.range.startCol, table.range.endCol)
@@ -95,7 +151,7 @@ function assertSourceResources(resources: SheetClipboardWorkbookResources, conte
     throw new TypeError('剪贴板绘图缺少一致的源范围几何。')
   }
   for (const chart of resources.charts ?? []) {
-    if (chart.sheetId !== source.sheetId || !sheetClipboardBoundsContain(sourceBounds, { left: chart.position.x, top: chart.position.y, ...chart.size })) {
+    if (chart.sheetId !== source.sheetId || !sheetClipboardBoundsContain(sourceBounds, chartDrawingWorldBounds(chart))) {
       throw new TypeError('剪贴板图表不属于完整选中的复制源范围。')
     }
   }
@@ -133,6 +189,7 @@ function assertTableFilter(filter: SheetAutoFilter, table: SheetTableModel): voi
 
 function assertPivotField(field: PivotFieldModel, pivot: PivotTableModel): void {
   if (!record(field) || !identifier(field.id) || typeof field.name !== 'string' || !index(field.sourceColumn, 16_384)
+    || field.sourceFieldId !== undefined && !identifier(field.sourceFieldId)
     || field.sourceColumn < pivot.source.range.startCol || field.sourceColumn > pivot.source.range.endCol
     || !['row', 'column', 'filter', 'value'].includes(field.area) || !index(field.position, 16_384)
     || field.aggregation !== undefined && !['average', 'count', 'countNums', 'max', 'min', 'product', 'stdDev', 'stdDevp', 'sum', 'var', 'varp'].includes(field.aggregation)
@@ -156,6 +213,7 @@ function assertPivotField(field: PivotFieldModel, pivot: PivotTableModel): void 
 
 function assertPivot(pivot: PivotTableModel): void {
   if (!record(pivot.source) || !record(pivot.anchor) || !identifier(pivot.source.unitId) || !identifier(pivot.source.subUnitId)
+    || pivot.pivotCacheId !== undefined && !identifier(pivot.pivotCacheId) || pivot.source.pivotCacheId !== undefined && !identifier(pivot.source.pivotCacheId)
     || typeof pivot.source.sheetName !== 'string' || !identifier(pivot.anchor.unitId) || !identifier(pivot.anchor.subUnitId)
     || pivot.source.unitId !== pivot.anchor.unitId || !index(pivot.anchor.row, 1_048_576) || !index(pivot.anchor.col, 16_384)
     || !Array.isArray(pivot.fields) || pivot.fields.length > 16_384 || new Set(pivot.fields.map(field => field?.id)).size !== pivot.fields.length
@@ -201,8 +259,10 @@ function assertChartAxis(axis: ChartAxisOptions): void {
 }
 
 function assertSlicer(slicer: SlicerModel): void {
+  const hints = [slicer.tableId, slicer.pivotTableId, slicer.ownedPivotChartId].filter(value => value !== undefined)
   if (!identifier(slicer.unitId) || !identifier(slicer.hostSheetId) || !identifier(slicer.sourceFieldId) || typeof slicer.caption !== 'string'
-    || !['slicer', 'timeline'].includes(slicer.type) || Boolean(slicer.tableId) === Boolean(slicer.pivotTableId)
+    || !['slicer', 'timeline'].includes(slicer.type) || hints.length > 1 || !slicer.cacheId && hints.length !== 1
+    || slicer.cacheId !== undefined && !identifier(slicer.cacheId) || slicer.ownedPivotChartId !== undefined && !identifier(slicer.ownedPivotChartId)
     || slicer.tableId !== undefined && !identifier(slicer.tableId) || slicer.pivotTableId !== undefined && !identifier(slicer.pivotTableId)
     || !record(slicer.position) || !record(slicer.size) || !index(slicer.position.row, 1_048_576) || !index(slicer.position.column, 16_384)
     || !count(slicer.size.rows, 1_048_576) || !count(slicer.size.columns, 16_384)
@@ -216,6 +276,12 @@ function assertSlicer(slicer: SlicerModel): void {
   }
   if (slicer.layout && (!record(slicer.layout) || ![slicer.layout.left, slicer.layout.top, slicer.layout.width, slicer.layout.height].every(Number.isFinite)
     || slicer.layout.width <= 0 || slicer.layout.height <= 0)) throw new TypeError('剪贴板切片器布局无效。')
+  if (slicer.drawingGeometry !== undefined) {
+    const bounds = drawingAffineBounds(normalizeDrawingAffineGeometry(slicer.drawingGeometry))
+    const expected = { ...bounds, left: GRID_HEADER_WIDTH + bounds.left, top: GRID_HEADER_HEIGHT + bounds.top }
+    if (slicer.layout && (['left', 'top', 'width', 'height'] as const).some(key => Math.abs(slicer.layout![key] - expected[key])
+      > Math.max(1e-7, Math.abs(expected[key]) * Number.EPSILON * 8))) throw new TypeError('剪贴板切片器布局与仿射几何不一致。')
+  }
   if (slicer.timelineRange && (!record(slicer.timelineRange) || !['day', 'month', 'quarter', 'year'].includes(slicer.timelineRange.level)
     || slicer.timelineRange.start !== undefined && !scalar(slicer.timelineRange.start) || slicer.timelineRange.end !== undefined && !scalar(slicer.timelineRange.end))) {
     throw new TypeError('剪贴板时间线范围无效。')
@@ -228,16 +294,68 @@ function assertSlicer(slicer: SlicerModel): void {
   for (const key of ['columnCount', 'rowHeight'] as const) if (slicer[key] !== undefined && (!Number.isFinite(slicer[key]) || slicer[key]! <= 0)) throw new RangeError('剪贴板切片器项目尺寸无效。')
 }
 
+function assertConnections(connections: SheetSlicerConnections): void {
+  if (!record(connections) || !Array.isArray(connections.pivotTables)
+    || connections.ownedPivotCharts !== undefined && !Array.isArray(connections.ownedPivotCharts)) throw new TypeError('剪贴板切片器连接无效。')
+  const keys = new Set<string>()
+  for (const [kind, entries, idKey] of [
+    ['pivotTable', connections.pivotTables, 'pivotTableId'], ['ownedPivotChart', connections.ownedPivotCharts ?? [], 'pivotChartId'],
+  ] as const) for (const ref of entries) {
+    if (!record(ref) || !identifier(ref.subUnitId) || !identifier(ref[idKey])) throw new TypeError('剪贴板切片器连接引用无效。')
+    const key = JSON.stringify([kind, ref.subUnitId, ref[idKey]])
+    if (keys.has(key)) throw new TypeError('剪贴板切片器连接重复。')
+    keys.add(key)
+  }
+}
+
+function assertSlicerCache(cache: SlicerCacheModel): void {
+  const source = cache.source
+  if (!identifier(cache.unitId) || !['slicer', 'timeline'].includes(cache.type) || !record(source)
+    || !index(cache.revision, Number.MAX_SAFE_INTEGER) || cache.selectedItems !== undefined && !stringItems(cache.selectedItems)) {
+    throw new TypeError('剪贴板切片器共享缓存无效。')
+  }
+  if (source.kind === 'table') {
+    if (!identifier(source.subUnitId) || !identifier(source.tableId) || !identifier(source.columnId) || cache.type === 'timeline'
+      || cache.connections !== undefined) throw new TypeError('剪贴板切片器表格来源无效。')
+  } else if (source.kind !== 'pivot' || !identifier(source.pivotCacheId) || !identifier(source.sourceFieldId)) {
+    throw new TypeError('剪贴板切片器透视来源无效。')
+  }
+  if (cache.connections !== undefined) assertConnections(cache.connections)
+  if (cache.timelineRange !== undefined && (!record(cache.timelineRange) || !['day', 'month', 'quarter', 'year'].includes(cache.timelineRange.level)
+    || cache.timelineRange.start !== undefined && !scalar(cache.timelineRange.start) || cache.timelineRange.end !== undefined && !scalar(cache.timelineRange.end))) {
+    throw new TypeError('剪贴板时间线共享范围无效。')
+  }
+}
+
 /** Validate imported clipboard object contracts before they can be installed in a candidate. */
 export function assertSheetClipboardWorkbookResources(resources: SheetClipboardWorkbookResources, context?: SheetClipboardResourceValidationContext): void {
   if (!record(resources)) throw new TypeError('剪贴板工作簿资源无效。')
-  for (const key of ['tables', 'pivotTables', 'charts', 'slicers'] as const) {
+  for (const key of ['tables', 'pivotTables', 'pivotCaches', 'charts', 'slicers', 'slicerCaches'] as const) {
     const entries = resources[key]
     if (entries === undefined) continue
     if (!Array.isArray(entries) || entries.length > SHEET_CLIPBOARD_RESOURCE_BUDGET
       || entries.some(item => !record(item) || !identifier(item.id)) || new Set(entries.map(item => item.id)).size !== entries.length) {
       throw new TypeError('剪贴板对象数量或标识无效。')
     }
+  }
+  for (const cache of resources.pivotCaches ?? []) {
+    if (!record(cache.source) || !identifier(cache.source.unitId) || !identifier(cache.source.subUnitId) || typeof cache.source.sheetName !== 'string'
+      || !index(cache.revision, Number.MAX_SAFE_INTEGER) || cache.nextFieldId !== undefined && !index(cache.nextFieldId, Number.MAX_SAFE_INTEGER)) {
+      throw new TypeError('剪贴板透视缓存来源无效。')
+    }
+    assertSheetCommandRanges([cache.source.range])
+    if (cache.source.range.endRow <= cache.source.range.startRow) throw new RangeError('剪贴板透视缓存缺少记录行。')
+    if (cache.fields !== undefined && (!Array.isArray(cache.fields) || cache.fields.length > cache.source.range.endCol - cache.source.range.startCol + 1
+      || cache.fields.some(field => !record(field) || !identifier(field.id) || !index(field.sourceColumn, 16_384)
+        || field.sourceColumn < cache.source.range.startCol || field.sourceColumn > cache.source.range.endCol
+        || field.name !== undefined && typeof field.name !== 'string') || new Set(cache.fields.map(field => field.id)).size !== cache.fields.length
+      || new Set(cache.fields.map(field => field.sourceColumn)).size !== cache.fields.length)) throw new TypeError('剪贴板透视缓存来源字段无效。')
+  }
+  let connectionCount = 0
+  for (const cache of resources.slicerCaches ?? []) {
+    assertSlicerCache(cache)
+    connectionCount += (cache.connections?.pivotTables.length ?? 0) + (cache.connections?.ownedPivotCharts?.length ?? 0)
+    if (connectionCount > SHEET_CLIPBOARD_RESOURCE_BUDGET) throw new RangeError('剪贴板切片器连接数量超出预算。')
   }
   const names = new Set<string>()
   for (const table of resources.tables ?? []) {
@@ -253,7 +371,13 @@ export function assertSheetClipboardWorkbookResources(resources: SheetClipboardW
   }
   for (const pivot of resources.pivotTables ?? []) assertPivot(pivot)
   for (const chart of resources.charts ?? []) {
-    if (!identifier(chart.sheetId) || !['bar', 'line', 'area', 'pie', 'doughnut', 'stacked-column', 'scatter', 'radar'].includes(chart.type)
+    if (chart.ownedPivot !== undefined) {
+      if (chart.pivotTableId) throw new TypeError('剪贴板透视图报告来源冲突。')
+      assertPivot(chart.ownedPivot)
+      if (chart.ownedPivot.anchor.subUnitId !== chart.sheetId) throw new TypeError('剪贴板独立透视图报告宿主无效。')
+    }
+    if (chart.drawingGeometry !== undefined) normalizeDrawingAffineGeometry(chart.drawingGeometry)
+    if (!identifier(chart.sheetId) || !isChartType(chart.type)
       || !record(chart.source) || !['columns', 'rows'].includes(chart.source.orientation) || chart.source.sheetId !== undefined && !identifier(chart.source.sheetId)
       || !record(chart.position) || !record(chart.size) || ![chart.position.x, chart.position.y, chart.size.width, chart.size.height].every(Number.isFinite)
       || chart.position.x < 0 || chart.position.y < 0 || chart.size.width <= 0 || chart.size.height <= 0 || chart.title !== undefined && typeof chart.title !== 'string'

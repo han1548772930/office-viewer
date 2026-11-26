@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Sheet drawing workbench fixture</title>
+<style>body{margin:0}#app{height:100vh}</style></head><body><div id="app"></div>
+<script type="module">
+import { createApp, h, nextTick, ref, shallowRef, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio.ts'
+import { FOffice } from '/packages/office-studio/src/api/facade.ts'
+import { getSheetDrawingSelection, setSheetDrawingSelection } from '/packages/office-studio/src/api/sheet-drawing-selection.ts'
+import { drawingAffinePoint } from '/packages/office-studio/src/domain/drawing-affine.ts'
+import { drawingGraph, drawingGroupFrame, drawingPaintOrder } from '/packages/office-studio/src/features/drawing-groups/index.ts'
+import { createSheetDrawingScene } from '/packages/office-studio/src/features/sheet-drawings/sheet-drawing-host.ts'
+import { sheetDrawingPaneLayouts } from '/packages/office-studio/src/features/sheet-drawings/sheet-drawing-viewport.ts'
+import { sheetImageWithFrame } from '/packages/office-studio/src/features/sheet-images/sheet-image-placement.ts'
+import { sheetClipboardObjectAxes } from '/packages/office-studio/src/features/sheet-workbench/sheet-clipboard-object-geometry.ts'
+import { chartPlotAreaHandlePoints } from '/packages/office-studio/src/features/charts/chart-plot-area-interaction.ts'
+import { EChartsCanvasRenderer } from '/packages/office-studio/src/features/charts/echarts-renderer.ts'
+import { GRID_HEADER_WIDTH as W, GRID_HEADER_HEIGHT as H, SpreadsheetGeometry } from '/packages/office-studio/src/rendering/spreadsheet/layout.ts'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter.ts'
+import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display.ts'
+import { slicerObjectLayouts } from '/packages/office-studio/src/features/slicer/slicer-renderer.ts'
+import { updateSlicerPresentation } from '/packages/office-studio/src/features/slicer/slicer-engine.ts'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+import { sheetDrawingWorkbook } from './sheet-drawing-model-fixture.mjs'
+import { slicerDrawingControls, slicerDrawingWorkbook } from './slicer-drawing-model-fixture.mjs'
+import { sheetImagePng } from './sheet-image-fixture.mjs'
+
+// Draft fixture: real Workbench/Pinia/Ant/Canvas/ECharts/native commands. It has not been opened in a browser.
+const slot = shallowRef(), view = ref(), dark = ref(false), variant = ref('classic'), display = ref({ chrome: 'full', zoom: 100 })
+const renderers = new Map(), commands = [], notices = [], originalRender = EChartsCanvasRenderer.prototype.render
+let app, stopView
+const json = value => JSON.parse(JSON.stringify(value))
+const studio = () => slot.value, facade = () => FOffice.newAPI(studio()), book = () => facade().getActiveWorkbook(), sheet = () => book().getActiveSheet()
+const model = () => studio().getWorkbookModel(book().getId()), scene = () => createSheetDrawingScene(model(), model().activeSheetId)
+const selected = () => getSheetDrawingSelection(studio(), book().getId(), model().activeSheetId)
+const refs = (kind, id) => ({ kind, id })
+async function settled() { await nextTick(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); await nextTick() }
+EChartsCanvasRenderer.prototype.render = function(id, option, size, colors) {
+  const result = originalRender.call(this, id, option, size, colors); renderers.set(id, this); return result
+}
+function seed({ readonly = false, withSlicers = false, affine = true, scrollable = true } = {}) {
+  const value = withSlicers ? slicerDrawingWorkbook({ affine, scrollable }) : sheetDrawingWorkbook(),
+    source = value.sheets[0], axes = sheetClipboardObjectAxes(value, source)
+  source.name = 'Drawings'; source.shapes = []
+  source.images = source.images.map((image, index) => sheetImageWithFrame({ ...image, crop: undefined, flipX: false,
+    resource: { ...image.resource, source: sheetImagePng, byteLength: 68, width: 1, height: 1 } },
+    index === 0 ? { left: 60, top: 70, width: 120, height: 80 } : { left: 540, top: 90, width: 100, height: 80 }, axes, '2'))
+  value.charts[0].position = { x: W + 240, y: H + 120 }; value.charts[0].size = { width: 260, height: 180 }
+  value.charts[0].title = 'Affine chart'; value.charts[0].options = { titleStyle: { fontSize: 18, manualLayout: { left: 0.5, top: 0.07 } },
+    plotArea: { left: 0.17, top: 0.28, width: 0.7, height: 0.55 } }
+  for (const control of value.slicers ?? []) {
+    const { width, height } = control.drawingGeometry ?? control.layout, matrix = control.drawingGeometry?.matrix ?? { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+    updateSlicerPresentation(control, { anchorType: 'none', drawingGeometry: { width, height,
+      matrix: { ...matrix, e: control.id === 's' ? 60 : 420, f: control.id === 's' ? 260 : 360 } } }, value)
+  }
+  for (const item of value.sheets) item.drawingState = undefined
+  value.sheets.push({ ...json(source), id: 'other', name: 'Other', images: [], cells: {}, drawingState: undefined })
+  if (readonly) source.worksheetProtection = { id: 'readonly', permissionId: 'readonly', unitType: 'worksheet', ownerUserId: 'peer',
+    allowedUserIds: [], editState: 'onlyMe', viewState: 'othersCanView' }
+  return value
+}
+function state() {
+  const value = model(), history = studio().editor.history.units[value.id]
+  return { model: json(value), selection: json(selected()), scene: json(scene()), order: json(drawingPaintOrder(scene())),
+    controls: json(slicerDrawingControls(value)), userId: studio().currentUserId,
+    revision: studio().getWorkbookRevision(value.id), history: { undo: history?.undo.length ?? 0, redo: history?.redo.length ?? 0,
+      dirty: studio().editor.history.isDirty(value.id) }, commands: json(commands), notices: json(notices) }
+}
+async function release() { app?.unmount(); app = undefined; stopView?.(); stopView = undefined; slot.value?.dispose(); slot.value = undefined; await settled() }
+async function mount(options = {}) {
+  await release(); commands.length = notices.length = 0; renderers.clear(); dark.value = false; variant.value = 'classic'; display.value = { chrome: 'full', zoom: 100 }
+  slot.value = new OfficeStudio({ workbook: options.model ?? seed(options), currentUserId: options.currentUserId }); view.value = toExcelWorkbookView(model())
+  stopView = watch(() => slot.value?.editor.workbook.model, value => { if (value) view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+  studio().events.addEvent('CommandExecuted', event => commands.push({ id: event.id, params: json(event.params ?? {}) }))
+  app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+    default: () => h(ExcelWorkbench, { modelValue: view.value, studio: slot.value, ribbonVariant: variant.value,
+      canUndo: studio().editor.canUndo, canRedo: studio().editor.canRedo,
+      'onUpdate:modelValue': value => studio().editor.replaceWorkbookFromView(value, 'en-US'),
+      onUndo: () => book().undo(), onRedo: () => book().redo(), onNotify: value => notices.push(json(value)),
+    }),
+  }) }).use(studio().pinia).provide(WorkbenchDisplayKey, display)
+  app.mount('#app'); await settled(); return state()
+}
+function canvas() {
+  const root = document.querySelector('[role="grid"][aria-label="工作表画布"]'), scroller = document.querySelector('.canvas-scroll'), rect = root.getBoundingClientRect()
+  return { root, rect, geometry: new SpreadsheetGeometry(view.value.sheets.find(sheet => sheet.id === model().activeSheetId)),
+    viewport: { width: rect.width, height: rect.height, zoom: display.value.zoom / 100, scrollLeft: scroller.scrollLeft, scrollTop: scroller.scrollTop } }
+}
+function visiblePoint(geometry, local, requested) {
+  const { rect, viewport, geometry: grid } = canvas()
+  for (const layout of sheetDrawingPaneLayouts(grid, viewport, geometry)) {
+    if (requested && (requested.frozenX !== undefined && layout.frozenX !== requested.frozenX || requested.frozenY !== undefined && layout.frozenY !== requested.frozenY)) continue
+    const point = drawingAffinePoint(layout.frame.matrix, local.x, local.y), clip = layout.clip
+    if (point.x >= clip.x && point.y >= clip.y && point.x <= clip.x + clip.width && point.y <= clip.y + clip.height)
+      return { x: rect.left + point.x, y: rect.top + point.y, pane: { frozenX: layout.frozenX, frozenY: layout.frozenY } }
+  }
+  throw new Error('Requested drawing point is clipped by every visible pane')
+}
+function point(kind, id, ratios = { x: 0.2, y: 0.2 }, requested) {
+  const graph = drawingGraph(scene()), object = kind === 'group' ? graph.groups.get(id)?.frame : graph.objects.get(kind + ':' + id)?.geometry
+  if (!object) throw new Error('No drawing owner')
+  return visiblePoint(object, { x: ratios.x * object.width, y: ratios.y * object.height }, requested)
+}
+function authorPoint(kind, handle, requested) {
+  const chart = model().charts.find(chart => chart.sheetId === model().activeSheetId), renderer = renderers.get(chart.id)
+  if (!renderer) throw new Error('No native chart renderer')
+  let local
+  if (kind === 'title') {
+    const target = renderer.getTitleTarget(chart.id, 'title')
+    local = target?.polygons.map(polygon => ({ x: polygon.reduce((total, point) => total + point.x, 0) / polygon.length,
+      y: polygon.reduce((total, point) => total + point.y, 0) / polygon.length })).find(point => renderer.getTitleHit(chart.id, point)?.kind === 'title')
+  } else {
+    const target = renderer.getPlotAreaTarget(chart.id)
+    local = target ? chartPlotAreaHandlePoints(target).find(point => point.handle === handle) : undefined
+  }
+  if (!local) throw new Error('No authored native target')
+  const object = scene().objects.find(object => object.ref.kind === 'chart' && object.ref.id === chart.id)
+  return { ...visiblePoint(object.geometry, { x: local.x * object.geometry.width / chart.size.width,
+    y: local.y * object.geometry.height / chart.size.height }, requested), local: json(local) }
+}
+function slicerControlPoint(id, kind, index = 0, requested, ratios = { x: 0.5, y: 0.5 }) {
+  const { geometry } = canvas(), layout = slicerObjectLayouts(geometry, slicerDrawingControls(model()), model().date1904 ?? false).find(layout => layout.id === id)
+  if (!layout) throw new Error('No native slicer layout')
+  const target = kind === 'item' ? layout.items.find(item => item.index === index)?.rect
+    : kind === 'period' ? layout.periods.find(item => item.period.key === index)?.rect ?? layout.periods[index]?.rect
+    : kind === 'thumb' ? layout.scrollThumb : layout[kind]
+  if (!target) throw new Error('No requested slicer control')
+  const local = { x: target.x - layout.rect.x + target.width * ratios.x, y: target.y - layout.rect.y + target.height * ratios.y }
+  return { ...visiblePoint(layout.geometry, local, requested), local, maxScrollOffset: layout.maxScrollOffset, scrollOffset: layout.scrollOffset }
+}
+window.sheetDrawingFixture = { mount, state, point, authorPoint, slicerControlPoint,
+  async presentation(id, patch, context) { await book().getSlicer(id).updatePresentation(patch, context); await settled(); return state() },
+  async filter(id, items, context) { await book().getSlicer(id).setItems(items, context); await settled(); return state() },
+  async switchUser(userId) { return mount({ model: json(book().save()), currentUserId: userId }) },
+  async select(selection) { setSheetDrawingSelection(studio(), book().getId(), model().activeSheetId, selection); await settled(); return state() },
+  async transform(selection, delta) { sheet().transformDrawings(selection, { delta }); await settled(); return state() },
+  async arrange(selection, type) { sheet().arrangeDrawings(selection, type); await settled(); return state() },
+  async freeze(rows, columns) { sheet().setFreeze({ rows, columns }); await settled(); return state() },
+  async switchSheet(id) { book().setActiveSheet(id); await settled(); return state() },
+  async zoom(value) { display.value = { ...display.value, zoom: value }; await settled(); return state() },
+  async appearance(value, layout) { dark.value = value; variant.value = layout; await settled(); return state() },
+  async scroll(left, top) { const scroller = document.querySelector('.canvas-scroll'); scroller.scrollLeft = left; scroller.scrollTop = top; await settled(); return state() },
+  async overlapImage() { studio().commitWorkbook(book().getId(), 'fixture overlap', value => {
+    const source = value.sheets.find(sheet => sheet.id === value.activeSheetId), chart = value.charts.find(chart => chart.sheetId === source.id)
+    source.images[0] = sheetImageWithFrame(source.images[0], { left: chart.position.x - W + 50, top: chart.position.y - H + 40, width: 100, height: 80 }, sheetClipboardObjectAxes(value, source), '2')
+  }); sheet().arrangeDrawings([refs('image', 'a')], 'front'); await settled(); return state() },
+  control(handle) { const graph = drawingGraph(scene()), selection = selected(), frames = selection.map(ref => ref.kind === 'group'
+    ? graph.groups.get(ref.id).frame : graph.objects.get(ref.kind + ':' + ref.id).geometry), frame = frames.length === 1 ? frames[0] : drawingGroupFrame(frames),
+    { geometry, viewport, rect } = canvas(), layout = sheetDrawingPaneLayouts(geometry, viewport, frame).find(layout => {
+      const point = layout.handles[handle]; return point.x >= layout.clip.x && point.y >= layout.clip.y && point.x <= layout.clip.x + layout.clip.width && point.y <= layout.clip.y + layout.clip.height
+    })
+    if (!layout) throw new Error('No visible shared drawing handle'); return { x: rect.left + layout.handles[handle].x, y: rect.top + layout.handles[handle].y }
+  },
+  async undo() { book().undo(); await settled(); return state() }, async redo() { book().redo(); await settled(); return state() },
+  async markSaved() { studio().editor.history.markSaved(book().getId()); await settled(); return state() },
+  async reopen() { return mount({ model: json(book().save()), currentUserId: studio().currentUserId }) },
+  async dispose() { await release(); renderers.clear(); EChartsCanvasRenderer.prototype.render = originalRender },
+}
+await mount()
+</script></body></html>

@@ -200,6 +200,7 @@ fn read_sidecar(bytes: &[u8]) -> Result<PivotSidecar, String> {
             table_names.insert(name, id.clone());
             sidecar.pivot_tables.push(json!({
                 "id": id,
+                "pivotCacheId": format!("office-pivot-cache:{cache_path}"),
                 "source": {"unitId":"", "subUnitId": source_sheet.as_deref().unwrap_or(""), "sheetName": source_sheet, "range": {"startRow":source_range[0],"startCol":source_range[1],"endRow":source_range[2],"endCol":source_range[3]}},
                 "anchor": {"unitId":"", "subUnitId":sheet_name, "row":target_range[0], "col":target_range[1]},
                 "outputRange":{"startRow":target_range[0],"startCol":target_range[1],"endRow":target_range[2],"endCol":target_range[3]},
@@ -292,7 +293,7 @@ fn canonical_fields(table: &Node, cache: &Node, source_start_col: u32) -> Vec<Va
     cache_fields.iter().enumerate().map(|(index, field)| {
         let placement = placements.get(&index);
         let name = field.attrs.get("name").cloned().unwrap_or_else(|| format!("Column {}", index + 1));
-        let mut result = json!({"id":index.to_string(),"sourceColumn":source_start_col + index as u32,"name":name,"area":placement.map_or("unused", |value| value.0.as_str()),"position":placement.map_or(0, |value| value.1)});
+        let mut result = json!({"id":index.to_string(),"sourceFieldId":index.to_string(),"sourceColumn":source_start_col + index as u32,"name":name,"area":placement.map_or("unused", |value| value.0.as_str()),"position":placement.map_or(0, |value| value.1)});
         if let Some((_, _, Some(display_name), aggregation)) = placement.filter(|placement| placement.0 == "value") { result["displayName"] = json!(display_name); result["aggregation"] = json!(normalize_aggregation(aggregation.as_deref())); }
         result
     }).collect()

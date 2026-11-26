@@ -15,6 +15,8 @@ import { documentSegmentIdForHost } from './document-segments'
 import { documentImageToDrawing } from './document-image-body'
 import { bodyRecord } from './document-body-style'
 import { trackDocumentImageTask } from './document-image-editors'
+import { documentImageBatchMembers, type DocumentImageAlign, type DocumentImageBatchTransform } from '../features/document/images/document-image-batch'
+import { readDocumentImageLayout, type DocumentImageGeometryReadOptions } from './document-image-layout'
 
 export interface DocumentImageTextRange { startOffset: number; endOffset: number; segmentId?: string }
 export interface DocumentImageInsertOptions {
@@ -79,6 +81,7 @@ export class FDocumentImage {
   getUnitId(): string { return this.document.id }
   getId(): string { return this.imageId }
   getSegmentId(): string { return this.segmentId }
+  belongsToDocument(document: FDocument): boolean { return this.document.id === document.id && this.document.getModel() === document.getModel() }
   private source(): DocumentImageEntry | undefined { return documentImageTargets(this.document, this.segmentId).find(entry => entry.imageId === this.imageId) }
   getSource(): string | undefined { const image = this.source()?.image; return image?.originalSource ?? image?.src }
   getSourceType(): 'URL' | 'BASE64' | undefined { const source = this.getSource(); return source === undefined ? undefined : /^data:/i.test(source) ? 'BASE64' : 'URL' }
@@ -135,6 +138,50 @@ export class FDocumentImage {
 }
 export function getDocumentImages(document: FDocument, segmentId = ''): FDocumentImage[] { return documentImageTargets(document, segmentId).map(entry => new FDocumentImage(document, entry.imageId, segmentId)) }
 export function getDocumentImage(document: FDocument, imageId: string, segmentId = ''): FDocumentImage | null { return getDocumentImages(document, segmentId).find(image => image.getId() === imageId) ?? null }
+
+function batchImageIds(document: FDocument, images: readonly (FDocumentImage | string)[], segmentId: string): string[] {
+  if (!Array.isArray(images) || !images.length || images.length > 1000) throw new TypeError('图片批量操作需要有效目标。')
+  const ids = images.map(image => {
+    if (typeof image === 'string') return image
+    if (!(image instanceof FDocumentImage) || !image.belongsToDocument(document) || image.getSegmentId() !== segmentId) throw new TypeError('图片属于其他文档实例或内容区。')
+    return image.getId()
+  })
+  if (ids.some(id => !id.trim()) || new Set(ids).size !== ids.length) throw new TypeError('图片批量操作需要不重复的有效目标。')
+  const model = document.getSegmentModel(segmentId), context = { documentId: document.id, userId: document.getCurrentUserId() }, entries = documentImageEntries(model)
+  for (const id of ids) {
+    if (!entries.some(entry => entry.imageId === id)) throw new RangeError('图片批量目标不属于指定内容区。')
+    assertDocumentPermission(model.permissionRules ?? [], context, 'view', permissionTargetsForImage(model, id))
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForImage(model, id))
+  }
+  return ids
+}
+export function alignDocumentImages(document: FDocument, images: readonly (FDocumentImage | string)[], align: DocumentImageAlign,
+  segmentId = '', options: DocumentImageGeometryReadOptions = {}): boolean {
+  const ids = batchImageIds(document, images, segmentId), source = document.getModel(), revision = document.getModelRevision()
+  const members = documentImageBatchMembers(document.getSegmentModel(segmentId), readDocumentImageLayout(document, segmentId, options), ids, options.preferredPage)
+  if (document.getModel() !== source || document.getModelRevision() !== revision) throw new RangeError('图片排版对应的文档版本已变化。')
+  const host = document.getSegmentHost(segmentId)
+  return document.executeCommand({ id: 'doc.command.align-images', members, align, ...(host ? { host } : {}) }, documentImageLegalSelection(document, segmentId)).changed
+}
+export function transformDocumentImages(document: FDocument, images: readonly (FDocumentImage | string)[], transform: DocumentImageBatchTransform,
+  segmentId = '', options: DocumentImageGeometryReadOptions = {}): boolean {
+  const ids = batchImageIds(document, images, segmentId), source = document.getModel(), revision = document.getModelRevision()
+  const members = documentImageBatchMembers(document.getSegmentModel(segmentId), readDocumentImageLayout(document, segmentId, options), ids, options.preferredPage)
+  if (document.getModel() !== source || document.getModelRevision() !== revision) throw new RangeError('图片排版对应的文档版本已变化。')
+  const host = document.getSegmentHost(segmentId)
+  return document.executeCommand({ id: 'doc.command.transform-images', members, transform, ...(host ? { host } : {}) }, documentImageLegalSelection(document, segmentId)).changed
+}
+export function arrangeDocumentImages(document: FDocument, images: readonly (FDocumentImage | string)[], arrange: DocumentImageArrange | number, segmentId = ''): boolean {
+  const imageIds = batchImageIds(document, images, segmentId), host = document.getSegmentHost(segmentId)
+  const command: DocumentImageCommand = typeof arrange === 'number' ? { id: 'doc.command.arrange-images', imageIds, zOrder: arrange }
+    : { id: 'doc.command.arrange-images', imageIds, arrange }
+  return document.executeCommand({ ...command, ...(host ? { host } : {}) }, documentImageLegalSelection(document, segmentId)).changed
+}
+export function removeDocumentImages(document: FDocument, images: readonly (FDocumentImage | string)[], segmentId = ''): boolean {
+  const imageIds = batchImageIds(document, images, segmentId), host = document.getSegmentHost(segmentId)
+  return document.executeCommand({ id: 'doc.command.batch-images', commands: imageIds.map(imageId => ({ id: 'doc.command.remove-image', imageId })),
+    ...(host ? { host } : {}) }, documentImageLegalSelection(document, segmentId)).changed
+}
 
 function captureImageTask(document: FDocument, options: Pick<DocumentImageInsertOptions, 'signal' | 'current'>) {
   const source = document.getModel(), revision = document.getModelRevision(), history = document.getHistoryGeneration(), generation = document.getInputState()?.generation

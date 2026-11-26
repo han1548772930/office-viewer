@@ -6,10 +6,11 @@ import { createBlankWorkbook, type CellRange } from '../../domain/model.ts'
 import type { SheetDrawingRef } from '../../domain/sheet-drawings.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { applyExcelWorkbookView, toExcelWorkbookView, type ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
-import { planDrawingArrange, planDrawingGroup, planDrawingGroupTransform, planDrawingSelectionTransform, planDrawingUngroup,
+import { planDrawingAlign, planDrawingArrange, planDrawingGroup, planDrawingGroupTransform, planDrawingMove, planDrawingSelectionTransform, planDrawingUngroup,
   SHEET_DRAWING_GROUP_COMMAND_IDS, type SheetDrawingPlanResult } from '../../features/drawing-groups/index.ts'
 import { applySheetDrawingTransaction, createSheetDrawingScene, removeSheetDrawings, sheetDrawingRefAffectedRanges,
   sheetDrawingTransactionAffectedRanges } from '../../features/sheet-drawings/sheet-drawing-host.ts'
+import { sheetDrawingMoveExtent } from '../../features/sheet-drawings/sheet-drawing-move.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
 import { captureSheetAxisCommandHost, type SheetAxisHostChangeOptions } from './sheet-axis-command-host.ts'
 
@@ -28,11 +29,6 @@ interface SheetDrawingUiContext {
   changed(options?: SheetAxisHostChangeOptions): void
   notify(message: string): void
   focus(): void
-}
-const labels: Record<SheetDrawingCommandId, string> = {
-  [SHEET_DRAWING_GROUP_COMMAND_IDS.group]: '组合绘图', [SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup]: '取消组合',
-  [SHEET_DRAWING_GROUP_COMMAND_IDS.transform]: '变换绘图', [SHEET_DRAWING_GROUP_COMMAND_IDS.arrange]: '排列绘图',
-  [SHEET_DRAWING_GROUP_COMMAND_IDS.remove]: '删除绘图',
 }
 /** The view adapter only captures/publishes. Models and planners remain the common authority. */
 export function useSheetDrawings(context: SheetDrawingUiContext) {
@@ -81,7 +77,13 @@ export function useSheetDrawings(context: SheetDrawingUiContext) {
           let plan: SheetDrawingPlanResult
           if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.group) plan = planDrawingGroup(scene, { selection, groupId: input.groupId ?? crypto.randomUUID() })
           else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.ungroup) plan = planDrawingUngroup(scene, { selection })
-          else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.arrange) {
+          else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.align) {
+            if (input.alignType === undefined) throw new TypeError('需要指定绘图对齐方式。')
+            plan = planDrawingAlign(scene, { selection, alignType: input.alignType })
+          } else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.move) {
+            if (input.direction === undefined) throw new TypeError('需要指定绘图移动方向。')
+            plan = planDrawingMove(scene, { selection, direction: input.direction, step: input.step, extent: sheetDrawingMoveExtent(model, sheetId) })
+          } else if (command === SHEET_DRAWING_GROUP_COMMAND_IDS.arrange) {
             const arrangeType = typeof input.arrangeType === 'number' ? (['forward', 'backward', 'front', 'back'] as const)[input.arrangeType] : input.arrangeType
             if ((arrangeType === undefined) === (input.zOrder === undefined)) throw new TypeError('需要且只能指定排列方式或层级。')
             plan = planDrawingArrange(scene, input.zOrder === undefined ? { selection, arrangeType: arrangeType! } : { selection, zOrder: input.zOrder })

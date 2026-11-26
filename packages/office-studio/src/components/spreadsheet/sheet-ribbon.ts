@@ -27,6 +27,20 @@ import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts
 import { sheetClipboardCommandCapability, type SheetClipboardCapabilities } from '../../features/sheet-workbench/sheet-clipboard-capabilities.ts'
 import { OPEN_SHEET_RANGE_THEME_OPERATION } from '../../features/sheet-workbench/sheet-range-theme-command.ts'
 import { SHEET_IMAGE_COMMANDS } from '../../features/sheet-images/sheet-image-commands.ts'
+import SlicerQuickStylePicker from './SlicerQuickStylePicker.vue'
+import { createSheetOutlineRibbonItem } from '../../features/sheet-outline/sheet-outline-menu.ts'
+import type { SheetOutlineCommandContext } from '../../features/sheet-outline/sheet-outline-command.ts'
+import { OPEN_SHEET_OUTLINE_SETTINGS_OPERATION } from './use-sheet-outline-workbench.ts'
+
+export interface SlicerRibbonControlState {
+  id: string
+  type: 'slicer' | 'timeline'
+  style?: string
+  styleOwner?: import('../../features/slicer/slicer-style-catalog.ts').SlicerStyleOwner
+  supportsConnections: boolean
+  canConfigure: boolean
+  revision: number
+}
 
 export interface SheetRibbonState {
   clipboardCapabilities?: SheetClipboardCapabilities
@@ -87,8 +101,11 @@ export interface SheetRibbonState {
   calculationMode?: 'automatic' | 'manual'
   outlineSummaryAbove?: boolean
   outlineSummaryLeft?: boolean
+  outlineContext?: SheetOutlineCommandContext
+  outlineSettingsAvailable?: boolean
   crosshairEnabled?: boolean
   crosshairColor?: string
+  slicerControl?: SlicerRibbonControlState
 }
 
 const functionCategoryOrder = [
@@ -151,6 +168,30 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const presets = (['dropdown-yes-no', 'dropdown-status', 'dropdown-abc'] as const).map(id => ({ id, values: presetValues[id] }))
   const editDropdown = tr('sheet.validation.quick.edit-dropdown', '编辑下拉列表')
   const clearDropdown = tr('sheet.validation.quick.clear-dropdown', '清除下拉列表')
+  const outlineItems: RibbonItem[] = [
+    createSheetOutlineRibbonItem(state.outlineContext),
+    { id: 'sheet.menu.outline-details', type: 'menu', title: '分组显示', icon: Grid2X2, order: 4, disabled: !state.hasSheet,
+      gridLayout: { row: 1, column: 2 }, children: [
+        button('sheet.command.outline-selected-rows', '组合行', { icon: Group, params: { value: 'row' } }),
+        button('sheet.command.outline-selected-columns', '组合列', { icon: Group, params: { value: 'column' } }),
+        button('sheet.command.clear-selected-rows-outlines', '取消行分组', { icon: Ungroup, params: { value: 'row' } }),
+        button('sheet.command.clear-selected-columns-outlines', '取消列分组', { icon: Ungroup, params: { value: 'column' } }),
+        button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: Grid2X2 }),
+        button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: Grid2X2 }),
+        button('sheet.operation.outline-collapse-rows', '隐藏行明细'), button('sheet.operation.outline-expand-rows', '显示行明细'),
+        button('sheet.operation.outline-collapse-columns', '隐藏列明细'), button('sheet.operation.outline-expand-columns', '显示列明细'),
+        { id: 'sheet.menu.outline-summary-rows', type: 'menu', title: '汇总行位置', children: [
+          button('sheet.menu.outline-summary-below', '汇总行在下方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: false }, activated: !state.outlineSummaryAbove }),
+          button('sheet.menu.outline-summary-above', '汇总行在上方', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'row', atStart: true }, activated: state.outlineSummaryAbove }),
+        ] },
+        { id: 'sheet.menu.outline-summary-columns', type: 'menu', title: '汇总列位置', children: [
+          button('sheet.menu.outline-summary-right', '汇总列在右侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: false }, activated: !state.outlineSummaryLeft }),
+          button('sheet.menu.outline-summary-left', '汇总列在左侧', { commandId: 'sheet.command.set-outline-summary-position', params: { axis: 'column', atStart: true }, activated: state.outlineSummaryLeft }),
+        ] },
+      ] },
+    button(OPEN_SHEET_OUTLINE_SETTINGS_OPERATION, '大纲设置', { icon: Settings2, order: 5, disabled: !state.outlineSettingsAvailable,
+      showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+  ]
   const tabs: RibbonTab[] = [
     {
       id: 'home', title: '开始', order: 0, groups: [
@@ -258,7 +299,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             ] },
           button('sheet.operation.insert-hyperlink', '超链接', { icon: Link, showLabel: true, disabled: !state.hyperlinkAvailable, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
           button('sheet.operation.insert-chart', '图表', { icon: ChartNoAxesCombined, order: 4, disabled: !state.chartAvailable, disabledReason: '图表需要绑定到已打开的工作簿' }),
-          button('sheet.operation.open-sparkline', '迷你图', { icon: ChartLine, order: 5 }),
+          button('sheet.operation.open-sparkline-selector', '迷你图', { icon: ChartLine, order: 5 }),
         ] },
         { id: 'cells', title: '单元格', order: 20, items: [
           { ...quick('sheet.operation.quick-data-validation.checkbox', '复选框', 'checkbox', SquareCheck), type: 'split', children: [
@@ -296,6 +337,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterEnabled }),
             button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled }),
           ] },
+          ...outlineItems,
         ] },
         { id: 'rules', title: '规则', order: 20, items: [
           { id: 'sheet.menu.data-validation', type: 'menu', title: '数据验证', icon: ClipboardCheck, disabled: quickDisabled, gridLayout: { row: 1, column: 1 }, children: [
@@ -306,23 +348,9 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         ] },
         { id: 'pivot', title: '分析', order: 30, items: [
           button('sheet.operation.open-pivot', '数据透视表', { icon: TableProperties, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 1, showLabel: true } }),
-          button('sheet.operation.open-pivot-chart', '透视图', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请先创建数据透视表', gridLayout: { row: 2, column: 1, showLabel: true } }),
+          button('sheet.operation.open-pivot-chart', '透视图', { icon: ChartNoAxesCombined, showLabel: true, disabled: !state.pivotChartAvailable, disabledReason: '请打开可用的工作簿和工作表', gridLayout: { row: 2, column: 1, showLabel: true } }),
           button('sheet.operation.open-slicer', '切片器', { icon: ListFilter, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 1, column: 2, showLabel: true } }),
           button('sheet.operation.open-timeline', '时间线', { icon: Clock, showLabel: true, disabled: !state.chartAvailable, gridLayout: { row: 2, column: 2, showLabel: true } }),
-        ] },
-        { id: 'outline', title: '分组显示', order: 40, items: [
-          button('sheet.operation.outline-group-rows', '组合行', { icon: Group, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-toggle-rows', '折叠/展开行组', { icon: Grid2X2, showLabel: true, gridLayout: { row: 1, column: 2, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-remove-rows', '取消行分组', { icon: Ungroup, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-group-columns', '组合列', { icon: Group, showLabel: true, gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-toggle-columns', '折叠/展开列组', { icon: Grid2X2, showLabel: true, gridLayout: { row: 1, column: 5, rowSpan: 2, showLabel: true } }),
-          button('sheet.operation.outline-remove-columns', '取消列分组', { icon: Ungroup, showLabel: true, gridLayout: { row: 1, column: 6, rowSpan: 2, showLabel: true } }),
-          { id: 'sheet.operation.outline-summary-rows', commandId: 'sheet.operation.outline-summary-position', type: 'select', title: '汇总行位置', width: 112, value: state.outlineSummaryAbove ? 'above' : 'below', valueParams: value => ({ axis: 'row', atStart: value === 'above' }), gridLayout: { row: 1, column: 7, rowSpan: 2, width: 112, showLabel: true }, options: [
-            { label: '汇总行在下方', value: 'below' }, { label: '汇总行在上方', value: 'above' },
-          ] },
-          { id: 'sheet.operation.outline-summary-columns', commandId: 'sheet.operation.outline-summary-position', type: 'select', title: '汇总列位置', width: 112, value: state.outlineSummaryLeft ? 'left' : 'right', valueParams: value => ({ axis: 'column', atStart: value === 'left' }), gridLayout: { row: 1, column: 8, rowSpan: 2, width: 112, showLabel: true }, options: [
-            { label: '汇总列在右侧', value: 'right' }, { label: '汇总列在左侧', value: 'left' },
-          ] },
         ] },
         { id: 'data-tools', title: '工具', order: 50, items: [
           button('sheet.operation.find', '查找', { icon: Search, showLabel: true, shortcut: 'Ctrl+F', gridLayout: { row: 1, column: 1, rowSpan: 2, columnSpan: 2, showLabel: true } }),
@@ -388,5 +416,26 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
       ],
     },
   ]
+  const slicer = state.slicerControl
+  if (slicer) tabs.push({
+    id: 'slicer-format', title: '切片器格式', contextual: true, order: 100,
+    groups: [
+      { id: 'slicer-format.styles', title: '样式', order: 0, items: [{
+        id: 'sheet.menu.slicer-quick-style', commandId: 'sheet.command.update-slicer-presentation', type: 'menu', title: '快速样式', icon: PaintBucket,
+        disabled: !slicer.canConfigure, value: slicer.style ?? '', popupComponent: SlicerQuickStylePicker,
+        popupCommandId: 'sheet.command.update-slicer-presentation', popupProps: { slicerId: slicer.id, kind: slicer.type, style: slicer.style,
+          styleOwner: slicer.styleOwner, expectedRevision: slicer.revision },
+        gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
+      }] },
+      { id: 'slicer-format.options', title: '选项', order: 1, items: [
+        button('sheet.menu.slicer-settings', '切片器设置', { commandId: 'sheet.operation.open-slicer-settings-dialog', icon: Settings2, order: 0,
+          hidden: slicer.type !== 'slicer', disabled: !slicer.canConfigure, params: { slicerId: slicer.id, kind: slicer.type }, gridLayout: { row: 1, column: 1, showLabel: true } }),
+        button('sheet.menu.timeline-settings', '时间线设置', { commandId: 'sheet.operation.open-slicer-settings-dialog', icon: CalendarDays, order: 1,
+          hidden: slicer.type !== 'timeline', disabled: !slicer.canConfigure, params: { slicerId: slicer.id, kind: slicer.type }, gridLayout: { row: 1, column: 1, showLabel: true } }),
+        button('sheet.menu.slicer-connections', '报表连接', { commandId: 'sheet.operation.open-slicer-connections-dialog', icon: Link, order: 2,
+          hidden: !slicer.supportsConnections, disabled: !slicer.canConfigure, params: { slicerId: slicer.id }, gridLayout: { row: 2, column: 1, showLabel: true } }),
+      ] },
+    ],
+  })
   return translate ? localizeRibbon(tabs, 'sheet', translate) : tabs
 }

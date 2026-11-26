@@ -5,9 +5,11 @@ import { createParagraph, clampPoint, collapsedSelection, findDocumentBlock, sam
 import { documentContentControlOwnedBlockIds, resolveDocumentContentControlBlocks } from '../model/content-control-block-range'
 import { reconcileDocumentContentControlBlockEdits } from '../model/content-control-block-edits'
 import { getDocumentContentControls, validateDocumentContentControlRanges } from '../services/content-controls'
-import { assertDocumentPermission, permissionTargetsForChangedBlocks, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { assertDocumentPermission, permissionTargetsForChangedBlocks, permissionTargetsForImage, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
 import { synchronizeDocumentPictureControlImages } from '../services/document-image-controls'
+import { alignDocumentImageBatch, assertDocumentImageBatchMembers, transformDocumentImageBatch,
+  type DocumentImageAlign, type DocumentImageBatchMember, type DocumentImageBatchTransform } from '../images/document-image-batch'
 
 export type DocumentImageTextMutation = (model: DocumentModel, selection: DocumentSelection, text: string) => DocumentSelection
 
@@ -19,10 +21,13 @@ export type DocumentImageObjectCommand =
   | { id: 'doc.command.arrange-image'; imageId: string; arrange: DocumentImageArrange }
 export type DocumentImageCommand = DocumentImageObjectCommand
   | ({ id: 'doc.command.arrange-images'; imageIds: string[] } & ({ arrange: DocumentImageArrange; zOrder?: never } | { arrange?: never; zOrder: number }))
+  | { id: 'doc.command.align-images'; members: DocumentImageBatchMember[]; align: DocumentImageAlign }
+  | { id: 'doc.command.transform-images'; members: DocumentImageBatchMember[]; transform: DocumentImageBatchTransform }
   | { id: 'doc.command.batch-images'; commands: DocumentImageObjectCommand[] }
 
 export function isDocumentImageCommand(command: { id: string }): command is DocumentImageCommand {
-  return ['doc.command.update-image', 'doc.command.replace-image', 'doc.command.remove-image', 'doc.command.reset-image-size', 'doc.command.arrange-image', 'doc.command.arrange-images', 'doc.command.batch-images'].includes(command.id)
+  return ['doc.command.update-image', 'doc.command.replace-image', 'doc.command.remove-image', 'doc.command.reset-image-size', 'doc.command.arrange-image', 'doc.command.arrange-images',
+    'doc.command.align-images', 'doc.command.transform-images', 'doc.command.batch-images'].includes(command.id)
 }
 
 function arrangeImages(candidate: DocumentModel, imageIds: string[], arrangement: DocumentImageArrange | number): void {
@@ -58,9 +63,25 @@ export function assertDocumentImageEditable(model: DocumentModel, imageId: strin
 /** All object changes publish one transaction candidate through the editor history. */
 export function executeDocumentImageCommand(model: DocumentModel, selection: DocumentSelection, command: DocumentImageCommand,
   context: DocumentPermissionContext, replaceText: DocumentImageTextMutation): DocumentSelection {
+  if (command.id === 'doc.command.align-images' || command.id === 'doc.command.transform-images') {
+    if (!Array.isArray(command.members)) throw new TypeError('图片几何操作需要当前排版快照。')
+    assertDocumentImageBatchMembers(model, command.members)
+    for (const member of command.members) {
+      assertDocumentImageEditable(model, member.imageId)
+      const targets = permissionTargetsForImage(model, member.imageId)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'view', targets)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', targets)
+    }
+    const updates = command.id === 'doc.command.align-images' ? alignDocumentImageBatch(command.members, command.align)
+      : transformDocumentImageBatch(command.members, command.transform)
+    if (!updates.length) return selection
+    return executeDocumentImageCommand(model, selection, { id: 'doc.command.batch-images', commands: updates.map(update => ({
+      id: 'doc.command.update-image', imageId: update.imageId, patch: update.patch })) }, context, replaceText)
+  }
   if (command.id === 'doc.command.batch-images') {
     if (!Array.isArray(command.commands) || !command.commands.length || command.commands.length > 1000
-      || command.commands.some(item => !item || !isDocumentImageCommand(item) || ['doc.command.batch-images', 'doc.command.arrange-images'].includes(Reflect.get(item, 'id')))) throw new TypeError('图片批量操作无效。')
+      || command.commands.some(item => !item || !['doc.command.update-image', 'doc.command.replace-image', 'doc.command.remove-image', 'doc.command.reset-image-size', 'doc.command.arrange-image']
+        .includes(Reflect.get(item, 'id')))) throw new TypeError('图片批量操作无效。')
     const candidate = cloneModel(model)
     let current = selection
     for (const item of command.commands) current = executeDocumentImageCommand(candidate, current, item, context, replaceText)
@@ -70,7 +91,12 @@ export function executeDocumentImageCommand(model: DocumentModel, selection: Doc
   }
   if (command.id === 'doc.command.arrange-images') {
     if (!Array.isArray(command.imageIds) || !command.imageIds.length || command.imageIds.length > 1000
-      || command.zOrder !== undefined && (command.arrange !== undefined || typeof command.zOrder !== 'number')) throw new TypeError('图片排列参数无效。')
+      || command.zOrder !== undefined && (command.arrange !== undefined || typeof command.zOrder !== 'number' || !Number.isFinite(command.zOrder))) throw new TypeError('图片排列参数无效。')
+    for (const id of command.imageIds) {
+      const targets = permissionTargetsForImage(model, id)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'view', targets)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', targets)
+    }
     const candidate = cloneModel(model)
     arrangeImages(candidate, command.imageIds, command.zOrder ?? command.arrange!)
     synchronizeDocumentPictureControlImages(model, candidate)
@@ -81,6 +107,9 @@ export function executeDocumentImageCommand(model: DocumentModel, selection: Doc
   }
   if (typeof command.imageId !== 'string' || !command.imageId.trim()) throw new TypeError('图片身份无效。')
   assertDocumentImageEditable(model, command.imageId, command.id === 'doc.command.remove-image')
+  const targets = permissionTargetsForImage(model, command.imageId)
+  assertDocumentPermission(model.permissionRules ?? [], context, 'view', targets)
+  assertDocumentPermission(model.permissionRules ?? [], context, 'edit', targets)
   const candidate = cloneModel(model), entry = documentImageEntries(candidate).find(entry => entry.imageId === command.imageId)!
   const old = entry.image
   let nextSelection = selection

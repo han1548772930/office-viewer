@@ -51,13 +51,21 @@ export function documentSelectionClipboardData(model: DocumentModel, selection: 
 }
 
 export function documentImageClipboardData(model: DocumentModel, imageId: string): DocumentClipboardData {
-  const entry = documentImageEntries(model).find(entry => entry.imageId === imageId)
-  if (!entry) throw new RangeError('复制的图片已不存在。')
-  const block = createParagraph()
-  block.style = cloneModel(entry.block.style)
-  const run = entry.inline ? cloneModel(entry.inline.run) : createRun('\uFFFC')
-  setDocumentImageAtom(run, entry.imageId, cloneModel(entry.image)); block.runs = [run]
-  return { text: entry.image.alt, html: documentHtml({ ...model, blocks: [block] }) }
+  return documentImagesClipboardData(model, [imageId])
+}
+export function documentImagesClipboardData(model: DocumentModel, imageIds: readonly string[]): DocumentClipboardData {
+  if (!Array.isArray(imageIds) || !imageIds.length || imageIds.length > 1000 || new Set(imageIds).size !== imageIds.length) throw new TypeError('复制的图片选择无效。')
+  const entries = documentImageEntries(model), blocks: DocumentBlock[] = [], labels: string[] = []
+  for (const imageId of imageIds) {
+    const entry = entries.find(entry => entry.imageId === imageId)
+    if (!entry) throw new RangeError('复制的图片已不存在。')
+    const block = createParagraph()
+    block.style = cloneModel(entry.block.style)
+    const run = entry.inline ? cloneModel(entry.inline.run) : createRun('\uFFFC')
+    setDocumentImageAtom(run, entry.imageId, cloneModel(entry.image)); block.runs = [run]
+    blocks.push(block); labels.push(entry.image.alt)
+  }
+  return { text: labels.join('\n'), html: documentHtml({ ...model, blocks }) }
 }
 
 /** Crop compact anchors while materializing effective formatting at the new clipboard edges. */

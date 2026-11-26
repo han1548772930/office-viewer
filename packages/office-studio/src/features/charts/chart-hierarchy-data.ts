@@ -34,7 +34,8 @@ export function chartHierarchyTokenKey(value: unknown): string {
 }
 
 export function chartHierarchyFields(source: ChartRecords, chart: ChartDataBinding): number[] {
-  return chart.options?.mapping?.hierarchyIndexes ?? (source.sourceCategoryFields?.length ? source.sourceCategoryFields : [chart.categoryField])
+  return chart.options?.mapping?.hierarchyIndexes ?? (source.pivotAxis?.rowFields.length ? source.pivotAxis.rowFields.map(field => field.field)
+    : source.sourceCategoryFields?.length ? source.sourceCategoryFields : [chart.categoryField])
 }
 
 export function chartHierarchyValueField(source: ChartRecords, chart: ChartDataBinding): number {
@@ -82,9 +83,12 @@ export function* createChartHierarchyPlanSteps(source: ChartRecords, chart: Char
     if (weight !== null) { values[row] = weight; states[row] = 1 }
     for (let depth = 0; depth < fields.length; depth++) {
       const field = fields[depth]!, raw = record[field]
-      if (!chartHierarchyBlank(raw)) {
-        const key = dictionary(chartHierarchyTokenKey(raw), keys, keyIndex)
-        const label = dictionary(source.formattedRecords?.[row]?.[field] ?? String(raw), labels, labelIndex)
+      const pivotDepth = source.pivotAxis?.rowFields.findIndex(candidate => candidate.field === field) ?? -1
+      const pivotRow = source.pivotAxis?.recordRows[row]
+      const declaredMember = pivotDepth >= 0 && !!pivotRow && pivotDepth < pivotRow.labels.length
+      if (!chartHierarchyBlank(raw) || declaredMember) {
+        const key = dictionary(chartHierarchyTokenKey(declaredMember ? pivotRow!.labels[pivotDepth] : raw), keys, keyIndex)
+        const label = dictionary(source.formattedRecords?.[row]?.[field] ?? (raw == null ? '' : String(raw)), labels, labelIndex)
         const keyOffset = (depth + 1) * rows + row, labelOffset = (fields.length + depth + 1) * rows + row
         values[keyOffset] = key; states[keyOffset] = 1; values[labelOffset] = label; states[labelOffset] = 1
       }
