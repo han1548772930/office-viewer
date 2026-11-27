@@ -3,7 +3,7 @@ import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 
 // DOC-12 oversized-decoration contract drafts. No tests, browser, Office sample or performance acceptance were run.
-let server, domain, model, stories, notes, settings, layout, hosts
+let server, domain, model, stories, notes, settings, layout, hosts, scene, codec
 beforeAll(async () => {
   server = await createServer({ cacheDir: 'node_modules/.vite/document-note-pagination', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error' })
@@ -14,6 +14,8 @@ beforeAll(async () => {
   settings = await server.ssrLoadModule('/packages/office-studio/src/features/document/notes/document-note-settings.ts')
   layout = await server.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
   hosts = await server.ssrLoadModule('/packages/office-studio/src/features/document/services/document-block-host.ts')
+  scene = await server.ssrLoadModule('/packages/office-studio/src/features/document/rendering/document-scene.ts')
+  codec = await server.ssrLoadModule('/packages/office-studio/src/api/document-body-codec.ts')
 })
 afterAll(async () => { await server?.close() })
 const copy = value => JSON.parse(JSON.stringify(value)), measurer = { measure: text => [...text].length * 6 }
@@ -73,6 +75,128 @@ function assertOnlyRealReferences(value, result, kind, before) {
   assert.ok(result.pages.length < 200, 'bounded progress for this fixed fixture')
   assert.ok(result.noteDecorations.every(content => [...content.lines, ...content.cells, ...content.images].every(item => item.host?.kind === 'noteDecoration')))
 }
+
+test('default note separator fields use the capped first width and full continuation width at the font baseline', () => {
+  for (const kind of ['footnote', 'endnote']) for (const width of [200, 360, 800]) {
+    const value = domain.createBlankDocument()
+    value.id = 'default-separator-' + kind + '-' + width
+    value.page = { width, height: 260, marginTop: 20, marginBottom: 20, marginLeft: 20, marginRight: 20 }
+    value.blocks = [paragraph('reference', 'R')]
+    const point = { blockId: 'reference', offset: 1 }
+    notes.insertDocumentNote(value, { anchor: point, focus: point }, kind, { noteId: 'note', content: story(paragraphs('NOTE', 24)) })
+    const before = copy(value), result = layout.layoutDocument(value, measurer)
+    const decorations = result.noteDecorations.filter(content => content.kind !== 'continuationNotice')
+    assert.ok(decorations.some(content => content.kind === 'separator'))
+    assert.ok(decorations.some(content => content.kind === 'continuationSeparator'))
+    for (const content of decorations) {
+      assert.equal(content.dividers.length, 1)
+      const divider = content.dividers[0], line = content.lines[0], em = 10 * 4 / 3
+      assert.equal(divider.noteSeparator, true)
+      assert.equal(divider.width, content.kind === 'separator' ? Math.min(192, content.width) : content.width)
+      assert.ok(Math.abs(divider.height - em / 20) < 1e-9)
+      assert.ok(Math.abs(divider.y + divider.height / 2 - (line.baseline - em / 4)) < 1e-9)
+      assert.ok(Math.abs(content.height - line.height) < 1e-9, 'default paragraph adds no trailing spacing')
+      assert.equal(line.target.blockId, 'default-note-decoration:' + kind + ':' + content.kind + ':paragraph')
+      assert.equal(line.start, 0); assert.equal(line.end, 0)
+    }
+    assert.deepEqual(value, before)
+    const selection = { anchor: point, focus: point }
+    for (const zoom of [50, 100]) {
+      const rendered = scene.sceneFromDocument(value, result, { width: 1200, height: result.height + 100, scrollLeft: 0, scrollTop: 0, zoom },
+        { selection, focused: false, caretVisible: false, composing: false, images: new Map() })
+      const thickness = 10 * 4 / 3 / 20 * zoom / 100
+      assert.equal(rendered.commands.filter(command => command.kind === 'line' && Math.abs(command.width - thickness) < 1e-9).length, decorations.length)
+    }
+  }
+})
+
+test('unmarked custom fractional note rules preserve their existing width, placement, and one-pixel stroke', () => {
+  for (const fraction of [1 / 3, 1 / 2, 1]) {
+    const separator = paragraph('custom-separator')
+    separator.metadata.noteSeparator = { version: 1, widthFraction: fraction, color: '#123456' }
+    const value = fixture('footnote', [separator], [], [], [paragraph('NOTE', 'Note')]), before = copy(value)
+    const result = layout.layoutDocument(value, measurer), content = result.noteDecorations.find(content => content.kind === 'separator')
+    const line = content.lines[0], divider = content.dividers[0]
+    assert.equal(divider.width, content.width * fraction)
+    assert.equal(divider.height, 1); assert.equal(divider.noteSeparator, undefined)
+    assert.equal(divider.y, line.y + Math.max(1, line.height - 2)); assert.equal(divider.color, '#123456')
+    assert.deepEqual(value, before)
+  }
+})
+
+test('public separator FIELD bodies retain their identities through save and reopen and use the same layout and scene', () => {
+  for (const kind of ['footnote', 'endnote']) {
+    const reopened = {}
+    for (const source of [
+      { decoration: 'separator', fieldType: 'FOOTNOTE_SEPARATOR', fontSize: 12 },
+      { decoration: 'continuationSeparator', fieldType: 'FOOTNOTE_CONTINUATION_SEPARATOR', fontSize: 18 },
+    ]) {
+      const paragraphId = 'public-' + kind + '-' + source.decoration
+      const range = { rangeId: paragraphId + '-field', rangeType: 1, startIndex: 0, endIndex: 0, wholeEntity: true,
+        properties: { fieldType: source.fieldType } }
+      const body = { dataStream: '\uFFFC\r\n', paragraphs: [{ paragraphId, startIndex: 1,
+        paragraphStyle: { spaceAbove: { v: 0 }, spaceBelow: { v: 0 }, textStyle: { fs: source.fontSize } } }],
+        sectionBreaks: [{ sectionId: paragraphId + '-section', startIndex: 2 }], customRanges: [range] }
+      const original = copy(body), decoded = codec.decodeDocumentBody(body)
+      assert.deepEqual(body, original)
+      assert.equal(decoded.content.blocks.length, 1)
+      assert.equal(decoded.content.blocks[0].metadata.noteSeparator.fieldType, source.fieldType)
+      assert.deepEqual(decoded.content.blocks[0].metadata.univerNoteSeparatorRangeSource, range)
+      const saved = codec.encodeDocumentBody(decoded.content, undefined, decoded.contentControls)
+      assert.equal(saved.body.dataStream, body.dataStream)
+      assert.deepEqual(saved.body.customRanges, [range])
+      const restored = codec.decodeDocumentBody(saved.body)
+      const block = restored.content.blocks[0]
+      assert.equal(block.id, paragraphId)
+      assert.equal(model.runText(block.runs), '')
+      assert.equal(block.runs[0].fontSize, source.fontSize)
+      assert.equal(block.style.spaceBefore, 0); assert.equal(block.style.spaceAfter, 0)
+      assert.equal(block.metadata.noteSeparator.fieldType, source.fieldType)
+      assert.deepEqual(block.metadata.univerNoteSeparatorRangeSource, range)
+      reopened[source.decoration] = restored.content
+    }
+    for (const width of [200, 360, 800]) {
+      const value = domain.createBlankDocument()
+      value.id = 'public-separator-' + kind + '-' + width
+      value.page = { width, height: 260, marginTop: 20, marginBottom: 20, marginLeft: 20, marginRight: 20 }
+      value.blocks = [paragraph('reference', 'R')]
+      const point = { blockId: 'reference', offset: 1 }
+      notes.insertDocumentNote(value, { anchor: point, focus: point }, kind, { noteId: 'note', content: story(paragraphs('NOTE', 24)) })
+      settings.setDocumentNoteSettings(value, kind, reopened)
+      const before = copy(value), result = layout.layoutDocument(value, measurer)
+      const decorations = result.noteDecorations.filter(content => content.kind !== 'continuationNotice')
+      assert.ok(decorations.some(content => content.kind === 'separator'))
+      assert.ok(decorations.some(content => content.kind === 'continuationSeparator'))
+      for (const content of decorations) {
+        const block = value.noteSettings[kind][content.kind].blocks[0]
+        const em = block.runs[0].fontSize * 4 / 3
+        assert.equal(content.lines.length, 1); assert.equal(content.dividers.length, 1)
+        const line = content.lines[0], divider = content.dividers[0]
+        const host = { kind: 'noteDecoration', noteKind: kind, decoration: content.kind }
+        assert.equal(divider.noteSeparator, true)
+        assert.equal(divider.width, content.kind === 'separator' ? Math.min(192, content.width) : content.width)
+        assert.ok(Math.abs(divider.height - em / 20) < 1e-9)
+        assert.ok(Math.abs(divider.y + divider.height / 2 - (line.baseline - em / 4)) < 1e-9)
+        assert.equal(line.target.blockId, block.id); assert.equal(line.start, 0); assert.equal(line.end, 0)
+        assert.deepEqual(line.host, host); assert.deepEqual(divider.host, host)
+        assert.deepEqual(block.metadata.univerNoteSeparatorRangeSource, reopened[content.kind].blocks[0].metadata.univerNoteSeparatorRangeSource)
+      }
+      assert.deepEqual(value, before)
+      for (const zoom of [50, 100]) {
+        const rendered = scene.sceneFromDocument(value, result, { width: 1200, height: result.height + 100, scrollLeft: 0, scrollTop: 0, zoom },
+          { selection: { anchor: point, focus: point }, focused: false, caretVisible: false, composing: false, images: new Map() })
+        for (const decoration of ['separator', 'continuationSeparator']) {
+          const contents = decorations.filter(content => content.kind === decoration)
+          const divider = contents[0].dividers[0]
+          const lines = rendered.commands.filter(command => command.kind === 'line'
+            && Math.abs(command.width - divider.height * zoom / 100) < 1e-9
+            && Math.abs(command.x2 - command.x1 - divider.width * zoom / 100) < 1e-9 && command.y1 === command.y2)
+          assert.equal(lines.length, contents.length)
+        }
+      }
+    }
+  }
+})
 
 test('small legacy separator stories use their real decoration host for layout IDs and input geometry', () => {
   for (const kind of ['footnote', 'endnote']) {

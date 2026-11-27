@@ -1,23 +1,36 @@
 <script setup lang="ts">
 import { Alert, Button, Form, FormItem, InputNumber, Modal, Select, theme } from 'antdv-next'
-import { computed, inject, ref, watch } from 'vue'
+import { computed, inject, ref, shallowRef, watch } from 'vue'
 import type { DocumentPageSetup } from '../../domain/model'
 import { DOCUMENT_MODERN_WIDTHS, DOCUMENT_PAPER_SIZES, documentModernWidth, documentPageSettingsError, documentPaperSize } from './document-page-settings'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 
-const props = withDefaults(defineProps<{ open: boolean; page: DocumentPageSetup; mode?: 'traditional' | 'modern'; disabled?: boolean }>(), { mode: 'traditional', disabled: false })
-const emit = defineEmits<{ 'update:open': [open: boolean]; apply: [page: DocumentPageSetup, mode: 'traditional' | 'modern'] }>()
+const props = withDefaults(defineProps<{ open: boolean; page: DocumentPageSetup; mode?: 'traditional' | 'modern'; disabled?: boolean;
+  documentId?: string; historyGeneration?: number; error?: string }>(), { mode: 'traditional', disabled: false })
+const emit = defineEmits<{ 'update:open': [open: boolean]; apply: [page: DocumentPageSetup, mode: 'traditional' | 'modern']; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const { token } = theme.useToken()
 const draft = ref({ ...props.page })
-const error = ref('')
+const draftError = ref('')
+const draftOwner = shallowRef({ documentId: props.documentId, historyGeneration: props.historyGeneration })
+const error = computed(() => draftError.value || props.error)
 const paperOptions = computed(() => [
   ...(['A3', 'A4', 'A5', 'B4', 'B5', 'Executive', 'Folio', 'Legal', 'Letter', 'Statement', 'Tabloid'] as const).map(value => ({ value, label: t(`doc.page-settings.paper-size.${value}`, value) })),
   { value: 'Custom', label: t('doc.page-settings.paper-size.custom', 'Custom') },
 ])
 const paper = computed(() => documentPaperSize(draft.value))
 const modernWidth = computed(() => documentModernWidth(draft.value))
-watch(() => props.open, (open) => { if (open) { draft.value = { ...props.page }; error.value = '' } })
+watch(() => props.open, (open) => {
+  if (!open) return
+  draft.value = { ...props.page }
+  draftOwner.value = { documentId: props.documentId, historyGeneration: props.historyGeneration }
+  draftError.value = ''
+}, { flush: 'sync' })
+watch([() => props.documentId, () => props.historyGeneration], () => {
+  if (props.open && (draftOwner.value.documentId !== props.documentId
+    || draftOwner.value.historyGeneration !== props.historyGeneration)) emit('update:open', false)
+}, { flush: 'sync' })
+watch(draft, () => { draftError.value = '' }, { deep: true })
 function setPaper(value: string) {
   if (value === 'Custom' || !(value in DOCUMENT_PAPER_SIZES)) return
   const size = DOCUMENT_PAPER_SIZES[value as keyof typeof DOCUMENT_PAPER_SIZES]
@@ -28,15 +41,17 @@ function setModernWidth(value: keyof typeof DOCUMENT_MODERN_WIDTHS) {
   draft.value = { ...draft.value, width: DOCUMENT_MODERN_WIDTHS[value], height: 1124 }
 }
 function apply() {
-  if (props.disabled) return
+  if (!props.open || props.disabled || draftOwner.value.documentId !== props.documentId
+    || draftOwner.value.historyGeneration !== props.historyGeneration) return
   const message = documentPageSettingsError(draft.value)
-  if (message) { error.value = message; return }
+  if (message) { draftError.value = message; return }
   emit('apply', { ...draft.value }, props.mode)
 }
 </script>
 
 <template>
-  <Modal :open="open" :title="t('doc.page-settings.title', '页面设置')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :ok-button-props="{ disabled }" :width="528" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)">
+  <Modal :open="open" :title="t('doc.page-settings.title', '页面设置')" :ok-text="t('common.apply', '应用')" :cancel-text="t('common.cancel', '取消')" :ok-button-props="{ disabled }" :width="528"
+    :focus-trigger-after-close="false" :after-close="() => emit('closed')" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)">
     <Form :model="draft" :disabled="disabled" layout="horizontal" class="page-settings-form">
       <div v-if="props.mode === 'traditional'">
       <fieldset>

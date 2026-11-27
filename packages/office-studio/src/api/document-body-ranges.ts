@@ -59,7 +59,7 @@ export function applyDocumentBodyRanges(value: unknown, positions: readonly Docu
       }
     } else if (rangeType === 1) {
       if (properties.fieldType === 'FOOTNOTE_SEPARATOR' || properties.fieldType === 'FOOTNOTE_CONTINUATION_SEPARATOR') {
-        first.block.metadata.noteSeparator = { version: 1, widthFraction: properties.fieldType === 'FOOTNOTE_SEPARATOR' ? 1 / 3 : 1 }
+        first.block.metadata.noteSeparator = { version: 1, widthFraction: properties.fieldType === 'FOOTNOTE_SEPARATOR' ? 1 / 3 : 1, fieldType: properties.fieldType }
         first.block.metadata.univerNoteSeparatorRangeSource = cloneModel(raw)
         modeledRangeIds.add(id)
         continue

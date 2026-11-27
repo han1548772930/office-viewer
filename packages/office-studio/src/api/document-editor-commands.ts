@@ -82,6 +82,7 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.table-tab': '跳转表格单元格',
   'doc.command.set-section-header-footer': '设置页眉页脚',
   'doc.command.set-section-setup': '设置节格式',
+  'docs.command.page-setup': '设置页面',
   'doc.command.refresh-header-footer-fields': '更新页眉页脚字段',
   'doc.command.update-selected-fields': '更新选中字段',
   'doc.command.insert-page-field': '插入页面域',
@@ -195,6 +196,10 @@ function tableTextInputCommand(command: DocumentCommand, selection: DocumentSele
 
 /** Both UI and facade commands edit a transaction draft with the same logical selection. */
 export function applyDocumentEditorCommand(model: DocumentModel, request: DocumentEditorCommandRequest, permissionContext: DocumentPermissionContext): DocumentSelection {
+  if (request.command.id === 'docs.command.page-setup') {
+    executeDocumentCommand(model, request.selection, request.command, permissionContext)
+    return cloneDocumentSelection(request.selection)
+  }
   const hyperlink = request.command.id === 'docs.command.update-hyper-link'
     ? documentHyperlinks(request.command.host ? documentModelForBlockHost(model, request.command.host) : model)
       .find(link => request.command.id === 'docs.command.update-hyper-link' && link.id === request.command.linkId) : undefined

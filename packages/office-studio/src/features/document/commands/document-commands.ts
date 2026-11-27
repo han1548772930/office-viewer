@@ -14,10 +14,10 @@ import { documentTableGrid } from '../model/document-table-grid'
 import { documentTableCellBlocks, documentTableCellContentContainers } from '../model/document-table-continuations'
 import { createDocumentTableViewSelection, documentTableDescendantIds, documentTableSelectedTextTargets } from '../model/document-table-selection'
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
-import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, type DocumentSectionSetupPatch } from '../services/document-settings'
+import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, prepareDocumentPageSetup, type DocumentPageSetupRequest, type DocumentSectionSetupPatch } from '../services/document-settings'
 import { applyDocumentTocMutation, applyDocumentTocPageNumberUpdate, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
 import { prepareDocumentTocAction } from '../toc/document-toc-command'
-import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
+import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, resolveDocumentPermission, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { cloneModel } from '../../../domain/serialization'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import { applyDocumentBlockHostModel, documentModelForBlockHost } from '../services/document-block-host'
@@ -89,6 +89,7 @@ export type DocumentBodyCommand =
   | { id: 'doc.command.table-tab'; direction: -1 | 1 }
   | { id: 'doc.command.set-section-header-footer'; sectionId: string; patch: SectionHeaderFooterPatch; input?: DocumentStoryInputCommit }
   | { id: 'doc.command.set-section-setup'; sectionId: string; patch: DocumentSectionSetupPatch }
+  | ({ id: 'docs.command.page-setup' } & DocumentPageSetupRequest)
   | ({ id: 'doc.command.refresh-header-footer-fields' } & Omit<DocumentStoryFieldRefreshRequest, 'stories' | 'bodySelection'>)
   | ({ id: 'doc.command.update-selected-fields' } & DocumentStoryFieldRefreshRequest)
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
@@ -104,9 +105,13 @@ export type DocumentCommand = DocumentBodyCommand & {
 }
 
 export function documentCommandSupportsBlockHost(command: Pick<DocumentCommand, 'id'>): boolean {
-  return !['doc.command.set-document-permission-rules', 'doc.command.set-section-header-footer', 'doc.command.set-section-setup',
+  return !['doc.command.set-document-permission-rules', 'doc.command.set-section-header-footer', 'doc.command.set-section-setup', 'docs.command.page-setup',
     'doc.command.insert-section-break', 'doc.command.insert-column-break', 'doc.command.insert-page-break',
     'doc.command.refresh-header-footer-fields', 'doc.command.update-table-of-contents', 'doc.command.delete-table-of-contents'].includes(command.id)
+}
+
+export function documentPageSetupCommandState(model: DocumentModel, context: DocumentPermissionContext) {
+  return resolveDocumentPermission(model.permissionRules ?? [], context, 'edit', [{ scope: 'document', id: context.documentId }])
 }
 
 function blockContainer(model: DocumentModel, point: TextTarget): DocumentBlock[] {
@@ -367,6 +372,16 @@ export function executeDocumentCommand(
   permissionContext?: DocumentPermissionContext,
   sourceModel: DocumentModel = model,
 ): DocumentSelection {
+  if (command.id === 'docs.command.page-setup') {
+    if (command.host) throw new RangeError('页面设置作用于完整文档。')
+    const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+    const permission = documentPageSetupCommandState(model, context)
+    if (!permission.allowed) throw new Error(permission.reason ?? '没有编辑此文档的权限。')
+    const candidate = prepareDocumentPageSetup(model, command)
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+    Object.assign(model, candidate)
+    return selection
+  }
   if (command.id === 'doc.command.insert-horizontal-line-bellow') {
     if (selection.tableSelection) throw new RangeError('分隔线需要文字插入位置。')
     const scoped = command.host ? documentModelForBlockHost(model, command.host) : model

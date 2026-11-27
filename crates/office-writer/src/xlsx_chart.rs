@@ -70,7 +70,8 @@ pub(super) fn context<'a>(workbook: &'a WorkbookInput, chart: &ChartInput) -> Re
     let sheet = &workbook.sheets[sheet_index];
     let sheet_name = safe_sheet_names(workbook.sheets.iter().map(|sheet| sheet.name.as_str())).into_iter().nth(sheet_index)
         .ok_or_else(|| ExportError::invalid("missing chart source worksheet name"))?;
-    let bounds = range_bounds(pivot.and_then(|pivot| pivot.output_range.as_ref()).unwrap_or(&chart.source.range))
+    let bounds = pivot.and_then(|pivot| pivot.output_range.as_ref())
+        .map_or_else(|| range_bounds(&chart.source.range), |range| range.bounds())
         .ok_or_else(|| ExportError::invalid(format!("chart {} source range is missing", chart.id)))?;
     let (first_row, first_col, last_row, last_col) = bounds;
     if first_row >= last_row || first_col >= last_col || last_row > MAX_ROW_INDEX || last_col > MAX_COLUMN_INDEX

@@ -2,9 +2,73 @@ import type { DocumentBlock, DocumentModel, DocumentPageSetup, DocumentParagraph
 import { DEFAULT_DOCUMENT_SECTION_ID, documentSectionIds } from './section-header-footer.ts'
 import { validateDocumentNoteSettings } from '../notes/document-note-settings'
 import { markDocumentParagraphPaginationAuthored } from '../model/document-paragraph-pagination'
+import { cloneModel } from '../../../domain/serialization'
+import { tableForBlock } from '../model/document-model'
+import { documentBlockChildContainers } from '../model/document-structural-blocks'
+import { documentStoredBlockHosts } from '../model/document-block-host'
+import { documentTableGrid } from '../model/document-table-grid'
+import { documentTableColumnWidths } from '../model/document-table-style'
 
 export type DocumentParagraphStylePatch = Partial<DocumentParagraphStyle>
 export type DocumentSectionSetupPatch = Partial<DocumentSectionSetup>
+
+export interface DocumentPageSetupRequest {
+  pageSize: Pick<DocumentPageSetup, 'width' | 'height'>
+  pageOrient: 0 | 1
+  documentFlavor?: 0 | 1 | 2 | 3
+  marginTop: number
+  marginBottom: number
+  marginLeft: number
+  marginRight: number
+}
+
+export const DOCUMENT_MODERN_PAGE_MARGIN = 50 / 0.75
+
+export function prepareDocumentPageSetup(model: DocumentModel, request: DocumentPageSetupRequest): DocumentModel {
+  if (!request || typeof request !== 'object' || Array.isArray(request) || !request.pageSize || typeof request.pageSize !== 'object' || Array.isArray(request.pageSize)) throw new TypeError('页面设置参数无效。')
+  if (request.pageOrient !== 0 && request.pageOrient !== 1) throw new RangeError('页面方向无效。')
+  if (request.documentFlavor !== undefined && ![0, 1, 2, 3].includes(request.documentFlavor)) throw new RangeError('文档模式无效。')
+  const page = { ...model.page, width: request.pageSize.width, height: request.pageSize.height, marginTop: request.marginTop, marginBottom: request.marginBottom,
+    marginLeft: request.marginLeft, marginRight: request.marginRight }
+  if (![page.width, page.height].every(value => Number.isFinite(value) && value >= 1)
+    || ![page.marginTop, page.marginBottom, page.marginLeft, page.marginRight].every(value => Number.isFinite(value) && value >= 0)) {
+    throw new RangeError('页面尺寸须为正数，页边距须为非负数。')
+  }
+  if (page.width <= page.marginLeft + page.marginRight || page.height <= page.marginTop + page.marginBottom) throw new RangeError('页边距必须保留可用内容区。')
+  const candidate = cloneModel(model)
+  candidate.page = page
+  if (request.documentFlavor !== undefined) candidate.metadata = { ...candidate.metadata, documentFlavor: request.documentFlavor, documentFlavorContract: 'univer' }
+  const modern = candidate.metadata.documentFlavor === 2
+  const orientation = request.pageOrient === 1 ? 'landscape' : 'portrait'
+  candidate.metadata = { ...candidate.metadata, documentPageOrientation: orientation }
+  if (!modern) {
+    candidate.sectionSetup = { ...candidate.sectionSetup, ...page, orientation }
+    for (const block of candidate.blocks) if (block.type === 'sectionBreak') block.sectionBreak = {
+      ...block.sectionBreak!, setup: { ...block.sectionBreak?.setup, ...page, orientation },
+    }
+  }
+  for (const id of documentSectionIds(candidate)) documentEffectiveSectionSetup(candidate, id)
+  const oldContentWidth = model.page.width - (model.metadata.documentFlavor === 2 ? DOCUMENT_MODERN_PAGE_MARGIN * 2 : model.page.marginLeft + model.page.marginRight)
+  const newContentWidth = page.width - (modern ? DOCUMENT_MODERN_PAGE_MARGIN * 2 : page.marginLeft + page.marginRight)
+  if (Math.abs(oldContentWidth - newContentWidth) <= 2) return candidate
+  const resizeTables = (blocks: DocumentBlock[]) => {
+    for (const block of blocks) {
+      const table = tableForBlock(block)
+      if (table && (table.columnWidths?.length || table.style?.width !== undefined)) {
+        const grid = documentTableGrid(table), widths = documentTableColumnWidths(table, grid.columnCount, oldContentWidth)
+        const total = widths.reduce((sum, width) => sum + width, 0)
+        if (Math.abs(total - oldContentWidth) <= 2) {
+          table.columnWidths = widths.map(width => width / total * newContentWidth)
+          table.style = { ...table.style, width: newContentWidth }
+        }
+      }
+      for (const child of documentBlockChildContainers(block)) resizeTables(child)
+    }
+  }
+  resizeTables(candidate.blocks)
+  for (const entry of documentStoredBlockHosts(candidate)) resizeTables(entry.blocks)
+  return candidate
+}
 
 export const DOCUMENT_PARAGRAPH_STYLE_FIELDS = [
   'align', 'indent', 'lineHeight', 'spaceBefore', 'spaceAfter', 'indentStart', 'indentEnd',
@@ -157,11 +221,14 @@ export interface EffectiveDocumentSectionSetup {
 export function documentEffectiveSectionSetup(model: DocumentModel, sectionId: string): EffectiveDocumentSectionSetup {
   const source = documentSectionSetup(model, sectionId)
   validateDocumentSectionSetupPatch(source)
-  const page: DocumentPageSetup = {
+  const nominalPage: DocumentPageSetup = {
     width: source.width ?? model.page.width, height: source.height ?? model.page.height,
     marginTop: source.marginTop ?? model.page.marginTop, marginBottom: source.marginBottom ?? model.page.marginBottom,
     marginLeft: source.marginLeft ?? model.page.marginLeft, marginRight: source.marginRight ?? model.page.marginRight,
   }
+  const modern = model.metadata.documentFlavor === 2
+  const page = modern ? { ...model.page, marginTop: DOCUMENT_MODERN_PAGE_MARGIN, marginBottom: DOCUMENT_MODERN_PAGE_MARGIN,
+    marginLeft: DOCUMENT_MODERN_PAGE_MARGIN, marginRight: DOCUMENT_MODERN_PAGE_MARGIN } : nominalPage
   const contentWidth = page.width - page.marginLeft - page.marginRight
   const contentHeight = page.height - page.marginTop - page.marginBottom
   if (![page.width, page.height, contentWidth, contentHeight].every(value => Number.isFinite(value) && value > 0)) {
@@ -172,7 +239,7 @@ export function documentEffectiveSectionSetup(model: DocumentModel, sectionId: s
   const explicit = sectionId === DEFAULT_DOCUMENT_SECTION_ID ? model.sectionSetup
     : model.blocks.find(block => block.id === sectionId)?.sectionBreak?.setup
   return {
-    sectionId, page, orientation: source.orientation ?? (page.width > page.height ? 'landscape' : 'portrait'),
+    sectionId, page, orientation: modern ? (model.metadata.documentPageOrientation === 'landscape' ? 'landscape' : 'portrait') : source.orientation ?? (page.width > page.height ? 'landscape' : 'portrait'),
     columnCount, columnGap, columnSeparator: source.columnSeparator ?? 'none',
     ...(explicit?.pageNumberStart === undefined ? {} : { pageNumberStart: explicit.pageNumberStart }),
     marginHeader: source.marginHeader ?? 48, marginFooter: source.marginFooter ?? 48,

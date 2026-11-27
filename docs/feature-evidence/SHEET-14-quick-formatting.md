@@ -67,24 +67,34 @@ API 与工作台继续使用 `planSheetConditionalFormatsCommand`、`commitWorkb
 
 ## 2026-11-27 管理列表范围续核
 
-状态：只读核对与待确认方案；本节没有条件格式生产改动或新增运行结果，SHEET-14 仍未验收。
+状态：管理列表范围、整条列表清除和可见目标排序已落盘，契约与浏览器草稿未运行；SHEET-14 仍未验收。
 
 重新读取固定 [manage-rule.ts][manage]、[open-conditional-formatting-panel.ts][panel]、[RuleEdit.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleEdit.tsx) 与 [RuleList.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleList.tsx)。十项管理菜单、六类新建、编辑提交、删除与排序均有真实上游命令。本地 `saveDraft → mergeConditionalFormatRuleDraft → submit → sheet.command.set-conditional-formats` 已接完整列表规划、变化规则的旧/新范围权限、宿主与版本检查及工作簿隔离历史；未变化时不增加版本或历史。面板采用一次完整列表应用，与固定版逐条 SetCf/AddCf/DeleteCf/MoveCf 的提交时机不同。
 
 两项候选已排除：本地模板单独放行 `highlightSubtype === 'timePeriod'`，日期期间 Select 可以显示；现有平均值求值明确处理等于、不等于及两个包含等号的比较，并非全部退为大于。Drawer 已使用函数 prop `after-open-change`，没有本次范围主题 Modal 的回调接线问题。本轮未运行交互、历史或重开检查，不能由静态接线推定这些场景已验收。
 
-确认的缺口在管理列表范围：固定 `RuleList` 默认 `selectValue = '2'`，提供工作表与当前选区两项；选区模式用 `getCurrentLastSelection()` 和 `Rectangle.intersects` 过滤交叠规则，并订阅选择、工作表和规则 mutation。其选区模式列表清除会删除匹配的整条规则，区别于顶部“清除所选区域的规则”的范围差集。本地 [ConditionalFormattingPanel.vue](../../packages/office-studio/src/components/spreadsheet/ConditionalFormattingPanel.vue) 仅遍历整表 `localRules`，`defaultRange` 只为新建草稿提供初始范围，没有列表范围 Select 或实时选择过滤。这项尚未实现，不能以已有十项菜单宣称管理列表等价。
+固定 `RuleList` 默认 `selectValue = '2'`，提供工作表与当前选区两项；选区模式用 `getCurrentLastSelection()` 和 `Rectangle.intersects` 过滤任一应用范围交叠的规则，并订阅选择、工作表和规则 mutation。其选区模式列表清除会按 cfId 删除匹配的整条规则，区别于顶部“清除所选区域的规则”的范围差集。拖动根据可见源/目标 ID 进入 [MoveCfCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting/src/commands/commands/move-cf.command.ts)，由 [ConditionalFormattingRuleModel](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting/src/models/conditional-formatting-rule-model.ts) 改变整表规则序列。
 
-待确认实施范围为 4 文件，预计 130–190 行：
+本批实际接线如下：
 
-| 文件 | 预计行数 | 实施内容 |
-| --- | ---: | --- |
-| `components/spreadsheet/ConditionalFormattingPanel.vue` | 40–60 | 用 Ant Select 提供工作表/当前选区，过滤展示规则；保留完整 `localRules` 作为提交源，列表清除按匹配规则 ID 删除，隐藏规则不被过滤掉的提交覆盖 |
-| `components/ExcelWorkbench.vue` | 10–20 | 传入真实当前最后选区并随选择变化更新，沿用既有宿主与关闭生命周期；文件由主任务负责 |
-| `tests/sheet-format-painter.browser.test.mjs` | 60–90 | 原真实 fixture 覆盖两布局、范围切换、选择变化、未显示规则保留、清除/排序权限及一次历史、撤销重做和内部重开 |
-| `docs/feature-evidence/SHEET-14-quick-formatting.md` | 20 | 补明确来源、列表清除与顶部清除的差异、实施与未运行证据 |
+| 文件 | 实际改动与接口 |
+| --- | --- |
+| [ConditionalFormattingPanel.vue](../../packages/office-studio/src/components/spreadsheet/ConditionalFormattingPanel.vue) | 新增可选 `selectionRange` prop；`antdv-next` Form/FormItem/Select 切换工作表与当前选区，每次打开默认工作表。`visibleRules` 仅用于展示和列表操作，完整 `localRules` 仍是唯一提交源；列表显示实际应用范围。新增“清除列表规则”，上下移动按可见邻项 ID 操作完整序列 |
+| [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) | 传入 `selectedModelRanges().at(-1)`，响应真实末选区变化；开窗捕获的 `defaultRange` 继续只作为新建规则初始范围，沿用现有宿主、版本、权限、关闭及焦点生命周期 |
+| [conditional-format-rule-editor.ts](../../packages/office-studio/src/features/conditional-formatting/conditional-format-rule-editor.ts) | 新增 `ConditionalFormatRuleListScope` 与 `conditionalFormatRuleListForScope`，复用 `sheetRangesIntersect`；`removeConditionalFormatRuleDraft` 支持单 ID 或多个 ID；`moveConditionalFormatRuleDraft` 增加可选第四参数 `targetId`，未传时保留相邻移动行为 |
+| [conditional-formatting.ts 语言表](../../packages/office-studio/src/i18n/sheets/locales/conditional-formatting.ts) | 为项目 19 种语言补齐工作表、当前选区、显示规则范围、清除列表规则及空选区五个键，通过现有共享 translator 和 ConfigProvider 使用 |
 
-本方案仅增加轻量 UI 范围状态和现有规则事务的调用，不新增领域模型、公开 API、第二套历史或 Worker/WASM 协议；未实施。固定版范围预览高亮、完整 Office 行为、原生 IME、两种 Canvas 后端与大样本仍另留未完成或未验收项。
+过滤不会截断规则的其他应用范围。列表清除按当前可见规则 ID 删除整条规则，例如规则同时覆盖 A1:A4 与 J15，在 A1 选区中清除列表后两个范围都移除；不交叠的隐藏规则保留。编辑与应用始终提交完整列表，取消不会写入模型。可见规则移动跨过隐藏项时，保留隐藏项的相对顺序，并在受影响的完整序列区间复用原优先级槽；区间之外的规则、范围、配置、来源和优先级保留，相等优先级仍按新数组顺序求值。
+
+权限仍由既有 `planSheetConditionalFormatsCommand` / `assertSheetRangesEditable` 在应用时原子检查变化规则的旧/新全部范围：未变化的隐藏受保护规则允许保留，匹配规则的其他受保护范围会阻止整条清除，跨隐藏受保护规则改变优先级或同优先级次序会拒绝整个提交。固定版 `RuleList` 另按权限隐藏不可编辑行，并据全部匹配规则权限禁用清除；本地本批保留先编辑草稿、应用时拒绝的交互，尚未实现该权限展示策略，不能标记为完全等价。
+
+[conditional-formatting.contract.test.mjs](../../packages/office-studio/tests/conditional-formatting.contract.test.mjs) 新增四个未运行声明，覆盖末选区输入、交叠边界、多范围规则、空选区、共享翻译、整条批量清除、全局槽位及相等优先级/来源隔离。[sheet-conditional-formatting-commands.contract.test.mjs](../../packages/office-studio/tests/sheet-conditional-formatting-commands.contract.test.mjs) 新增三个未运行声明，使用真实 standalone 规划与 OfficeStudio 命令，覆盖隐藏规则保留、匹配规则全部旧范围权限、跨隐藏保护排序、一次历史、撤销/重做、值与缓存不变及内部快照重开。
+
+[sheet-format-painter.browser.test.mjs](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) 扩展现有真实 fixture，新增范围样本和真实 `studio.setSelections` 接口；三个参数化声明展开为 10 个未运行场景，覆盖 classic/grid、实时选择与多选末项、空选区、明暗主题、取消焦点、完整列表编辑/清除、隐藏保护、可见邻项排序及撤销/重做/内部重开。该 fixture 选择 Canvas2D，不能作为 WebGPU 验证证据。
+
+本批只增加轻量规则列表状态及既有事务的调用，不新增领域模型、公开 Facade、内容历史或 Worker/WASM 协议。新增可替换控件均使用 `antdv-next`，样式使用既有主题 token；没有运行主题、焦点、输入法或文件样本。固定版拖动排序、规则范围预览高亮、权限展示、外部规则 mutation 下的草稿合并政策、完整 Office 往返、Windows IME、WebGPU 与大样本性能仍有未完成或未验收项。所有运行验证继续后置，静态检查不代表这些行为已经验收。
+
+本批只读检查：限定文件 `git diff --check` 通过；四个涉及的 `.mjs` 草稿及浏览器 fixture 内嵌模块通过 `node --check` 静态语法解析。本节文档的 9 个本地文件目标、12 个固定版上游源码目标均存在，链接中的上游提交一致。未执行任何测试、类型检查、构建、dev、浏览器、Rust/WASM、Office 往返或基准。
 
 [schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
 [quick]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/quick-insert.menu.ts

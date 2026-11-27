@@ -1,6 +1,6 @@
 # DOC-12 脚注、尾注与分隔故事
 
-状态：**未验收**。更新日期：2026-11-25。本记录覆盖已有实现、本批契约草稿与仍须完成的边界，不能证明 Docs、DOC-12 或 Pro 能力整体完成。本轮按用户已确认的“先实现，后统一检查”顺序编写，未运行测试、类型检查、前端构建、Rust/WASM、dev、浏览器、Office 文件重开或基准。
+状态：**未验收**。更新日期：2026-11-27。本记录覆盖已有实现、本批契约草稿与仍须完成的边界，不能证明 Docs、DOC-12 或 Pro 能力整体完成。本轮按用户已确认的“先实现，后统一检查”顺序编写，未运行测试、类型检查、前端构建、Rust/WASM、dev、浏览器、Office 文件重开或基准。
 
 关联：[功能清单](../UNIVER_FEATURE_PARITY.md)、[引用规则](../UNIVER_REFERENCE_RULES.md)、[执行标准](../../PROJECT_EXECUTION_STANDARD.md)、[渲染与计算标准](../RENDERING_AND_COMPUTE_STANDARD.md)、[DOC-11 控件证据](DOC-11-content-controls.md)。
 
@@ -39,7 +39,7 @@ scoped view 与 edit 独立判断。preview、note panel、Canvas 导航与分�
 
 大 continuationNotice 作为实际顺序故事流从前页剩余空间延续，随后完整 continuationSeparator 再进入 note；它可能占据只有装饰的页面。此策略与最终 Word/Univer 的续页位置和分隔显示语义尚未核实，布局发出 `DOCUMENT_NOTE_DECORATION_PAGINATED` 记录真实状态。单个不可拆超页 glyph/对象仍保留完整源与排版对象，但视觉裁剪及固定点未收敛需独立诊断；不能以本批接线声称所有极端内容均已可见或达标。
 
-分隔字段的来源与几何需要分开验收。固定 OSS `layout/footnote-layout.ts::defaultSeparatorBody`（205）使用 `U+FFFC` 及覆盖其单字符范围的 `CustomRangeType.FIELD`，fieldType 为 `FOOTNOTE_SEPARATOR` / `FOOTNOTE_CONTINUATION_SEPARATOR`；`layout/block/paragraph/shaping.ts::createNoteGlyph`（332–350）将首分隔宽度设为 `min(192,textWidth)`、续页分隔为 `textWidth`。`extensions/font-and-base-line.ts`（124–133）以 `em/20` 厚度绘制，底边在 baseline 上方 `em/4`。根任务已接真实 `paragraph.noteSeparator` / FIELD 公开读写；本地 `document-paragraph-layout.ts` 当前仍以可用文字宽度 `widthFraction`（默认首分隔 1/3、续页分隔 1）绘制 1px divider，其 y 为首行底部减 2px，并保留真实空 paragraph 输入锚点。宽度、厚度、baseline 和默认段后距与上游仍有差异，不以字段映射或空段锚点证明 Office 显示一致。
+分隔字段的来源与几何需要分开验收。固定 OSS `layout/footnote-layout.ts::defaultSeparatorBody`（205）使用 `U+FFFC` 及覆盖其单字符范围的 `CustomRangeType.FIELD`，fieldType 为 `FOOTNOTE_SEPARATOR` / `FOOTNOTE_CONTINUATION_SEPARATOR`；`layout/block/paragraph/shaping.ts::createNoteGlyph`（332–350）将首分隔宽度设为 `min(192,textWidth)`、续页分隔为 `textWidth`。`extensions/font-and-base-line.ts`（124–133）以 `em/20` 厚度绘制，底边在 baseline 上方 `em/4`。本地此前统一以可用文字宽度 `widthFraction` 绘制 1px divider，位置为首行底部减 2px；默认与明确 FIELD 的新实现见[分隔线字段与几何](#note-separator-field-geometry)。未标记自定义分隔内容仍保留原行为。公开字段映射、空段锚点和本次几何实现均不能证明 Office 显示已经验收。
 
 ## 未运行的验证草稿与缺口
 
@@ -47,7 +47,7 @@ scoped view 与 edit 独立判断。preview、note panel、Canvas 导航与分�
 | --- | --- | --- |
 | `packages/office-studio/tests/document-note-controls.contract.test.mjs` | 同图复制、block/row/field/picture/SDT map、跨 kind ID、来源隔离、foreign/UTF-16/临时锁拒绝、note/settings 原子回滚、批注外部段、完整替换锁、settings no-op/source/dormant | 未运行。 |
 | `packages/office-studio/tests/document-note-inspection.contract.test.mjs` | 真实 table/image/orphan 检查、body 页保持、活动/默认/原生/公开 dormant 区分、默认首次注册编辑、撤销重做/内部保存重开、settings/mark 草稿能力、scoped view、陈旧会话 | 未运行。 |
-| `packages/office-studio/tests/document-note-pagination.contract.test.mjs` | 小型 legacy 分隔测量/编辑 ID 与真实 host、separator 恰好占满页不递归、foot/end 完整 notice 与 continuation source、table cell 全部 UTF-16 span、完整 image 比例/clip、连续 table strip、多栏 note/单栏装饰、parity blank、sectEnd 后续正文、模型/引用不变 | 未运行。 |
+| `packages/office-studio/tests/document-note-pagination.contract.test.mjs` | 默认及公开 FIELD 分隔线宽度/厚度/baseline/缩放、公开 Body 编码重开与来源身份、自定义规则保留；小型 legacy 分隔测量/编辑 ID 与真实 host、separator 恰好占满页不递归、foot/end 完整 notice 与 continuation source、table cell 全部 UTF-16 span、完整 image 比例/clip、连续 table strip、多栏 note/单栏装饰、parity blank、sectEnd 后续正文、模型/引用不变 | 未运行。 |
 | `packages/office-studio/tests/document-notes.contract.test.mjs` | 插入真实 note body、跨段保留文字、两位引用、UTF-16、源定义冲突、nested 删除后重读权威模型 | 修改草稿；未运行。 |
 | `packages/office-studio/tests/document-permissions.contract.test.mjs` 与 `document-permission-rules.contract.test.mjs` | view/edit 独立、deny/default-deny 与多目标、note/decoration 目标清单 | 修改草稿；未运行。 |
 | `packages/office-studio/tests/document-note-workbench.browser.test.mjs` | 真实 Workbench/FDocument/ConfigProvider；纯图片来源空段锚点与实际 Canvas 像素、separator-only/public dormant、首次 notice 编辑/撤销重做/saveModel 重开、scope/mark 草稿、view/edit、动画关闭焦点、正文 scroll/zoom、编辑/返回观察者重入、明暗 classic/grid、合成 composition 的单提交/取消/旧节点 | 新增草稿；未运行。合成 composition 不代表 Windows IME 验收。 |
@@ -69,3 +69,21 @@ scoped view 与 edit 独立判断。preview、note panel、Canvas 导航与分�
 [document-note-workbench.browser.test.mjs](../../packages/office-studio/tests/document-note-workbench.browser.test.mjs) 复用原 fixture，仅增加调用既有 `FDocument.setInputSelection` 的选区入口；新增一个声明展开四个计划案例，分别检查两类注释的 classic/light 正向与 grid/dark 反向选区。通过真实 Ribbon 按钮检查取消后模型/历史不变、末端引用与原选中文字保留、单次 CommandExecuted/历史、note host/Canvas 输入焦点、撤销重做/saveModel 重开及末端拒绝时的禁用状态。现有 ConfigProvider、Ant 按钮与 Input.TextArea 输入桥不变，未新建 fixture、测试文件或 UI 控件。
 
 仅执行源码/diff 回读和 Babel AST 计数：两个草稿文件本次前均为 **11 个声明 / 11 个计划案例**；当前契约为 **12 / 12**，浏览器为 **12 / 15**，运行结果均为 **0**。契约声明内部的 kind/方向循环不额外计注册案例。统一静态检查由主线收尾；测试、类型、构建、dev/服务、浏览器、Rust/WASM、公开 Body/native DOCX 样本和基准均后置。新增 saveModel 草稿只覆盖本地模型重开，不能代替公开 save/getSnapshot 或 Office 文件保真；真实主题、弹层、焦点和 Windows IME 仍未验收。
+
+<a id="note-separator-field-geometry"></a>
+
+## 2026-11-27 分隔线字段与几何
+
+状态：**未验收**。本节记录默认分隔和明确公开 FIELD 的实现，替代上文对这两类内容使用 1/3 宽度、1px 厚度、首行底部减 2px 及默认段后距的历史说明；未标记自定义 `noteSeparator` 继续使用原规则。
+
+固定来源仍为 `E:/rust_test/univer` 的 v1.6.0 / `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。[默认来源](../../../univer/packages/engine-render/src/components/docs/layout/footnote-layout.ts)、[字段 shaping](../../../univer/packages/engine-render/src/components/docs/layout/block/paragraph/shaping.ts) 和[字体基线绘制](../../../univer/packages/engine-render/src/components/docs/extensions/font-and-base-line.ts) 分别给出真实空段及 FIELD、首分隔 `min(192,textWidth)` / 续页全宽、段前后零、厚度 `em/20` 与底边 `baseline-em/4`。
+
+[document-note-decorations.ts](../../packages/office-studio/src/features/document/notes/document-note-decorations.ts) 为默认首分隔与续页分隔增加准确 `fieldType`，段后距改为零，保留原宽度分数与颜色。主任务配套修改 [document-body-ranges.ts](../../packages/office-studio/src/api/document-body-ranges.ts) 和 [document-body-read.ts](../../packages/office-studio/src/api/document-body-read.ts)：公开 `CustomRangeType.FIELD` 与实际分隔 token 的解码结果携带 `FOOTNOTE_SEPARATOR` / `FOOTNOTE_CONTINUATION_SEPARATOR`，保留 `univerNoteSeparatorRangeSource` 等原来源；不根据 `widthFraction === 1/3` 推测字段身份。
+
+[document-paragraph-layout.ts](../../packages/office-studio/src/features/document/layout/document-paragraph-layout.ts) 使用已形成的真实 `LayoutLine.baseline`：首分隔宽度为 `min(192,column.width)`，续页宽度为 `column.width`，`em=fontSize*4/3`，厚度为 `em/20`。本地场景采用中心线 stroke，因此分隔线 y 为 `baseline-em/4-thickness/2`，使绘制底边对应上游位置。小分隔测量和分页分隔继续复用同一 paragraph/block 内核，保留真实空段输入地址。未标记自定义内容继续使用 `geometry.width(0)*widthFraction`、原行底位置、1px 厚度与原颜色。
+
+[document-layout-types.ts](../../packages/office-studio/src/features/document/layout/document-layout-types.ts) 的 `LayoutDivider` 新增可选派生 `noteSeparator` 标记；已有布局平移和裁剪保留该标记。[document-scene.ts](../../packages/office-studio/src/features/document/rendering/document-scene.ts) 对标记分隔线直接使用 `height*scale`，保留缩小后的分数像素宽度；其他 divider 仍按原规则绘制。持久化来源 metadata 增加 `fieldType`，公开 API、命令、历史及 Worker/WASM 协议没有新增接口。本批未改变 Vue 控件或输入桥，未新增原生表单；既有 `antdv-next` 主题、焦点和 IME 仍待浏览器验收。
+
+[document-note-pagination.contract.test.mjs](../../packages/office-studio/tests/document-note-pagination.contract.test.mjs) 新增三个声明草稿：默认两类注释在 200/360/800px 页宽下的首分隔与续页几何、零段后距和真实空段；未标记 1/3、1/2、1 自定义规则的原行为；两种公开 FIELD 通过真实 `decodeDocumentBody → encodeDocumentBody → decodeDocumentBody` 保留单字符范围、range ID、fieldType、空段及 12/18pt 字体，再进入真实 note settings、layout 与 scene 检查宿主、来源和几何。默认及公开草稿都检查 50/100% 缩放与布局不修改模型。这些是公开 Body 往返契约草稿，不代表已验证整文档 `save/getSnapshot`、DOCX 文件往返或浏览器 Canvas 像素。
+
+本批只做源码与限定 diff 回读、空白差异和文档来源链接检查；测试、类型、前端构建、Rust/WASM、dev/服务、浏览器、Office 样本和性能/内存基准均未运行。真实 Office 与浏览器显示、特殊字体/缩放、极端分隔内容以及 Worker/Rust/WASM 排版仍保留未验收状态。

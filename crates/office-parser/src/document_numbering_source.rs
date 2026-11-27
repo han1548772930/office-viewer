@@ -18,7 +18,7 @@ fn content_type<'a>(types: &'a Element, path: &str) -> Option<&'a str> {
         .and_then(|node| node.attribute("ContentType"))
         .or_else(|| path.rsplit_once('.').and_then(|(_, extension)| types.children.iter().find(|node|
             node.name == "Default" && node.attribute("Extension").is_some_and(|name| name.eq_ignore_ascii_case(extension)))
-                .and_then(|node| node.attribute("ContentType")))
+                .and_then(|node| node.attribute("ContentType"))))
 }
 
 fn retain_media(source: &mut DocumentNumberingSource, content_types: Option<&str>,

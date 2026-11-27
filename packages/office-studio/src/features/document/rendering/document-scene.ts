@@ -117,7 +117,7 @@ export function sceneFromDocument(model: DocumentModel, layout: DocumentLayout, 
     }
     for (const divider of content.dividers) {
       if (!visible(divider) || divider.height <= 0) continue
-      const width = Math.max(1, divider.height * scale), color = documentTextColor(divider.color ?? '#b3bdca')
+      const width = divider.noteSeparator ? divider.height * scale : Math.max(1, divider.height * scale), color = documentTextColor(divider.color ?? '#b3bdca')
       const clip = divider.clip ? intersectRect(rect(layout.pages[pageIndex]!), rect(divider.clip)) : rect(layout.pages[pageIndex]!)
       if (!divider.style || divider.style === 'solid') {
         commands.push({ kind: 'line', x1: x(divider.x), y1: y(divider.y), x2: x(divider.x + divider.width), y2: y(divider.y), color, width, clip })

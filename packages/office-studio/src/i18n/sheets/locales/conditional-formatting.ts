@@ -51,9 +51,33 @@ const quickValues: Record<string, readonly string[]> = {
   'zh-TW': ['資料條', '圖示集', '等級', '形狀', '方向', '新建條件格式', '清除所選區域的規則'],
 }
 
+const scopeKeys = ['scope.worksheet', 'scope.selection', 'scope.label', 'clear-list', 'empty-selection'] as const
+const scopeValues: Record<string, readonly string[]> = {
+  'ar-SA': ['ورقة العمل', 'التحديد الحالي', 'إظهار قواعد', 'مسح القواعد المعروضة', 'لا توجد قواعد تنسيق شرطي للتحديد الحالي.'],
+  'ca-ES': ['Full de càlcul', 'Selecció actual', 'Mostra les regles de', 'Esborra les regles de la llista', 'La selecció actual no té regles de format condicional.'],
+  'de-DE': ['Arbeitsblatt', 'Aktuelle Auswahl', 'Regeln anzeigen für', 'Regeln in der Liste löschen', 'Für die aktuelle Auswahl sind keine Regeln für bedingte Formatierung vorhanden.'],
+  'en-US': ['Worksheet', 'Current Selection', 'Show Rules for', 'Clear Listed Rules', 'The current selection has no conditional formatting rules.'],
+  'es-ES': ['Hoja de cálculo', 'Selección actual', 'Mostrar reglas para', 'Borrar las reglas de la lista', 'La selección actual no tiene reglas de formato condicional.'],
+  'fa-IR': ['کاربرگ', 'انتخاب فعلی', 'نمایش قواعد برای', 'پاک کردن قواعد فهرست', 'انتخاب فعلی قاعده قالب‌بندی شرطی ندارد.'],
+  'fr-FR': ['Feuille de calcul', 'Sélection actuelle', 'Afficher les règles pour', 'Effacer les règles de la liste', 'La sélection actuelle ne contient aucune règle de mise en forme conditionnelle.'],
+  'id-ID': ['Lembar Kerja', 'Pilihan Saat Ini', 'Tampilkan Aturan untuk', 'Hapus Aturan dalam Daftar', 'Pilihan saat ini tidak memiliki aturan pemformatan bersyarat.'],
+  'it-IT': ['Foglio di lavoro', 'Selezione corrente', 'Mostra regole per', 'Cancella le regole elencate', 'La selezione corrente non contiene regole di formattazione condizionale.'],
+  'ja-JP': ['ワークシート', '現在の選択範囲', 'ルールの表示対象', '一覧のルールをクリア', '現在の選択範囲に条件付き書式ルールはありません。'],
+  'ko-KR': ['워크시트', '현재 선택 영역', '규칙 표시 대상', '목록의 규칙 지우기', '현재 선택 영역에 조건부 서식 규칙이 없습니다.'],
+  'pl-PL': ['Arkusz', 'Bieżące zaznaczenie', 'Pokaż reguły dla', 'Wyczyść reguły na liście', 'Bieżące zaznaczenie nie ma reguł formatowania warunkowego.'],
+  'pt-BR': ['Planilha', 'Seleção Atual', 'Mostrar Regras para', 'Limpar Regras da Lista', 'A seleção atual não tem regras de formatação condicional.'],
+  'ru-RU': ['Лист', 'Текущее выделение', 'Показать правила для', 'Очистить правила в списке', 'Для текущего выделения нет правил условного форматирования.'],
+  'sk-SK': ['Hárok', 'Aktuálny výber', 'Zobraziť pravidlá pre', 'Vymazať pravidlá v zozname', 'Aktuálny výber nemá pravidlá podmieneného formátovania.'],
+  'vi-VN': ['Trang tính', 'Vùng chọn hiện tại', 'Hiển thị quy tắc cho', 'Xóa quy tắc trong danh sách', 'Vùng chọn hiện tại không có quy tắc định dạng có điều kiện.'],
+  'zh-CN': ['工作表', '当前选区', '显示规则范围', '清除列表规则', '当前选区没有条件格式规则。'],
+  'zh-HK': ['工作表', '目前選取範圍', '顯示規則範圍', '清除清單規則', '目前選取範圍沒有條件格式規則。'],
+  'zh-TW': ['工作表', '目前選取範圍', '顯示規則範圍', '清除清單規則', '目前選取範圍沒有條件格式規則。'],
+}
+
 export const conditionalFormattingLocaleMessages: Partial<Record<string, Record<string, string>>> = Object.fromEntries(
   Object.entries(quickValues).map(([locale, values]) => [locale, Object.fromEntries([
     ...(localeValues[locale] ?? []).map((value, index) => [keys[index]!, value]),
     ...values.map((value, index) => [`conditional.quick.${quickKeys[index]!}`, value]),
+    ...scopeValues[locale]!.map((value, index) => [`conditional.${scopeKeys[index]!}`, value]),
   ])]),
 )

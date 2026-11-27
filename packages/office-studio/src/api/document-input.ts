@@ -66,7 +66,12 @@ export function documentFromPublicInput(input: UniverBodyRecord, candidate: Docu
     ...block.sectionBreak!, setup: { ...documentSetup, ...block.sectionBreak?.setup },
   }
   const firstSetup = documentSectionSetupFromBody(candidate.metadata.univerBodyFirstSectionSource)
-  applyDocumentSectionSetupPatch(candidate, DEFAULT_DOCUMENT_SECTION_ID, { ...documentSetup, ...firstSetup })
+  if (flavor === 2) {
+    applyDocumentSectionSetupPatch(candidate, DEFAULT_DOCUMENT_SECTION_ID, documentSetup)
+    candidate.sectionSetup = { ...candidate.sectionSetup, ...firstSetup }
+    candidate.metadata.documentPageOrientation = documentSetup.orientation ?? (candidate.page.width > candidate.page.height ? 'landscape' : 'portrait')
+  }
+  if (flavor !== 2) applyDocumentSectionSetupPatch(candidate, DEFAULT_DOCUMENT_SECTION_ID, { ...documentSetup, ...firstSetup })
   const claimed = new Set<string>()
   reservePublicDocumentContent(decoded.content, decoded.contentControls, claimed)
   applyPublicDocumentStories(candidate, input, resources, options, claimed)

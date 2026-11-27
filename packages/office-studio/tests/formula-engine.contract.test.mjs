@@ -32,6 +32,125 @@ beforeAll(async () => {
 
 afterAll(async () => { await server?.close() })
 
+test('statistical aggregates retain fixed scalar conversions, empty data, arity and canonical function entries', () => {
+  const examples = [
+    ['AVEDEV', '2,4', 1], ['DEVSQ', '2,4', 2], ['GEOMEAN', '4,9', 6],
+    ['HARMEAN', '2,6', 3], ['MODE.SNGL', '2,4,4', 4],
+  ]
+  for (const [name, argumentsText, expected] of examples) {
+    const entry = functionCatalog.SHEET_FUNCTION_CATALOG.find(entry => entry.name === name)
+    assert.equal(entry.category, '统计')
+    assert.equal(entry.example, argumentsText)
+    assert.ok(Math.abs(formula.evaluateFormula(functionCatalog.buildSheetFunctionFormula(name, argumentsText), model, 'sheet-main') - expected) < 1e-12)
+    for (const invalid of ['', Array(256).fill('1').join(',')]) {
+      assert.deepEqual(formula.evaluateFormula(`=${name}(${invalid})`, model, 'sheet-main'), { kind: 'error', code: '#N/A' })
+    }
+    assert.equal(formula.evaluateFormula(`=${name}(${Array(255).fill('1').join(',')})`, model, 'sheet-main'), name === 'AVEDEV' || name === 'DEVSQ' ? 0 : 1)
+    assert.deepEqual(formula.evaluateFormula(`=${name}(#REF!)`, model, 'sheet-main'), { kind: 'error', code: '#REF!' })
+  }
+  for (const [expression, expected] of [
+    ['AVEDEV(1,"2")', 0.5], ['AVEDEV(2,TRUE)', 0.5], ['AVEDEV(2,FALSE)', 1], ['AVEDEV("50%",1)', 0.25],
+    ['DEVSQ("2","4")', 2], ['DEVSQ(2,TRUE,FALSE,"text"," ",A2)', 0], ['DEVSQ(2,"0x10")', 98],
+    ['GEOMEAN("4","9")', 6], ['GEOMEAN(4,"25%","2012-2-2",TRUE)', 4],
+    ['HARMEAN("2","6")', 3], ['HARMEAN(4,"25%","2012-2-2",FALSE)', 4],
+    ['MODE.SNGL(2,"2",2)', 2], ['MODE.SNGL(5,2,2,5)', 5], ['MODE.SNGL(2,4,4,2)', 2],
+  ]) assert.ok(Math.abs(formula.evaluateFormula(`=${expression}`, model, 'sheet-main') - expected) < 1e-12, expression)
+  for (const [expression, code] of [
+    ['AVEDEV("text")', '#VALUE!'], ['AVEDEV(A2)', '#NUM!'], ['DEVSQ("text",TRUE,A2)', '#NUM!'],
+    ['GEOMEAN("text",2)', '#VALUE!'], ['HARMEAN("text",2)', '#VALUE!'], ['MODE.SNGL("text",2,2)', '#VALUE!'],
+    ['GEOMEAN(TRUE,A2)', '#NUM!'], ['HARMEAN(TRUE,A2)', '#N/A'], ['MODE.SNGL("2","2")', '#N/A'],
+    ['GEOMEAN(0,2)', '#NUM!'], ['HARMEAN(-1,2)', '#NUM!'], ['MODE.SNGL(1,2)', '#N/A'],
+    ['GEOMEAN(-1,#REF!)', '#REF!'], ['HARMEAN(-1,#REF!)', '#REF!'],
+  ]) assert.deepEqual(formula.evaluateFormula(`=${expression}`, model, 'sheet-main'), { kind: 'error', code }, expression)
+})
+
+test('statistical aggregates preserve row-order errors, typed reference text, INDEX and first-occurrence ties', () => {
+  const source = structuredClone(model)
+  const sheet = source.sheets[0]
+  const template = sheet.cells['0:0']
+  sheet.cells = {}
+  for (const [row, col, value, dataType] of [
+    [1, 2, 4, 'number'], [0, 2, '4', 'text'], [1, 1, 'skip', 'text'],
+    [0, 1, 4, 'number'], [1, 0, true, 'boolean'], [0, 0, 2, 'number'],
+    [3, 1, '#REF!', 'error'], [3, 0, '#DIV/0!', 'error'],
+  ]) sheet.cells[`${row}:${col}`] = { ...template, id: `${row}:${col}`, row, col, value, dataType, formula: null, display: String(value) }
+  const cases = [['AVEDEV', 8 / 9], ['DEVSQ', 3], ['GEOMEAN', 128 ** 0.25], ['HARMEAN', 3.2], ['MODE.SNGL', 4]]
+  for (const [name, expected] of cases) {
+    assert.ok(Math.abs(formula.evaluateFormula(`=${name}(A1:C2)`, source, 'sheet-main') - expected) < 1e-12, name)
+    assert.deepEqual(formula.evaluateFormula(`=${name}(A4:B4)`, source, 'sheet-main'), { kind: 'error', code: '#DIV/0!' })
+  }
+  for (const reference of ['C1', 'C1:C1', 'INDEX(A1:C2,1,3)']) {
+    for (const [name, expected] of [['DEVSQ', 0], ['GEOMEAN', 4], ['HARMEAN', 4]]) {
+      assert.equal(formula.evaluateFormula(`=${name}(${reference})`, source, 'sheet-main'), expected)
+    }
+    for (const [name, code] of [['AVEDEV', '#NUM!'], ['MODE.SNGL', '#N/A']]) {
+      assert.deepEqual(formula.evaluateFormula(`=${name}(${reference})`, source, 'sheet-main'), { kind: 'error', code })
+    }
+  }
+  sheet.cells['1:0'].formula = '=TRUE()'
+  assert.ok(Math.abs(formula.evaluateFormula('=AVEDEV(A1:C2)', source, 'sheet-main') - 8 / 9) < 1e-12)
+  for (const pattern of ['@', '@@@']) {
+    sheet.cells['0:1'] = { ...sheet.cells['0:1'], style: { ...template.style, numberFormat: pattern } }
+    assert.equal(formula.evaluateFormula('=AVEDEV(A1:C2)', source, 'sheet-main'), 1)
+    assert.deepEqual(formula.evaluateFormula('=MODE.SNGL(A1:C2)', source, 'sheet-main'), { kind: 'error', code: '#N/A' })
+    assert.equal(formula.evaluateFormula('=DEVSQ(A1:C2)', source, 'sheet-main'), 3)
+  }
+  for (const [row, col, value] of [[7, 2, 6], [7, 1, 5], [7, 0, 4], [6, 2, 4], [6, 1, 3], [6, 0, 2], [5, 2, 3], [5, 1, 2], [5, 0, 1]]) {
+    sheet.cells[`${row}:${col}`] = { ...template, id: `${row}:${col}`, row, col, value, dataType: 'number', formula: null, display: String(value) }
+  }
+  assert.equal(formula.evaluateFormula('=MODE.SNGL(A6:C8)', source, 'sheet-main'), 2)
+  for (const name of ['GEOMEAN', 'HARMEAN']) {
+    assert.deepEqual(formula.evaluateFormula(`=${name}(-1,A4:B4)`, source, 'sheet-main'), { kind: 'error', code: '#DIV/0!' })
+  }
+})
+
+test('statistical aggregates retain AVEDEV phase errors and unguarded raw numeric results', () => {
+  const source = structuredClone(model)
+  source.sheets[0].cells['0:0'].value = 1e308
+  source.sheets[0].cells['0:1'].value = 1e308
+  for (const [expression, code] of [
+    ['AVEDEV(1e308,1e308)', '#VALUE!'], ['AVEDEV(1e308,1e308,#REF!)', '#REF!'],
+    ['AVEDEV(A1:B1,#REF!)', '#VALUE!'], ['AVEDEV(A1:A1,B1:B1,#REF!)', '#NUM!'],
+  ]) assert.deepEqual(formula.evaluateFormula(`=${expression}`, source, 'sheet-main'), { kind: 'error', code }, expression)
+  assert.equal(formula.evaluateFormula('=DEVSQ(1e308,-1e308)', source, 'sheet-main'), Infinity)
+  assert.equal(formula.evaluateFormula('=GEOMEAN(1e308,1e308)', source, 'sheet-main'), Infinity)
+  assert.equal(formula.evaluateFormula('=HARMEAN(QUOTIENT("1e999",1),QUOTIENT("1e999",1))', source, 'sheet-main'), Infinity)
+  for (const [name, suffix, expected] of [['DEVSQ', '2', 0], ['GEOMEAN', '2', 2], ['HARMEAN', '2', 2], ['MODE.SNGL', '2,2', 2]]) {
+    assert.equal(formula.evaluateFormula(`=${name}(QUOTIENT("1e999","1e999"),${suffix})`, source, 'sheet-main'), expected)
+  }
+  assert.deepEqual(formula.evaluateFormula('=AVEDEV(QUOTIENT("1e999","1e999"),2)', source, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+})
+
+test('ISDATE reads date and time text with the fixed date system and preserves scalar reference formats', () => {
+  for (const [argument, expected] of [
+    ['"2012-2-2"', true], ['"10:30:00"', true], ['"31/01/2024"', false],
+    ['"test"', false], ['"50%"', false], ['40826.4375', false], ['TRUE', false], ['A2', false],
+  ]) {
+    assert.equal(formula.evaluateFormula(`=ISDATE(${argument})`, model, 'sheet-main', { numberFormatLocale: 'fr-FR' }), expected, argument)
+  }
+  assert.equal(formula.evaluateFormula('=ISDATE("01/01/1900")', model, 'sheet-main'), true)
+  assert.equal(formula.evaluateFormula('=ISDATE("01/01/1900")', { ...model, date1904: true }, 'sheet-main'), false)
+  for (const argument of ['', '1,2']) assert.deepEqual(formula.evaluateFormula(`=ISDATE(${argument})`, model, 'sheet-main'), { kind: 'error', code: '#N/A' })
+  assert.deepEqual(formula.evaluateFormula('=ISDATE(#REF!)', model, 'sheet-main'), { kind: 'error', code: '#REF!' })
+  assert.deepEqual(formula.evaluateFormula('=ISDATE(A1:B1)', model, 'sheet-main'), { kind: 'error', code: '#VALUE!' })
+
+  const source = structuredClone(model)
+  source.sheets[0].cells['0:0'].value = 40826.4375
+  for (const [pattern, expected] of [
+    ['General', false], ['yyyy-mm-dd hh:mm:ss', true], ['hh:mm:ss', true], ['[h]:mm:ss', true],
+    ['0"yyyy"', false], ['0.00;0.00;yyyy-mm-dd', true], ['@', false], ['@@@', false],
+  ]) {
+    source.sheets[0].cells['0:0'].style.numberFormat = pattern
+    for (const reference of ['A1', 'A1:A1', 'INDEX(A1:B1,1,1)']) {
+      assert.equal(formula.evaluateFormula(`=ISDATE(${reference})`, source, 'sheet-main'), expected, `${pattern}: ${reference}`)
+    }
+  }
+  const entry = functionCatalog.SHEET_FUNCTION_CATALOG.find(entry => entry.name === 'ISDATE')
+  assert.equal(entry.category, '信息')
+  assert.equal(entry.example, 'A1')
+  assert.equal(formula.evaluateFormula(functionCatalog.buildSheetFunctionFormula('ISDATE', '"2012-2-2"'), model, 'sheet-main'), true)
+})
+
 test('parser preserves references, ranges, functions and absolute markers', () => {
   const node = formula.parseFormula('=SUM($A1:B$2)+Data!C3')
   assert.equal(node.kind, 'binary')

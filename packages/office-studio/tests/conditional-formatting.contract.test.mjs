@@ -4,8 +4,10 @@ import { normalizeWorkbook } from '../src/parser/workbookNormalizer.ts'
 import { createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { evaluateFormula } from '../src/features/formula/formula-engine.ts'
+import { createOfficeTranslator, supportedOfficeLocales } from '../src/i18n/office-i18n.ts'
+import { conditionalFormattingLocaleMessages } from '../src/i18n/sheets/locales/conditional-formatting.ts'
 import { conditionalFormatFormulaAt } from '../src/features/conditional-formatting/conditional-format-formulas.ts'
-import { conditionalFormatEditorFormula, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
+import { conditionalFormatEditorFormula, conditionalFormatRuleListForScope, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
   prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../src/features/conditional-formatting/conditional-format-rule-editor.ts'
 import {
   addConditionalFormatRule,
@@ -310,6 +312,86 @@ test('rule-list drafts retain untouched priority slots and deeply isolate prepen
   assert.deepEqual(second.metadata.keep, ['second']); assert.deepEqual(untouched.metadata.keep, ['untouched'])
   assert.deepEqual(first.formulaAnchor, { row: 1, col: 0 }); assert.deepEqual(first.config.custom.keep, ['first'])
   assert.deepEqual(order(original), [['rule-a', 4], ['second', 9], ['untouched', 17]])
+})
+
+test('rule-list scopes use the last supplied selection and inclusive intersections across every rule range', () => {
+  const multiple = { ...baseRule, id: 'multiple', ranges: [
+    { startRow: 7, startCol: 3, endRow: 8, endCol: 4 },
+    { startRow: 1, startCol: 1, endRow: 1, endCol: 1 },
+  ] }
+  const hidden = { ...baseRule, id: 'hidden', ranges: [{ startRow: 10, startCol: 13, endRow: 10, endCol: 13 }] }
+  const rules = [baseRule, multiple, hidden]
+  const at = (row, col) => ({ startRow: row, startCol: col, endRow: row, endCol: col })
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'worksheet'), rules)
+  assert.notEqual(conditionalFormatRuleListForScope(rules, 'worksheet'), rules)
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'selection'), [])
+  assert.deepEqual(conditionalFormatRuleListForScope([], 'selection', at(0, 0)), [])
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'selection', at(2, 1)), [baseRule])
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'selection', at(3, 1)), [])
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'selection', at(1, 1)), [baseRule, multiple])
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'selection', [at(0, 0), at(7, 3)].at(-1)), [multiple])
+  assert.deepEqual(conditionalFormatRuleListForScope(rules, 'worksheet', at(7, 3)), rules)
+})
+
+test('scoped rule-list controls use each registered locale through the shared translator', () => {
+  const keys = ['conditional.scope.worksheet', 'conditional.scope.selection', 'conditional.scope.label',
+    'conditional.clear-list', 'conditional.empty-selection']
+  for (const locale of supportedOfficeLocales) {
+    const translate = createOfficeTranslator(locale)
+    for (const key of keys) {
+      const value = conditionalFormattingLocaleMessages[locale][key]
+      assert.equal(typeof value, 'string')
+      assert.ok(value.trim().length > 0)
+      assert.equal(translate(key, 'missing translation'), value)
+    }
+  }
+  assert.equal(createOfficeTranslator('en-US')('conditional.scope.selection', ''), 'Current Selection')
+  assert.equal(createOfficeTranslator('zh-CN')('conditional.clear-list', ''), '清除列表规则')
+})
+
+test('clearing a scoped list deletes whole multi-range rules and deeply preserves hidden rules', () => {
+  const multiple = { ...baseRule, id: 'multiple', ranges: [baseRule.ranges[0],
+    { startRow: 7, startCol: 3, endRow: 8, endCol: 4 }], metadata: { vendor: ['multiple'] } }
+  const hidden = { ...baseRule, id: 'hidden', priority: 13,
+    ranges: [{ startRow: 10, startCol: 13, endRow: 10, endCol: 13 }], metadata: { vendor: ['hidden'] } }
+  const original = [baseRule, hidden, multiple]
+  const visible = conditionalFormatRuleListForScope(original, 'selection', { startRow: 0, startCol: 0, endRow: 0, endCol: 0 })
+  const cleared = removeConditionalFormatRuleDraft(original, visible.map(rule => rule.id))
+  assert.deepEqual(cleared, [hidden])
+  assert.deepEqual(removeConditionalFormatRuleDraft(original, []), original)
+  cleared[0].metadata.vendor.push('draft')
+  cleared[0].ranges[0].startRow = 11
+  assert.deepEqual(hidden.metadata.vendor, ['hidden'])
+  assert.equal(hidden.ranges[0].startRow, 10)
+  assert.equal(multiple.ranges.length, 2)
+  assert.deepEqual(original.map(rule => rule.id), ['rule-a', 'hidden', 'multiple'])
+})
+
+test('scoped priority moves cross hidden rows using visible targets and retain global slots and imported source', () => {
+  const original = ['first', 'hidden-one', 'hidden-two', 'last', 'untouched'].map((id, index) => ({
+    ...baseRule, id, priority: [3, 7, 13, 17, 23][index],
+    formulaAnchor: { row: 1, col: 0 }, config: { custom: { source: [id] } }, metadata: { source: [id] },
+  }))
+  const moved = moveConditionalFormatRuleDraft(original, 'first', 1, 'last')
+  assert.deepEqual(moved.map(rule => [rule.id, rule.priority]), [
+    ['hidden-one', 3], ['hidden-two', 7], ['last', 13], ['first', 17], ['untouched', 23],
+  ])
+  assert.deepEqual(moveConditionalFormatRuleDraft(moved, 'first', -1, 'hidden-one'), original)
+  assert.deepEqual(moved[4], original[4])
+  const tied = original.map((rule, index) => ({ ...rule, priority: index < 4 ? 3 : 23 }))
+  const tiedMove = moveConditionalFormatRuleDraft(tied, 'last', -1, 'first')
+  assert.deepEqual(tiedMove.map(rule => [rule.id, rule.priority]), [
+    ['last', 3], ['first', 3], ['hidden-one', 3], ['hidden-two', 3], ['untouched', 23],
+  ])
+  const noOp = moveConditionalFormatRuleDraft(original, 'first', 1, 'missing')
+  assert.deepEqual(noOp, original)
+  assert.deepEqual(moveConditionalFormatRuleDraft(original, 'first', -1, 'first'), original)
+  moved[3].formulaAnchor.row = 2
+  moved[3].config.custom.source.push('draft')
+  noOp[0].metadata.source.push('draft')
+  assert.deepEqual(original[0].formulaAnchor, { row: 1, col: 0 })
+  assert.deepEqual(original[0].config.custom.source, ['first'])
+  assert.deepEqual(original[0].metadata.source, ['first'])
 })
 
 test('rule editor preserves unknown configuration, threshold and metadata fields while resetting known style fields', () => {

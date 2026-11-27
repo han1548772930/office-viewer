@@ -1,6 +1,6 @@
 # SHEET-09 FORMULAS 顶部入口续核
 
-状态：2026-11-27 继续按固定来源核对现有公式入口和求值链路。续接 ISEVEN / ISODD / ISFORMULA / SHEET / SHEETS / ISEMAIL / ISURL / ISBETWEEN；反三角批之后累计新增48个数学名称。当前唯一目录208项、8个真实类别，Ribbon 为8类加常用投影共9个函数根；函数菜单出现项215、另有插入函数子项1，根入口不变。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`；未变更模型、命令或 Worker/WASM 协议。全部运行验证后置，完整函数功能未验收。
+状态：2026-11-27 继续按固定来源核对现有公式入口和求值链路。本批续接 PERCENTOF、ISDATE、AVEDEV / DEVSQ / GEOMEAN / HARMEAN / MODE.SNGL，并修正既有逻辑函数的参数数目错误；数学名称累计新增48个。当前唯一目录215项、8个真实类别，Ribbon 为8类加常用投影共9个函数根；函数菜单出现项222、另有插入函数子项1，根入口不变。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`；公式批未变更模型、命令或 Worker/WASM 协议。全部运行验证后置，完整函数功能未验收。
 
 ## 固定入口与计数
 
@@ -31,7 +31,7 @@ classic 按相同分组和 order 排列。常用下拉的静态列表是 `SUMIF 
 
 [sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 的 `formula-edit` 组在 NA 批之前提供 **8** 根；接入 NA 后依序提供常用与统计、财务、逻辑、文本、日期与时间、查找与引用、数学、统计、信息共 **9** 根。common 仍为 r1c1 跨两行。本批 common 读取独立投影，其余按真实类别过滤；信息续接四项后共 13 项，工程/数据库仍没有目录项。
 
-[现有函数目录](../../packages/office-studio/src/features/sheet-workbench/sheet-function-catalog.ts) 当前为 **208** 项、**8** 类：财务17、逻辑11、文本25、日期与时间27、查找与引用11、数学75、统计21、信息21，无重复名称。common 投影固定七项，复用同一目录对象；菜单函数出现项 **215**，common 底部“插入函数”另计 **1** 子项，全部子项216，唯一函数仍为 **208**。NA 批117→118、126/131、三角批137/9类、常用投影批137/8类、角度转换140、反三角148、双曲/对数160、奇偶/整商164、阶乘/组合168、ROUND系列172、CEILING/FLOOR179、整数聚合183、SUMSQ184、数组求和189、罗马/进制转换193、随机函数195、MDETERM 196、信息类型200及七个信息函数207均为历史快照。MDETERM 后累计新增48个数学名称；原函数修正不增加唯一名称，数量不等于逐函数验收。
+[现有函数目录](../../packages/office-studio/src/features/sheet-workbench/sheet-function-catalog.ts) 当前为 **215** 项、**8** 类：财务17、逻辑12、文本25、日期与时间27、查找与引用11、数学75、统计26、信息22，无重复名称。common 投影固定七项 SUMIF / SUM / AVERAGE / IF / COUNT / SIN / MAX，复用同一目录对象；菜单函数出现项 **222**，common 底部“插入函数”另计 **1** 子项，全部子项223，唯一函数仍为 **215**。NA 批117→118、126/131、三角批137/9类、常用投影批137/8类、角度转换140、反三角148、双曲/对数160、奇偶/整商164、阶乘/组合168、ROUND系列172、CEILING/FLOOR179、整数聚合183、SUMSQ184、数组求和189、罗马/进制转换193、随机函数195、MDETERM 196、信息类型200、七个信息函数207及 ISBETWEEN 批208均为历史快照。MDETERM 后累计新增48个数学名称；原函数修正不增加唯一名称，数量不等于逐函数验收。
 
 `calculation-options` 组提供 **3** 根：计算模式（r1c1 跨两行两列）、编辑公式（r1c3）、重新计算（r2c3）。本地 FORMULAS 常驻根从 **11** 增至 **12**。参数入口批的根增量为 0；NA 批常驻根 +1、函数子项 +1，扩展、溢出和上下文新增根均为 0，窄屏继续复用现有根。本地 12 是 9 分类 + 3 计算入口，固定 12 是 11 分类 + 1 计算选项，根数相等不代表分类或功能齐全。
 
@@ -53,17 +53,19 @@ classic 按相同分组和 order 排列。常用下拉的静态列表是 `SUMIF 
 | --- | ---: | ---: | ---: |
 | 常用函数（本地“常用与统计”） | 7 个快捷项 | 7 | 7，重复引用真实类别 |
 | [财务](../../../univer/packages/engine-formula/src/services/formula/function-list/financial.ts) | 55 | 55 | 17 |
-| [逻辑](../../../univer/packages/engine-formula/src/services/formula/function-list/logical.ts) | 19 | 19 | 11 |
+| [逻辑](../../../univer/packages/engine-formula/src/services/formula/function-list/logical.ts) | 19 | 19 | 12 |
 | [文本](../../../univer/packages/engine-formula/src/services/formula/function-list/text.ts) | 51 | 48 | 25 |
 | [日期与时间](../../../univer/packages/engine-formula/src/services/formula/function-list/date.ts) | 27 | 27 | 27 |
 | [查找与引用](../../../univer/packages/engine-formula/src/services/formula/function-list/lookup.ts) | 37 | 36 | 11 |
 | [数学](../../../univer/packages/engine-formula/src/services/formula/function-list/math.ts) | 82 | 82 | 75 |
-| [统计](../../../univer/packages/engine-formula/src/services/formula/function-list/statistical.ts) | 113 | 109 | 21 |
+| [统计](../../../univer/packages/engine-formula/src/services/formula/function-list/statistical.ts) | 113 | 109 | 26 |
 | [工程](../../../univer/packages/engine-formula/src/services/formula/function-list/engineering.ts) | 57 | 57 | 0 |
-| [信息](../../../univer/packages/engine-formula/src/services/formula/function-list/information.ts) | 25 | 23 | 13 |
+| [信息](../../../univer/packages/engine-formula/src/services/formula/function-list/information.ts) | 25 | 23 | 22 |
 | [数据库](../../../univer/packages/engine-formula/src/services/formula/function-list/database.ts) | 12 | 12 | 0 |
 
 固定描述中未实际注册的 `PHONETIC / CALL / REGISTER.ID / RTD / FORECAST.ETS / FORECAST.ETS.CONFINT / FORECAST.ETS.SEASONALITY / FORECAST.ETS.STAT / INFO / ISOMITTED` 不计入交集。该计数来自固定文件中的真实注册项，排除了注释掉的 map 项，不以枚举名称数推断可用函数。
+
+[逻辑 map](../../../univer/packages/engine-formula/src/functions/logical/function-map.ts) 实际注册21项；GROUPBY / PERCENTOF 未列入19项描述目录，仍属完整目标。LET 已在该逻辑 map 注册，不能因数学 map 未注册就记为全局未注册。本地逻辑12项仍缺 BYCOL / BYROW / GROUPBY / LAMBDA / LET / MAKEARRAY / MAP / REDUCE / SCAN；信息23注册项中尚缺 CELL，统计109注册项仅26项进入本地目录。名称进入目录也不表示数组、引用和文件行为已验收。
 
 本地实际求值入口是 [formula-engine.ts](../../packages/office-studio/src/features/formula/formula-engine.ts)，由 [OfficeStudio](../../packages/office-studio/src/api/office-studio.ts) 的工作簿事务准备阶段调用。现有 [ComputeTask](../../packages/office-studio/src/compute/protocol.ts) 及 [office-compute](../../crates/office-compute/src/lib.rs) 只有 aggregate、sort、filter、chartStatistics、slicerMembers 等任务，没有另一套工程或数据库公式求值。未知函数的旧缓存保留行为不能当成计算实现。NA 沿用现有 TS 权威求值，本批没有声称迁移到 Worker/WASM。
 
@@ -426,7 +428,7 @@ ROMAN 沿同一[固定词元及形式表](../../../univer/packages/engine-formul
 
 [公式草稿](../../packages/office-studio/tests/formula-engine.contract.test.mjs)新增2声明，检查真实随机区间、整数/单值上下界、空白/Null、单格/矩形、Boolean/原错误顺序、非有限值及严格参数数目，不断言相邻随机结果必然不同。[Facade 草稿](../../packages/office-studio/tests/workbook-calculation-mode.contract.test.mjs)新增1声明，覆盖 manual 缓存冻结、上下界修改、撤销重做、显式重算和 native 保存重开。原 [Ribbon 名称派发](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)循环补两个名称；原 [Ant 表单浏览器草稿](../../tests/browser/sheet-toolbar.spec.ts)补固定7,7的提交/撤销及 RAND 的直接编辑/提交/撤销，全部运行0。完整 volatile 依赖调度、重算时钟/种子、动态随机数组、Office 缓存和真实运行仍待核实或验收。
 
-唯一目录193→195、数学72→74、菜单出现项200→202、含 picker 子项201→203；常用七项、函数根9和各类新增根0保持。固定数学 map 注册82项，当前对应74，仍缺 AGGREGATE、MDETERM、MINVERSE、MMULT、MUNIT、RANDARRAY、SEQUENCE、SUBTOTAL；[数学名称枚举](../../../univer/packages/engine-formula/src/functions/math/function-names.ts)另有未在该 map 注册的 LET，单独保留待核实目标。当前 RuntimeValue 未承载完整数组输出/spill，不能只补矩阵/数组菜单冒充功能。既有数组/引擎方案、自动范围/批量插入、迭代设置、完整 Pro 继续保留；模型/公开命令/历史/Worker/WASM 协议无新增，SHEET-09/10仍未验收。
+唯一目录193→195、数学72→74、菜单出现项200→202、含 picker 子项201→203；常用七项、函数根9和各类新增根0保持。该批固定数学 map 注册82项，对应74，仍缺 AGGREGATE、MDETERM、MINVERSE、MMULT、MUNIT、RANDARRAY、SEQUENCE、SUBTOTAL；[数学名称枚举](../../../univer/packages/engine-formula/src/functions/math/function-names.ts)另有未在数学 map 注册的 LET，但它已在[逻辑 map](../../../univer/packages/engine-formula/src/functions/logical/function-map.ts)注册，应归入逻辑缺口。当前 RuntimeValue 未承载完整数组输出/spill，不能只补矩阵/数组菜单冒充功能。既有数组/引擎方案、自动范围/批量插入、迭代设置、完整 Pro 继续保留；模型/公开命令/历史/Worker/WASM 协议无新增，SHEET-09/10仍未验收。
 
 <a id="mdeterm-matrix-continuation"></a>
 
@@ -436,7 +438,7 @@ ROMAN 沿同一[固定词元及形式表](../../../univer/packages/engine-formul
 
 已读取[固定测试](../../../univer/packages/engine-formula/src/functions/math/mdeterm/__tests__/index.spec.ts)、[数学 map](../../../univer/packages/engine-formula/src/functions/math/function-map.ts)及[描述目录](../../../univer/packages/engine-formula/src/services/formula/function-list/math.ts)，目录示例为 A1:C3。原[公式草稿](../../packages/office-studio/tests/formula-engine.contract.test.mjs)新增2声明，覆盖正常/奇异方阵、主元交换、两阶与三阶阈值差异、30阶单位阵、数值文本、行序错误、形状、参数数目和源模型不变；[Facade 草稿](../../packages/office-studio/tests/workbook-calculation-mode.contract.test.mjs)新增1声明，覆盖矩阵修改、错误恢复、manual 缓存、撤销重做和 native 保存重开。原[Ribbon 名称派发](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)与[Ant 参数表单](../../tests/browser/sheet-toolbar.spec.ts)补 MDETERM，均未运行。
 
-目录195→196、数学74→75，函数根不变。固定数学 map 注册82项，本地对应75，仍缺 AGGREGATE、MINVERSE、MMULT、MUNIT、RANDARRAY、SEQUENCE、SUBTOTAL；LET 另列未注册枚举项。标量非有限值沿既有路径保留，引用非有限值沿公共读取返回 #NUM!；数组常量、派生数组、spill、真实 Office、性能和大型 Worker/Rust/WASM 路径仍未完成或未验收，不据算法改写宣称优化。
+目录195→196、数学74→75，函数根不变。固定数学 map 注册82项，本地对应75，仍缺 AGGREGATE、MINVERSE、MMULT、MUNIT、RANDARRAY、SEQUENCE、SUBTOTAL；LET 已注册于逻辑 map，继续保留本地求值缺口。标量非有限值沿既有路径保留，引用非有限值沿公共读取返回 #NUM!；数组常量、派生数组、spill、真实 Office、性能和大型 Worker/Rust/WASM 路径仍未完成或未验收，不据算法改写宣称优化。
 
 <a id="information-types-reference-continuation"></a>
 
@@ -480,7 +482,7 @@ ROMAN 沿同一[固定词元及形式表](../../../univer/packages/engine-formul
 
 已读取[固定测试](../../../univer/packages/engine-formula/src/functions/information/isbetween/__tests__/index.spec.ts) 与[描述目录](../../../univer/packages/engine-formula/src/services/formula/function-list/information.ts)，示例为7.9,1.2,12.45。原[公式草稿](../../packages/office-studio/tests/formula-engine.contract.test.mjs)新增2声明，[Facade 草稿](../../packages/office-studio/tests/workbook-calculation-mode.contract.test.mjs)新增1声明，覆盖边界/类型/空值方向/精度/通配/错误顺序、范围与标志修改、typed text、manual 缓存、历史及内部保存重开。原 [Ribbon](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs) 和 [Ant 参数表单](../../tests/browser/sheet-toolbar.spec.ts) 增加该名称；两个信息菜单名称断言均已与实际21项目录做 AST 对比，均未运行。
 
-目录207→208、信息20→21、函数菜单出现项214→215、含 picker 子项215→216；常用七项、函数根9和各类新增根0保持。固定信息 map 23项当前仍缺 CELL / ISDATE，INFO / ISOMITTED 继续单列未注册枚举项。RuntimeValue 尚未保留数值格式身份，因此 ISBETWEEN 的双日期格式比较（固定源码舍入至1e-8）、ISDATE 及派生数组等仍待补协议，不按日期函数名称假推断类型；ISFORMULA 数组/si、ERROR.TYPE 数组、TYPE 对象和完整函数/Pro 继续未完成。当前公式82声明/82计划、calculation27/27、sheet-toolbar14/14，运行0；小型路径保持同步 TS，大样本 Worker/Rust/WASM、Office、两后端、系统 IME、主题及性能未验收。
+目录207→208、信息20→21、函数菜单出现项214→215、含 picker 子项215→216；常用七项、函数根9和各类新增根0保持。该批固定信息 map 23项仍缺 CELL / ISDATE，INFO / ISOMITTED 继续单列未注册枚举项。RuntimeValue 尚未保留数值格式身份，因此 ISBETWEEN 的双日期格式比较（固定源码舍入至1e-8）、ISDATE 及派生数组等当时仍待补协议，不按日期函数名称假推断类型；ISFORMULA 数组/si、ERROR.TYPE 数组、TYPE 对象和完整函数/Pro 继续未完成。该批公式82声明/82计划、calculation27/27、sheet-toolbar14/14，运行0；小型路径保持同步 TS，大样本 Worker/Rust/WASM、Office、两后端、系统 IME、主题及性能未验收。ISDATE 后续标量/引用进度见[日期判断续接](#information-isdate-continuation)。
 
 <a id="information-predicate-arity-text-reference"></a>
 
@@ -494,7 +496,46 @@ ROMAN 沿同一[固定词元及形式表](../../../univer/packages/engine-formul
 
 原 [公式契约草稿](../../packages/office-studio/tests/formula-engine.contract.test.mjs) 修正两处文本 ISNA 与八个函数的旧参数断言，新增一条真实引用回归，覆盖 @ / @@@、缓存数值公式、INDEX、跨表、强制错误文本与源值不变。原 [calculation 契约草稿](../../packages/office-studio/tests/workbook-calculation-mode.contract.test.mjs) 新增一条真实 Facade 闭环，覆盖只改数字格式的依赖重算、undo/redo、强制文本错误、manual 缓存、内部保存重开及显式重算。全部草稿未运行；唯一目录仍为208项/8类，信息21，根与菜单子项增量0。
 
-本次无 UI、模型、公共 API、命令、内容历史或 Worker/WASM 协议变更。数组广播/spill、CELL / ISDATE、ISFORMULA 的 si、日期格式身份、完整函数/Pro、真实输入与主题、Office 文件及大样本性能继续未完成或未验收；不能由参数和标量引用修正认定八个函数完整验收。
+该批无 UI、模型、公共 API、命令、内容历史或 Worker/WASM 协议变更。数组广播/spill、当时未实现的 CELL / ISDATE、ISFORMULA 的 si、日期格式身份、完整函数/Pro、真实输入与主题、Office 文件及大样本性能继续未完成或未验收；不能由参数和标量引用修正认定八个函数完整验收。
+
+<a id="logical-percentof-arity-continuation"></a>
+
+## 2026-11-27 PERCENTOF 与逻辑参数数目续核
+
+固定 [PERCENTOF](../../../univer/packages/engine-formula/src/functions/logical/percentof/index.ts) 接受两个参数，先执行 SUM(dataSubset)，成功后执行 SUM(dataAll)，再相除；子集原错误优先于全集错误，零分母返回 #DIV/0!。本地复用既有 SUM 与二元除法，支持直接标量、稀疏引用和原数值文本/Boolean 转换；不增加第二套求和。该名称在[逻辑 map](../../../univer/packages/engine-formula/src/functions/logical/function-map.ts)注册但没有描述项，本地示例为 A1:A3,A1:A10，中文短标签为“子集占比”。固定 GROUPBY 将它作为 aggregator token 的 AST 路径尚未实现。
+
+参数数目依据 [FunctionNode](../../../univer/packages/engine-formula/src/engine/ast-node/function-node.ts) 及 [AND](../../../univer/packages/engine-formula/src/functions/logical/and/index.ts)、[OR](../../../univer/packages/engine-formula/src/functions/logical/or/index.ts)、[XOR](../../../univer/packages/engine-formula/src/functions/logical/xor/index.ts)、[NOT](../../../univer/packages/engine-formula/src/functions/logical/not/index.ts)、[IF](../../../univer/packages/engine-formula/src/functions/logical/if/index.ts)、[IFERROR](../../../univer/packages/engine-formula/src/functions/logical/iferror/index.ts)、[IFNA](../../../univer/packages/engine-formula/src/functions/logical/ifna/index.ts) 和 [IFS](../../../univer/packages/engine-formula/src/functions/logical/ifs/index.ts)。AND / OR / XOR 为1–255参数，NOT为1，IF为2–3，IFERROR / IFNA为2，IFS为2–254且必须成对；无效参数数目在读取参数错误前返回 #N/A，IF 的未选分支继续保持惰性。TRUE / FALSE 及既有 NOW / TODAY 的零参数行为沿用前批修正。
+
+原[公式契约草稿](../../packages/office-studio/tests/formula-engine.contract.test.mjs)新增 PERCENTOF 与逻辑参数各1声明；原[Facade 草稿](../../packages/office-studio/tests/workbook-calculation-mode.contract.test.mjs)各新增1声明，覆盖编辑重算、参数错误、255上界、manual缓存、一次撤销重做和内部保存重开。[Ribbon](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)及[Ant 参数表单](../../tests/browser/sheet-toolbar.spec.ts)增加 PERCENTOF 名称派发与真实参数场景，全部未运行。唯一目录208→209，逻辑11→12；根入口不增加，数组/高阶逻辑及完整公式仍未验收。
+
+<a id="information-isdate-continuation"></a>
+
+## 2026-11-27 ISDATE 日期判断续接
+
+[固定 ISDATE](../../../univer/packages/engine-formula/src/functions/information/isdate/index.ts) 接受一个参数；多格矩形返回 #VALUE!，原错误保持。带 pattern 的数值按[日期格式判断](../../../univer/packages/engine-formula/src/basics/date.ts)识别，文本按固定日期系统解析日期或时间，其余类型返回 false。本地复用引用矩阵、[格式描述](../../packages/office-studio/src/features/sheet-workbench/number-format-render.ts)、已有 parseDate / parseTime，读取单格、冒号单格、跨表与 INDEX 的真实格式，并固定文本解析 locale 为 en，避免 UI 语言改变公式含义。
+
+来源另含[固定测试](../../../univer/packages/engine-formula/src/functions/information/isdate/__tests__/index.spec.ts)、[信息 map](../../../univer/packages/engine-formula/src/functions/information/function-map.ts)及[描述目录](../../../univer/packages/engine-formula/src/services/formula/function-list/information.ts)。原公式与 Facade 草稿各新增1声明，覆盖日期/时间文本、1900/1904边界、数值格式修改后的依赖重算、typed date text、manual缓存、历史和内部保存重开；原 Ribbon 信息目录断言和 Ant 参数循环补该名称，全部未运行。唯一目录209→210，信息21→22；固定23注册信息项尚缺 CELL。
+
+本地仅对真实引用读取数字格式；嵌套表达式的数值 RuntimeValue 尚未携带 pattern，因此 ISDATE(IF(...)) 等格式身份传播仍缺。ISBETWEEN 双日期格式精度、ISFORMULA si、完整数组/spill、Office文件与大样本仍未完成或未验收，不能把该标量分支记为完整日期类型协议。
+
+<a id="statistical-deviation-means-mode-continuation"></a>
+
+## 2026-11-27 五个统计聚合续接
+
+固定来源为 [AVEDEV](../../../univer/packages/engine-formula/src/functions/statistical/avedev/index.ts)、[DEVSQ](../../../univer/packages/engine-formula/src/functions/statistical/devsq/index.ts)、[GEOMEAN](../../../univer/packages/engine-formula/src/functions/statistical/geomean/index.ts)、[HARMEAN](../../../univer/packages/engine-formula/src/functions/statistical/harmean/index.ts)、[MODE.SNGL](../../../univer/packages/engine-formula/src/functions/statistical/mode-sngl/index.ts)、[统计 map](../../../univer/packages/engine-formula/src/functions/statistical/function-map.ts)及[描述目录](../../../univer/packages/engine-formula/src/services/formula/function-list/statistical.ts)。五者均为1–255参数，数量错误返回 #N/A；本地复用 evaluateArrayArgument、共享引用读取和行列顺序，不新建求值或历史服务。
+
+| 函数 | 本地真实行为与固定差异点 |
+| --- | --- |
+| AVEDEV | 直接数字文本和Boolean参与，引用文字/Boolean/空值忽略；按每个引用参数分组保留求和、均值和偏差的错误阶段。无数值返回 #NUM!。 |
+| DEVSQ | 直接及引用数字文本按原始 Number 参与，Boolean、空值和非数值文字忽略；返回偏差平方和，无数值返回 #NUM!。 |
+| GEOMEAN / HARMEAN | 直接文字先做共享数值转换检查，再按原字符串 Number 参与；引用数字文本参与。非正数在原参数错误读取完成后返回 #NUM!；无数值分别返回 #NUM! / #N/A。 |
+| MODE.SNGL | 直接文字先检查转换后忽略，引用文字/Boolean/空值忽略；并列频率取首次出现，引用按行列顺序。无重复数值返回 #N/A。 |
+
+数值与错误阶段依据 [primitive-object](../../../univer/packages/engine-formula/src/engine/value-object/primitive-object.ts)、[base-value-object](../../../univer/packages/engine-formula/src/engine/value-object/base-value-object.ts)、[ArrayValueObject.sum](../../../univer/packages/engine-formula/src/engine/value-object/array-value-object.ts)、[math-kit](../../../univer/packages/engine-formula/src/engine/utils/math-kit.ts)、[isRealNum](../../../univer/packages/core/src/shared/generate.ts)及[getModeSnglResult](../../../univer/packages/engine-formula/src/basics/statistical.ts)。DEVSQ / GEOMEAN / HARMEAN 的最终结果沿固定 NumberValueObject.create 接收原始数值，不增加非有限结果守卫；引用非有限值沿共享入口返回 #NUM!。AVEDEV 的标量与引用分组错误不能统一改为 #NUM!：两个1e308标量产生 #VALUE!，后加 #REF! 则保留 #REF!；两个1e308同组引用后加 #REF! 返回 #VALUE!，分成两个单格引用则返回 #NUM!。
+
+已读取五份固定测试：[AVEDEV](../../../univer/packages/engine-formula/src/functions/statistical/avedev/__tests__/index.spec.ts)、[DEVSQ](../../../univer/packages/engine-formula/src/functions/statistical/devsq/__tests__/index.spec.ts)、[GEOMEAN](../../../univer/packages/engine-formula/src/functions/statistical/geomean/__tests__/index.spec.ts)、[HARMEAN](../../../univer/packages/engine-formula/src/functions/statistical/harmean/__tests__/index.spec.ts)、[MODE.SNGL](../../../univer/packages/engine-formula/src/functions/statistical/mode-sngl/__tests__/index.spec.ts)，未执行。原公式草稿新增3声明、Facade草稿新增2声明，覆盖转换/空值/错误/255边界、INDEX、引用行序、并列众数、非有限结果、格式与源格编辑、manual缓存、undo/redo和内部保存重开。原 Ribbon 名称派发及 Ant 参数表单循环补五项，全部未运行。
+
+目录210→215，统计21→26；常用七项、函数根9保持，菜单函数出现项222、picker另1、全部子项223。只读 AST 解析主线7个代码/草稿文件无语法诊断；公式89、calculation33、Sheets Ribbon32、sheet-toolbar14均为声明数，内部数据循环不另计声明，运行0。模型/API/历史与 Worker/WASM 协议无公式批增量；统计其余83个注册名称、完整数组/spill、派生值格式、Office及性能继续未完成或未验收。
 
 ## 命令、输入、历史与保存
 
@@ -518,7 +559,7 @@ ROMAN 沿同一[固定词元及形式表](../../../univer/packages/engine-formul
 
 参数入口批仅执行限定静态检查：Ribbon 契约 `node --check` 无语法错误；schema 与浏览器草稿的 TypeScript AST 解析共 2 个文件、0 条语法诊断；当时本证据 15 个链接均存在，限定变更及新证据无空白错误。
 
-NA 批补 [既有公式契约](../../packages/office-studio/tests/formula-engine.contract.test.mjs) 中的构造、#N/A、IFNA、IFERROR 和错误传播草稿；全目录契约明确 NA 应返回 #N/A，其他示例仍要求正常求值。该批信息根最初只有 NA；当时 Ribbon 契约明确九个信息子项、Info 图标、分类顺序和函数派发，并继续覆盖权限禁用。浏览器草稿将 NA 加入既有零参数编辑/取消循环。当前21项见本轮续接记录，全部草稿仍未运行。
+NA 批补 [既有公式契约](../../packages/office-studio/tests/formula-engine.contract.test.mjs) 中的构造、#N/A、IFNA、IFERROR 和错误传播草稿；全目录契约明确 NA 应返回 #N/A，其他示例仍要求正常求值。该批信息根最初只有 NA；当时 Ribbon 契约明确九个信息子项、Info 图标、分类顺序和函数派发，并继续覆盖权限禁用。浏览器草稿将 NA 加入既有零参数编辑/取消循环。当前22项见本轮续接记录，全部草稿仍未运行。
 
 NA 批静态检查通过：3 个既有契约 `node --check`；catalog/schema 两个 TypeScript AST 解析 0 条语法诊断；本证据 38 个链接均存在；26 个固定 map/description 文件中的枚举引用无缺失；按已有 CRLF 规则执行限定空白检查通过。RIGHT 小修在同一公式契约追加零长度、默认长度、正长度、超出文本长度及负数参数的真实实现回归草稿，未运行。追加后该契约 `node --check`、引擎 TypeScript AST（0 条语法诊断）、38 个证据链接和限定空白检查均通过。
 

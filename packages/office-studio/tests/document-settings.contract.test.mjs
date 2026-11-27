@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs'
 import { test, afterAll } from 'vitest'
 import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
-import { createParagraph, cloneDocument } from '../src/features/document/model/document-model.ts'
-import { executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
-import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, documentSectionSetup, validateDocumentParagraphStylePatch, validateDocumentSectionSetupPatch } from '../src/features/document/services/document-settings.ts'
+import { createParagraph, createTable, cloneDocument } from '../src/features/document/model/document-model.ts'
+import { documentPageSetupCommandState, executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
+import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, documentEffectiveSectionSetup, documentSectionSetup, prepareDocumentPageSetup, DOCUMENT_MODERN_PAGE_MARGIN, validateDocumentParagraphStylePatch, validateDocumentSectionSetupPatch } from '../src/features/document/services/document-settings.ts'
 import { saveDocumentSnapshot } from '../src/features/document/services/document-facade.ts'
 import { DOCUMENT_MODERN_WIDTHS, DOCUMENT_PAPER_SIZES, documentModernWidth, documentPaperSize } from '../src/components/document/document-page-settings.ts'
 import { layoutDocument } from '../src/features/document/layout/document-layout.ts'
@@ -18,6 +18,94 @@ const vite = await createServer({ configFile: './vite.config.ts', server: { midd
 afterAll(() => vite.close())
 
 function paragraph(blockId, offset = 0) { return { blockId, offset } }
+const pageRequest = (page, documentFlavor = 1) => ({ pageSize: { width: page.width, height: page.height }, pageOrient: page.width > page.height ? 1 : 0,
+  documentFlavor, marginTop: page.marginTop, marginBottom: page.marginBottom, marginLeft: page.marginLeft, marginRight: page.marginRight })
+function tableBlock(id, widths, width) {
+  const table = createTable(1, widths.length || 2)
+  table.columnWidths = [...widths]
+  if (width !== undefined) table.style = { width }
+  return { ...createParagraph(), id, type: 'table', runs: [], metadata: { table } }
+}
+
+test('canonical page setup updates every top-level section on a detached candidate and keeps other section properties', () => {
+  const model = createBlankDocument(), first = model.blocks[0]
+  model.sectionSetup = { width: 500, height: 700, orientation: 'portrait', columnCount: 2, columnGap: 16, pageNumberStart: 4,
+    noteProperties: { endnote: { position: 'sectEnd' } }, suppressEndnotes: true }
+  const nested = { ...createParagraph(), type: 'sectionBreak', runs: [], sectionBreak: { type: 'nextPage', setup: { width: 400, height: 600 } } }
+  const section = { ...createParagraph(), type: 'sectionBreak', runs: [], metadata: { vendorSection: 'keep' },
+    sectionBreak: { type: 'oddPage', setup: { width: 800, height: 900, marginTop: 48, columnCount: 3, columnGap: 20, pageNumberStart: 9 } } }
+  model.blocks = [first, { ...createParagraph(), type: 'quote', runs: [], children: [nested] }, section, createParagraph('Second section')]
+  const before = cloneDocument(model), page = { width: 1000, height: 760, marginTop: 30, marginBottom: 40, marginLeft: 50, marginRight: 60 }
+  const candidate = prepareDocumentPageSetup(model, pageRequest(page))
+  assert.deepEqual(model, before)
+  assert.deepEqual(candidate.page, page)
+  assert.deepEqual(candidate.sectionSetup, { ...before.sectionSetup, ...page, orientation: 'landscape' })
+  assert.deepEqual(candidate.blocks[2].sectionBreak, { type: 'oddPage', setup: { ...section.sectionBreak.setup, ...page, orientation: 'landscape' } })
+  assert.deepEqual(candidate.blocks[2].metadata, section.metadata)
+  assert.deepEqual(candidate.blocks[1].children[0], nested)
+  assert.deepEqual(candidate.blocks[0], first)
+  assert.equal(documentEffectiveSectionSetup(candidate, section.id).page.width, 1000)
+})
+
+test('page-fill tables resize proportionally through body, nested cells and stored stories while fixed and automatic tables retain their data', () => {
+  const model = createBlankDocument()
+  model.page = { width: 320, height: 360, marginTop: 30, marginBottom: 30, marginLeft: 30, marginRight: 30 }
+  const fill = tableBlock('fill', [80, 180], 260), fixed = tableBlock('fixed', [90, 110], 200), automatic = tableBlock('automatic', [])
+  const nested = tableBlock('nested-fill', [130, 130], 260)
+  fixed.metadata.table.rows[0].cells[0].blocks.push(nested)
+  const stored = tableBlock('story-fill', [65, 195], 260)
+  model.blocks.push(fill, fixed, automatic)
+  model.sectionHeaderFooters = { first: { header: '', storyContent: { header: { blocks: [stored], runs: [], paragraphs: [] } } } }
+  const page = { ...model.page, width: 500, marginLeft: 50, marginRight: 50 }, before = cloneDocument(model)
+  const candidate = prepareDocumentPageSetup(model, pageRequest(page))
+  assert.deepEqual(model, before)
+  assert.deepEqual(candidate.blocks[1].metadata.table.columnWidths, [80 / 260 * 400, 180 / 260 * 400])
+  assert.equal(candidate.blocks[1].metadata.table.style.width, 400)
+  assert.deepEqual(candidate.blocks[2].metadata.table.columnWidths, fixed.metadata.table.columnWidths)
+  assert.deepEqual(candidate.blocks[2].metadata.table.rows[0].cells[0].blocks[1].metadata.table.columnWidths, [200, 200])
+  assert.deepEqual(candidate.blocks[3], automatic)
+  assert.deepEqual(candidate.sectionHeaderFooters.first.storyContent.header.blocks[0].metadata.table.columnWidths, [100, 300])
+})
+
+test('page-fill tolerance is inclusive at two CSS pixels and modern defaults use fixed margins without overwriting stored section geometry', () => {
+  const model = createBlankDocument(), oldWidth = model.page.width - model.page.marginLeft - model.page.marginRight
+  model.blocks.push(tableBlock('within-tolerance', [oldWidth / 2, oldWidth / 2 + 2], oldWidth + 2),
+    tableBlock('outside-tolerance', [oldWidth / 2, oldWidth / 2 + 2.01], oldWidth + 2.01))
+  const within = prepareDocumentPageSetup(model, pageRequest({ ...model.page, width: model.page.width + 2 }))
+  assert.deepEqual(within.blocks, model.blocks)
+  model.sectionSetup = { width: 400, height: 600, marginLeft: 45, marginRight: 55, orientation: 'portrait' }
+  const page = { ...model.page, width: 960, height: 1124 }
+  const modern = prepareDocumentPageSetup(model, pageRequest(page, 2)), expected = page.width - DOCUMENT_MODERN_PAGE_MARGIN * 2
+  assert.deepEqual(modern.sectionSetup, model.sectionSetup)
+  assert.equal(modern.metadata.documentFlavorContract, 'univer')
+  assert.equal(modern.blocks[1].metadata.table.style.width, expected)
+  assert.deepEqual(modern.blocks[2], model.blocks[2])
+  assert.deepEqual(documentEffectiveSectionSetup(modern, 'first').page, { ...page, marginTop: DOCUMENT_MODERN_PAGE_MARGIN,
+    marginBottom: DOCUMENT_MODERN_PAGE_MARGIN, marginLeft: DOCUMENT_MODERN_PAGE_MARGIN, marginRight: DOCUMENT_MODERN_PAGE_MARGIN })
+  assert.equal(layoutDocument(modern, { measure: text => text.length * 8 }).pages[0].width, 960)
+})
+
+test('page setup rejects invalid requests and affected locked tables atomically while an unchanged selected paragraph does not block document settings', () => {
+  const model = createBlankDocument(), caret = { anchor: paragraph(model.blocks[0].id), focus: paragraph(model.blocks[0].id) }
+  const context = { documentId: model.id, userId: 'editor' }, original = cloneDocument(model), valid = pageRequest({ ...model.page, width: 1000 })
+  for (const request of [null, { ...valid, pageSize: null }, { ...valid, pageOrient: 2 }, { ...valid, documentFlavor: 4 },
+    { ...valid, pageSize: { width: NaN, height: 900 } }, { ...valid, marginLeft: -1 }, { ...valid, marginLeft: 500, marginRight: 500 }]) {
+    assert.throws(() => executeDocumentCommand(model, caret, { id: 'docs.command.page-setup', ...request }, context))
+    assert.deepEqual(model, original)
+  }
+  model.permissionRules = [{ id: 'selected-lock', scope: 'paragraph', targetId: model.blocks[0].id, action: 'edit', effect: 'deny', userIds: [] }]
+  assert.equal(documentPageSetupCommandState(model, context).allowed, true)
+  executeDocumentCommand(model, caret, { id: 'docs.command.page-setup', ...valid }, context)
+  assert.deepEqual(model.blocks[0], original.blocks[0])
+  const total = model.page.width - model.page.marginLeft - model.page.marginRight
+  model.blocks.push(tableBlock('locked-table', [total / 2, total / 2], total))
+  model.permissionRules.push({ id: 'table-lock', scope: 'entity', targetId: 'locked-table', action: 'edit', effect: 'deny', userIds: [] })
+  const beforeDenied = cloneDocument(model)
+  assert.throws(() => executeDocumentCommand(model, caret, { id: 'docs.command.page-setup', ...pageRequest({ ...model.page, width: 1200 }) }, context))
+  assert.deepEqual(model, beforeDenied)
+  assert.throws(() => executeDocumentCommand(model, caret, { id: 'docs.command.page-setup', ...valid,
+    host: { kind: 'story', sectionId: 'first', story: 'header' } }, context), /完整文档/)
+})
 
 test('paragraph setting updates cover alignment, four indent modes, spacing rules and wrap flags', () => {
   const block = createParagraph('Text')

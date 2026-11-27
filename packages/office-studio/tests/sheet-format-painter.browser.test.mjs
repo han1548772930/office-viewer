@@ -53,6 +53,7 @@ window.painterFixture = {
   cancel: (id, enabled) => { if (enabled) canceled.add(id); else canceled.delete(id) },
   appearance: (isDark, language = 'zh-CN') => { dark.value = isDark; studio.regionalSettings.setLocale(language) },
   variant: value => { variant.value = value },
+  selections: (ranges, options = {}) => studio.setSelections(current().id, active().id, ranges, options),
   command: (id, ranges, extra = {}) => studio.executeCommandSync(id, { unitId: current().id, sheetId: active().id, ...(ranges ? { ranges } : {}), ...extra }),
   setSourceSize: value => api.getActiveWorkbook().getSheetBySheetId('painter-main').getRange('A1').setFontSize(value),
   mutate: () => api.getActiveWorkbook().getSheetBySheetId('painter-main').getRange('N11').setValue('new revision'),
@@ -104,6 +105,19 @@ window.painterFixture = {
           operator: 'greaterThan', formula1: '0', style: { fill: '#dc3344' }, priority: 2, stopIfTrue: false },
         { id: 'cf-independent-locked', type: 'cellIs', ranges: [{ startRow: 10, endRow: 10, startCol: 13, endCol: 13 }],
           operator: 'greaterThan', formula1: '0', style: { fill: '#3344dd' }, priority: 3, stopIfTrue: false, metadata: { vendor: ['locked'] } },
+      ]
+    }
+    if (mode === 'conditional-scope') {
+      source.conditionalFormats = [
+        { id: 'cf-scope-first', type: 'cellIs', ranges: [{ startRow: 0, endRow: 3, startCol: 0, endCol: 0 },
+          { startRow: 14, endRow: 14, startCol: 9, endCol: 9 }],
+          operator: 'greaterThan', formula1: '5', style: { fill: '#35a65f' }, priority: 4, stopIfTrue: false,
+          config: { custom: { source: ['first'] } }, metadata: { source: ['first'] } },
+        { id: 'cf-scope-hidden', type: 'cellIs', ranges: [{ startRow: 10, endRow: 10, startCol: 13, endCol: 13 }],
+          operator: 'greaterThan', formula1: '0', style: { fill: '#3344dd' }, priority: 9, stopIfTrue: false,
+          metadata: { source: ['hidden'] } },
+        { id: 'cf-scope-last', type: 'cellIs', ranges: [{ startRow: 3, endRow: 4, startCol: 3, endCol: 3 }],
+          operator: 'greaterThan', formula1: '0', style: { fill: '#dc3344' }, priority: 13, stopIfTrue: false },
       ]
     }
     replace(model); studio.editor.history.clear(model.id); executed.length = 0; emitted.length = 0; requests.length = 0; valueChanges.length = 0
@@ -544,6 +558,10 @@ async function expectConditionalClosed() {
   await expect(conditionalPanel()).toBeHidden()
   await expect(grid()).toBeFocused()
 }
+async function setConditionalScope(label) {
+  await conditionalPanel().getByRole('combobox', { name: '显示规则范围', exact: true }).click()
+  await page.getByRole('option', { name: label, exact: true }).click()
+}
 
 test('management menu opens all six editors and a new rule without publishing canceled drafts', async () => {
   await select('A1:A2')
@@ -861,6 +879,135 @@ test('condition-panel list actions keep independent protected priorities and rej
     await command('sheet.command.redo'); assert.deepEqual(await conditionalRules(), afterRules)
   }
 })
+
+test.each(['classic', 'grid'])('condition-panel scope follows the last selection, library theme and cancel focus in %s', async variant => {
+  await page.evaluate(value => { window.painterFixture.variant(value); window.painterFixture.seed('conditional-scope') }, variant)
+  await select('A1')
+  const before = await snapshot(), beforeRevision = await revision()
+  await openConditionalPanel()
+  const rows = conditionalPanel().locator('.conditional-rule-row')
+  const scope = conditionalPanel().locator('.conditional-rule-scope .ant-select')
+  await expect(rows).toHaveCount(3)
+  await expect(scope).toContainText('工作表')
+  const lightColor = await scope.evaluate(element => getComputedStyle(element).color)
+  await page.evaluate(() => window.painterFixture.appearance(true))
+  await expect.poll(() => scope.evaluate(element => getComputedStyle(element).color)).not.toBe(lightColor)
+  await setConditionalScope('当前选区')
+  await expect(rows).toHaveCount(1)
+  await expect(rows.nth(0).locator('.conditional-rule-range')).toContainText('J15')
+  await select('D4')
+  await expect(rows).toHaveCount(1)
+  await expect(rows.nth(0).locator('.conditional-rule-range')).toHaveText('D4:D5')
+  await page.evaluate(() => window.painterFixture.selections([
+    { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    { startRow: 3, endRow: 3, startColumn: 3, endColumn: 3 },
+  ], { activeRangeIndex: 0 }))
+  await expect(rows).toHaveCount(1)
+  await expect(rows.nth(0).locator('.conditional-rule-range')).toHaveText('D4:D5')
+  await page.evaluate(() => window.painterFixture.selections([]))
+  await expect(rows).toHaveCount(0)
+  await expect(conditionalPanel()).toContainText('当前选区没有条件格式规则。')
+  await expect(conditionalPanel().getByRole('button', { name: '清除列表规则', exact: true })).toBeDisabled()
+  await setConditionalScope('工作表')
+  await expect(rows).toHaveCount(3)
+  await page.evaluate(() => window.painterFixture.appearance(false))
+  await expect.poll(() => scope.evaluate(element => getComputedStyle(element).color)).toBe(lightColor)
+  await conditionalPanel().getByRole('button', { name: '取消', exact: true }).click()
+  await expectConditionalClosed()
+  assert.deepEqual(await snapshot(), before)
+  assert.equal(await revision(), beforeRevision)
+  assert.equal((await history()).undo, 0)
+})
+
+test.each(['classic', 'grid'].flatMap(variant => ['edit', 'clear'].map(action => ({ variant, action }))))(
+  'condition-panel scoped $action retains hidden protection and one reversible snapshot in $variant', async ({ variant, action }) => {
+    await page.evaluate(value => {
+      window.painterFixture.variant(value)
+      window.painterFixture.seed('conditional-scope')
+      window.painterFixture.protect({ startRow: 10, endRow: 10, startCol: 13, endCol: 13 })
+    }, variant)
+    await select('A1:D5')
+    const before = await snapshot(), beforeRules = before.sheets[0].conditionalFormats
+    await openConditionalPanel()
+    await setConditionalScope('当前选区')
+    const rows = conditionalPanel().locator('.conditional-rule-row')
+    await expect(rows).toHaveCount(2)
+    if (action === 'clear') await conditionalPanel().getByRole('button', { name: '清除列表规则', exact: true }).click()
+    if (action === 'edit') {
+      await rows.nth(0).locator('.conditional-rule-select').click()
+      await conditionalPanel().getByRole('textbox', { name: '数值或公式', exact: true }).fill('8')
+      await conditionalPanel().getByRole('button', { name: '更新规则', exact: true }).click()
+    }
+    assert.deepEqual(await snapshot(), before)
+    assert.equal((await history()).undo, 0)
+    await applyConditionalPanel()
+    await expectConditionalClosed()
+    const afterRules = await conditionalRules()
+    assert.deepEqual(afterRules.find(rule => rule.id === 'cf-scope-hidden'), beforeRules[1])
+    if (action === 'clear') assert.deepEqual(afterRules, [beforeRules[1]])
+    if (action === 'edit') {
+      assert.equal(afterRules.length, 3)
+      assert.equal(afterRules[0].formula1, '8')
+      assert.deepEqual(afterRules[0].ranges, beforeRules[0].ranges)
+      assert.deepEqual(afterRules[0].metadata, beforeRules[0].metadata)
+      assert.deepEqual(afterRules[0].config, beforeRules[0].config)
+      assert.deepEqual(afterRules[2], beforeRules[2])
+    }
+    assert.equal((await history()).undo, 1)
+    assert.deepEqual(await valueEvents(), [])
+    assert.deepEqual(contents(await snapshot()), contents(before))
+    assert.equal((await page.evaluate(() => window.painterFixture.commands())).filter(event => event.id === conditionalCommand).length, 1)
+    await page.getByRole('tab', { name: '开始', exact: true }).click()
+    await command('sheet.command.undo')
+    assert.deepEqual(await conditionalRules(), beforeRules)
+    await command('sheet.command.redo')
+    assert.deepEqual(await conditionalRules(), afterRules)
+    await page.evaluate(model => window.painterFixture.reopen(model), await snapshot())
+    await expect.poll(conditionalRules).toEqual(afterRules)
+  },
+)
+
+test.each(['classic', 'grid'].flatMap(variant => [false, true].map(locked => ({ variant, locked }))))(
+  'condition-panel scoped move crosses hidden priority slots with protection=$locked in $variant', async ({ variant, locked }) => {
+    await page.evaluate(({ variant, locked }) => {
+      window.painterFixture.variant(variant)
+      window.painterFixture.seed('conditional-scope')
+      if (locked) window.painterFixture.protect({ startRow: 10, endRow: 10, startCol: 13, endCol: 13 })
+    }, { variant, locked })
+    await select('A1:D5')
+    const before = await snapshot(), beforeRules = before.sheets[0].conditionalFormats, beforeRevision = await revision()
+    await openConditionalPanel()
+    await setConditionalScope('当前选区')
+    const rows = conditionalPanel().locator('.conditional-rule-row')
+    await expect(rows).toHaveCount(2)
+    await expect(rows.nth(0).getByRole('button', { name: '上移规则', exact: true })).toBeDisabled()
+    await expect(rows.nth(1).getByRole('button', { name: '下移规则', exact: true })).toBeDisabled()
+    await rows.nth(0).getByRole('button', { name: '下移规则', exact: true }).click()
+    await expect(rows.nth(0).locator('.conditional-rule-range')).toHaveText('D4:D5')
+    assert.deepEqual(await snapshot(), before)
+    await applyConditionalPanel()
+    if (locked) {
+      await expect(conditionalPanel().getByRole('alert')).toContainText('受保护')
+      assert.deepEqual(await snapshot(), before)
+      assert.equal(await revision(), beforeRevision)
+      assert.equal((await history()).undo, 0)
+      await conditionalPanel().getByRole('button', { name: '取消', exact: true }).click()
+      await expectConditionalClosed()
+      return
+    }
+    await expectConditionalClosed()
+    const expected = [{ ...beforeRules[1], priority: 4 }, { ...beforeRules[2], priority: 9 }, { ...beforeRules[0], priority: 13 }]
+    assert.deepEqual(await conditionalRules(), expected)
+    assert.equal((await history()).undo, 1)
+    assert.deepEqual(await valueEvents(), [])
+    assert.deepEqual(contents(await snapshot()), contents(before))
+    await page.getByRole('tab', { name: '开始', exact: true }).click()
+    await command('sheet.command.undo')
+    assert.deepEqual(await conditionalRules(), beforeRules)
+    await command('sheet.command.redo')
+    assert.deepEqual(await conditionalRules(), expected)
+  },
+)
 
 test('condition-panel revisions reject external edits while preserving both the new document and the unsaved draft', async () => {
   await page.evaluate(() => window.painterFixture.seed('conditional-boundary')); await select('G7'); await openConditionalPanel(); await editConditionalRule('A1:A4', '=A1>8')

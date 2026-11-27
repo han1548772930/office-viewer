@@ -364,7 +364,7 @@ test('formula categories expose populated dropdowns and dispatch the selected fu
   assert.equal(categories.at(-1).title, '信息')
   assert.equal(categories.at(-1).icon, Info)
   assert.deepEqual(categories.at(-1).children.map(item => item.title), [
-    'ERROR.TYPE', 'ISBETWEEN', 'ISBLANK', 'ISEMAIL', 'ISERR', 'ISERROR', 'ISEVEN', 'ISFORMULA', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISODD', 'ISREF', 'ISTEXT', 'ISURL', 'N', 'NA', 'SHEET', 'SHEETS', 'TYPE',
+    'ERROR.TYPE', 'ISBETWEEN', 'ISBLANK', 'ISDATE', 'ISEMAIL', 'ISERR', 'ISERROR', 'ISEVEN', 'ISFORMULA', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISODD', 'ISREF', 'ISTEXT', 'ISURL', 'N', 'NA', 'SHEET', 'SHEETS', 'TYPE',
   ])
   assert.equal(categories[0].children.at(-1), picker)
   assert.deepEqual(categories[0].children.slice(0, -1).map(item => item.title), [
@@ -373,6 +373,10 @@ test('formula categories expose populated dropdowns and dispatch the selected fu
   assert.ok(categories.find(item => item.title === '数学').children.some(item => item.title === 'SUM'))
   assert.ok(['AVERAGE', 'COUNT', 'COUNTA', 'MIN', 'MAX'].every(name =>
     categories.find(item => item.title === '统计').children.some(item => item.title === name)))
+  for (const name of ['AVEDEV', 'DEVSQ', 'GEOMEAN', 'HARMEAN', 'MODE.SNGL']) {
+    const entry = categories.find(item => item.title === '统计').children.find(item => item.title === name)
+    assert.deepEqual(ribbonInvocation(entry), { commandId: 'sheet.operation.insert-function', params: name })
+  }
   const functionItems = categories.flatMap(category => category.children.filter(item => item.commandId === 'sheet.operation.insert-function'))
   assert.equal(functionItems.length, SHEET_FUNCTION_CATALOG.length + SHEET_COMMON_FUNCTION_CATALOG.length)
   assert.equal(new Set(functionItems.map(item => item.params)).size, SHEET_FUNCTION_CATALOG.length)

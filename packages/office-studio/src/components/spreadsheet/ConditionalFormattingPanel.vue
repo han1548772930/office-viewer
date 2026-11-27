@@ -5,8 +5,8 @@ import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
 import type { CellRange, SheetConditionalFormatFormulaAnchor, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from '../../features/conditional-formatting/conditional-format-formulas.ts'
-import { conditionalFormatAverageEditorOperator, conditionalFormatAverageRuleOperator, conditionalFormatEditorFormula, conditionalFormatEditorText, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
-  prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../../features/conditional-formatting/conditional-format-rule-editor.ts'
+import { conditionalFormatAverageEditorOperator, conditionalFormatAverageRuleOperator, conditionalFormatEditorFormula, conditionalFormatEditorText, conditionalFormatRuleListForScope, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
+  prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft, type ConditionalFormatRuleListScope } from '../../features/conditional-formatting/conditional-format-rule-editor.ts'
 import { assertSheetConditionalFormatRuleSnapshot, type SheetConditionalFormatSubmitResult } from '../../features/conditional-formatting/conditional-format-command.ts'
 import { QUICK_CONDITIONAL_DATA_BAR, type ConditionalFormatPanelInitialType } from '../../features/conditional-formatting/quick-conditional-formatting.ts'
 import { conditionalIconPresets } from '../../features/conditional-formatting/conditional-icon-presets.ts'
@@ -16,7 +16,7 @@ import ConditionalThresholdInput from './ConditionalThresholdInput.vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme.ts'
 
-const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; initialType?: ConditionalFormatPanelInitialType;
+const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; selectionRange?: CellRange; initialType?: ConditionalFormatPanelInitialType;
   submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; closed: [] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
@@ -56,6 +56,12 @@ const strike = ref(false)
 const stopIfTrue = ref(false)
 const error = ref('')
 const localRules = ref<SheetConditionalFormatRule[]>([])
+const ruleListScope = ref<ConditionalFormatRuleListScope>('worksheet')
+const visibleRules = computed(() => conditionalFormatRuleListForScope(localRules.value, ruleListScope.value, props.selectionRange))
+const ruleListScopeOptions = computed(() => [
+  { value: 'worksheet', label: t('conditional.scope.worksheet', '工作表') },
+  { value: 'selection', label: t('conditional.scope.selection', '当前选区') },
+])
 const previewIcons = computed(() => conditionalIconSequence({ icons: iconThresholds.value, reverse: reverseIcons.value }))
 const needsSecondValue = computed(() => operator.value === 'between' || operator.value === 'notBetween')
 const operatorOptions = computed(() => [
@@ -98,6 +104,7 @@ watch([ruleType, highlightSubtype], ([type]) => {
 
 watch(() => props.open, open => {
   if (!open) return
+  ruleListScope.value = 'worksheet'
   localRules.value = props.rules.map(cloneRule).sort((left, right) => left.priority - right.priority)
   error.value = ''
   if (props.initialType) {
@@ -257,24 +264,25 @@ function saveDraft() {
   }
 }
 
-function removeRule(id: string) {
+function removeRule(id: string | readonly string[]) {
   const wasEditing = editing.value
+  const removed = new Set(typeof id === 'string' ? [id] : id)
   localRules.value = removeConditionalFormatRuleDraft(localRules.value, id)
-  if (draftId.value === id) {
-    if (localRules.value.length) {
-      selectRule(localRules.value[0]!)
-      editing.value = wasEditing
-    } else if (wasEditing) newRule()
-    else {
-      draftId.value = null
-      newRule()
-      editing.value = false
-    }
+  if (draftId.value === null || !removed.has(draftId.value)) return
+  const next = visibleRules.value[0]
+  if (next) {
+    selectRule(next)
+    editing.value = wasEditing
+    return
   }
+  newRule()
+  editing.value = wasEditing
 }
 
 function moveRule(id: string, offset: -1 | 1) {
-  localRules.value = moveConditionalFormatRuleDraft(localRules.value, id, offset)
+  const target = visibleRules.value[visibleRules.value.findIndex(rule => rule.id === id) + offset]
+  if (!target) return
+  localRules.value = moveConditionalFormatRuleDraft(localRules.value, id, offset, target.id)
 }
 
 function apply() {
@@ -358,17 +366,27 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
   <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="true" :focusable="{ focusTriggerAfterClose: false }" :after-open-change="afterDrawerOpenChange" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' } }" @close="emit('update:open', false)">
     <div class="conditional-panel" :style="themeStyle">
       <aside v-if="!editing" class="conditional-rule-list" :aria-label="t('conditional.rules', '规则')">
-        <Button size="small" type="primary" @click="newRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>
-        <p v-if="!localRules.length" class="conditional-empty">{{ t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
-        <div v-for="(rule, index) in localRules" :key="rule.id" class="conditional-rule-row">
+        <Form layout="vertical" class="conditional-rule-scope" @submit.prevent>
+          <FormItem :label="t('conditional.scope.label', '显示规则范围')">
+            <Select v-model:value="ruleListScope" :aria-label="t('conditional.scope.label', '显示规则范围')" :options="ruleListScopeOptions" />
+          </FormItem>
+        </Form>
+        <div class="conditional-rule-actions">
+          <Button size="small" type="primary" @click="newRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>
+          <Button size="small" danger :disabled="!visibleRules.length" @click="removeRule(visibleRules.map(rule => rule.id))"><Trash2 :size="14" />{{ t('conditional.clear-list', '清除列表规则') }}</Button>
+        </div>
+        <p v-if="!visibleRules.length" class="conditional-empty">{{ ruleListScope === 'selection' ? t('conditional.empty-selection', '当前选区没有条件格式规则。') : t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
+        <div v-for="(rule, index) in visibleRules" :key="rule.id" class="conditional-rule-row">
           <Button class="conditional-rule-select" type="text" :aria-pressed="draftId === rule.id" @click="selectRule(rule)">
-            {{ index + 1 }}.
-            <template v-if="rule.type === 'dataBar'">{{ t('conditional.quick.data-bar', '数据条') }}</template>
-            <template v-else-if="rule.type === 'iconSet'">{{ t('conditional.quick.icon-set', '图标集') }} · {{ iconSetLabel(rule.config?.iconSet ?? rule.config?.icons?.[0]?.iconType ?? '3Arrows') }}</template>
-            <template v-else>{{ t(`conditional.operator.${rule.operator}`, rule.operator) }} {{ rule.formula1 }}<template v-if="rule.formula2"> – {{ rule.formula2 }}</template></template>
+            <span class="conditional-rule-summary">
+              <span><template v-if="rule.type === 'dataBar'">{{ t('conditional.quick.data-bar', '数据条') }}</template>
+              <template v-else-if="rule.type === 'iconSet'">{{ t('conditional.quick.icon-set', '图标集') }} · {{ iconSetLabel(rule.config?.iconSet ?? rule.config?.icons?.[0]?.iconType ?? '3Arrows') }}</template>
+              <template v-else>{{ t(`conditional.operator.${rule.operator}`, rule.operator) }} {{ rule.formula1 }}<template v-if="rule.formula2"> – {{ rule.formula2 }}</template></template></span>
+              <span class="conditional-rule-range">{{ rule.ranges.map(formatRange).join(';') }}</span>
+            </span>
           </Button>
           <Tooltip :title="t('conditional.move-up', '上移规则')"><Button type="text" size="small" :disabled="index === 0" :aria-label="t('conditional.move-up', '上移规则')" @click="moveRule(rule.id, -1)"><ArrowUp :size="14" /></Button></Tooltip>
-          <Tooltip :title="t('conditional.move-down', '下移规则')"><Button type="text" size="small" :disabled="index === localRules.length - 1" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)"><ArrowDown :size="14" /></Button></Tooltip>
+          <Tooltip :title="t('conditional.move-down', '下移规则')"><Button type="text" size="small" :disabled="index === visibleRules.length - 1" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)"><ArrowDown :size="14" /></Button></Tooltip>
           <Tooltip :title="t('conditional.delete', '删除规则')"><Button type="text" size="small" danger :aria-label="t('conditional.delete', '删除规则')" @click="removeRule(rule.id)"><Trash2 :size="14" /></Button></Tooltip>
         </div>
       </aside>
@@ -429,12 +447,17 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 <style scoped>
 .conditional-panel { display: grid; min-height: 0; }
 .conditional-rule-list, .conditional-rule-editor { display: grid; align-content: start; gap: 10px; min-width: 0; }
+.conditional-rule-scope :deep(.ant-form-item) { margin-bottom: 0; }
+.conditional-rule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .conditional-empty { margin: 0; padding: 12px 0; color: var(--ribbon-text-secondary); font-size: 12px; }
 .conditional-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
 .conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid var(--ribbon-border); background: var(--ribbon-background); color: var(--ribbon-text); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .conditional-rule-select.ant-btn:hover { background: var(--ribbon-hover-background); }
 .conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: var(--ribbon-primary); background: var(--ribbon-active-background); color: var(--ribbon-primary); }
 .conditional-rule-select.ant-btn:focus-visible { outline: 2px solid var(--ribbon-primary); outline-offset: 2px; }
+.conditional-rule-summary { display: grid; gap: 3px; min-width: 0; max-width: 100%; overflow: hidden; }
+.conditional-rule-summary > span { overflow: hidden; text-overflow: ellipsis; }
+.conditional-rule-range { color: var(--ribbon-text-secondary); font-size: 12px; }
 .conditional-rule-editor :deep(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .conditional-back { justify-self: start; padding-inline: 0; }
 .conditional-values, .conditional-colors { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }

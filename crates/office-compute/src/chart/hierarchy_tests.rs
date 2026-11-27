@@ -3,7 +3,7 @@ use super::*;
 // P26 shared-fixture drafts. These tests have not been executed in this phase.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Fixture { name: String, depth: usize, key_count: u32, rows: Vec<Row>, values: Vec<f64>, indices: Vec<u32>, valid_sample_count: u32, available: bool }
+struct Fixture { name: String, depth: usize, key_count: u32, rows: Vec<Row>, values: Vec<f64>, indices: Vec<u32>, valid_sample_count: usize, available: bool }
 #[derive(Deserialize)]
 struct Row { weight: Option<f64>, keys: Vec<Option<u32>> }
 #[derive(Deserialize)]

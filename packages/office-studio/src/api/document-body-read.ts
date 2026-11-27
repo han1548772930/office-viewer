@@ -167,7 +167,8 @@ export function readDocumentBody(value: unknown, resources: UniverDocumentBodyRe
         const markRuns = textRuns.filter(run => run.start <= end && run.end > end)
         if (markRuns.length) paragraph.metadata.univerBodyParagraphMarkTextStyle = Object.assign({}, ...markRuns.map(run => bodyRecord(run.raw.ts)))
       }
-      if (pendingSeparator) paragraph.metadata.noteSeparator = { version: 1, widthFraction: pendingSeparator === 'separator' ? 1 / 3 : 1 }
+      if (pendingSeparator) paragraph.metadata.noteSeparator = { version: 1, widthFraction: pendingSeparator === 'separator' ? 1 / 3 : 1,
+        fieldType: pendingSeparator === 'separator' ? 'FOOTNOTE_SEPARATOR' : 'FOOTNOTE_CONTINUATION_SEPARATOR' }
       const source = bodyRecord(paragraph.metadata.univerBodyParagraphSource)
       paragraph.metadata.univerBodyParagraphSource = { ...source, start, end, spans: cloneModel(spans), terminated: terminal, baselineText: runText(paragraph.runs),
         ...(pendingTokens.length ? { boundaryTokens: pendingTokens } : {}) }

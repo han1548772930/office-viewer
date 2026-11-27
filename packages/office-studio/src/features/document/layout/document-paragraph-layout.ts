@@ -208,8 +208,8 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
         if (first && block.type === 'checklist') line.checklist = { blockId: block.id, checked: block.checklist?.checked === true }
         appendDocumentInlineImages(line, result.images)
         result.lines.push(line)
+        if (first) appendNoteSeparator(block, wholeGeometry, flow, result, line)
       }
-      appendNoteSeparator(block, wholeGeometry, flow, result, lineIndex, row.height)
       floatingCommitted = true
       flow.consume(row.height)
       baseOffset = row.nextOffset; lineIndex++; rawIndex = 0; fragmentEnd = -1; imageBandHeightFloor = 0
@@ -277,7 +277,7 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
     if (lineIndex === 0 && block.type === 'checklist') line.checklist = { blockId: block.id, checked: block.checklist?.checked === true }
     appendDocumentInlineImages(line, result.images)
     result.lines.push(line)
-    appendNoteSeparator(block, geometry, flow, result, lineIndex, height)
+    if (lineIndex === 0) appendNoteSeparator(block, geometry, flow, result, line)
     floatingCommitted = true
     flow.consume(height)
     imageBandHeightFloor = 0
@@ -285,11 +285,19 @@ export function layoutDocumentParagraph(block: DocumentBlock, list: ParagraphLis
   }
 }
 
-function appendNoteSeparator(block: DocumentBlock, geometry: ParagraphGeometry, flow: DocumentSectionFlow, result: DocumentLayout, lineIndex: number, height: number): void {
-  if (lineIndex !== 0 || !block.metadata.noteSeparator || typeof block.metadata.noteSeparator !== 'object') return
+function appendNoteSeparator(block: DocumentBlock, geometry: ParagraphGeometry, flow: DocumentSectionFlow, result: DocumentLayout, line: LayoutLine): void {
+  if (!block.metadata.noteSeparator || typeof block.metadata.noteSeparator !== 'object') return
   const separator = block.metadata.noteSeparator, fraction = Reflect.get(separator, 'widthFraction'), color = Reflect.get(separator, 'color')
+  const fieldType = Reflect.get(separator, 'fieldType')
+  if (Reflect.get(separator, 'version') === 1 && (fieldType === 'FOOTNOTE_SEPARATOR' || fieldType === 'FOOTNOTE_CONTINUATION_SEPARATOR')) {
+    const em = block.runs[0]!.fontSize * 4 / 3, thickness = em / 20
+    result.dividers.push({ x: flow.column.x + geometry.firstIndent, y: line.baseline - em / 4 - thickness / 2,
+      width: fieldType === 'FOOTNOTE_SEPARATOR' ? Math.min(192, flow.column.width) : flow.column.width,
+      height: thickness, noteSeparator: true, page: flow.page.index, ...flow.location, ...(typeof color === 'string' ? { color } : {}) })
+    return
+  }
   if (Reflect.get(separator, 'version') === 1 && typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
-    result.dividers.push({ x: flow.column.x + geometry.firstIndent, y: flow.cursor + Math.max(1, height - 2), width: geometry.width(0) * fraction,
+    result.dividers.push({ x: flow.column.x + geometry.firstIndent, y: line.y + Math.max(1, line.height - 2), width: geometry.width(0) * fraction,
       height: 1, page: flow.page.index, ...flow.location, ...(typeof color === 'string' ? { color } : {}) })
   }
 }

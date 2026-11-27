@@ -1,6 +1,6 @@
 # SHEET-18：表格选择器与创建入口续核
 
-记录日期：2026-11-27。状态：源码与现有实现已静态核对，创建接线方案待确认，功能未验收。本轮未新增按钮、命令或弹窗。
+记录日期：2026-11-27。状态：既有纯领域创建已补表头转换与合并交叠拒绝，测试草稿未运行；完整创建接线方案仍待确认，功能未验收。本轮未新增按钮、命令或弹窗。
 
 ## 固定来源与入口清点
 
@@ -24,8 +24,8 @@
 
 | 本地文件/链路 | 已有行为 | 实际缺口 |
 | --- | --- | --- |
-| [sheet-tables.ts](../../packages/office-studio/src/features/sheet-tables/sheet-tables.ts) | create/resize/totals/delete 纯函数；create 需要显式名称，拒绝单行和表重叠，默认 TableStyleMedium2 | 生产 Studio/工作台未调用这些函数，当前调用只有测试夹具/切片器草稿。没有真实 add-table 命令、打开范围操作、菜单状态、owner、权限或内容历史接线；create 未拒绝合并区，名称冲突仅查表 |
-| 同一模型创建与调整 | 字符串表头可生成唯一列名；resize 保留列数 | 数字、布尔、富文本表头落为 ColumnN，未对齐上游转换；变列数的调整未实现 |
+| [sheet-tables.ts](../../packages/office-studio/src/features/sheet-tables/sheet-tables.ts) | create/resize/totals/delete 纯函数；create 需要显式名称，拒绝单行、表重叠和合并交叠，默认 TableStyleMedium2 | 生产 Studio/工作台未调用这些函数，当前调用只有测试夹具/切片器草稿。没有真实 add-table 命令、打开范围操作、菜单状态、owner、权限或内容历史接线；名称冲突仅查表 |
+| 同一模型创建与调整 | 创建读取完整本地 richText 文本、数字和 TRUE/FALSE，保留原空表头与唯一列名规则；resize 保留列数 | 完整公开 p/body 优先契约、上游本地化默认列名与变列数的调整未实现 |
 | [domain/model.ts](../../packages/office-studio/src/domain/model.ts)、[workbookNormalizer.ts](../../packages/office-studio/src/parser/workbookNormalizer.ts) | 原生表格的 ID/name/range/columns/header/totals/style/autoFilter 基础字段；定义名称保存在 workbook.metadata.definedNames/localDefinedNames | 没有完整上游 options/meta 或 SHEET_TABLE_PLUGIN 公共资源映射；这些基础字段不能当作完整表模型保真 |
 | [excelViewAdapter.ts](../../packages/office-studio/src/services/excelViewAdapter.ts) | 保留本地 tables，并从表筛选派生隐藏行 | 没有表格创建和后续专属操作的工作台命令入口 |
 | [xlsx_table.rs](../../crates/office-writer/src/xlsx_table.rs)、[xlsx.rs](../../crates/office-writer/src/xlsx.rs) | 写原生 table XML、列名、header/totals/style 和 worksheet tableParts | 当前表 XML 总写空 autoFilter ref；不能声明表筛选条件完整往返或创建后独立 XLSX 重开已验证 |
@@ -56,6 +56,20 @@
 
 完整 SHEET-18 仍包括表专属插删、范围/列调整、计算列、自动扩展、筛选排序联动、结构化引用、转换为范围、公开 Facade/资源和 Office 全面往返。创建方案是后续批次的依赖，不降低这些目标，也不以新增 root 标记功能完成。
 
-## 实际修改与验证
+<a id="table-header-merge-domain-continuation"></a>
 
-本轮只新增本证据，表格实现与公开接口均未改变。已静态读取上述固定源码和本地调用，本文件 19 个本地来源链接存在；所有测试、类型检查、构建、Rust/WASM、dev、浏览器及基准后置。没有文件样本验证或性能实测，SHEET-18 保持 **未验收**。
+## 既有表头与合并交叠续修
+
+本次小补仅修改既有同步 [sheet-tables.ts](../../packages/office-studio/src/features/sheet-tables/sheet-tables.ts)，未实施上述较大创建接线方案。固定 [util.ts](../../../univer/packages/sheets-table/src/util.ts) 的 `convertCellDataToString` 和 [table-manager.ts](../../../univer/packages/sheets-table/src/models/table-manager.ts) 的 `getColumnHeader` 明确读取正文、标量值和布尔 TRUE/FALSE；[SheetTableSelector.tsx](../../../univer/packages/sheets-table-ui/src/views/components/SheetTableSelector.tsx) 明确拒绝与合并区相交的表范围。
+
+本地 `readUniqueHeaders` 现在优先连接完整 `richText` 运行，数字使用保存值而非格式化 display，布尔及公式布尔缓存复用 `normalizeSheetCellValueType` 输出 TRUE/FALSE。强制字符串保留文本；空运行正文不借用旧缓存值。原有 trim、ColumnN 空表头和不区分大小写的 `_2` 后缀保持，创建不修改源单元格、运行、公式或样式。
+
+`createSheetTable` 在构造表候选前拒绝包含、被包含、边缘接触及部分交叠的合并区域；四侧相邻合并允许。这里把公开 selector 的合并语义落实在本项目既有领域创建入口，不声称固定上游 Add mutation 已有相同 guard。没有新增内部重复校验、UI、命令、公共 DTO 或 Worker/WASM 协议。
+
+新增 [sheet-tables.contract.test.mjs](../../packages/office-studio/tests/sheet-tables.contract.test.mjs) 的 6 个测试声明，直接测真实领域函数与既有快照归一化：标量/重复/空表头、声明和缓存布尔、富文本与来源保留、合并交叠拒绝及原子性、四侧邻接、内部保存重开和旧严格名称调用。全部未运行；内部重开草稿不能替代真实 UI 内容历史或 Office 重导入证据。
+
+完整公开 `p.body.dataStream` 与非文本正文、默认本地化名称、表列调整和所有上文创建/权限/历史/结构资源/Office 目标仍有缺口。此补项没有性能实测，也没有将现有逐列表头读取记为性能优化。SHEET-18 保持未验收。
+
+## 前轮只读核对与验证
+
+前轮仅新增本证据，表格实现与公开接口均未改变。前轮已静态读取上述固定源码和本地调用，原 19 个本地来源链接存在；该历史记录不覆盖本次续修。所有测试、类型检查、构建、Rust/WASM、dev、浏览器及基准继续后置。没有文件样本验证或性能实测，SHEET-18 保持 **未验收**。

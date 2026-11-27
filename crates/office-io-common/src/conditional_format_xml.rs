@@ -287,7 +287,8 @@ pub fn parse(source: &str) -> Result<Element, String> {
             Event::Start(tag) | Event::Empty(tag) => {
                 elements += 1;
                 if elements > ELEMENT_LIMIT || stack.len() >= DEPTH_LIMIT { return Err("Conditional-format XML exceeds its element or depth limit".into()); }
-                let node = node_from_tag(&reader, &tag, namespace(resolved)?)?;
+                let resolved_namespace = namespace(resolved)?;
+                let node = node_from_tag(&reader, &tag, resolved_namespace)?;
                 if empty { if let Some(parent) = stack.last_mut() { parent.push(node); } else if root.replace(node).is_some() { return Err("Conditional-format XML has multiple roots".into()); } }
                 else { stack.push(node); }
             }

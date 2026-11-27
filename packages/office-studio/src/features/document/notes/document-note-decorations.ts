@@ -13,8 +13,9 @@ export function defaultDocumentNoteDecoration(model: DocumentModel, kind: Docume
   const defaults = documentDefaultStyle(model), id = `default-note-decoration:${kind}:${decoration}:paragraph`
   const paragraph: DocumentModel['blocks'][number] = { id, type: 'paragraph', level: 0,
     runs: [{ id: `${id}:run`, text: '', ...defaults.text, fontSize: 10 }],
-    style: { ...defaults.paragraph, spaceBefore: 0, lineHeight: 1, spacingRule: 'auto', spaceAfter: 4 },
+    style: { ...defaults.paragraph, spaceBefore: 0, lineHeight: 1, spacingRule: 'auto', spaceAfter: 0 },
     metadata: decoration === 'continuationNotice' ? {}
-      : { noteSeparator: { version: 1, widthFraction: decoration === 'separator' ? 1 / 3 : 1, color: '#1f2937' } } }
+      : { noteSeparator: { version: 1, fieldType: decoration === 'separator' ? 'FOOTNOTE_SEPARATOR' : 'FOOTNOTE_CONTINUATION_SEPARATOR',
+        widthFraction: decoration === 'separator' ? 1 / 3 : 1, color: '#1f2937' } } }
   return projectDocumentStoryBlocks({ blocks: [paragraph], runs: [], paragraphs: [] }, 'display').content
 }

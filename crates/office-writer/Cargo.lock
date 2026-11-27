@@ -200,6 +200,7 @@ dependencies = [
 name = "office-io-common"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "csscolorparser",
  "quick-xml",
  "serde",
@@ -231,6 +232,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "zip",
 ]
 

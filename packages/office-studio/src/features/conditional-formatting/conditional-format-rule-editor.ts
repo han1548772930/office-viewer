@@ -1,5 +1,15 @@
-import type { SheetConditionalFormatRule, SheetConditionalFormatValueConfig, SheetConditionalFormatVisualConfig } from '../../domain/model.ts'
+import type { CellRange, SheetConditionalFormatRule, SheetConditionalFormatValueConfig, SheetConditionalFormatVisualConfig } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
+import { sheetRangesIntersect } from '../sheet-workbench/sheet-range-command.ts'
+
+export type ConditionalFormatRuleListScope = 'worksheet' | 'selection'
+
+export function conditionalFormatRuleListForScope(rules: readonly SheetConditionalFormatRule[], scope: ConditionalFormatRuleListScope,
+  selection?: CellRange): SheetConditionalFormatRule[] {
+  if (scope === 'worksheet') return [...rules]
+  if (!selection) return []
+  return rules.filter(rule => rule.ranges.some(range => sheetRangesIntersect(range, selection)))
+}
 
 const editorSubtypes: Partial<Record<SheetConditionalFormatRule['type'], SheetConditionalFormatRule['subType']>> = {
   cellIs: 'number', highlightCell: 'number', expression: 'formula', top10: 'rank', average: 'average',
@@ -41,21 +51,22 @@ export function prependConditionalFormatRuleDraft(rules: readonly SheetCondition
   return cloneModel([{ ...rule, priority }, ...rules])
 }
 
-export function removeConditionalFormatRuleDraft(rules: readonly SheetConditionalFormatRule[], id: string): SheetConditionalFormatRule[] {
-  return cloneModel(rules.filter(rule => rule.id !== id))
+export function removeConditionalFormatRuleDraft(rules: readonly SheetConditionalFormatRule[], id: string | readonly string[]): SheetConditionalFormatRule[] {
+  const removed = new Set(typeof id === 'string' ? [id] : id)
+  return cloneModel(rules.filter(rule => !removed.has(rule.id)))
 }
 
-/** An adjacent move exchanges only the two affected priority slots; equal priorities retain the new array order. */
-export function moveConditionalFormatRuleDraft(rules: readonly SheetConditionalFormatRule[], id: string, offset: -1 | 1): SheetConditionalFormatRule[] {
+/** Preserve global priority slots when moving before or after a visible rule across hidden list entries. */
+export function moveConditionalFormatRuleDraft(rules: readonly SheetConditionalFormatRule[], id: string, offset: -1 | 1,
+  targetId?: string): SheetConditionalFormatRule[] {
   const result = cloneModel([...rules])
-  const index = result.findIndex(rule => rule.id === id), target = index + offset
+  const index = result.findIndex(rule => rule.id === id)
+  const target = targetId === undefined ? index + offset : result.findIndex(rule => rule.id === targetId)
   if (index < 0 || target < 0 || target >= result.length) return result
-  const rule = result[index]!, neighbour = result[target]!
-  const priority = rule.priority
-  rule.priority = neighbour.priority
-  neighbour.priority = priority
-  result[index] = neighbour
-  result[target] = rule
+  const priorities = result.map(rule => rule.priority)
+  const rule = result.splice(index, 1)[0]!
+  result.splice(target, 0, rule)
+  for (let position = Math.min(index, target); position <= Math.max(index, target); position += 1) result[position]!.priority = priorities[position]!
   return result
 }
 

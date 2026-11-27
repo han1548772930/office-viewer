@@ -26,7 +26,9 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   }
   const data = documentPublicBodyIndex(model).data, sections = data.body.sectionBreaks ?? []
   const originalStyle = bodyRecord(source.documentStyle ?? model.metadata?.documentStyle)
-  const style = documentSectionSetupToBody({ ...model.page, ...model.sectionSetup }, originalStyle)
+  const modern = model.metadata?.documentFlavor === 2
+  const style = documentSectionSetupToBody(modern ? { ...model.sectionSetup, ...model.page,
+    orientation: model.metadata.documentPageOrientation === 'landscape' ? 'landscape' : 'portrait' } : { ...model.page, ...model.sectionSetup }, originalStyle)
   style.textStyle = documentRunStyleToBody(createRun('', { ...defaults.text, metadata: { univerTextStyle: bodyRecord(originalStyle.textStyle) } }))
   style.defaultParagraphStyle = documentParagraphStyleToBody(defaults.paragraph, originalStyle.defaultParagraphStyle)
   const flavor = model.metadata?.documentFlavor ?? originalStyle.documentFlavor ?? 1

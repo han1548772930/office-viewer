@@ -37,7 +37,7 @@ async fn worker_uses_worker_timer_and_never_requires_window_or_document() {
     let worker: web_sys::WorkerGlobalScope = js_sys::global().dyn_into().unwrap();
     let delivered = Rc::new(Cell::new(false));
     let state = delivered.clone();
-    let callback = Closure::new(move || state.set(true));
+    let callback = Closure::<dyn FnMut()>::new(move || state.set(true));
     let timer = worker.set_timeout_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(), 0,
     ).unwrap();

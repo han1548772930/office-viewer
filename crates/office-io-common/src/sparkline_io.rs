@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::conditional_format_xml as source_xml;
 
 #[path = "sparkline_native.rs"]
-mod native;
+pub mod native;
 #[path = "sparkline_source.rs"]
 mod source;
 pub use native::{NativeSparklineGroup, decode_native_group, native_group_for_spec, native_group_fingerprint, native_group_signature, native_projection_signature, normalize_native_group};

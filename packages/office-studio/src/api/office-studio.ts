@@ -1439,7 +1439,7 @@ export class OfficeStudio {
         ...(prepared.location.kind === 'body' && prepared.location.host ? { host: { ...prepared.location.host } } : {}) }
     }
     const globalCommand = request.command.id === 'doc.command.set-section-header-footer' || request.command.id === 'doc.command.set-section-setup'
-      || !!fieldRefresh || tocRefresh
+      || request.command.id === 'docs.command.page-setup' || !!fieldRefresh || tocRefresh
     // Global commands still operate on the full model. Their view selection
     // retains its independent block host instead of being resolved as body text.
     const selectionHost = request.command.host ?? (globalCommand && sourceCurrent && session?.valid && session.modelRevision === revision

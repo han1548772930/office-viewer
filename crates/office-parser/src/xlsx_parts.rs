@@ -54,7 +54,7 @@ fn unqualified_attributes(reader: &NsReader<&[u8]>, element: &BytesStart<'_>) ->
         let attribute = attribute.map_err(|error| error.to_string())?;
         if attribute.key.as_ref().contains(&b':') || attribute.key.as_ref() == b"xmlns" { continue; }
         let name = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?.to_owned();
-        let value = attribute.decode_and_unescape_value(reader.decoder(), XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
+        let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
         attributes.insert(name, value);
     }
     Ok(attributes)
@@ -129,7 +129,7 @@ fn workbook_sheets(xml: &str) -> Result<Vec<(String, String)>, String> {
                         let (namespace, local) = reader.resolver().resolve_attribute(attribute.key);
                         if local.as_ref() == b"id" && matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == REL_NS || value.as_ref() == STRICT_REL_NS) {
                             if relationship_id.is_some() { return Err("Duplicate XLSX sheet relationship attribute".into()); }
-                            relationship_id = Some(attribute.decode_and_unescape_value(reader.decoder(), XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned());
+                            relationship_id = Some(attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned());
                         }
                     }
                     result.push((name, relationship_id.ok_or_else(|| "Missing XLSX worksheet relationship ID".to_owned())?));

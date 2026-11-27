@@ -497,7 +497,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
               ['orange', '橙色', 'rgba(235, 128, 55, 0.18)'], ['red', '红色', 'rgba(220, 75, 75, 0.16)'],
               ['purple', '紫色', 'rgba(141, 99, 201, 0.16)'], ['gray', '灰色', 'rgba(105, 119, 140, 0.16)'],
             ].map(([color, title, value]) => button(`sheet.operation.crosshair-color.${color}`, title!, {
-              commandId: 'sheet.operation.set-crosshair-highlight-color', params: value, swatch: value,
+              commandId: 'sheet.operation.set-crosshair-highlight-color', params: value, swatch: value, activated: state.crosshairColor === value,
             })),
           ] },
         ] },

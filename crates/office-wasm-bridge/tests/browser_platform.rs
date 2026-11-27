@@ -83,7 +83,7 @@ async fn future_yields_to_a_real_browser_timer_and_preserves_rejection_dto() {
     let window = web_sys::window().unwrap();
     let delivered = Rc::new(Cell::new(false));
     let state = delivered.clone();
-    let callback = Closure::new(move || state.set(true));
+    let callback = Closure::<dyn FnMut()>::new(move || state.set(true));
     let timer = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(), 0,
     ).unwrap();

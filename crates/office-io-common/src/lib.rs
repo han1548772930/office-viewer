@@ -13,7 +13,7 @@ pub mod conditional_format_color;
 pub mod sheet_validation_source;
 pub mod sheet_outline_source;
 pub mod sparkline_io;
-pub mod sparkline_native;
+pub use sparkline_io::native as sparkline_native;
 pub mod document_legacy_source;
 pub mod chart_kind;
 pub mod chart_options;
@@ -92,7 +92,7 @@ impl WorksheetAxisFingerprint {
                 let attribute = attribute.map_err(|error| error.to_string())?;
                 let key = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?;
                 if !allowed.contains(&key) { continue; }
-                let value = attribute.decode_and_unescape_value(decoder, XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
+                let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder).map_err(|error| error.to_string())?;
                 let flag = matches!(key, "customHeight" | "customWidth" | "zeroHeight" | "hidden");
                 let normalized = if flag {
                     let enabled = match value.as_ref() { "1" | "true" => true, "0" | "false" => false, _ => return Err("Invalid Office axis flag".into()) };

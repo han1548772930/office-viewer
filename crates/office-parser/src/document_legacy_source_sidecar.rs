@@ -44,7 +44,7 @@ fn declarations(xml: &str, root_name: &[u8], namespaces: &[&[u8]]) -> Result<Vec
                         // attribute named x:Type must not masquerade as Type.
                         if attribute.key.as_ref().contains(&b':') || attribute.key.as_ref() == b"xmlns" { continue; }
                         let key = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?.to_owned();
-                        let value = attribute.decode_and_unescape_value(reader.decoder(), XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
+                        let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
                         if attributes.insert(key, value).is_some() { return Err("Office legacy source metadata repeats an attribute.".into()); }
                     }
                     result.push(Declaration { name: String::from_utf8(name.as_ref().to_vec()).map_err(|error| error.to_string())?, attributes });

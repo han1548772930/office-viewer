@@ -7,7 +7,8 @@ import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/exc
 import { applySheetConditionalFormatsCommand, assertSheetConditionalFormatRuleSnapshot, planSheetConditionalFormatsCommand,
   SET_SHEET_CONDITIONAL_FORMATS_COMMAND as command, sheetConditionalFormatsCommandInput } from '../src/features/conditional-formatting/conditional-format-command.ts'
 import { conditionalFormatFormulaAt, reanchorConditionalFormatRule } from '../src/features/conditional-formatting/conditional-format-formulas.ts'
-import { moveConditionalFormatRuleDraft, prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../src/features/conditional-formatting/conditional-format-rule-editor.ts'
+import { conditionalFormatRuleListForScope, mergeConditionalFormatRuleDraft, moveConditionalFormatRuleDraft,
+  prependConditionalFormatRuleDraft, removeConditionalFormatRuleDraft } from '../src/features/conditional-formatting/conditional-format-rule-editor.ts'
 import { conditionalFormatStyleAt, evaluateConditionalFormatRule } from '../src/features/conditional-formatting/conditional-formatting.ts'
 import { evaluateFormula } from '../src/features/formula/formula-engine.ts'
 import {
@@ -309,6 +310,103 @@ test('quick command rejects stale and protected rule footprints without publishi
     assert.deepEqual(worksheet.getConditionalFormats(), before)
     assert.equal(undoCount(studio), 0)
   }, workbook)
+})
+
+test('scoped edits and list clear submit one complete reversible snapshot while retaining hidden protected rules', () => {
+  const first = { ...rule('first', [range(0, 0, 3, 0), range(6, 2, 8, 2)], 4), metadata: { source: ['first'] } }
+  const hidden = { ...rule('hidden', [range(10, 13)], 9), metadata: { source: ['hidden'] } }
+  const last = rule('last', [range(1, 1, 2, 1)], 13)
+  const original = [first, hidden, last], selection = range(0, 0, 3, 1)
+  for (const action of ['edit', 'clear']) {
+    const source = sample()
+    source.sheets[0].conditionalFormats = cloneModel(original)
+    source.sheets[0].rangeProtectionRules = protection(hidden.ranges)
+    const visible = conditionalFormatRuleListForScope(original, 'selection', selection)
+    assert.deepEqual(visible.map(rule => rule.id), ['first', 'last'])
+    const next = action === 'clear' ? removeConditionalFormatRuleDraft(original, visible.map(rule => rule.id))
+      : original.map(rule => rule.id === first.id ? mergeConditionalFormatRuleDraft(rule, { ...rule, formula1: '8' }) : rule)
+    const view = toExcelWorkbookView(source)
+    const local = applySheetConditionalFormatsCommand(view.sheets[0], next, 'local-user')
+    assert.deepEqual(local.ranges, action === 'clear' ? [...first.ranges, ...last.ranges] : first.ranges)
+    assert.deepEqual(local.rules.find(rule => rule.id === hidden.id), hidden)
+    withStudio((studio, api) => {
+      const workbook = api.getActiveWorkbook(), worksheet = workbook.getActiveSheet()
+      const cells = cloneModel(studio.editor.workbook.model.sheets[0].cells), events = [], executed = []
+      studio.events.addEvent('SheetValueChanged', event => events.push(event))
+      studio.events.addEvent('CommandExecuted', event => executed.push(event.id))
+      assert.equal(studio.executeCommandSync(command, input(studio, next)), true)
+      assert.deepEqual(worksheet.getConditionalFormats(), local.rules)
+      assert.equal(undoCount(studio), 1)
+      assert.deepEqual(events, [])
+      assert.deepEqual(executed, [command])
+      assert.deepEqual(studio.editor.workbook.model.sheets[0].cells, cells)
+      workbook.undo()
+      assert.deepEqual(worksheet.getConditionalFormats(), original)
+      workbook.redo()
+      assert.deepEqual(worksheet.getConditionalFormats(), local.rules)
+      const reopened = api.createWorkbook({ ...workbook.save(), id: 'cf-scoped-' + action + '-reopened' })
+      assert.deepEqual(reopened.getActiveSheet().getConditionalFormats(), local.rules)
+      assert.deepEqual(studio.getWorkbookModel(reopened.getId()).sheets[0].cells, cells)
+    }, source)
+  }
+})
+
+test('scoped list clear checks every range of a matched rule before removing any rule', () => {
+  const first = rule('multiple', [range(0, 0, 3, 0), range(14, 9)], 4)
+  const hidden = rule('hidden', [range(10, 13)], 9)
+  const source = sample()
+  source.sheets[0].conditionalFormats = [first, hidden]
+  source.sheets[0].rangeProtectionRules = protection([first.ranges[1]])
+  const visible = conditionalFormatRuleListForScope([first, hidden], 'selection', range(0, 0))
+  const cleared = removeConditionalFormatRuleDraft([first, hidden], visible.map(rule => rule.id))
+  assert.deepEqual(cleared, [hidden])
+  const view = toExcelWorkbookView(source), beforeView = cloneModel(view)
+  assert.throws(() => applySheetConditionalFormatsCommand(view.sheets[0], cleared, 'local-user'), /保护/)
+  assert.deepEqual(view, beforeView)
+  withStudio(studio => {
+    const before = cloneModel(studio.editor.workbook.model), revision = studio.getWorkbookRevision(source.id)
+    assert.throws(() => studio.executeCommandSync(command, input(studio, cleared)), /保护/)
+    assert.deepEqual(studio.editor.workbook.model, before)
+    assert.equal(studio.getWorkbookRevision(source.id), revision)
+    assert.equal(undoCount(studio), 0)
+  }, source)
+})
+
+test('scoped moves use global priority slots and reject crossed hidden protection including tied priorities', () => {
+  for (const priorities of [[4, 9, 13, 21], [7, 7, 7, 21]]) {
+    const first = rule('first', [range(0, 0, 3, 0)], priorities[0])
+    const hidden = { ...rule('hidden', [range(10, 13)], priorities[1]), metadata: { source: ['hidden'] } }
+    const last = rule('last', [range(1, 1, 2, 1)], priorities[2])
+    const untouched = rule('untouched', [range(20, 2)], priorities[3])
+    const original = [first, hidden, last, untouched]
+    const visible = conditionalFormatRuleListForScope(original, 'selection', range(0, 0, 3, 1))
+    const moved = moveConditionalFormatRuleDraft(original, visible[0].id, 1, visible[1].id)
+    assert.deepEqual(moved.map(rule => [rule.id, rule.priority]), [
+      ['hidden', priorities[0]], ['last', priorities[1]], ['first', priorities[2]], ['untouched', priorities[3]],
+    ])
+    for (const locked of [false, true]) {
+      const source = sample()
+      source.sheets[0].conditionalFormats = cloneModel(original)
+      source.sheets[0].rangeProtectionRules = locked ? protection(hidden.ranges) : []
+      withStudio((studio, api) => {
+        const before = cloneModel(studio.editor.workbook.model), revision = studio.getWorkbookRevision(source.id)
+        if (locked) {
+          assert.throws(() => studio.executeCommandSync(command, input(studio, moved)), /保护/)
+          assert.deepEqual(studio.editor.workbook.model, before)
+          assert.equal(studio.getWorkbookRevision(source.id), revision)
+          assert.equal(undoCount(studio), 0)
+          return
+        }
+        assert.equal(studio.executeCommandSync(command, input(studio, moved)), true)
+        assert.deepEqual(api.getActiveWorkbook().getActiveSheet().getConditionalFormats(), moved)
+        assert.equal(undoCount(studio), 1)
+        api.getActiveWorkbook().undo()
+        assert.deepEqual(api.getActiveWorkbook().getActiveSheet().getConditionalFormats(), original)
+        api.getActiveWorkbook().redo()
+        assert.deepEqual(api.getActiveWorkbook().getActiveSheet().getConditionalFormats(), moved)
+      }, source)
+    }
+  }
 })
 
 test('registered edits share command events, one history transaction, cached values and internal snapshot reopen', () => withStudio((studio, api) => {

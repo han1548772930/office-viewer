@@ -10,6 +10,7 @@ import { formatSheetValue, isSheetTextNumberFormat } from '../sheet-workbench/sh
 import { parseDate, parseNumber, parseTime } from '../sheet-workbench/number-format-engine/parse-value.ts'
 import { DateSystem } from '../sheet-workbench/number-format-engine/date-system.ts'
 import { getDateSystemMaxSerial } from '../sheet-workbench/number-format-engine/serial-date.ts'
+import { describeSheetNumberFormat } from '../sheet-workbench/number-format-render.ts'
 
 interface RangeValue { kind: 'rangeValue'; sheet: SpreadsheetSheet; reference: FormulaRangeReference }
 type RuntimeValue = FormulaValue | RangeValue
@@ -309,6 +310,84 @@ function evaluateFunction(
   if (name === 'AREAS') return evaluateReferenceAreas(args, evaluateArgument)
   if (name === 'TRUE' || name === 'FALSE') return args.length === 0 ? name === 'TRUE' : formulaError('#N/A')
   if ((name === 'NOW' || name === 'TODAY') && args.length !== 0) return formulaError('#N/A')
+  if (name === 'AVEDEV' || name === 'DEVSQ' || name === 'GEOMEAN' || name === 'HARMEAN' || name === 'MODE.SNGL') {
+    if (args.length < 1 || args.length > 255) return formulaError('#N/A')
+    const groups: Array<{ numbers: number[]; referenced: boolean }> = []
+    let averageSum: number | FormulaErrorValue = 0
+    const addNumbers = (left: number | FormulaErrorValue, right: number | FormulaErrorValue): number | FormulaErrorValue => {
+      if (isFormulaError(left) || isFormulaError(right) || Number.isNaN(left) || Number.isNaN(right)) return formulaError('#VALUE!')
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return formulaError('#NUM!')
+      const total = left + right
+      return Number.isFinite(total) ? total : formulaError('#NUM!')
+    }
+    for (const argument of args) {
+      const input = evaluateArrayArgument(argument)
+      if (isFormulaError(input)) return input
+      const referenced = isRangeValue(input)
+      const values = isRangeValue(input)
+        ? cellsInRange(input).sort((left, right) => left.row - right.row || left.col - right.col)
+          .map(cell => formulaReferenceCellValue(input.sheet, cell.row, cell.col, resolve))
+        : [input]
+      const numbers: number[] = []
+      for (const item of values) {
+        if (isFormulaError(item)) return item
+        if (item === null) continue
+        if (typeof item === 'boolean') {
+          if (name === 'AVEDEV' && !referenced) numbers.push(Number(item))
+          continue
+        }
+        if (typeof item === 'string') {
+          if (referenced && (name === 'AVEDEV' || name === 'MODE.SNGL')) continue
+          const converted = !referenced && name !== 'DEVSQ' ? numericTextCoercion(item, workbook, evaluationTime) : Number(item)
+          if (isFormulaError(converted)) return converted
+          if (name === 'MODE.SNGL' || !item.trim() || name !== 'AVEDEV' && Number.isNaN(Number(item))) continue
+          numbers.push(name === 'AVEDEV' ? converted : Number(item))
+          continue
+        }
+        if (name === 'AVEDEV' || !Number.isNaN(item)) numbers.push(item)
+      }
+      groups.push({ numbers, referenced })
+      if (name === 'AVEDEV' && (referenced || numbers.length > 0)) {
+        averageSum = addNumbers(averageSum, referenced ? numbers.reduce<number | FormulaErrorValue>(addNumbers, 0) : numbers[0]!)
+        if (referenced && isFormulaError(averageSum)) return averageSum
+      }
+    }
+    const numbers = groups.flatMap(group => group.numbers)
+    if (name === 'MODE.SNGL') {
+      const counts = new Map<number, number>()
+      let maximumCount = 1
+      for (const number of numbers) {
+        const count = (counts.get(number) ?? 0) + 1
+        counts.set(number, count)
+        maximumCount = Math.max(maximumCount, count)
+      }
+      if (maximumCount === 1) return formulaError('#N/A')
+      return numbers.find(number => counts.get(number) === maximumCount)!
+    }
+    if (numbers.length === 0) return formulaError(name === 'HARMEAN' ? '#N/A' : '#NUM!')
+    if (name === 'GEOMEAN' || name === 'HARMEAN') {
+      if (numbers.some(number => number <= 0)) return formulaError('#NUM!')
+      if (name === 'GEOMEAN') return numbers.reduce((product, number) => product * number, 1) ** (1 / numbers.length)
+      return numbers.length / numbers.reduce((sum, number) => sum + 1 / number, 0)
+    }
+    if (name === 'DEVSQ') {
+      const mean = numbers.reduce((sum, number) => sum + number, 0) / numbers.length
+      return numbers.reduce((sum, number) => sum + (number - mean) ** 2, 0)
+    }
+    if (isFormulaError(averageSum)) return formulaError('#VALUE!')
+    const mean = averageSum / numbers.length
+    let deviationSum: number | FormulaErrorValue = 0
+    for (const group of groups) {
+      if (!group.referenced && group.numbers.length === 0) continue
+      const deviations = group.numbers.map(number => {
+        const difference = number - mean
+        return Number.isFinite(difference) ? Math.abs(difference) : formulaError('#VALUE!')
+      })
+      deviationSum = addNumbers(deviationSum, group.referenced ? deviations.reduce<number | FormulaErrorValue>(addNumbers, 0) : deviations[0]!)
+      if (group.referenced && isFormulaError(deviationSum)) return deviationSum
+    }
+    return isFormulaError(deviationSum) ? formulaError('#VALUE!') : deviationSum / numbers.length
+  }
   if (name === 'PERCENTOF') {
     if (args.length !== 2) return formulaError('#N/A')
     const subsetTotal = evaluateFunction('SUM', [args[0]!], sheet, resolve, workbook, byName, formulaCell, evaluationTime)
@@ -1040,6 +1119,21 @@ function evaluateFunction(
     if (compareIntervalValue(values[1]!, values[2]!, '>')) return formulaError('#NUM!')
     if (!compareIntervalValue(values[0]!, values[1]!, Number(lowerInclusive) ? '>=' : '>')) return false
     return compareIntervalValue(values[0]!, values[2]!, Number(upperInclusive) ? '<=' : '<')
+  }
+
+  if (name === 'ISDATE') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = evaluateArrayArgument(args[0]!)
+    const matrix = formulaArgumentMatrix(input, resolve)
+    if (matrix.rowCount > 1 || matrix.columnCount > 1) return formulaError('#VALUE!')
+    const value = matrix.valueAt(0)
+    if (isFormulaError(value)) return value
+    if (typeof value === 'number' && isRangeValue(input)) {
+      return describeSheetNumberFormat(input.sheet.cells[cellKey(input.reference.start.row, input.reference.start.column)]!.style.numberFormat)?.isDate ?? false
+    }
+    if (typeof value !== 'string') return false
+    const options = { dateSystem: workbook.date1904 ? DateSystem.Date1904 : DateSystem.Date1900, locale: 'en', currentYear: evaluationTime.getFullYear() }
+    return Boolean(parseDate(value, options) || parseTime(value, options))
   }
 
   if (name === 'ISEMAIL' || name === 'ISURL') {

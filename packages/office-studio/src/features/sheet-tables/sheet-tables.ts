@@ -1,22 +1,28 @@
 import { randomId } from '../../api/model-utils.ts'
 import type { CellRange, SheetTableModel, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
+import { normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 
 export interface CreateSheetTableInput {
   sheetId: string
   range: CellRange
   name: string
   id?: string
+  columnPrefix?: string
 }
 
 export function createSheetTable(workbook: WorkbookModel, input: CreateSheetTableInput): WorkbookModel {
   const sheet = requireSheet(workbook, input.sheetId)
   validateRange(input.range)
   if (input.range.endRow <= input.range.startRow) throw new RangeError('A table needs a header row and at least one data row')
+  if (sheet.mergedRanges.some(range => input.range.startRow <= range.endRow && input.range.endRow >= range.startRow
+    && input.range.startCol <= range.endCol && input.range.endCol >= range.startCol)) {
+    throw new RangeError('A table cannot intersect merged cells')
+  }
   if (workbook.tables?.some(table => table.name.toLocaleLowerCase() === input.name.trim().toLocaleLowerCase())) {
     throw new RangeError('Table names must be unique in a workbook')
   }
   const tableName = input.name.trim()
-  if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(tableName) || tableName.toLocaleLowerCase() === 'r' || tableName.toLocaleLowerCase() === 'c') {
+  if (!isSheetTableName(tableName)) {
     throw new TypeError('Table name must start with a letter or underscore and contain only letters, numbers, underscores, or periods')
   }
   const table: SheetTableModel = {
@@ -24,7 +30,7 @@ export function createSheetTable(workbook: WorkbookModel, input: CreateSheetTabl
     name: tableName,
     sheetId: sheet.id,
     range: { ...input.range },
-    columns: readUniqueHeaders(sheet, input.range),
+    columns: readUniqueHeaders(sheet, input.range, input.columnPrefix),
     showHeaderRow: true,
     showTotalsRow: false,
     styleName: 'TableStyleMedium2',
@@ -58,9 +64,13 @@ export function deleteSheetTable(workbook: WorkbookModel, tableId: string): Work
 }
 
 export function validateSheetTableName(name: string): void {
-  if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(name.trim()) || ['r', 'c'].includes(name.trim().toLocaleLowerCase())) {
+  if (!isSheetTableName(name.trim())) {
     throw new TypeError('Invalid table name')
   }
+}
+
+export function isSheetTableName(name: string): boolean {
+  return /^[\p{L}_][\p{L}\p{M}\p{N}_.]*$/u.test(name) && !['r', 'c'].includes(name.toLocaleLowerCase())
 }
 
 function requireSheet(workbook: WorkbookModel, sheetId: string): SpreadsheetSheet {
@@ -82,12 +92,15 @@ function validateRange(range: CellRange): void {
   }
 }
 
-function readUniqueHeaders(sheet: SpreadsheetSheet, range: CellRange): SheetTableModel['columns'] {
+function readUniqueHeaders(sheet: SpreadsheetSheet, range: CellRange, columnPrefix?: string): SheetTableModel['columns'] {
   const used = new Set<string>()
   return Array.from({ length: range.endCol - range.startCol + 1 }, (_, offset) => {
     const cell = Object.values(sheet.cells).find(candidate => candidate.row === range.startRow && candidate.col === range.startCol + offset)
-    const rawName = typeof cell?.value === 'string' ? cell.value.trim() : ''
-    const base = rawName || `Column${offset + 1}`
+    const type = normalizeSheetCellValueType(cell?.formula ? cell.cachedDataType : cell?.dataType)
+    const rawName = cell?.richText ? cell.richText.map(run => run.text).join('')
+      : type === 'boolean' || type !== 'text' && typeof cell?.value === 'boolean' ? cell?.value ? 'TRUE' : 'FALSE'
+        : String(cell?.value ?? '')
+    const base = rawName.trim() || (columnPrefix === undefined ? `Column${offset + 1}` : `${columnPrefix} ${offset + 1}`)
     let name = base
     for (let suffix = 2; used.has(name.toLocaleLowerCase()); suffix += 1) name = `${base}_${suffix}`
     used.add(name.toLocaleLowerCase())

@@ -275,6 +275,8 @@ const chartOverlay = ref<InstanceType<typeof ChartOverlay> | null>(null)
 const displayPreference = useWorkbenchDisplay()
 const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
 const zoom = ref<number>(displayPreference?.value.zoom ?? 100)
+const crosshairEnabled = ref(false)
+const crosshairColor = ref('rgba(91, 141, 239, 0.18)')
 const searchText = ref('')
 const replaceText = ref('')
 const findBy = ref<SheetFindBy>('value')
@@ -899,6 +901,7 @@ const ribbonTabs = computed(() => createSheetRibbon({
   filterHasCriteria: Object.keys(activeSheet.value?.autoFilter?.columns ?? {}).length > 0,
   filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
   frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
+  crosshairEnabled: crosshairEnabled.value, crosshairColor: crosshairColor.value,
   calculationMode: workbook.value.calculationMode ?? 'automatic',
   wrapStrategy: selectionFormat.value.wrapStrategy ?? null,
   outlineSummaryAbove: activeSheet.value?.outline?.summaryAbove ?? false,
@@ -2755,6 +2758,7 @@ function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 's
 }
 
 async function executeRibbon(commandId: string, params?: unknown) {
+  const crosshairOperation = commandId === 'sheet.operation.toggle-crosshair-highlight' || commandId === 'sheet.operation.set-crosshair-highlight-color'
   const newRangeProtectionRequested = commandId === 'sheet.operation.open-range-protection'
     && typeof params === 'object' && params !== null && 'mode' in params && params.mode === 'add'
   if (newRangeProtectionRequested && !canQuickFormatSelection.value) return
@@ -2773,7 +2777,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
   if (SHEET_BORDER_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
   if (SHEET_LAYOUT_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo'
-    && !SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId) && !finishEdit()) return
+    && !SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId) && !crosshairOperation && !finishEdit()) return
   if ((SHEET_OUTLINE_COMMAND_IDS as readonly string[]).includes(commandId)) {
     try { runOutlineAlias(commandId, params) } catch (error) { emit('notify', { type: 'warning', message: error instanceof Error ? error.message : '大纲操作失败。' }) }
     return
@@ -2910,6 +2914,12 @@ async function executeRibbon(commandId: string, params?: unknown) {
     },
     'sheet.command.freeze-first-row': () => freeze(1, 0), 'sheet.command.freeze-first-column': () => freeze(0, 1),
     'sheet.command.unfreeze': () => freeze(0, 0),
+    'sheet.operation.toggle-crosshair-highlight': () => { crosshairEnabled.value = !crosshairEnabled.value },
+    'sheet.operation.set-crosshair-highlight-color': () => {
+      if (typeof params !== 'string') return
+      crosshairColor.value = params
+      crosshairEnabled.value = true
+    },
     'sheet.operation.zoom-in': () => { zoom.value = Math.min(400, zoom.value + 10) },
     'sheet.operation.zoom-out': () => { zoom.value = Math.max(10, zoom.value - 10) },
     'sheet.operation.reset-zoom': () => { zoom.value = 100 },
@@ -2943,7 +2953,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     void nextTick(() => { if (workbenchActive.value && !editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
     return
   }
-  if ((!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom') || commandId === 'sheet.operation.set-zoom'
+  if (crosshairOperation && editSession.value) restoreCellInputFocus(editSession.value)
+  if ((!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom') || commandId === 'sheet.operation.set-zoom' || crosshairOperation
     || SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId)) && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value) {
     void nextTick(() => { if (workbenchActive.value && !editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value
       && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
@@ -3102,6 +3113,7 @@ onActivated(() => { workbenchActive.value = true })
       :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
       :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :sparkline-metadata="workbook.metadata" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :active-range-index="activeSelectionIndex"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :workbook-id="workbook.id"
+      :crosshair-highlight="{ enabled: crosshairEnabled, color: crosshairColor }"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :workbook-history-generation="studio && workbook.id ? studio.editor.history.captureSavepoint(workbook.id).generation : undefined"
       :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview"
@@ -3184,7 +3196,7 @@ onActivated(() => { workbenchActive.value = true })
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
     <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen"
-      :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :initial-type="conditionalFormattingContext.initialType" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
+      :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :selection-range="selectedModelRanges().at(-1)" :initial-type="conditionalFormattingContext.initialType" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SheetOutlineActionDialog v-if="outlineActionRequest" :key="outlineActionRequest.key" :open="outlineActionOpen" :studio="outlineActionRequest.studio" :workbook-id="outlineActionRequest.workbookId" :sheet-id="outlineActionRequest.sheetId" :ranges="outlineActionRequest.ranges" :operation="outlineActionRequest.operation"

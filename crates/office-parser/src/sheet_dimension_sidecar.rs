@@ -274,7 +274,7 @@ fn attributes<R: BufRead>(reader: &NsReader<R>, element: &BytesStart<'_>) -> Res
         let attribute = attribute.map_err(|error| error.to_string())?;
         if attribute.key.as_ref().contains(&b':') || attribute.key.as_ref() == b"xmlns" { continue; }
         let name = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?.to_owned();
-        let value = attribute.decode_and_unescape_value(reader.decoder(), XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
+        let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
         result.insert(name, value);
     }
     Ok(result)

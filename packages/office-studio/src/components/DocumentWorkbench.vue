@@ -57,8 +57,8 @@ import { createDocumentRibbon, documentCommandFromRibbon, documentRibbonSelectio
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentStoryToolbarState, documentToolbarState, type DocumentToolbarState } from './document/document-toolbar-state'
 import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
 import { documentParagraphPagination } from '../features/document/model/document-paragraph-pagination'
-import { documentOrientedPage, documentPageSettingsError, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
-import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, documentCommandSupportsBlockHost, documentNamedParagraphStyleState, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
+import { documentOrientedPage, documentPaperSize, type DocumentPageMode, type DocumentPaperSize } from './document/document-page-settings'
+import { blockAtPoint, canChangeDocumentParagraphIndent, canContinueDocumentNumbering, canRestartDocumentNumbering, documentCommandSupportsBlockHost, documentNamedParagraphStyleState, documentPageSetupCommandState, executeDocumentCommand, type DocumentCommand } from '../features/document/commands/document-commands'
 import { emptyLayout, lineForPoint, type DocumentLayout } from '../features/document/layout/document-layout'
 import { findDocumentStoryPage } from '../features/document/layout/document-story-navigation'
 import { createDocumentNumericPageField } from '../features/document/model/document-page-field-result'
@@ -227,9 +227,11 @@ const standalonePendingMarks = shallowRef<RunPatch>({})
 let modelReceived = false
 let inputStateActive = true
 let inputStateEpoch = 0
+const inputStateVersion = ref(0)
 const storyActionVersion = ref(0)
 let applyingInputState = false
 let applyingOpenFieldCache = false
+let applyingPageSetup = false
 const pendingMarks = computed<RunPatch>(() => props.documentApi
   ? props.documentApi.id === model.value.id ? props.documentApi.getInputMarks(selection.value, currentStoryRange.value, editingHost.value) : {}
   : standalonePendingMarks.value)
@@ -267,6 +269,9 @@ const selectedContentControl = computed(() => selectedContentControlId.value
   ? model.value.contentControls?.find(control => control.id === selectedContentControlId.value)
   : undefined)
 const pageSettingsOpen = ref(false)
+const pageSettingsError = ref('')
+const pageSettingsTarget = shallowRef<{ unitId: string | undefined; api?: FDocument; adapter?: DocumentFieldCacheAdapter; historyGeneration?: number }>()
+let pageSettingsClosingFocus: (() => void) | undefined
 const headerFooterPanelOpen = ref(false)
 const storyLocation = ref<StoryLocation>()
 const legacyStoryActive = computed(() => !!storyLocation.value && !editingHost.value)
@@ -383,7 +388,7 @@ const canManagePermissionRules = computed(() => canManageDocumentPermissions(per
 const canComment = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment').allowed)
 const documentInputComposing = computed(() => storyComposing.value || canvasRef.value?.isBodyComposing() === true)
 const pageSettingsDisabled = computed(() => !inputStateActive || documentInputComposing.value
-  || !resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit').allowed)
+  || !documentPageSetupCommandState(model.value, permissionContext.value).allowed)
 const noteInsertState = computed(() => documentNoteInsertState(model.value, selection.value, {
   permission: permissionContext.value, host: editingHost.value,
   disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
@@ -400,9 +405,15 @@ watch([model, selection, editingHost], () => {
 }, { immediate: true, flush: 'sync' })
 const canRefreshFields = computed(() => !documentInputComposing.value && canRefreshDocumentStoryFields(model.value, permissionContext.value))
 const fieldCacheState = computed(() => props.fieldCacheAdapter?.getState())
-const fieldOpenHistoryGeneration = computed(() => props.documentApi
-  ? props.documentApi.id === model.value.id ? props.documentApi.getHistoryGeneration() : undefined
-  : fieldCacheState.value?.unitId === model.value.id ? fieldCacheState.value.historyGeneration : undefined)
+const fieldOpenHistoryGeneration = computed(() => {
+  void inputStateVersion.value
+  return props.documentApi
+    ? props.documentApi.id === model.value.id ? props.documentApi.getHistoryGeneration() : undefined
+    : fieldCacheState.value?.unitId === model.value.id ? fieldCacheState.value.historyGeneration : undefined
+})
+watch([() => props.documentApi, () => props.fieldCacheAdapter, () => model.value.id, fieldOpenHistoryGeneration], () => {
+  if (pageSettingsOpen.value && !pageSettingsTargetCurrent()) setPageSettingsOpen(false, false)
+}, { flush: 'sync' })
 const canCreateComment = computed(() => {
   if (legacyStoryActive.value || editingHost.value?.kind === 'story' && storyLinkedToPrevious.value || !canComment.value || selectionCollapsed(selection.value)
     || !resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment', permissionTargetsForSelection(editingModel.value, selection.value)).allowed) return false
@@ -809,7 +820,7 @@ onDeactivated(() => {
   clipboardRequest++
   modalOpen.value = false
   contentControlPanelOpen.value = false
-  pageSettingsOpen.value = false
+  setPageSettingsOpen(false, false)
   paragraphSettingsPanelOpen.value = false
   sectionSettingsPanelOpen.value = false
   commentsPanelOpen.value = false
@@ -865,7 +876,7 @@ watch(modalOpen, open => { insertModalComposing.value = false; if (!open) abortP
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.documentApi, (next, previous, onCleanup) => {
   inputStateEpoch++
-  if (next !== previous) pageSettingsOpen.value = false
+  if (next !== previous) setPageSettingsOpen(false, false)
   if (previous && previous !== next) canvasRef.value?.cancelInput(false)
   if (previous && previous.id !== next?.id && previous.getInputState()) previous.clearInputMarks()
   standalonePendingMarks.value = {}
@@ -889,7 +900,7 @@ watch(() => props.modelValue, (value) => {
   modelReceived = true
   if (typeof value === 'string' || next.id !== model.value.id) painter.value = undefined
   const sameDocument = next.id === model.value.id
-  if (!sameDocument) pageSettingsOpen.value = false
+  if (!sameDocument) setPageSettingsOpen(false, false)
   if (!sameDocument) { canvasRef.value?.cancelInput(false); blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined; notesPanelOpen.value = false; noteSettings.value = undefined; notesError.value = '' }
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
@@ -901,7 +912,8 @@ watch(() => props.modelValue, (value) => {
   if (returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
   if (!sameDocument) { commentDraftSelection.value = undefined; commentDraftHost.value = undefined; commentDraftReference.value = ''; searchScopeSelection.value = undefined; searchInSelection.value = false }
   paperSize.value = documentPaperSize(next.page)
-  orientation.value = next.page.width > next.page.height ? 'landscape' : 'portrait'
+  orientation.value = next.metadata.documentPageOrientation === 'landscape' ? 'landscape'
+    : next.metadata.documentPageOrientation === 'portrait' ? 'portrait' : next.page.width > next.page.height ? 'landscape' : 'portrait'
 }, { immediate: true })
 watch([() => props.documentApi, () => props.fieldCacheAdapter, () => model.value,
   () => fieldCacheState.value?.modelRevision, fieldOpenHistoryGeneration, canRefreshFields], () => refreshDocumentFieldsOnOpen(), { immediate: true, flush: 'post' })
@@ -930,8 +942,9 @@ function clearInputMarks() {
 }
 function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateChanged']) {
   const epoch = ++inputStateEpoch
+  if (api === props.documentApi) inputStateVersion.value++
   const state = event.state
-  const restoreFocus = !applyingOpenFieldCache
+  const restoreFocus = !applyingOpenFieldCache && !applyingPageSetup && !pageSettingsOpen.value
   const current = () => {
     if (!inputStateActive || api !== props.documentApi || api.id !== model.value.id || event.unitId !== api.id || !state?.valid) return false
     const latest = api.getInputState()
@@ -942,7 +955,13 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
   const next = api.getModel()
   applyingInputState = true
   try {
-    if (JSON.stringify(next) !== JSON.stringify(model.value)) { model.value = next; documentTitle.value = next.name }
+    if (JSON.stringify(next) !== JSON.stringify(model.value)) {
+      model.value = next
+      documentTitle.value = next.name
+      paperSize.value = documentPaperSize(next.page)
+      orientation.value = next.metadata.documentPageOrientation === 'landscape' ? 'landscape'
+        : next.metadata.documentPageOrientation === 'portrait' ? 'portrait' : next.page.width > next.page.height ? 'landscape' : 'portrait'
+    }
     if (state.location.kind === 'body') {
       const range = state.location.selection, host = state.location.host
       if (!sameDocumentBlockHost(host, editingHost.value) || legacyStoryActive.value || JSON.stringify(selection.value) !== JSON.stringify(range)) canvasRef.value?.cancelInput(false)
@@ -1114,7 +1133,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     || ['doc.command.format-text', 'doc.command.format-paragraph', 'doc.command.set-block-type', 'doc.command.change-list-type',
       'doc.command.restart-list-numbering', 'doc.command.continue-list-numbering', 'doc.command.change-paragraph-indent',
       'doc.command.horizontal-line', 'doc.command.insert-divider', 'doc.command.insert-horizontal-line-bellow',
-      'doc.command.create-table', 'doc.command.insert-table'].includes(command.id))
+      'doc.command.create-table', 'doc.command.insert-table', 'docs.command.page-setup'].includes(command.id))
     && (!inputStateActive || documentInputComposing.value)) return false
   if (!command.host && legacyStoryActive.value && documentCommandSupportsBlockHost(command)
     && command.id !== 'doc.command.format-text' && command.id !== 'doc.command.clear-formatting') activateStoryBlockEditing()
@@ -1132,10 +1151,11 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
   const derivedFieldRefresh = (command.id === 'doc.command.refresh-header-footer-fields' || command.id === 'doc.command.update-selected-fields') && command.onOpen === true
   if (documentApi && documentApi.id !== model.value.id) { notify('文档切换尚未完成，请稍后重试。'); return false }
   if ((command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && !command.story && currentStoryRange.value) command = { ...command, story: currentStoryRange.value }
-  const targets = (command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
+  const targets = command.id === 'docs.command.page-setup' ? []
+    : (command.id === 'doc.command.clear-formatting' || command.id === 'doc.command.format-text') && command.story ? [{ scope: 'section' as const, id: command.story.sectionId }]
     : command.host ? permissionTargetsForSelection(editingModel.value, selection.value)
     : 'sectionId' in command ? [{ scope: 'section' as const, id: command.sectionId }] : permissionTargetsForSelection(editingModel.value, selection.value)
-  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.create-table' && !isDocumentTableCommand(command) && !isDocumentImageCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
+  if (command.id !== 'doc.command.set-document-permission-rules' && command.id !== 'doc.command.insert-table' && command.id !== 'doc.command.create-table' && command.id !== 'docs.command.page-setup' && !isDocumentTableCommand(command) && !isDocumentImageCommand(command) && !fieldRefresh && !canDocumentPermission('edit', targets)) return false
   try {
     if (derivedFieldRefresh && !documentApi) {
       if (command.id !== 'doc.command.refresh-header-footer-fields') return false
@@ -1163,9 +1183,16 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     }
     const nextCommand = !documentApi && (command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula') ? { ...command, marks: { ...pendingMarks.value, ...command.marks } } : command
     if (documentApi) {
+      const pageInput = command.id === 'docs.command.page-setup' ? documentApi.getInputState() : undefined
+      const pageHistoryGeneration = command.id === 'docs.command.page-setup' ? documentApi.getHistoryGeneration() : undefined
       const result = documentApi.executeCommand(nextCommand, selection.value, sourceCommandId)
       if (feedback) feedback.modelRevision = result.modelRevision
-      if (result.selectionCurrent === false || documentApi !== props.documentApi || documentApi.id !== model.value.id || !inputStateActive) {
+      const latestPageInput = command.id === 'docs.command.page-setup' ? documentApi.getInputState() : undefined
+      const pageCurrent = command.id !== 'docs.command.page-setup' || documentApi.getHistoryGeneration() === pageHistoryGeneration
+        && documentApi.getModelRevision() === result.modelRevision && (!pageInput?.valid || latestPageInput?.valid === true
+          && latestPageInput.generation === pageInput.generation + (result.changed ? 1 : 0)
+          && sameDocumentInputLocation(latestPageInput.location, pageInput.location))
+      if (result.selectionCurrent === false || !pageCurrent || documentApi !== props.documentApi || documentApi.id !== model.value.id || !inputStateActive) {
         if (feedback) feedback.selectionCurrent = false
         syncCurrentInput(documentApi)
         return true
@@ -1182,7 +1209,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     } else {
       const next = cloneDocument(model.value)
       selection.value = applyDocumentEditorCommand(next, { unitId: next.id ?? '', selection: selection.value, command: nextCommand }, permissionContext.value)
-      if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next, command.id === 'doc.command.insert-text')
+      if (JSON.stringify(next) !== JSON.stringify(model.value)) publish(next, command.id === 'doc.command.insert-text' || command.id === 'docs.command.page-setup')
     }
     if (textInput) {
       const control = editingModel.value.contentControls?.find(control => control.id === command.activeContentControlId)
@@ -1197,7 +1224,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
         storySelection.value = { start: clearedStory.start, end: clearedStory.end }
       }
     }
-    if (!documentApi && command.id !== 'doc.command.insert-text' && !collapsedFormat && !fieldRefresh) standalonePendingMarks.value = {}
+    if (!documentApi && command.id !== 'doc.command.insert-text' && command.id !== 'docs.command.page-setup' && !collapsedFormat && !fieldRefresh) standalonePendingMarks.value = {}
     if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
     colorMemory.value = rememberDocumentColors(colorMemory.value, command)
     if (command.id === 'doc.command.table-set-background' && typeof command.color === 'string') tableColors.value = { ...tableColors.value, background: command.color }
@@ -1679,22 +1706,57 @@ function redo() {
   emit('redo', model.value.id)
   scheduleInputFocus(() => canvasRef.value?.focus())
 }
-function changePageSetup() {
-  applyPageSetup(documentOrientedPage(model.value.page, orientation.value, paperSize.value))
+function pageSettingsTargetCurrent() {
+  const target = pageSettingsTarget.value
+  return !!target && target.unitId === model.value.id && target.api === props.documentApi && target.adapter === props.fieldCacheAdapter
+    && target.historyGeneration === (target.api?.getHistoryGeneration() ?? fieldOpenHistoryGeneration.value)
 }
-function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMode.value) {
-  if (!inputStateActive || documentInputComposing.value) return
-  if (!canDocumentPermission('edit')) return
-  const error = documentPageSettingsError(page)
-  if (error) { notify(error); return }
-  const next = cloneDocument(model.value)
-  next.page = { ...page }
-  next.metadata = { ...next.metadata, documentFlavor: mode === 'modern' ? 2 : 1 }
-  paperSize.value = documentPaperSize(page)
-  orientation.value = page.width > page.height ? 'landscape' : 'portrait'
-  publish(next)
+function setPageSettingsOpen(open: boolean, restoreFocus = true) {
+  if (open) {
+    if (pageSettingsDisabled.value || props.documentApi && props.documentApi.id !== model.value.id) return
+    pageSettingsClosingFocus = undefined
+    pageSettingsError.value = ''
+    pageSettingsTarget.value = { unitId: model.value.id, api: props.documentApi, adapter: props.fieldCacheAdapter,
+      historyGeneration: props.documentApi?.getHistoryGeneration() ?? fieldOpenHistoryGeneration.value }
+    pageSettingsOpen.value = true
+    return
+  }
+  const current = restoreFocus && pageSettingsTargetCurrent()
   pageSettingsOpen.value = false
-  scheduleInputFocus(() => canvasRef.value?.focus())
+  pageSettingsClosingFocus = current ? captureNoteOverlayFocus() : undefined
+  pageSettingsTarget.value = undefined
+}
+function onPageSettingsClosed() {
+  const focus = pageSettingsClosingFocus
+  pageSettingsClosingFocus = undefined
+  if (focus) scheduleInputFocus(focus)
+}
+function changePageSetup(paper = paperSize.value, direction = orientation.value) {
+  applyPageSetup(documentOrientedPage(model.value.page, direction, paper), pageMode.value, direction)
+}
+function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMode.value,
+  direction: 'portrait' | 'landscape' = mode === 'modern' ? orientation.value : page.width > page.height ? 'landscape' : 'portrait') {
+  if (pageSettingsOpen.value && !pageSettingsTargetCurrent()) { setPageSettingsOpen(false, false); return }
+  if (!inputStateActive || documentInputComposing.value) return
+  const api = props.documentApi, unitId = model.value.id, generation = api?.getHistoryGeneration() ?? fieldOpenHistoryGeneration.value
+  const target = pageSettingsOpen.value ? pageSettingsTarget.value : undefined
+  const feedback: { selectionCurrent: boolean; modelRevision?: number; error?: string } = { selectionCurrent: true }
+  pageSettingsError.value = ''
+  const previous = applyingPageSetup
+  applyingPageSetup = true
+  try {
+    const accepted = execute({ id: 'docs.command.page-setup', pageSize: { width: page.width, height: page.height },
+      pageOrient: direction === 'landscape' ? 1 : 0, documentFlavor: mode === 'modern' ? 2 : 1,
+      marginTop: page.marginTop, marginBottom: page.marginBottom, marginLeft: page.marginLeft, marginRight: page.marginRight }, false, feedback)
+    if (!accepted) { pageSettingsError.value = feedback.error ?? '页面设置未应用。'; return }
+    if (!feedback.selectionCurrent || api !== props.documentApi || unitId !== model.value.id
+      || generation !== (api?.getHistoryGeneration() ?? fieldOpenHistoryGeneration.value)
+      || target && pageSettingsTarget.value !== target) return
+    paperSize.value = documentPaperSize(model.value.page)
+    orientation.value = direction
+    if (pageSettingsOpen.value) { setPageSettingsOpen(false); return }
+    scheduleInputFocus(() => canvasRef.value?.focus())
+  } finally { applyingPageSetup = previous }
 }
 function applyHeaderFooter(patch: SectionHeaderFooterPatch, input?: DocumentStoryInputCommit, sectionId = headerFooterSectionId.value) {
   const feedback: { selectionCurrent: boolean; modelRevision?: number } = { selectionCurrent: true }
@@ -3137,7 +3199,7 @@ function onRibbonExecute(id: string, params?: unknown) {
       break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
     case 'doc.operation.open-page-settings':
-      if (!pageSettingsDisabled.value) pageSettingsOpen.value = true
+      setPageSettingsOpen(true)
       break
     case 'doc.operation.open-header-footer': {
       const preferredPage = layout.value.lines.find(line => line.target.blockId === selection.value.focus.blockId && line.start <= selection.value.focus.offset && line.end >= selection.value.focus.offset)?.page ?? activePageIndex.value
@@ -3149,17 +3211,15 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size':
       if (pageSettingsDisabled.value) break
-      if (params === 'Custom') { pageSettingsOpen.value = true; break }
+      if (params === 'Custom') { setPageSettingsOpen(true); break }
       if (params === 'A4' || params === 'Letter') {
-        paperSize.value = params
-        changePageSetup()
+        changePageSetup(params)
       }
       break
     case 'doc.command.set-orientation':
       if (pageSettingsDisabled.value) break
       if (params === 'portrait' || params === 'landscape') {
-        orientation.value = params
-        changePageSetup()
+        changePageSetup(paperSize.value, params)
       }
       break
   }
@@ -3286,7 +3346,8 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="tableRibbonContext.composing"
       :layout="editingLayoutSource === model ? editingLayout : undefined"
       @update:open="open => { if (tableProperties) tableProperties = { ...tableProperties, open } }" @submit="applyTableProperties" @closed="closeTableProperties" />
-    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" :disabled="pageSettingsDisabled" @apply="applyPageSetup" />
+    <DocumentPageSettings :open="pageSettingsOpen" :page="model.page" :mode="pageMode" :disabled="pageSettingsDisabled" :error="pageSettingsError"
+      :document-id="model.id" :history-generation="fieldOpenHistoryGeneration" @update:open="setPageSettingsOpen" @apply="applyPageSetup" @closed="onPageSettingsClosed" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :read-only="!canEditHeaderFooterSection" :editable-stories="editableHeaderFooterStories" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
     <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" :initial-focus="codeDialogFocus" @apply="applyCodeBlock" @composition-change="value => codeDialogComposing = value" @closed="closeStructureDialog(codeDialogTarget)" />

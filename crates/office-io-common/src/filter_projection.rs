@@ -67,7 +67,7 @@ impl WorksheetFilterProjection {
             let namespace = namespace_value(namespace)?;
             let local = std::str::from_utf8(local.as_ref()).map_err(|error| error.to_string())?;
             let key = if namespace.is_empty() { local.to_owned() } else { format!("{{{namespace}}}{local}") };
-            let value = attribute.decode_and_unescape_value(reader.decoder(), XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
+            let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
             self.reserve(key.len().saturating_add(value.len()))?;
             if attributes.insert(key, value).is_some() { return Err("duplicate resolved AutoFilter attribute".into()); }
         }
