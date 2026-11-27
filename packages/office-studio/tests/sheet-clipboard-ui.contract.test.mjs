@@ -2,15 +2,20 @@ import assert from 'node:assert/strict'
 import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 import { nextTick, shallowRef } from 'vue'
+import { sheetImagePng } from './fixtures/sheet-image-fixture.mjs'
 
 // Draft only. This suite is written for the user's later unified verification pass.
-let server, sdk, clipboardUi, clipboardContent
+let server, sdk, clipboardUi, clipboardContent, clipboardModel, richFonts, clipboardCells, imageSource
 beforeAll(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
-  ;[sdk, clipboardUi, clipboardContent] = await Promise.all([
+  ;[sdk, clipboardUi, clipboardContent, clipboardModel, richFonts, clipboardCells, imageSource] = await Promise.all([
     '/packages/office-studio/src/index.ts',
     '/packages/office-studio/src/components/spreadsheet/use-sheet-clipboard.ts',
     '/packages/office-studio/src/features/sheet-workbench/sheet-clipboard-content.ts',
+    '/packages/office-studio/src/features/sheet-workbench/sheet-clipboard.ts',
+    '/packages/office-studio/src/features/sheet-workbench/sheet-cell-rich-text-style.ts',
+    '/packages/office-studio/src/features/sheet-workbench/sheet-clipboard-cell.ts',
+    '/packages/office-studio/src/features/sheet-images/sheet-image-source.ts',
   ].map(path => server.ssrLoadModule(path)))
 })
 afterAll(async () => { await server?.close() })
@@ -30,6 +35,26 @@ function model() {
   sheet.cells['0:0'] = rich
   sheet.cells['0:1'] = { ...sdk.createCell(0, 1, 5), formula: '=A2+$A$2', dataType: 'formula', cachedDataType: 'number', display: '5' }
   sheet.cells['1:0'] = sdk.createCell(1, 0, 5); sheet.columnWidths = { 0: 123, 1: 156 }
+  return book
+}
+const formattedRuns = [
+  { id: 'target-first', text: 'target ', hyperlink: 'https://target.test/run', font: { language: 'ja-JP' }, vendor: { keep: 1 } },
+  { id: 'target-second', text: 'runs', vendor: { keep: 2 } },
+]
+function formatsModel() {
+  const book = model(), source = sdk.createCell(0, 0, 'source'), target = sdk.createCell(4, 4, 'target runs')
+  source.style.font = { family: 'Courier New', size: 16, bold: true, italic: false, underline: true, strike: false, color: '#123456' }
+  source.richText = [{ id: 'source-run', text: 'source', font: { family: 'Arial', size: 40 }, vendor: { source: true } }]
+  source.authoredStyle = copy(source.style)
+  target.style = copy(source.style); target.authoredStyle = copy(target.style)
+  target.richText = [
+    { id: 'target-first', text: 'target ', hyperlink: 'https://target.test/run', vendor: { keep: 1 },
+      font: { family: 'Arial', size: 32, bold: false, italic: true, underline: false, strike: true, color: '#ff0000', language: 'ja-JP' } },
+    { id: 'target-second', text: 'runs', fontFamily: 'Arial', fontSize: 28, bold: false, italic: true,
+      underline: false, strike: true, color: '#ff0000', vendor: { keep: 2 } },
+  ]
+  target.hyperlink = 'https://target.test/cell'; target.metadata = { vendor: { retain: true } }
+  book.sheets[0].cells['0:0'] = source; book.sheets[0].cells['4:4'] = target
   return book
 }
 function host(t, options = {}) {
@@ -93,6 +118,199 @@ function clipboardEvent(content = {}) {
 }
 function keyEvent(key, extra = {}) { return { key, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, isComposing: false,
   keyCode: 0, defaultPrevented: false, preventDefault() { this.defaultPrevented = true }, ...extra } }
+
+test('external forced strings keep their literal text and cannot become numbers or formula-only inputs', () => {
+  const target = formatsModel().sheets[0].cells['4:4'], before = copy(target)
+  for (const externalFormat of ['text', 'html']) for (const type of ['force_string', 'force-string', 'forcestring']) {
+    for (const literal of ['00123', '=1+1']) {
+      const source = { ...sdk.createCell(0, 0, literal), dataType: type }, original = copy(source)
+      for (const mode of ['all', 'values']) {
+        const pasted = clipboardCells.createSheetClipboardPastedCell(source, target, { row: 4, col: 4 }, mode,
+          { rowDelta: 4, columnDelta: 4, externalFormat, date1904: false, region: 'en-US' })
+        assert.equal(pasted.value, literal); assert.equal(pasted.formula, null); assert.equal(pasted.dataType, type)
+        if (mode === 'values') assert.deepEqual(pasted.style.font, target.style.font)
+      }
+      const formulas = clipboardCells.createSheetClipboardPastedCell(source, target, { row: 4, col: 4 }, 'formulas',
+        { rowDelta: 4, columnDelta: 4, externalFormat, date1904: false, region: 'en-US' })
+      assert.deepEqual(formulas, before); assert.deepEqual(source, original)
+    }
+  }
+  const plain = clipboardCells.createSheetClipboardPastedCell({ ...sdk.createCell(0, 0, '00123'), dataType: 'text' }, target,
+    { row: 4, col: 4 }, 'values', { rowDelta: 4, columnDelta: 4, externalFormat: 'text', date1904: false, region: 'en-US' })
+  assert.equal(plain.value, 123); assert.equal(plain.dataType, 'number'); assert.deepEqual(target, before)
+})
+
+test('values paste retains source rich-run fonts except over a formula while target formatting links recent history and reopen survive', async t => {
+  for (const standalone of [false, true]) for (const formulaTarget of [false, true]) {
+    const original = formatsModel(), source = original.sheets[0].cells['0:0']
+    source.hyperlink = 'https://source.test/cell'
+    source.richText = [
+      { id: 'source-first', text: 'so', font: { family: 'Arial', size: 24, bold: false }, hyperlink: 'https://source.test/run', vendor: { retain: 1 } },
+      { id: 'source-second', text: 'urce', fontFamily: 'Times New Roman', fontSize: 18, italic: true, vendor: { retain: 2 } },
+    ]
+    if (formulaTarget) Object.assign(original.sheets[0].cells['4:4'], { value: 91, formula: '=90+1', dataType: 'formula', cachedDataType: 'number', display: '91' })
+    const h = host(t, { standalone, model: original, permission: request => request.point !== 'setCellStyle' })
+    const before = copy(h.cell(4, 4)), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.select(range(0, 0)); const copied = await h.ui.runClipboardCommand('sheet.command.copy'); h.select(range(4, 4))
+    assert.equal(h.ui.capabilities.value.paste.values.disabled, false)
+    const result = await h.ui.runClipboardCommand('sheet.command.paste-value', { clipboardId: copied.clipboard.id })
+    assert.equal(result.accepted, true); assert.equal(result.changed, true)
+    const pasted = copy(h.cell(4, 4)), expectedRuns = formulaTarget ? undefined : source.richText
+    assert.equal(pasted.value, 'source'); assert.equal(pasted.formula, null); assert.equal(pasted.cachedDataType, null)
+    assert.deepEqual(pasted.richText, expectedRuns)
+    assert.deepEqual(pasted.style, before.style); assert.equal(pasted.hyperlink, before.hyperlink); assert.deepEqual(pasted.metadata, before.metadata)
+    const view = h.view.value.sheets[0].cells.E5
+    assert.deepEqual(view.richText, expectedRuns)
+    assert.deepEqual(richFonts.sheetCellFontValues(view, 'family'), formulaTarget ? ['Courier New'] : ['Arial', 'Times New Roman'])
+    assert.deepEqual(richFonts.sheetCellFontValues(view, 'size'), formulaTarget ? [16] : [24, 18]); assert.equal(h.calls.changed.length, 1)
+    assert.equal(h.history().undo, standalone ? 0 : 1); assert.equal(h.ui.pasteOptions.value.mode, 'values')
+    if (!standalone) assert.deepEqual(values.map(event => event.ranges.map(domainRange)), [[range(4, 4)]])
+    const repeated = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_VALUE' })
+    assert.equal(repeated.accepted, true); assert.equal(repeated.changed, false); assert.equal(h.calls.changed.length, 1)
+    assert.deepEqual(h.cell(0, 0).richText, source.richText); assert.deepEqual(h.cell(4, 4), pasted)
+    if (standalone) continue
+    const api = sdk.FOffice.newAPI(h.owner.value), book = api.getActiveWorkbook()
+    book.undo(); assert.deepEqual(h.cell(4, 4), before); book.redo(); assert.deepEqual(h.cell(4, 4), pasted)
+    const reopened = api.createWorkbook({ ...book.save(), id: 'clipboard-rich-values-reopened' })
+    assert.deepEqual(h.owner.value.getWorkbookModel(reopened.getId()).sheets[0].cells['4:4'].richText, expectedRuns)
+  }
+})
+
+test('values paste copies a cell image and its public body while a following plain value clears the old image content', () => {
+  const source = sdk.createCell(0, 0, null), target = formatsModel().sheets[0].cells['4:4']
+  source.image = { id: 'source-cell-image', title: 'Source', altText: 'Source image', vendor: { retain: true },
+    resource: imageSource.sheetImageResourceFromDataUrl(sheetImagePng, 'source.png', 'source-cell-resource') }
+  source.metadata = { publicBody: sdk.sheetCellImageToPublicBody(source), sheetImagePublicDrawingId: source.image.id }
+  const before = copy(source), options = { rowDelta: 4, columnDelta: 4, date1904: false, region: 'en-US' }
+  const pasted = clipboardCells.createSheetClipboardPastedCell(source, target, { row: 4, col: 4 }, 'values', options)
+  assert.notEqual(pasted.image.id, source.image.id); assert.deepEqual(pasted.image.resource, source.image.resource)
+  assert.deepEqual(pasted.image.vendor, source.image.vendor); assert.deepEqual(pasted.style.font, target.style.font)
+  assert.deepEqual(pasted.metadata.publicBody, source.metadata.publicBody); assert.equal(pasted.metadata.sheetImagePublicDrawingId, source.image.id)
+  const publicBody = sdk.sheetCellImageToPublicBody(pasted)
+  assert.deepEqual(publicBody.drawingsOrder, [pasted.image.id]); assert.equal(publicBody.body.customBlocks[0].blockId, pasted.image.id)
+  assert.equal(Object.hasOwn(publicBody.drawings, source.image.id), false)
+  assert.deepEqual(sdk.toExcelCellView(pasted).image.resource, source.image.resource); assert.deepEqual(source, before)
+  const plain = clipboardCells.createSheetClipboardPastedCell(sdk.createCell(0, 0, 'plain'), pasted, { row: 4, col: 4 }, 'values', options)
+  assert.equal(plain.value, 'plain'); assert.equal(plain.image, undefined); assert.equal(plain.richText, undefined)
+  assert.equal(plain.metadata.publicBody, undefined); assert.equal(plain.metadata.sheetImagePublicDrawingId, undefined)
+  assert.equal(plain.hyperlink, target.hyperlink); assert.deepEqual(plain.style.font, target.style.font)
+  const formulaTarget = { ...copy(target), value: 91, formula: '=90+1', dataType: 'formula', cachedDataType: 'number', display: '91' }
+  const flattened = clipboardCells.createSheetClipboardPastedCell(source, formulaTarget, { row: 4, col: 4 }, 'values', options)
+  assert.equal(flattened.formula, null); assert.equal(flattened.image, undefined); assert.equal(flattened.metadata.publicBody, undefined)
+  assert.equal(flattened.hyperlink, target.hyperlink); assert.deepEqual(flattened.style, target.style)
+})
+
+test('value permission and stop validation reject values paste before content, events, history or recent state change', async t => {
+  for (const standalone of [false, true]) for (const blocked of ['permission', 'validation']) {
+    const original = formatsModel()
+    if (blocked === 'validation') original.sheets[0].dataValidations = [{ id: 'reject-values', type: 'custom', formula1: '=FALSE()',
+      allowBlank: false, showErrorMessage: true, errorStyle: 'stop', error: 'Value edits are blocked', ranges: [range(4, 4)] }]
+    const h = host(t, { standalone, model: original,
+      permission: blocked === 'permission' ? request => request.point !== 'setCellValue' : undefined }), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.select(range(0, 0)); const copied = await h.ui.runClipboardCommand('sheet.command.copy'); h.select(range(4, 4))
+    const before = copy(h.current()), depth = h.history()
+    const result = await h.ui.runClipboardCommand('sheet.command.paste-values', { clipboardId: copied.clipboard.id })
+    assert.equal(result?.accepted ?? false, false); assert.deepEqual(h.current(), before); assert.deepEqual(h.history(), depth)
+    assert.equal(h.calls.changed.length, 0); assert.deepEqual(values, []); assert.equal(h.ui.pasteOptions.value, undefined)
+    assert.ok(h.calls.notices.length > 0)
+  }
+})
+
+test('formats planner replaces target run fonts and retains text, links, identities and extensions in model and view', () => {
+  const original = formatsModel(), before = copy(original), sheet = original.sheets[0]
+  const captured = clipboardModel.captureSheetClipboard(original, { unitId: original.id, sheetId: sheet.id, range: range(0, 0) }, { userId: 'local-user' })
+  const plan = clipboardModel.createSheetClipboardPastePlan(original,
+    { unitId: original.id, sheetId: sheet.id, range: range(4, 4) }, captured, 'formats', { userId: 'local-user', region: 'en-US' })
+  assert.equal(plan.result.accepted, true); assert.equal(plan.result.changed, true)
+  assert.deepEqual(plan.changedRanges[sheet.id], [range(4, 4)])
+  const candidate = copy(original); clipboardModel.applySheetClipboardPastePlan(candidate, plan)
+  const pasted = candidate.sheets[0].cells['4:4'], target = before.sheets[0].cells['4:4']
+  assert.deepEqual(pasted.richText, formattedRuns); assert.equal(pasted.value, target.value)
+  assert.equal(pasted.formula, target.formula); assert.equal(pasted.dataType, target.dataType)
+  assert.equal(pasted.cachedDataType, target.cachedDataType); assert.equal(pasted.hyperlink, target.hyperlink)
+  assert.deepEqual(pasted.metadata, target.metadata); assert.deepEqual(pasted.style.font, sheet.cells['0:0'].style.font)
+  const view = sdk.toExcelWorkbookView(candidate).sheets[0].cells.E5
+  assert.deepEqual(view.richText, formattedRuns)
+  for (const field of Object.keys(pasted.style.font)) {
+    assert.deepEqual(richFonts.sheetCellFontValues(view, field), [pasted.style.font[field], pasted.style.font[field]])
+  }
+  assert.deepEqual(clipboardModel.sheetClipboardChangedValueRanges(sheet, candidate.sheets[0]), [])
+  assert.deepEqual(original, before); assert.deepEqual(captured.cells['0:0'].richText, sheet.cells['0:0'].richText)
+})
+
+test('run-only formats paste skips stop value validation and keeps one history entry through no-op, undo, redo and reopen', async t => {
+  for (const standalone of [false, true]) {
+    const original = formatsModel()
+    original.sheets[0].dataValidations = [{ id: 'reject-value-edits', type: 'custom', formula1: '=FALSE()', allowBlank: false,
+      showErrorMessage: true, errorStyle: 'stop', error: 'Value edits are blocked', ranges: [range(4, 4)] }]
+    const h = host(t, { standalone, model: original }), before = copy(h.cell(4, 4)), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.select(range(0, 0)); const copied = await h.ui.runClipboardCommand('sheet.command.copy')
+    h.select(range(4, 4))
+    const result = await h.ui.runClipboardCommand('sheet.command.paste-format', { clipboardId: copied.clipboard.id })
+    assert.equal(result.accepted, true); assert.equal(result.changed, true); assert.deepEqual(result.issues, [])
+    const pasted = copy(h.cell(4, 4))
+    assert.deepEqual(pasted.richText, formattedRuns); assert.equal(pasted.value, before.value)
+    assert.deepEqual(pasted.style.font, before.style.font); assert.deepEqual(h.view.value.sheets[0].cells.E5.richText, formattedRuns)
+    assert.deepEqual(values, []); assert.equal(h.calls.changed.length, 1); assert.equal(h.calls.notices.length, 0)
+    assert.deepEqual(h.history(), { undo: standalone ? 0 : 1, redo: 0 })
+    assert.equal(h.ui.pasteOptions.value.mode, 'formats'); await nextTick()
+    assert.deepEqual(h.calls.focused.at(-1), range(4, 4))
+    const redundant = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_FORMAT' })
+    assert.equal(redundant.accepted, true); assert.equal(redundant.changed, false)
+    assert.deepEqual(h.cell(4, 4), pasted); assert.equal(h.calls.changed.length, 1); assert.deepEqual(values, [])
+    assert.equal(h.history().undo, standalone ? 0 : 1)
+    if (standalone) continue
+    const api = sdk.FOffice.newAPI(h.owner.value), book = api.getActiveWorkbook()
+    book.undo(); assert.deepEqual(h.cell(4, 4), before)
+    book.redo(); assert.deepEqual(h.cell(4, 4), pasted)
+    const saved = book.save(), reopened = api.createWorkbook({ ...saved, id: 'clipboard-formats-reopened' })
+    assert.deepEqual(h.owner.value.getWorkbookModel(reopened.getId()).sheets[0].cells['4:4'], pasted)
+  }
+})
+
+test('recent formats replacement restores real values and formulas while excluding cells changed only by formatting from value events', async t => {
+  for (const standalone of [false, true]) {
+    const original = formatsModel(), sheet = original.sheets[0]
+    sheet.cells['4:5'] = { ...sdk.createCell(4, 5, 4), formula: '=2+2', dataType: 'formula', cachedDataType: 'number' }
+    sheet.cells['0:2'] = sdk.createCell(0, 2, 8); sheet.cells['0:2'].style.font.bold = true
+    sheet.cells['4:6'] = sdk.createCell(4, 6, 8)
+    const h = host(t, { standalone, model: original }), initial = copy(h.current()), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.select(range(0, 0, 0, 2)); const copied = await h.ui.runClipboardCommand('sheet.command.copy')
+    h.select(range(4, 4)); assert.equal((await h.ui.runClipboardCommand('sheet.command.paste', { clipboardId: copied.clipboard.id })).accepted, true)
+    assert.equal(h.cell(4, 4).value, 'source'); assert.equal(h.cell(4, 5).formula, '=E6+$A$2')
+    assert.equal(h.cell(4, 6).style.font.bold, true)
+    if (!standalone) assert.deepEqual(values.at(-1).ranges.map(domainRange), [range(4, 4, 4, 5)])
+    values.length = 0
+    const result = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_FORMAT' })
+    assert.equal(result.accepted, true); assert.equal(result.changed, true)
+    assert.equal(h.cell(4, 4).value, 'target runs'); assert.deepEqual(h.cell(4, 4).richText, formattedRuns)
+    assert.equal(h.cell(4, 5).formula, '=2+2'); assert.equal(h.cell(4, 5).value, 4); assert.equal(h.cell(4, 6).style.font.bold, true)
+    assert.equal(h.ui.pasteOptions.value.mode, 'formats'); assert.equal(h.calls.changed.length, 2)
+    assert.equal(h.history().undo, standalone ? 0 : 1)
+    if (standalone) continue
+    assert.equal(values.length, 1); assert.deepEqual(values[0].ranges.map(domainRange), [range(4, 4, 4, 5)])
+    const amended = copy(h.current()), book = sdk.FOffice.newAPI(h.owner.value).getActiveWorkbook()
+    assert.equal(h.owner.value.sheetClipboard.recentPaste.mode, 'formats')
+    book.undo(); assert.deepEqual(h.current().sheets[0].cells, initial.sheets[0].cells)
+    book.redo(); assert.deepEqual(h.current().sheets[0].cells, amended.sheets[0].cells)
+  }
+})
+
+test('clipboard value ranges ignore modeled run fonts, empty styled cells and geometry but retain sparse content changes', () => {
+  const before = formatsModel().sheets[0], after = copy(before)
+  after.cells['4:4'].richText = copy(formattedRuns); after.cells['4:4'].style.fill = '#abcdef'
+  after.cells['6:8'] = sdk.createCell(6, 8, null); after.cells['6:8'].style.font.bold = true
+  after.columnWidths[4] = 200; after.mergedRanges = [range(8, 8, 8, 9)]
+  assert.deepEqual(clipboardModel.sheetClipboardChangedValueRanges(before, after), [])
+  after.cells['4:4'].richText[0].hyperlink = 'https://changed.test/run'
+  after.cells['4:5'] = sdk.createCell(4, 5, 9); after.cells['6:8'].value = 'sparse'; after.cells['6:8'].dataType = 'text'
+  assert.deepEqual(clipboardModel.sheetClipboardChangedValueRanges(before, after), [range(4, 4, 4, 5), range(6, 8)])
+  assert.equal(before.cells['4:4'].richText[0].hyperlink, 'https://target.test/run')
+})
 
 test('native copy writes plain and HTML flavours while cut retains its source until a paste commits', t => {
   const h = host(t), before = copy(h.current()), event = clipboardEvent()
@@ -596,5 +814,179 @@ test('an explicitly unavailable reader uses cached content without reading and e
     h.shapeTextEditing.value = true; assert.equal(h.ui.capabilities.value.ribbonPaste.hidden, true)
     assert.equal(await h.ui.runClipboardCommand('sheet.command.copy'), undefined)
     assert.deepEqual(h.current(), before); assert.deepEqual(h.history(), depth); assert.equal(h.calls.changed.length, published)
+  }
+})
+
+test('formula paste writes ordinary values and sparse blanks while copy-formulas and cut retain history, target formatting and translated references', async t => {
+  for (const standalone of [false, true]) for (const command of ['sheet.command.copy', 'sheet.command.copy-formula-only', 'sheet.command.cut']) {
+    const original = formatsModel(), sheet = original.sheets[0]
+    sheet.cells['0:0'] = copy(model().sheets[0].cells['0:0']); sheet.cells['0:2'] = sdk.createCell(0, 2, 8)
+    sheet.cells['4:5'] = { ...sdk.createCell(4, 5, 4), formula: '=2+2', dataType: 'formula', cachedDataType: 'number' }
+    sheet.cells['4:6'] = sdk.createCell(4, 6, 'old number'); sheet.cells['4:7'] = sdk.createCell(4, 7, 'old blank')
+    const h = host(t, { standalone, model: original, permission: request => request.point !== 'setCellStyle' })
+    const initial = copy(h.current()), target = copy(h.cell(4, 4)), values = [], dimensions = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.owner.value?.events.addEvent('SheetDimensionsChanged', event => dimensions.push(copy(event)))
+    h.select(range(0, 0, 0, 4)); const copied = await h.ui.runClipboardCommand(command); h.select(range(4, 4))
+    assert.equal(h.ui.capabilities.value.paste.formulas.disabled, false)
+    const result = await h.ui.runClipboardCommand(command === 'sheet.command.copy-formula-only' ? 'sheet.command.paste' : 'sheet.command.paste-formula',
+      { clipboardId: copied.clipboard.id })
+    assert.equal(result.accepted, true); assert.equal(result.changed, true)
+    assert.equal(h.cell(4, 4).value, command === 'sheet.command.copy-formula-only' ? null : 'rich')
+    assert.equal(h.cell(4, 4).formula, null); assert.equal(h.cell(4, 4).richText, undefined)
+    assert.deepEqual(h.cell(4, 4).style, target.style); assert.equal(h.cell(4, 4).hyperlink, target.hyperlink)
+    assert.equal(h.cell(4, 5).formula, '=E6+$A$2'); assert.equal(h.cell(4, 5).value, null); assert.equal(h.cell(4, 5).cachedDataType, null)
+    assert.equal(h.cell(4, 6).value, command === 'sheet.command.copy-formula-only' ? null : 8)
+    assert.equal(h.cell(4, 7).value, null); assert.equal(h.cell(4, 8), undefined)
+    for (const key of ['0:0', '0:1', '0:2', '1:0']) assert.deepEqual(h.current().sheets[0].cells[key], initial.sheets[0].cells[key])
+    assert.equal(h.ui.pasteOptions.value.mode, 'formulas'); assert.equal(h.history().undo, standalone ? 0 : 1)
+    if (!standalone) assert.deepEqual(values.map(event => event.ranges.map(domainRange)), [[range(4, 4, 4, 7)]])
+    assert.deepEqual(dimensions, [])
+    const pasted = copy(h.current()), repeated = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_FORMULA' })
+    assert.equal(repeated.accepted, true); assert.equal(repeated.changed, false)
+    assert.deepEqual(h.current(), pasted); assert.equal(h.calls.changed.length, 1); assert.equal(values.length, standalone ? 0 : 1)
+    await nextTick(); assert.deepEqual(h.calls.focused.at(-1), range(4, 4, 4, 8))
+    if (standalone) continue
+    const api = sdk.FOffice.newAPI(h.owner.value), book = api.getActiveWorkbook()
+    book.undo(); assert.deepEqual(h.current().sheets[0].cells, initial.sheets[0].cells)
+    book.redo(); assert.deepEqual(h.current().sheets[0].cells, pasted.sheets[0].cells)
+    const reopened = api.createWorkbook({ ...book.save(), id: 'clipboard-formulas-reopened-' + command })
+    assert.deepEqual(h.owner.value.getWorkbookModel(reopened.getId()).sheets[0].cells, pasted.sheets[0].cells)
+  }
+  for (const standalone of [false, true]) {
+    const h = host(t, { standalone, permission: request => request.point !== 'setCellValue' }), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    const copied = await h.ui.runClipboardCommand('sheet.command.copy'); h.select(range(4, 4)); const before = copy(h.current())
+    const rejected = await h.ui.runClipboardCommand('sheet.command.paste-formula', { clipboardId: copied.clipboard.id })
+    assert.equal(rejected?.accepted ?? false, false); assert.deepEqual(h.current(), before)
+    assert.deepEqual(values, []); assert.equal(h.calls.changed.length, 0); assert.equal(h.history().undo, 0)
+    assert.equal(h.ui.pasteOptions.value, undefined)
+  }
+})
+
+test('column width paste skips hidden and zero-width columns without value validation and preserves a rejected recent replacement', async t => {
+  for (const standalone of [false, true]) {
+    const original = model(), source = original.sheets[0], target = original.sheets[1]
+    source.columnWidths = { 0: 123, 1: 156, 2: 180, 3: 200, 4: 0, 5: 250 }
+    target.columnWidths = { 4: 190, 5: 200, 6: 210, 7: 220, 8: 230, 9: 0 }
+    target.hiddenColumns = [5]; target.columnHiddenSpans = [{ start: 6, end: 6, value: true }]
+    target.outline = { summaryAbove: false, summaryLeft: false, groups: [{ id: 'collapsed-column', axis: 'column', start: 7, end: 7, collapsed: true }] }
+    target.cells['4:4'] = sdk.createCell(4, 4, 'target content')
+    target.dataValidations = [{ id: 'reject-values', type: 'custom', formula1: '=FALSE()', allowBlank: false,
+      showErrorMessage: true, errorStyle: 'stop', error: 'Value edits are blocked', ranges: [range(4, 4, 4, 9)] }]
+    const h = host(t, { standalone, model: original, permission: request => !['setCellValue', 'setCellStyle'].includes(request.point) })
+    const before = copy(h.current().sheets[1]), values = [], dimensions = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.owner.value?.events.addEvent('SheetDimensionsChanged', event => dimensions.push(copy(event)))
+    h.select(range(0, 0, 0, 5)); const copied = await h.ui.runClipboardCommand('sheet.command.copy')
+    h.select(range(4, 4), target.id); assert.equal(h.ui.capabilities.value.paste.columnWidths.disabled, false)
+    const result = await h.ui.runClipboardCommand('sheet.command.paste-column-widths', { clipboardId: copied.clipboard.id })
+    assert.equal(result.accepted, true); assert.equal(result.changed, true); assert.deepEqual(result.issues, [])
+    const pasted = copy(h.current().sheets[1])
+    assert.deepEqual([4, 5, 6, 7, 8, 9].map(column => sdk.sheetColumnWidth(pasted, column)), [123, 200, 210, 220, 230, 0])
+    assert.deepEqual(pasted.cells, before.cells); assert.deepEqual(pasted.dataValidations, before.dataValidations)
+    assert.deepEqual(pasted.hiddenColumns, before.hiddenColumns); assert.deepEqual(pasted.columnHiddenSpans, before.columnHiddenSpans)
+    assert.deepEqual(pasted.outline, before.outline); assert.deepEqual(values, [])
+    if (!standalone) {
+      assert.equal(dimensions.length, 1); assert.equal(dimensions[0].axis, 'column'); assert.equal(dimensions[0].automatic, false)
+      assert.equal(dimensions[0].sheetId, target.id); assert.deepEqual(dimensions[0].ranges.map(domainRange), [range(0, 4, 39, 4)])
+    }
+    const repeated = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_COL_WIDTH' })
+    assert.equal(repeated.accepted, true); assert.equal(repeated.changed, false); assert.equal(h.calls.changed.length, 1)
+    h.permission.value = request => request.point !== 'setCellStyle'
+    const current = copy(h.current()), depth = h.history(), options = copy(h.ui.pasteOptions.value)
+    const rejected = await h.ui.runClipboardCommand('sheet.command.optional-paste', { type: 'SPECIAL_PASTE_FORMULA' })
+    assert.equal(rejected.accepted, false); assert.equal(rejected.reason, 'validation')
+    assert.deepEqual(h.current(), current); assert.deepEqual(h.history(), depth); assert.deepEqual(h.ui.pasteOptions.value, options)
+    assert.equal(h.calls.changed.length, 1); assert.deepEqual(values, []); assert.equal(dimensions.length, standalone ? 0 : 1)
+    if (standalone) continue
+    const api = sdk.FOffice.newAPI(h.owner.value), book = api.getActiveWorkbook()
+    book.undo(); assert.deepEqual(h.current().sheets[1], before)
+    book.redo(); assert.deepEqual(h.current().sheets[1], pasted)
+    const reopened = api.createWorkbook({ ...book.save(), id: 'clipboard-hidden-widths-reopened' })
+    assert.deepEqual(h.owner.value.getWorkbookModel(reopened.getId()).sheets[1], pasted)
+  }
+})
+
+test('uniform whole-text runs use ordinary external parsing and target value fonts while forced strings and rich extensions keep their content', () => {
+  const target = formatsModel().sheets[0].cells['4:4'], position = { row: 4, col: 4 }
+  const options = { rowDelta: 4, columnDelta: 4, date1904: false, region: 'en-US' }
+  for (const font of [{ font: { family: 'Arial', size: 24, bold: false, color: '#123456' } },
+    { fontFamily: 'Arial', fontSize: 24, bold: false, color: '#123456' }]) {
+    const source = sdk.createCell(0, 0, '00123'); source.richText = [{ id: 'uniform', text: '00123', ...font }]
+    source.style.fill = '#ffeeaa'; source.authoredStyle = copy(source.style); const before = copy(source)
+    const internal = clipboardCells.createSheetClipboardPastedCell(source, target, position, 'values', options)
+    assert.equal(internal.value, '00123'); assert.equal(internal.richText, undefined); assert.deepEqual(internal.style, target.style)
+    for (const mode of ['all', 'values']) {
+      const pasted = clipboardCells.createSheetClipboardPastedCell(source, target, position, mode, { ...options, externalFormat: 'html' })
+      assert.equal(pasted.value, 123); assert.equal(pasted.dataType, 'number'); assert.equal(pasted.formula, null); assert.equal(pasted.richText, undefined)
+      if (mode === 'values') { assert.deepEqual(pasted.style, target.style); assert.equal(pasted.hyperlink, target.hyperlink); continue }
+      assert.equal(pasted.style.font.family, 'Arial'); assert.equal(pasted.style.font.size, 24); assert.equal(pasted.style.font.bold, false)
+      assert.equal(pasted.style.font.color, '#123456'); assert.equal(pasted.style.fill, source.style.fill)
+      assert.equal(pasted.authoredStyle.font.family, 'Arial'); assert.equal(pasted.authoredStyle.font.size, 24)
+    }
+    const textTarget = copy(target); textTarget.style.numberFormat = '@'; textTarget.authoredStyle.numberFormat = '@'
+    const text = clipboardCells.createSheetClipboardPastedCell(source, textTarget, position, 'values', { ...options, externalFormat: 'html' })
+    assert.equal(text.value, '00123'); assert.deepEqual(text.style, textTarget.style); assert.equal(text.richText, undefined)
+    for (const type of ['force_string', 'force-string', 'forcestring']) for (const literal of ['00123', '=1+1']) {
+      const forced = { ...copy(source), value: literal, dataType: type, richText: [{ id: 'uniform', text: literal, ...font }] }
+      for (const mode of ['all', 'values']) {
+        const pasted = clipboardCells.createSheetClipboardPastedCell(forced, target, position, mode, { ...options, externalFormat: 'html' })
+        assert.equal(pasted.value, literal); assert.equal(pasted.dataType, type); assert.equal(pasted.formula, null)
+      }
+    }
+    assert.deepEqual(source, before)
+  }
+  for (const runs of [
+    [{ text: '00', font: { family: 'Arial', size: 24 } }, { text: '123', font: { family: 'Times New Roman', size: 18 } }],
+    [{ text: '00123', font: { family: 'Arial', size: 24, language: 'ja-JP' } }],
+    [{ text: '00123', font: { family: 'Arial', size: 24, va: 1 } }],
+    [{ text: '00123', font: { family: 'Arial', size: 24 }, vendor: { keep: 1 } }],
+    [{ text: '00123', font: { family: 'Arial', size: 24 }, hyperlink: 'https://source.test/run' }],
+    [{ text: '00\n123', font: { family: 'Arial', size: 24 } }],
+  ]) {
+    const source = { ...sdk.createCell(0, 0, runs.map(run => run.text).join('')), richText: runs }
+    const pasted = clipboardCells.createSheetClipboardPastedCell(source, target, position, 'values', { ...options, externalFormat: 'html' })
+    assert.equal(pasted.value, source.value); assert.deepEqual(pasted.richText, runs); assert.deepEqual(pasted.style, target.style)
+  }
+  const source = sdk.createCell(0, 0, '00123'); source.richText = [{ text: '00123', font: { family: 'Arial', size: 24 } }]
+  source.image = { id: 'uniform-image', resource: imageSource.sheetImageResourceFromDataUrl(sheetImagePng, 'uniform.png', 'uniform-resource') }
+  source.metadata = { publicBody: sdk.sheetCellImageToPublicBody(source), sheetImagePublicDrawingId: source.image.id }
+  const image = clipboardCells.createSheetClipboardPastedCell(source, target, position, 'values', { ...options, externalFormat: 'html' })
+  assert.equal(image.value, '00123'); assert.deepEqual(image.richText, source.richText); assert.notEqual(image.image.id, source.image.id)
+  assert.deepEqual(image.metadata.publicBody, source.metadata.publicBody)
+  delete source.image; delete source.metadata.sheetImagePublicDrawingId
+  const body = clipboardCells.createSheetClipboardPastedCell(source, target, position, 'values', { ...options, externalFormat: 'html' })
+  assert.equal(body.value, '00123'); assert.deepEqual(body.richText, source.richText)
+})
+
+test('uniform-run values preserve target fonts and formula cleanup through recent history, undo, redo and internal reopen', async t => {
+  for (const standalone of [false, true]) for (const formulaTarget of [false, true]) {
+    const original = formatsModel(), source = original.sheets[0].cells['0:0']
+    source.richText = [{ id: 'source-uniform', text: 'source', font: { family: 'Arial', size: 24, bold: false } }]
+    if (formulaTarget) Object.assign(original.sheets[0].cells['4:4'], { value: 91, formula: '=90+1', dataType: 'formula', cachedDataType: 'number', display: '91' })
+    const h = host(t, { standalone, model: original, permission: request => request.point !== 'setCellStyle' }), before = copy(h.cell(4, 4)), values = []
+    h.owner.value?.events.addEvent('SheetValueChanged', event => values.push(copy(event)))
+    h.select(range(0, 0)); const copied = await h.ui.runClipboardCommand('sheet.command.copy'); h.select(range(4, 4))
+    assert.equal((await h.ui.runClipboardCommand('sheet.command.paste-values', { clipboardId: copied.clipboard.id })).accepted, true)
+    assert.equal(h.cell(4, 4).value, 'source'); assert.equal(h.cell(4, 4).formula, null); assert.equal(h.cell(4, 4).richText, undefined)
+    assert.deepEqual(h.cell(4, 4).style, before.style); assert.equal(h.cell(4, 4).hyperlink, before.hyperlink)
+    assert.deepEqual(richFonts.sheetCellFontValues(h.view.value.sheets[0].cells.E5, 'family'), ['Courier New'])
+    assert.deepEqual(richFonts.sheetCellFontValues(h.view.value.sheets[0].cells.E5, 'size'), [16])
+    h.permission.value = undefined
+    assert.equal((await h.ui.runClipboardCommand('sheet.command.optional-paste', { mode: 'all' })).accepted, true)
+    assert.deepEqual(h.cell(4, 4).richText, source.richText)
+    assert.equal((await h.ui.runClipboardCommand('sheet.command.optional-paste', { mode: 'values' })).accepted, true)
+    const pasted = copy(h.cell(4, 4)), repeated = await h.ui.runClipboardCommand('sheet.command.optional-paste', { mode: 'values' })
+    assert.equal(repeated.accepted, true); assert.equal(repeated.changed, false); assert.equal(pasted.richText, undefined)
+    assert.deepEqual(pasted.style, before.style); assert.equal(h.calls.changed.length, 3); assert.equal(h.history().undo, standalone ? 0 : 1)
+    assert.deepEqual(h.cell(0, 0).richText, source.richText); assert.equal(h.ui.pasteOptions.value.mode, 'values')
+    if (!standalone) assert.deepEqual(values.map(event => event.ranges.map(domainRange)), [[range(4, 4)], [range(4, 4)], [range(4, 4)]])
+    await nextTick(); assert.deepEqual(h.calls.focused.at(-1), range(4, 4))
+    if (standalone) continue
+    const api = sdk.FOffice.newAPI(h.owner.value), book = api.getActiveWorkbook()
+    book.undo(); assert.deepEqual(h.cell(4, 4), before); book.redo(); assert.deepEqual(h.cell(4, 4), pasted)
+    const reopened = api.createWorkbook({ ...book.save(), id: 'clipboard-uniform-run-reopened' })
+    assert.deepEqual(h.owner.value.getWorkbookModel(reopened.getId()).sheets[0].cells['4:4'], pasted)
   }
 })

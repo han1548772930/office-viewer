@@ -130,6 +130,48 @@ API 在提交前检查版本、查看权限、工作表编辑权限和旧/新范
 
 OfficeStudio 根注册、公共 index 导出及功能总清单由主任务维护。新增领域字段是可选 formulaAnchor；新增同步命令采用完整规则列表；面板由旧 apply emit 改为 submit 回调并新增 closed 事件。调用面板的宿主须返回接受/拒绝结果并处理关闭焦点，不能继续按旧的无返回 emit 假定提交成功。本轮列表草稿新增模块级 `prependConditionalFormatRuleDraft`、`removeConditionalFormatRuleDraft`、`moveConditionalFormatRuleDraft`，不改变完整列表命令的输入/返回契约。
 
+<a id="sheets-format-painter-history-run-style-review"></a>
+
+## 2026-11-27 START/HISTORY 格式刷续核
+
+固定来源仍为 v1.6.0 / `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。[Sheets controller][U13] 的 `_getUndoRedoMutationInfo` 在单格扩大为源块时，将扩大范围的 redo selection 与原范围的 undo selection 一起放入内容 mutation。该 controller 只采样 cell style；随后 `SetRangeValuesMutation` 的 [handleStyle / mergeRichTextStyle][U14] 先随 `s: null` 清目标 run 样式，再把源字体应用于目标 run，不复制源正文。
+
+[sheet-format-painter-commands.ts](../../packages/office-studio/src/api/sheet-format-painter-commands.ts) 原先先提交模型，再扩展选择，导致 redo 快照只记住原范围。当前复用 `WorkbookCommitOptions.selections`，before 保存实际完整范围、activeRangeIndex 与 primary，after 保存扩大范围及起点；模型与选择由同一内容历史项恢复。只在当前活动范围匹配实际目标时编排扩大，显式无关目标保留当前选择。成功但内容无变化的刷取仍扩大选择、消耗 ONCE，且不新增内容历史。
+
+[sheet-format-painter.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-format-painter.ts) 的 model / view 路径复用既有 `clearSheetCellRichTextFonts`，清除目标 run 的七个已建模字体覆盖，让目标文字继承刷来的单元格字体。单元格样式相同但 run 字体不同也构成格式变化，可进入内容历史；原文、链接、run ID 与未知扩展保留。固定版直接重写 run 样式，本地以继承表达同一已建模字体效果；未知 run 样式约定及 Office 独立读取效果仍未核实。粘贴的 formats 分支保持独立，未随本次修改。
+
+内部保存链路已读到 [FWorkbook.save](../../packages/office-studio/src/api/facade.ts) 深克隆当前 WorkbookModel 并标记 savepoint，重开经 `createWorkbook` / `workbookFromInput` 恢复领域数据。刷取会话和选择历史属于临时应用状态，不据此宣称 Office 文件往返或历史持久化已完成。
+
+[合同草稿](../../packages/office-studio/tests/sheet-format-painter.contract.test.mjs) 该批新增 4 个声明，覆盖完整多选 undo / redo、冗余扩大不入历史、model / view 的 run-only 字体覆盖，以及 API 的历史、值验证隔离与内部重开；强化既有无关显式目标和单格扩展用例。[浏览器草稿](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) 新增 1 个 Canvas 字体 / 历史用例，并强化既有名称框 `D4` ↔ `D4:E5`。该批完成时两文件分别为 60 / 56 个 `test` 声明，仅为静态数量，实际运行 0。
+
+生产增量为 API `+11/-6`、model / view `+8/-3`；没有公共接口新增。语法、引用、链接与 diff 收尾由主线统一记录。测试、类型检查、构建、Rust/WASM、浏览器、Office 样本、真实 IME、主题 / 焦点和性能均未运行，状态继续 **未验收**。
+
+<a id="sheets-format-painter-input-session-review"></a>
+
+## 2026-11-27 格式刷输入会话与确认取消续核
+
+本批继续原格式刷入口：START / HISTORY，classic 第 3 项、grid `row: 1, column: 2`；主按钮与 continuous `subId`、More 和共享 UI aliases 沿原命令表。常驻、扩展、上下文、溢出根和子项增量均为 0，没有修改 Ribbon 清点或新增按钮。
+
+固定 [Sheets controller][U13] 的 `sheet-cells.canStart` 复用 [ClearSelectionFormatMenuItemFactory][U16] 的 disabled$。它调用 [getCurrentRangeDisable$][U15]，默认 `supportCellEdit=false`，可见单元格编辑器或 `FOCUSING_FX_BAR_EDITOR` 会返回禁用，并继续判断工作表/范围权限与绘图上下文。这是本批输入禁用的具体依据。固定 [共享 session][U17] 在 OFF 时检查 adapter.canStart；已有会话升级 continuous 不重新采样，普通 activate 取消已有会话。其 apply 检查 adapter、unit 与 applying，没有同样的 DOM 输入判断；固定低层 Sheets apply 也没有本项目的合并确认扩展，不能把新增 UI 判断描述为所有上游程序入口的共同限制。
+
+[use-sheet-format-painter.ts](../../packages/office-studio/src/components/spreadsheet/use-sheet-format-painter.ts) 的本地 UI 上下文新增 `editing()`，由 [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 提供共享单元格/公式栏 `editingKey` 与 `editComposing`。OFF 时的新采样依该状态禁用；UI apply、pointer selection 完成后的 apply 与 confirm 在输入或组字时返回 false，保留已有源快照和确认请求。已激活后的 continuous 升级、取消刷子和正确归属的取消确认仍可执行，不删除正在输入时的原样本。
+
+`executeRibbon` 先前在分派格式刷前调用 `finishEdit`，会提交输入草稿，使后续 UI 判断失去当前输入状态。本批仅让原格式刷命令表绕过这个自动提交，其他命令沿原路径；成功后的 Canvas 焦点恢复复用 `editingKey/editComposing`，输入期间不会强制切回网格。程序化 OfficeStudio 激活/应用保留原行为；原“输入中程序化激活、composition Esc 保留草稿，取消编辑后再 Esc 取消刷子”浏览器草稿保留。
+
+[SheetMergeConfirmationDialog.vue](../../packages/office-studio/src/components/spreadsheet/SheetMergeConfirmationDialog.vue) 新增可选 UI 属性 `disabled?: boolean`，只传给 `Modal.okButtonProps.disabled`。全部调用方是 ExcelWorkbench 的普通 merge 与格式刷确认两个实例：仅格式刷传 `Boolean(editingKey) || editComposing`，普通 merge 省略属性，取消按钮沿原行为。`afterPainterClose` 在原 `nextTick` 中直接复用 `context.editing()`，取消关闭期间仍在输入或组字就不恢复 Canvas 焦点。本地已安装 `antdv-next` 1.8.2 的 `dist/modal/interface.d.ts:83` 确认 `okButtonProps?: ButtonProps`；[官方 Modal 文档][U18] 经 Context7 返回当前版，1.8.2 尚未索引，不能将当前文档视为固定版证据。
+
+[sheet-format-painter-commands.ts](../../packages/office-studio/src/api/sheet-format-painter-commands.ts) 的 cancel-confirmation 复用 cancel / set-OFF 的显式 unitId 归属语义：指定其他工作簿时返回 false，不清确认、源或内容历史；省略 unitId 的原全局取消确认用法保留。standalone UI 同样判断取消确认的源工作簿。正确取消只释放当前确认请求，ONCE / continuous 样本仍可用于下一目标；版本、源/目标权限、合并值验证、候选事务、selection undo/redo 和 FWorkbook.save / 内部重开均复用既有实现，没有改写模型或历史协议。
+
+本批生产增量为 UI hook `+9/-3`、ExcelWorkbench 接线 `+6/-3`、API `+4/-1`、共享确认组件 `+2/-2`，共 `+21/-9`；另修改两份原草稿和本页，共七文件。内部 UI context 新增 `editing()`，共享 UI 组件新增可选 `disabled`；`sheet-format-painter.ts`、共享 rich-text helper、先前四个 Clipboard 文件、公式文件、DTO / 公开 API / 公共命令 ID / 事件字段 / 保存 / Worker/WASM 协议均无本批改动。
+
+[合同草稿](../../packages/office-studio/tests/sheet-format-painter.contract.test.mjs) 新增 1 个声明，直接调用真实 UI hook、Pinia 会话、领域应用与 OfficeStudio：production / standalone 分别检查编辑与组字时各激活 alias/status 的拒绝、pointer/apply/confirm 不改变候选/版本/历史、错误工作簿取消确认、连续升级、正确取消、输入结束后合并确认与生产 undo/redo/save/内部重开；standalone 检查原 view 发布与 JSON 保存读回，不伪造 OfficeStudio 历史。既有 API 取消确认用例补错 unitId、错 requestId 与内容/版本/历史不变。
+
+[浏览器草稿](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) 新增 1 个声明，循环 production / standalone × 单元格 / 公式栏，通过原 `antdv-next` Input / TextArea 和格式刷按钮检查 OFF 禁用、编辑草稿、合成 composition、明转暗、取消活动刷子不提交草稿/不新增值事件或历史、不强制 Canvas 焦点，取消输入后恢复网格焦点；四个循环样本仍只计 1 个声明。既有合并取消用例补错误工作簿调用后对话框、源、revision、内容与历史保留。fixture 沿原接口，没有新增产品 UI 控件或原生桥，统一 ConfigProvider / 主题 token 保留。
+
+同一浏览器声明另循环 production / standalone：打开合并确认后，向未聚焦的真实公式 TextArea 派发合成 composition，检查“继续合并”禁用、取消仍可用、明转暗仍禁用、迟到的原生 `click()` 不改变内容/版本/源/历史；composition 结束后恢复按钮并确认，生产只新增一项内容历史，standalone 只发布一次 view。重新打开确认后在合成 composition 期间取消，等待两帧检查 `after-close` 未强制网格焦点、源和内容历史保留。现有 hook 合同继续覆盖 editing/composing 时直接确认被拦截；这里的禁用按钮 `click()` 不证明 hook 收到迟到的 `@ok`，也未覆盖真实输入焦点与已开 Modal 同时编辑或 Windows IME，不能据合成事件宣称这些场景已通过。
+
+实际 `rg -c '^test\('` 为合同 **61**、浏览器 **57**，这两文件合计 **118** 个声明（含既有条件格式用例），运行均为 **0**。本批仅完成源码/diff 阅读与声明计数，统一静态语法、引用、链接/锚点和空白检查由主线收尾；没有运行产品、测试、类型检查、构建、Rust/WASM、dev、浏览器或基准。草稿不证明真实 Windows IME、系统焦点/剪贴板、两种渲染后端、Office 独立写出重开或性能，完整格式刷与 SHEET-04 / SHEET-14 仍保持 **未验收**。
+
 [U1]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/menu/schema.ts
 [U2]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/menu/format-painter.menu.ts
 [U3]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/controllers/format-painter.controller.ts
@@ -142,3 +184,9 @@ OfficeStudio 根注册、公共 index 导出及功能总清单由主任务维护
 [U10]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleEdit.tsx
 [U11]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleList.tsx
 [U12]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/manage-rule.ts
+[U13]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/controllers/format-painter/format-painter.controller.ts
+[U14]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets/src/basics/cell-style.ts
+[U15]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/menu-util.ts#L163
+[U16]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/clear.menu.ts#L59
+[U17]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/services/format-painter/format-painter-session.service.ts#L101
+[U18]: https://github.com/antdv-next/antdv-next/blob/main/docs/src/pages/components/modal/index.en-US.md

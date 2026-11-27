@@ -52,3 +52,17 @@ Ribbon 插入入口位于 MEDIA 分组，支持 Ctrl/Cmd+K、外部 HTTP(S)/mail
 内部目标仍有差异：[固定 parser](../../../univer/packages/sheets-hyper-link/src/services/parser.service.ts) 支持 `gid`、`range`、`rangeid`、`unitid`，本地只支持当前工作簿的工作表和 A1 范围，不具备定义名称或跨工作簿目标。此入口针对单元格，不能据此声称绘图对象超链接已实现。局部富文本、多链接、tooltip 和悬停编辑仍未验收。
 
 新增 [模型/视图合同草稿](../../packages/office-studio/tests/sheet-hyperlink.contract.test.mjs) 与 [命令合同草稿](../../packages/office-studio/tests/sheet-hyperlink-command.contract.test.mjs)，覆盖数值/布尔旧类型、公式形状的显示文字、缓存类型清除、移除、撤销重做和快照重开。本批没有运行测试、类型检查、Rust/WASM、浏览器或 XLSX 样本；上文历史通过记录不代表新增用例已经通过。UI 未改动，主题、焦点与输入法仍留待统一浏览器验收。
+
+<a id="hyperlink-active-selection-review"></a>
+
+## 活动范围目标续修
+
+固定 [InsertHyperLinkOperation](../../../univer/packages/sheets-hyper-link-ui/src/commands/operations/popup.operations.ts) 使用 getCurrentLastSelection 的范围起点作为写入位置；[getShouldDisableCurrentCellLink](../../../univer/packages/sheets-hyper-link-ui/src/utils/index.ts) 的前置判断却读取 selections[0]。菜单的 getLinkDisable$ 另由实际编辑单元格与范围权限决定禁用。这三处来源已分别读取，不把固定版的首范围判断和最终写入位置称为完全一致。
+
+本地 [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 的 hyperlinkSelectionKey 原来总取 selectedRanges[0]，多选时按钮状态和弹窗/写入都指向首范围。本续批只改该行，优先读取 activeSelectionIndex 指向的活动范围，缺省时使用最后范围；单范围仍取该范围起点。可用性、显示文字、捕获的 hyperlinkCell 和已有内容命令共用这一个目标，不新增选择器、模型字段、权限接口或计算路径。
+
+已有插入/编辑 UI 使用 antdv-next Modal / Form / FormItem / Input / Button；外部地址、内部导航、查看权限、公式及验证限制继续走原真实实现，内容撤销/重做和保存链路没有变化。本续批没有修改先前的链接文字类型修复。
+
+[原 range-editor 浏览器草稿](../../packages/office-studio/tests/sheet-range-editor.browser.test.mjs) 新增一条 test.each(['classic', 'grid'])，本续批 1 个声明、2 个计划用例，全文件现为 19 个声明位置、23 个计划用例，计入原行内循环展开的 2 例。复用原 seed、Canvas 坐标、真实 Ctrl+点击及 Ribbon：首选空白 A1，后选公式 C1 时入口禁用；后选富文本 B1 时编辑 B1，保留 A1 / C1、文字、样式与 metadata，并检查一次历史、撤销/重做、JSON 保存重开及主题切换中的输入焦点。seed 仅移除原公式 C1 上的测试链接，避免 Ctrl+点击触发既有链接导航；没有新造 fixture 或产品测试接口。
+
+本续批仅读源码、diff 和文本计数，所有运行验证后置。新增浏览器草稿、输入法、不同权限主体、两渲染后端、Office 样本与性能均未验收；局部富文本链接、多链接、tooltip、悬停编辑、定义名称及跨工作簿目标等既有缺口继续保留。

@@ -8,9 +8,10 @@ import { documentCodeFontFamilyOptions } from '../../features/document/code-bloc
 
 const props = defineProps<{ open: boolean; initial?: DocumentCodeBlockData; initialFocus?: 'font' | 'language' | 'settings' }>()
 const { t } = useI18n({ useScope: 'global' })
-const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [value: DocumentCodeBlockData]; closed: [] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; apply: [value: DocumentCodeBlockData]; 'composition-change': [value: boolean]; closed: [] }>()
 
 const source = ref('')
+const composing = ref(false)
 const language = ref('typescript')
 const lineNumbers = ref(false)
 const tabSize = ref(4)
@@ -24,6 +25,7 @@ const languages = computed(() => documentStructuredCodeLanguageOptions(language.
 const fonts = computed(() => documentCodeFontFamilyOptions(fontFamily.value))
 
 watch(() => [props.open, props.initial] as const, ([open, initial]) => {
+  composing.value = false
   if (!open) return
   source.value = initial?.source ?? ''
   language.value = initial?.language ?? 'typescript'
@@ -32,22 +34,34 @@ watch(() => [props.open, props.initial] as const, ([open, initial]) => {
   wrap.value = initial?.wrap ?? true
   fontFamily.value = initial?.fontFamily ?? 'Consolas'
 }, { immediate: true })
+watch(composing, value => emit('composition-change', value), { flush: 'sync' })
 
 function apply() {
+  if (!props.open || composing.value) return
   emit('apply', { source: source.value, language: language.value, lineNumbers: lineNumbers.value, tabSize: tabSize.value, wrap: wrap.value,
     ...(fontFamily.value === props.initial?.fontFamily ? {} : { fontFamily: fontFamily.value }) })
 }
 function afterOpenChange(open: boolean) {
-  if (!open || !props.open) return
+  if (!open || !props.open || composing.value) return
   if (props.initialFocus === 'font') fontSelect.value?.focus()
   else if (props.initialFocus === 'language') languageSelect.value?.focus()
   else if (props.initialFocus === 'settings') indentationInput.value?.focus()
 }
+function guardKey(event: KeyboardEvent) {
+  if (!composing.value && !event.isComposing && event.keyCode !== 229) return
+  event.stopPropagation()
+  if (event.key === 'Escape') event.preventDefault()
+}
 </script>
 
 <template>
-  <Modal :open="open" :title="t('document.code-block.title')" :ok-text="t('common.apply')" :cancel-text="t('common.cancel')" :width="640" destroy-on-hidden @ok="apply" @cancel="emit('update:open', false)" @after-close="emit('closed')" @after-open-change="afterOpenChange">
-    <Form layout="vertical" class="code-block-panel" :style="{ '--code-panel-color': token.colorTextSecondary }">
+  <Modal :open="open" :title="t('document.code-block.title')" :ok-text="t('common.apply')" :cancel-text="t('common.cancel')" :width="640"
+    :keyboard="!composing" :closable="!composing" :mask-closable="!composing" :ok-button-props="{ disabled: composing }" :cancel-button-props="{ disabled: composing }"
+    :focus-trigger-after-close="false" destroy-on-hidden
+    :after-close="() => emit('closed')" :after-open-change="afterOpenChange"
+    @ok="apply" @cancel="() => { if (!composing) emit('update:open', false) }">
+    <Form layout="vertical" class="code-block-panel" :style="{ '--code-panel-color': token.colorTextSecondary }"
+      @compositionstart="composing = true" @compositionend="composing = false" @keydown.capture="guardKey">
       <FormItem :label="t('document.code-block.language')"><Select ref="languageSelect" v-model:value="language" :options="languages" :aria-label="t('document.code-block.language-label')" show-search option-filter-prop="label" /></FormItem>
       <FormItem label="等宽字体"><Select ref="fontSelect" v-model:value="fontFamily" :options="fonts" show-search option-filter-prop="label" aria-label="代码块等宽字体" /></FormItem>
       <FormItem class="code-block-panel__toggle" :label="t('document.code-block.line-numbers')"><Switch v-model:checked="lineNumbers" :aria-label="t('document.code-block.show-line-numbers')" /></FormItem>

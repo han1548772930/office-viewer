@@ -69,6 +69,32 @@ test('replacement preserves formulas as formulas and does not replace cached for
   assert.deepEqual(patches.map(patch => [patch.key, patch.cell.formula, patch.cell.cachedValue]), [['B1', '=gamma+1', undefined]])
 })
 
+test('single replacement from an unmatched cell follows column-priority search order', () => {
+  const sheets = [sheet('active', { A2: { value: 'alpha' }, B2: { value: 'alpha' } })]
+  const columnQuery = query({ direction: 'column' })
+  const matches = findSheetMatches(sheets, 'active', columnQuery)
+  assert.deepEqual(matches.map(match => match.key), ['A2', 'B2'])
+  const targetIndex = nextSheetMatchIndex(matches, 'active', 'B1', 1, columnQuery.direction, sheets.map(sheet => sheet.id))
+  assert.deepEqual(createSheetReplacePatches(sheets, matches, columnQuery, false, targetIndex).map(patch => [patch.key, patch.cell.value]), [
+    ['B2', 'beta'],
+  ])
+})
+
+test('single replacement from an unmatched sheet follows the complete workbook sheet order', () => {
+  const sheets = [
+    sheet('before', { A1: { value: 'alpha' } }),
+    sheet('empty', {}),
+    sheet('after', { A1: { value: 'alpha' } }),
+  ]
+  const workbookQuery = query({ scope: 'workbook' })
+  const matches = findSheetMatches(sheets, 'empty', workbookQuery)
+  assert.deepEqual(matches.map(match => match.sheetId), ['before', 'after'])
+  const targetIndex = nextSheetMatchIndex(matches, 'empty', 'A1', 1, workbookQuery.direction, sheets.map(sheet => sheet.id))
+  assert.deepEqual(createSheetReplacePatches(sheets, matches, workbookQuery, false, targetIndex).map(patch => [patch.sheetId, patch.key, patch.cell.value]), [
+    ['after', 'A1', 'beta'],
+  ])
+})
+
 test('single replacement targets only the selected replaceable match and whole-cell replacement replaces all content', () => {
   const source = sheet('active', { A1: { value: 'alpha alpha' }, B1: { value: 'alpha' } })
   const matches = findSheetMatches([source], 'active', query())

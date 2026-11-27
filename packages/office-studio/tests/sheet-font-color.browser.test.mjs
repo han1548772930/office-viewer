@@ -13,6 +13,7 @@ import { FOffice } from '/packages/office-studio/src/api/facade'
 import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
 import { createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
 import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { initializeWorkbookCellStyles } from '/packages/office-studio/src/features/sheet-workbench/sheet-style-inheritance'
 const copy = value => JSON.parse(JSON.stringify(value))
 const initial = createBlankWorkbook()
 initial.id = 'sheet-font-color-fixture'; initial.name = '字体与颜色'; initial.calculationMode = 'manual'
@@ -40,6 +41,16 @@ window.sheetColorFixture = {
   appearance: (isDark, language = 'zh-CN') => { dark.value = isDark; studio.regionalSettings.setLocale(language) },
   variant: value => { variant.value = value },
   apiColor: (field, value, address = 'A1') => { const range = api.getActiveWorkbook().getActiveSheet().getRange(address); if (field === 'color') range.setFontColor(value); else range.setBackground(value) },
+  inheritColors: () => {
+    const next = copy(studio.editor.workbook.model)
+    next.defaultStyle = { font: { color: '#3f83f8' }, fill: '#ebf5ff' }
+    next.styles = { colored: { font: { color: '#112233' }, fill: '#ffeecc' } }
+    next.sheets[0].cells['1:0'].authoredStyleReference = 'colored'
+    next.sheets[0].cells['1:0'].richText = [{ id: 'source', text: '00123', color: '#f05252',
+      font: { color: '#f05252', italic: true }, hyperlink: 'https://example.test', vendor: { keep: true } }]
+    initializeWorkbookCellStyles(next)
+    studio.editor.workbook.replace(next)
+  },
   externalColor: value => { const next = copy(studio.editor.workbook.model); next.sheets[0].cells['0:0'].style.font.color = value; studio.editor.workbook.replace(next) },
   newWorkbook: () => { api.createWorkbook({ ...copy(initial), id: 'sheet-font-color-second' }) },
   activate: id => { studio.activateWorkbook(id) },
@@ -329,6 +340,48 @@ test('No Fill clears the stored background and the remembered fill can be applie
   await (await homeItem('sheet.menu.fill')).locator('.sheet-color-main').click()
   await expect.poll(() => colors('background')).toEqual(['#fac815'])
   assert.equal((await snapshot()).sheets[0].cells['0:0'].style.font.color, '#414657')
+})
+
+test('Ribbon resets override inherited colors and retain the sparse selection through history and reopen', async () => {
+  await page.evaluate(() => window.sheetColorFixture.inheritColors())
+  await selectRange('A2:B2')
+  const before = await snapshot(), textSwatch = await mainSwatch(), fillSwatch = await mainSwatch('background')
+  const textPanel = await openColor()
+  await textPanel.getByRole('button', { name: '重置文字颜色', exact: true }).click()
+  await expect.poll(() => colors('color', [1])).toEqual([null])
+  await expect(grid()).toBeFocused()
+  const fillPanel = await openColor('background')
+  await fillPanel.getByRole('button', { name: '无填充', exact: true }).click()
+  await expect.poll(() => colors('background', [1])).toEqual([null])
+  await expect(grid()).toBeFocused()
+  assert.deepEqual(await history(), { undo: 2, redo: 0 })
+  const cleared = await snapshot(), cell = cleared.sheets[0].cells['1:0']
+  assert.equal(Object.keys(cleared.sheets[0].cells).length, Object.keys(before.sheets[0].cells).length)
+  assert.equal(cleared.sheets[0].cells['1:1'], undefined)
+  assert.equal(cell.authoredStyleReference, 'colored')
+  assert.equal(cell.authoredStyle.font.color, null)
+  assert.equal(cell.authoredStyle.fill, null)
+  assert.deepEqual(cell.richText, [{ id: 'source', text: '00123', font: { italic: true },
+    hyperlink: 'https://example.test', vendor: { keep: true } }])
+  assert.deepEqual(content(cleared), content(before))
+  assert.equal(await mainSwatch(), textSwatch)
+  assert.equal(await mainSwatch('background'), fillSwatch)
+  await (await homeItem('sheet.command.undo')).getByRole('button').click()
+  await expect.poll(() => colors('background', [1])).toEqual(['#ffeecc'])
+  await (await homeItem('sheet.command.undo')).getByRole('button').click()
+  await expect.poll(() => colors('color', [1])).toEqual(['#112233'])
+  assert.deepEqual((await snapshot()).sheets[0].cells['1:0'].richText, before.sheets[0].cells['1:0'].richText)
+  await (await homeItem('sheet.command.redo')).getByRole('button').click()
+  await (await homeItem('sheet.command.redo')).getByRole('button').click()
+  const saved = JSON.stringify(await snapshot())
+  await page.evaluate(value => window.sheetColorFixture.reopen(value), saved)
+  await selectRange('A2:B2')
+  await expect.poll(() => colors('color', [1])).toEqual([null])
+  await expect.poll(() => colors('background', [1])).toEqual([null])
+  assert.deepEqual(content(await snapshot()), content(before))
+  const panel = await openColor()
+  await expect(panel.locator('.sheet-color-state')).toHaveText('自动文字颜色')
+  await expect(panel.locator('.sheet-color-preset[aria-pressed="true"]')).toHaveCount(0)
 })
 
 test('API colors update the remembered choice and reapplying the current color adds no history', async () => {

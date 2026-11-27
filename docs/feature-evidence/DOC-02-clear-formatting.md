@@ -231,6 +231,258 @@ sidecar 保存原始样式资源快照；编辑后的当前 DOCX 内容由领域
 
 接口增量为 `DocumentCommand.format-text.story?`、`set-section-header-footer.input?`、story 编辑 helper 的可选 marks/sourceRange、`DocumentRibbonContext.textFormattingDisabled?`、Canvas 的 `captureInputSession(sourceModel?: DocumentModel)` 回调，以及 Workbench 的 `undo: [unitId?: string]` / `redo: [unitId?: string]`。公共装配 facade.ts、office-studio.ts、index.ts、输入/历史 store 与[功能清单](../UNIVER_FEATURE_PARITY.md)、[工具栏清单](../UNIVER_TOOLBAR_PARITY.md)汇总继续由主任务负责；本轮复用 FDocument 的 clear/executeCommand 与输入 state/selection/advance 接口，不覆盖这些共享文件。DOC-05 编号和共享源样式方案继续沿用；本页不提升验收状态。
 
+<a id="home-format-composition"></a>
+
+## 9. Home 字符格式与清除的组字状态续核
+
+续核日期：2026-11-27（Asia/Shanghai）。本批修正已写入代码，**运行验证为零，状态仍为未验收**。本节的静态检查结果只适用于本批文件，不替代前述实现与草稿的运行验证。
+
+固定版 [docs-ui/menu/schema.ts][u-doc-schema]、[menu.ts][u-doc-menu] 和 [inline-format.command.ts][u-inline] 确认以下既有入口；新增根入口为 **0**，不重新计算完整 Ribbon / Pro 分类总数。
+
+| 既有入口 | 固定上游布局及命令 | 本项目命令 |
+| --- | --- | --- |
+| 下标、上标 | START / FORMAT，classic `order: 4/5`；grid 下标 `row: 2, column: 6`，上标 `row: 2, column: 5`；`doc.command.set-inline-format-subscript/superscript` | `doc.command.format-text` 的 `verticalAlign` patch |
+| 文字颜色、高亮 | START / FORMAT，classic `order: 8/9`；grid 文字颜色 `row: 2, column: 8`，高亮 `row: 2, column: 7`；`doc.command.set-inline-format-text-color/text-background-color`，另有 reset 子项 | `doc.command.format-text` 的 `color/highlight` patch 或 `clearFields` |
+| 清除格式 | START / HISTORY，classic `order: 3`；grid `row: 2, column: 2`；`ui.command.clear-formatting` | 共享别名转为 `doc.command.clear-formatting` |
+
+上游 `disableMenuWhenNoDocRange` 检查文本/矩形范围、相交代码块及编辑权限；`SetInlineFormatCommand` 用 `va` 翻转上下标，以 `cl/bg` 写颜色，折叠范围缓存下一次输入样式，展开范围进入 `RichTextEditingMutation`。本地继续使用既有 patch、权限、锁、文档隔离输入偏好与历史链路；本批没有更改这些数据语义。本地输入法守卫来自真实 TextArea 状态，不把上游上述菜单条件写成上游已经证明了本地组字行为。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 原先的 `textFormattingState`、`clearFormattingState` 只检查 `storyComposing`。正文、表格与富内容 story 使用 [DocumentCanvasViewport.vue](../../packages/office-studio/src/components/document/DocumentCanvasViewport.vue) 的普通 `antdv-next` `Input.TextArea`，其组字状态通过既有 `isBodyComposing()` 暴露；旧式 flat story 使用独立 TextArea 和 `storyComposing`。本批仅修改三个区段：两处可执行状态统一读取既有 `documentInputComposing`，`execute` 对 `doc.command.format-text` 复用同一活动输入/组字守卫；clear 执行继续检查修正后的 `clearFormattingState`。延迟的 Ribbon 回调因此在 Workbench 输入边界返回，不进入模型 mutation、输入偏好或内容历史。公共 API、领域模型、保存协议及 Worker/WASM 接口增量均为 **0**。
+
+| 本批浏览器草稿 | 计划用例及断言意图 | 本批结果 |
+| --- | --- | --- |
+| [document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) | 正文 2 例：classic 明色、grid 暗色；组字时所有字符按钮、字体/字号、两个颜色主按钮及菜单箭头、clear 禁用；用真实 Ribbon 组件事件发送延迟格式/clear，模型、历史及 `CommandExecuted` 不变；中文提交一次，之后下标、clear 各一次且恢复输入焦点 | 未运行 |
+| [document-story-input.browser.test.mjs](../../packages/office-studio/tests/document-story-input.browser.test.mjs) | flat/rich header × classic 明色/grid 暗色，共 4 例；flat 保留 UTF-16 字段对象并替换文字，rich 检查实际 `{ kind: 'story', sectionId: 'first', story: 'header' }` 宿主；同样检查禁用、延迟回调、单次提交、格式/clear 恢复、正文不变与宿主焦点 | 未运行 |
+
+本批共 **6 个计划用例、0 个运行结果**。表格和代码块的输入来源已静态追到同一正文 TextArea，但本批未新增这两类宿主的专用浏览器用例；不能据此声称六种 story、全部容器或代码格式权限已经覆盖。沿用既有 `antdv-next` 控件与统一 ConfigProvider，没有新增 UI；主题、焦点、真实 Windows IME、WebGPU/Canvas2D、保存/重开、独立 Office 样本和性能均未新增运行验收。第一批富 story 导航证据仍见 [DOC-03 的独立记录](DOC-03-header-footer-ribbon-sizing.md#rich-story-navigation)，不能与本批 6 例混计。
+
+本批限定静态检查：两个 `.mjs` 的 Node 语法、内嵌 HTML module 语法、Workbench Vue SFC / TypeScript AST 语法，以及两个草稿各 11 项本地 import 路径通过。DOC-02 / DOC-03 的本地链接、固定提交源路径、引用锚点及五个归属文件的限定 `git diff --check` 通过，未发现冲突标记。静态解析未执行测试、类型检查、应用构建、Rust/WASM、dev server、浏览器或基准，不提升功能验收状态。
+
+<a id="fixed-vertical-shortcuts"></a>
+
+## 10. 固定 Docs 上下标快捷键续核
+
+续核日期：2026-11-27（Asia/Shanghai）。本批补齐已有上下标入口的快捷键接线，**未运行、未验收**；常驻、扩展、溢出、上下文根入口增量均为 **0**。
+
+| 固定来源 | 已静态确认的契约与差异 |
+| --- | --- |
+| [docs-ui/shortcuts/toolbar.shortcut.ts][u-toolbar-shortcuts] 的 `SubscriptShortCut` / `SuperscriptShortCut` | 下标绑定 `CTRL_COMMAND + COMMA`，上标绑定 `CTRL_COMMAND + PERIOD`，两者均无 Shift。不能把 Sheets 的 Ctrl/Cmd+Shift+Comma/Period 字号步进登记为 Docs 同一契约。 |
+| [docs-ui/controllers/ui.controller.ts][u-doc-ui-controller] 的快捷键注册、[shortcuts/utils.ts][u-shortcut-utils] 的 `whenDocAndEditorFocused` | 两个快捷键均实际注册；要求 Docs 与编辑器焦点，排除 common drawings。权限与内容范围继续由字符命令承担。 |
+| [inline-format.command.ts][u-inline] 的 `SetInlineFormatCommand` | 上下标共享 `va`，相同值再次执行回到基线；折叠范围保留输入偏好，展开范围写入真实内容历史。 |
+
+[DocumentCanvasViewport.vue](../../packages/office-studio/src/components/document/DocumentCanvasViewport.vue) 的 flat `storyKeys` 与普通 `keydown` 原先只有 B/I/U 字符快捷键；rich story 复用普通 body bridge，[use-document-story-input.ts](../../packages/office-studio/src/components/document/use-document-story-input.ts) 提供 flat 当前输入元素、范围和组字状态。两条键盘路径现在识别物理 `event.code = Comma/Period`，要求 Ctrl 或 Meta、无 Shift/Alt、实际对应 TextArea 焦点且无图片选区，沿用现有宿主与 composition 校验。flat 继续传递源模型与实际 story 范围，保留 stale source、公共输入会话与权限约束；未新增 helper 或输入协议。
+
+两条路径都复用既有 `toggle-format` 事件。[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 根据 `currentMarks.verticalAlign` 构造 `doc.command.format-text` patch，再走已有组字/活动输入、权限、锁、历史与焦点恢复链路。事件名、参数形状、命令 ID、公共 API、模型、保存及 Worker/WASM 协议均未新增；**既有内部事件的 `field` 联合扩展 `subscript/superscript` 两个取值**，并同步修改唯一 Workbench 调用方类型。基线 patch 按 [document-model.ts](../../packages/office-studio/src/features/document/model/document-model.ts) 的 `applyRunPatch` 删除显式 `verticalAlign`，草稿断言使用 `undefined`，不要求领域 run 保留字符串 `baseline`。
+
+本批浏览器草稿新增 **6 个计划用例、0 个运行结果**：正文 classic 明色/grid 暗色 2 例，flat/rich header × 两种布局主题 4 例。两份既有文件检查 Ctrl/Meta 的相同值切换与上下标互斥、字号及正文/字段不变、Shift/Alt 和失焦无操作、真实 undo/redo、折叠偏好无内容历史及随后输入继承、权限变化阻止 mutation；story 另检查公共内部 save/reopen。前节 6 个组字草稿追加快捷键阻止断言，不新增该节用例数量。正文用例未新增保存/重开路径；内部快照也不等于 Office 文件验收。
+
+本批没有新增 UI，继续使用统一 ConfigProvider 与 `antdv-next` TextArea。图片选区排除已静态核对，尚无本批专用 drawing 浏览器用例；真实 Windows/Mac 快捷键、系统 IME、全部容器与六种 story、主题焦点、独立 Office、WebGPU/Canvas2D 及性能仍未验收。本批两份 Vue SFC / TypeScript AST、两个 `.mjs` 及内嵌 module 语法、两个草稿各 11 项本地 import、DOC-02 / DOC-03 本地与固定版源链接及显式锚点、六个归属文件的限定 `git diff --check` 均通过；仅执行静态检查，测试、类型、构建和浏览器继续后置。
+
+本节提示元数据续补：[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的 `verticalFormat` 原先没有 `shortcut`，现按同一固定绑定登记下标 `Ctrl+,`、上标 `Ctrl+.`，无 Shift。[document-toolbar-state.contract.test.mjs](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) 在既有真实 Ribbon/命令用例增加两条对应断言，未新增用例、未运行。入口 ID、布局、激活/禁用判断、patch、模型和命令均沿用既有实现。
+
+[ShortcutPanel.vue](../../packages/office-studio/src/platform/ribbon/ShortcutPanel.vue) 从可见 Ribbon 项的 `shortcut` 生成面板列表，并在 Mac 显示时将 `Ctrl+` 替换为 `⌘+`；[ribbon-command-menu.ts](../../packages/office-studio/src/platform/ribbon/ribbon-command-menu.ts) 也读取该元数据绘制菜单项快捷键。后者是通用消费者，本批上下标仍为既有根按钮，不据此声明新增菜单入口。[RibbonItem.vue](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue) 的 Tooltip 只读 `tooltip/title`，不会自动追加 `shortcut`；本次只补既有元数据及面板提示接线，不声称悬浮 Tooltip 已新增快捷键。共享 Ribbon 组件未修改；面板实际显示、Mac 文案与焦点行为仍未运行验收。
+
+本提示续补只执行静态检查：Ribbon TypeScript AST、既有契约 `.mjs` 的 Node/AST 语法、27 项本地 import 与 9 项 SSR 源引用、DOC-02 的 86 项本地链接/18 项固定版源链接/2 项引用锚点，以及三个涉及文件的限定 `git diff --check` 均通过。新增断言未执行，浏览器计划用例仍为前述 14 例、运行结果为 0；未启动测试、类型检查、构建、浏览器或基准。
+
+<a id="home-format-layout-shortcuts"></a>
+
+## 11. Home 字符、对齐和列表快捷键续核
+
+续核日期：2026-11-27（Asia/Shanghai）。固定版 [toolbar.shortcut.ts][u-toolbar-shortcuts] 的 START / FORMAT、START / LAYOUT 共 **12 条绑定**：B/I/U、删除线、上下标、四种对齐和两种列表。本地此前已有 5 条，本批补入剩余 **7 条**；这里只说明快捷键静态接线，**运行结果为 0，状态仍为未验收**。
+
+| 既有入口与新增绑定 | 固定分组、classic 顺序和 grid 位置 | 上游命令 → 本项目命令 |
+| --- | --- | --- |
+| 删除线，Ctrl/Cmd+Shift+X | START / FORMAT，`order: 3`；`row: 2, column: 4` | `doc.command.set-inline-format-strikethrough` → `doc.command.format-text` 的 `strike` patch |
+| 左 / 居中 / 右 / 两端对齐，Ctrl/Cmd+Shift+L/E/R/J | START / LAYOUT，对齐 selector `order: 2`；`row: 1, column: 1`；四个选项按左、居中、右、两端顺序 | 根 `doc.command.align-action` 与 `doc.command.align-left/center/right/justify` → `doc.command.format-paragraph` 的显式 `align` patch |
+| 有序列表，Ctrl/Cmd+Shift+7 | START / LAYOUT，`order: 7`；`row: 2, column: 1` | `doc.command.order-list` → `doc.command.set-block-type`，`type: numbered` |
+| 无序列表，Ctrl/Cmd+Shift+8 | START / LAYOUT，`order: 8`；`row: 1, column: 2` | `doc.command.bullet-list` → `doc.command.set-block-type`，`type: bullet` |
+
+入口布局来自固定 [schema.ts][u-doc-schema]；[menu.ts][u-doc-menu] 的 `StrikeThroughMenuItemFactory`、`AlignMenuItemFactory`、`HORIZONTAL_ALIGN_OPTIONS`、`OrderListMenuItemFactory`、`BulletListMenuItemFactory` 确认按钮/selector、选项标签与顺序、真实字符/段落/列表当前值、非活动 Docs 显隐和 `disableMenuWhenNoDocRange`。本批对应 **4 个既有常驻根项、4 个对齐子选项**，7 条绑定不等于 7 个新根项；常驻、扩展、溢出和上下文根入口增量均为 **0**。classic/grid、More 和页眉页脚复用沿用既有入口清点，完整 Pro 范围继续按总清单验收。
+
+| 固定行为来源 | 本批复用与差异 |
+| --- | --- |
+| [inline-format.command.ts][u-inline]，`SetInlineFormatStrikethroughCommand`、`SetInlineFormatCommand` | 上游翻转 `st.s`，折叠范围缓存输入格式，展开范围执行真实富文本 mutation。本地翻转 `currentMarks.strike` 并走既有字符 patch、权限/锁、输入偏好及历史。 |
+| [paragraph-align.command.ts][u-paragraph-align]，四种对齐与 `AlignOperationCommand` | 上游按当前 segment 和真实段落范围执行 `RichTextEditingMutation`；所选段落已经为同一对齐时改为 `UNSPECIFIED`。本地保留既有显式赋值与幂等行为，重复相同对齐保持模型和内容历史不变；这是已记录的实现差异，未做独立 Office 行为核实。 |
+| [list.command.ts][u-list-command]，`OrderListCommand`、`BulletListCommand`、`ListOperationCommand` | 默认列表按钮和快捷键进入 `BuildTextUtils.paragraph.bullet.switch` 与真实 mutation；指定 preset 另走 change-list-type。本地复用 `set-block-type` 已有选区全量 toggle-off、默认 `ORDER_LIST/BULLET_LIST`、相邻序列和编号来源保留逻辑，不新增列表算法。 |
+
+[DocumentCanvasViewport.vue](../../packages/office-studio/src/components/document/DocumentCanvasViewport.vue) 的两条键盘路径按物理 `event.code` 识别绑定，要求 Ctrl 或 Meta、Shift、无 Alt、实际对应 TextArea 焦点并排除图片选区，沿用当前输入会话、composition 和 229 守卫。删除线沿用 `toggle-format`；六个段落/列表键共用本地命令映射，普通正文与 rich story 使用已有 `dispatchCommand` 携带块宿主。flat story 同步 UTF-16 选区并确认源模型/当前事件，然后交给 Workbench 的既有命令入口。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 对 `format-paragraph`、`set-block-type`、`change-list-type` 复用活动输入/组字守卫，Ribbon 的 `editingDisabled` 同步此状态。flat story 首次段落命令通过现有 `activateStoryBlockEditing` 和 [document-block-host.ts](../../packages/office-studio/src/features/document/services/document-block-host.ts) 将 U+FFFC 输入范围转换为实际块/字段缓存范围，转入 `{ kind: 'story', sectionId: 'first', story: 'header' }` 宿主；后续按同一正文桥执行。已有 `documentModelForBlockHost` / `applyDocumentBlockHostModel` 将编辑写回根模型、literal story、字段投影及锚点，继续使用同一权限、锁、内容历史和保存路径。字段投影会补入既有块来源元数据，草稿按字段类型、literal offset、缓存文本和字体字号核对保真。
+
+本批计算域为已有 Docs UI 输入与命令编排；复用领域服务，未新增计算引擎。**既有内部 `toggle-format.field` 联合新增 `strike` 一个取值**，唯一 Workbench 调用方同步；事件名及参数形状、公共 API、命令 ID、领域模型、保存和 Worker/WASM 协议增量均为 **0**。生产增量相对上一批为 `+41/-5` 行，净增 36 行，没有新增控件或样式，继续使用 `antdv-next` TextArea 和统一 ConfigProvider。
+
+[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 为删除线、两种列表主按钮和四个对齐子项登记同一绑定的 `shortcut`；Workbench 的既有快捷键面板另显式列出四种对齐。菜单快捷键消费沿用 [ribbon-command-menu.ts](../../packages/office-studio/src/platform/ribbon/ribbon-command-menu.ts)，面板沿用 [ShortcutPanel.vue](../../packages/office-studio/src/platform/ribbon/ShortcutPanel.vue)。共享 [RibbonItem.vue](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue) 的 Tooltip 仍只读取 `tooltip/title`，本批没有补悬浮快捷键文案；面板、菜单和 Mac 显示仍未运行验收。
+
+| 本批草稿 | 新用例数量与断言意图 | 运行结果 |
+| --- | --- | --- |
+| [document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) | 2 例：classic 明色/grid 暗色；两段正文的删除线开关、四种对齐、重复对齐幂等、有序/无序列表开关与共享序列、10 次内容历史及 undo/redo、无 Shift/Alt/失焦阻止、权限变化、内部 JSON 重开和字体正文保留 | 0 |
+| [document-story-input.browser.test.mjs](../../packages/office-studio/tests/document-story-input.browser.test.mjs) | 4 例：flat/rich header × 两种布局主题；初始 flat/rich 输入守卫、Ctrl/Meta 操作、首次段落命令宿主转换、后续正文桥、单段列表/对齐、10 次历史及 undo/redo、字段与未选段落/正文/footer 保留、权限变化、公共内部 save/reopen | 0 |
+| [document-toolbar-state.contract.test.mjs](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) | 既有真实 Ribbon/菜单/命令用例内补 7 组快捷键及命令映射断言，新增用例 0 | 0 |
+
+前述 **6 个 composition 草稿**追加全部 7 条 Ctrl/Meta+Shift 组合、对齐/列表根控件禁用及真实 Ribbon 组件的延迟段落、列表和 preset 回调阻止，不另增加用例数。本批新增 **6 个浏览器计划用例**；2026-11-27 续核累计 **20 个浏览器计划用例、0 个运行结果**，包括此前 2 个 rich story 导航、6 个组字和 6 个上下标用例。快照重开不等于 Office 文件验收。表格/代码块与其他 story、专用 drawing 排除、真实 Windows/Mac 键盘与系统 IME、主题焦点、WebGPU/Canvas2D、独立 Office 文件和性能仍未验收。
+
+本批限定静态检查已通过：两个 Vue SFC 与六份源文件的 TypeScript AST 语法、三个 `.mjs` 的 Node 语法、两个内嵌 HTML module 语法、219 项本地 import 路径和 9 项 SSR 源引用；DOC-02 的 96 项本地链接/20 项固定版源链接/2 项引用锚点、DOC-03 的 42 项本地链接/20 项固定版源链接/2 项引用锚点，以及七个归属文件的 `git diff --check` 均通过，未发现冲突标记。检查仅解析文件和核对路径，没有执行测试、类型检查、构建、Rust/WASM、dev server、浏览器或基准，不提升验收状态。
+
+<a id="paragraph-alignment-unspecified"></a>
+
+## 12. 对齐重复执行的真实差异与待确认方案
+
+核对日期：2026-11-27（Asia/Shanghai）。**本节仅记录修复方案，未实施模型、命令或读写变更，运行结果为 0。** 第 11 节的显式赋值、重复对齐幂等及 10 次历史草稿仍是当前代码；不能将下述方案写成已修复。
+
+| 固定版真实来源 | 已核实行为 |
+| --- | --- |
+| [paragraph-align.command.ts][u-paragraph-align]，`AlignOperationCommand` | 从活动 segment 的实际范围取段落；只有全部段落的直接 `horizontalAlign` 等于请求值才切换。同值写入数值 `HorizontalAlign.UNSPECIFIED = 0`，保留属性，不删除它。 |
+| [core/paragraph-style.ts][u-paragraph-resolution]，`_definedStyle`、`resolveDocumentParagraphStyle`、`_assignParagraphStyle` | 直接样式中的 0 不会被过滤，最后覆盖命名样式和文档默认值。省略属性才继承；0 与省略不是同一状态。 |
+| [line-adjustment.ts][u-paragraph-line-adjustment]，`horizontalAlignHandler` | 普通 Docs 的 0 不执行居中、右对齐或两端对齐偏移，呈现左定位；这不代表模型直接赋成 `LEFT`。命令中的旧 `layout-ruler.ts` 注释路径已失效，以本表实际文件为准。 |
+| [menu.ts][u-doc-menu]，`getParagraphStyleAtCursor`、`AlignMenuItemFactory` | 菜单读取直接段落样式。selector 的值为 `horizontalAlign ?? LEFT`，保留 0；0 使用左侧根图标回退，四个子选项均不激活。不能依据画布左定位把 0 标成已激活左对齐。 |
+
+本地阻碍已逐文件确认：[DocumentParagraphStyle](../../packages/office-studio/src/domain/model.ts) 的 `align` 是必需的四值字段；[document-settings.ts](../../packages/office-studio/src/features/document/services/document-settings.ts) 拒绝 `align: undefined` 和第五种值；[document-body-style.ts](../../packages/office-studio/src/api/document-body-style.ts) 读入 0 时沿用默认对齐，写出时总输出 1–4；[documentNormalizer.ts](../../packages/office-studio/src/parser/documentNormalizer.ts) 与 [docx.rs](../../crates/office-writer/src/docx.rs) 将未知/缺失对齐归为 left。仅在 Ribbon 写 `left` 或删除 patch 字段都不能修复该契约。
+
+**待确认的最小建议**：在现有 `align` 字段表达六种直接意图 `inherit | unspecified | left | center | right | justify`，不另建一套对齐 mutation。`inherit` 是本项目内部对省略的显式表示；公共 body 序列化时省略 `horizontalAlign`，`unspecified` 写 0，四种显式值写 1–4。解析 DTO、直接意图和布局结果继续分离，文档默认值使用不含 `inherit` 的已解析对齐类型。旧四值快照保留原有显式含义，不凭呈现效果反推它曾经省略。
+
+| 意图 | 布局及菜单 | 保存/重开 |
+| --- | --- | --- |
+| `inherit`，公共属性省略 | 复用当前命名样式链、文档默认及已保留来源解析有效对齐；Ribbon 按上游直接值缺省提示，不用继承后的视觉值伪造直接设置 | 内部快照保留意图和既有样式来源；公共 body 继续省略属性 |
+| `unspecified`，公共值 0 | 明确覆盖继承；复用现有行定位，无居中/右/两端偏移；根图标回退，四子项均不激活 | 内部快照保存 `unspecified`，公共 body 保存 0，不能写成 1 后声称保真 |
+| 四种显式值 | 复用已有四种定位和菜单选项 | 保留现有四值快照及 body 1–4 映射 |
+
+命令建议给既有 `doc.command.format-paragraph` 增加可选对齐执行方式 `set | toggle`，默认 `set`。Ribbon 和四条快捷键使用 `toggle`；[Facade](../../packages/office-studio/src/api/facade.ts) 的 `formatParagraph` / `FDocumentParagraph.setParagraphStyle` 沿用默认显式赋值，相同赋值继续不新增历史。`toggle` 在命令内从真实 `selectedTargets` 比较直接意图；全部同值时统一写 `unspecified`，混合或继承时统一写请求值。复用原先半开范围、caret、表格单元格、整段锁预检、批量提交和一次内容历史，不在 UI 用 toolbar 的混合值替代目标段落检查。
+
+正文、rich story 和 flat story 共用该命令；flat 首次段落操作仍经 `activateStoryBlockEditing` 和现有块宿主转换。公共 API、菜单、快捷键的权限判断及 body/story 输入、composition、焦点恢复继续走当前链路。布局在现有段落排版入口解析有效对齐，再交给已有 `positionLine`，不增加计算引擎；工具栏保留直接意图与混合态，设置面板不把 `unspecified` 显示为显式 left。可替换控件仍使用 `antdv-next`，本方案不新增控件。
+
+公共 body 的读入必须在既有命名样式解析前记录直接属性是省略、0 还是显式值；[document-body-paragraph.ts](../../packages/office-studio/src/api/document-body-paragraph.ts) 已保留 raw 段落和 inherited 来源，但当前分页 baseline 只覆盖四个分页字段，不能声称对齐来源已经完整。应扩展既有来源记录，保证修改直接意图后旧 raw 对齐不重新覆盖它；[document-body-source.ts](../../packages/office-studio/src/api/document-body-source.ts) 继续排除派生源，不保存第二棵权威块树。默认样式、命名样式应用和 clear 也需核对同一对齐意图更新，保留原调用方的其他格式行为。
+
+**DOCX 必须一起处理**：当前 writer 总写 `<w:jc>`；省略继承应保留样式引用并省略直接 `<w:jc>`，显式四值按既有路径写出。`UNSPECIFIED(0)` 与原生 DOCX 的可用 `<w:jc>` 值没有已核实的一一对应，不能把写成 left 当成状态保真。建议在本项目转换链路添加版本化的段落对齐来源标记：原生部分表达左定位，附加来源保存显式 0，按实际 body/table/story 部件及段落标识绑定；重开仅在标识和原生对齐仍匹配时恢复该状态。parser/writer 复用一个共享来源 codec，外部编辑改变原生值后以原生数据为准。现有 `customXml/office-numbering.xml` 仅服务编号，并非完整模型 sidecar；本方案需新增对齐 payload 和读写接线，不能声称已有自动保留能力。标识选择、原生表达、Office 保留附加来源及外部同值编辑的处理仍需公开规格和文件样本核实，全部保留未验收。
+
+下表是按已读调用链给出的拟修改范围，**尚未获得实施确认**。行数为待审阅的代码增量粗估，不包含本节文档，也不代表完成量；共享 Facade、模型、解析和来源协议需由主任务协调归属。
+
+| 归属与实际文件 | 预计行数 |
+| --- | --- |
+| 模型：[domain/model.ts](../../packages/office-studio/src/domain/model.ts)、[document-model.ts](../../packages/office-studio/src/features/document/model/document-model.ts)、[document-default-style.ts](../../packages/office-studio/src/features/document/model/document-default-style.ts)；直接/有效对齐类型、默认及既有样式应用 | 40–70 |
+| 命令：[document-settings.ts](../../packages/office-studio/src/features/document/services/document-settings.ts)、[document-commands.ts](../../packages/office-studio/src/features/document/commands/document-commands.ts)；复用原事务，增加对齐方式和真实同值比较 | 35–60 |
+| Docs UI：[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue)、[DocumentCanvasViewport.vue](../../packages/office-studio/src/components/document/DocumentCanvasViewport.vue)、[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts)、[document-toolbar-state.ts](../../packages/office-studio/src/components/document/document-toolbar-state.ts)、[document-paragraph-settings-state.ts](../../packages/office-studio/src/components/document/document-paragraph-settings-state.ts)、[DocumentParagraphSettingsPanel.vue](../../packages/office-studio/src/components/document/DocumentParagraphSettingsPanel.vue)；切换入口与直接/混合态 | 45–75 |
+| 公共 body：[document-body-style.ts](../../packages/office-studio/src/api/document-body-style.ts)、[document-body-paragraph.ts](../../packages/office-studio/src/api/document-body-paragraph.ts)、[document-body-source.ts](../../packages/office-studio/src/api/document-body-source.ts)；省略/0/显式值、来源和重开 | 45–75 |
+| 布局：[document-paragraph-layout.ts](../../packages/office-studio/src/features/document/layout/document-paragraph-layout.ts)、[document-text-layout.ts](../../packages/office-studio/src/features/document/layout/document-text-layout.ts)；复用现有行定位 | 10–20 |
+| Office：[documentNormalizer.ts](../../packages/office-studio/src/parser/documentNormalizer.ts)、[document_paragraph_source.rs](../../crates/office-parser/src/document_paragraph_source.rs)、[parser.rs](../../crates/office-parser/src/parser.rs)、[docx.rs](../../crates/office-writer/src/docx.rs)、[docx_source_story.rs](../../crates/office-writer/src/docx_source_story.rs)；保留来源意图、原生属性与附加对齐来源接线 | 110–180 |
+| 来源协议：拟新增 `crates/office-io-common/src/document_alignment_source.rs`，在 [lib.rs](../../crates/office-io-common/src/lib.rs) 注册；共享版本化对齐 payload、段落绑定及预算 | 60–100 |
+| 合计 | 23 个生产文件（22 个既有文件，包含 `lib.rs` 注册；1 个新来源 codec），约 345–580 行；新增模型取值、命令参数和 Office 来源协议，属于需确认的较大改动 |
+
+确认后所需草稿至少覆盖：直接/继承/0 的公共 body 往返、命名样式和默认为 center/right 时显式 0 的覆盖、四种同值 toggle 与混合范围、半开/表格/锁原子拒绝、Facade 同值 set 幂等、直接菜单状态、布局定位、撤销重做及 body/flat/rich story 内部保存重开。复用已有 [设置契约](../../packages/office-studio/tests/document-settings.contract.test.mjs)、[段落设置状态契约](../../packages/office-studio/tests/document-paragraph-settings-state.contract.test.mjs)、[工具栏契约](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs)、[布局契约](../../packages/office-studio/tests/document-paragraph-layout.contract.test.mjs)、[Facade 契约](../../packages/office-studio/tests/document-facade.contract.test.mjs)、两份 Home/story 浏览器草稿及 [Rust 文件往返草稿](../../crates/office-parser/src/document_format_roundtrip_tests.rs) / [story 来源草稿](../../crates/office-writer/src/docx_source_story_tests.rs)，预计增改约 220–360 行，不新增空测试。现有重复 justify 幂等断言和 10 次历史预期必须同步修订；该次操作变成真实 mutation 后预计增加一次历史，最终状态和计数仍需实际验证。
+
+本方案使用现有同步模型/命令与段落布局计算域，未涉及新增 Worker/WASM 热路径。实施后的类型、前端/Rust/WASM、浏览器、Office 样本、主题/焦点/IME 和大样本性能验证继续按项目标准执行；本阶段未运行，不据此声明功能覆盖或性能达标。
+
+本节仅修改本证据文件。133 项本地链接、22 项固定提交源路径、24 项引用定义、2 项引用锚点及新增稳定锚点唯一性均通过静态核对，限定 `git diff --check` 通过；生产代码及测试草稿与本节前一致，浏览器计划仍为 20 例、运行结果仍为 0。
+
+<a id="home-list-numbering-context"></a>
+
+## 13. START 列表画廊与编号上下文续核
+
+续核日期：2026-11-27（Asia/Shanghai）。本批修正两处既有编号动作的上下文/输入接线，**运行结果为 0，状态仍为未验收**。第 12 节对齐模型和 Office 来源方案仍待确认，本批未实施它。
+
+| 固定来源 | 本批核对的入口与行为 |
+| --- | --- |
+| [schema.ts][u-doc-schema]、[menu.ts][u-doc-menu] 的 `OrderListMenuItemFactory` / `BulletListMenuItemFactory` | START / LAYOUT；classic `order: 7/8`；grid 有序为 `row: 2, column: 1`，无序为 `row: 1, column: 2`。两者是 `BUTTON_SELECTOR`，当前值按活动 range 的 `segmentId` 读取实际正文/header/footer 段落并解析列表，非活动 Docs 隐藏，禁用使用 `disableMenuWhenNoDocRange`。 |
+| [list-type-picker/Picker.tsx][u-list-picker]、[index.ts][u-list-picker-index] | 各画廊固定六项：默认项及 `_1`–`_5`，不把 quick-typing 预设加入画廊；三列 72×80，四行预览依次使用 level 0/1/2/0，当前预设按真实值标记。 |
+| [list.command.ts][u-list-command] 的 `ListOperationCommand` / `ChangeListTypeCommand` | 主按钮按真实段落范围走 bullet switch，预设按同一 segment 走 bullet set / mutation；正文和 header/footer 共用命令路径。当前两条 Ctrl/Cmd+Shift+7/8 绑定仍见第 11 节，本批没有新增绑定。 |
+
+本地两根项、两套六卡画廊继续使用 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts)、[DocumentListPicker.vue](../../packages/office-studio/src/components/document/DocumentListPicker.vue) 和 [document-lists.ts](../../packages/office-studio/src/features/document/model/document-lists.ts)。重新编号、起始编号表单和继续前一编号属于本项目既有扩展，不是固定版两画廊的额外预设；本批没有新增根项、卡片或编号动作。常驻、扩展、溢出及上下文根入口增量均为 0，完整 Pro 范围继续按总清单验收，不以本批小修替代列表或 Docs 全量完成。
+
+两处实际改动都位于 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue)：编号 `canRestart/canContinue` 改为使用既有 `paragraphContext.model/selection`，不再从 flat story 读取休眠正文。该上下文已用于段落设置和缩进，正文/rich story 使用活动块宿主，flat story 使用当前 UTF-16 范围与已有块投影。普通页眉不能因为正文是列表而启用编号，页眉自身的可编号段落也不再因为正文普通而失去能力。
+
+既有 `execute` 的活动输入/composition 守卫增加 `doc.command.restart-list-numbering` 和 `doc.command.continue-list-numbering`，在 flat 宿主转换之前阻止延迟 Ribbon 回调。正常执行仍使用 `activateStoryBlockEditing`、真实 [编号计划与能力判断](../../packages/office-studio/src/features/document/commands/document-commands.ts)、现有源编号/序列、权限和一次内容历史；没有另写模型 mutation。生产仅修改两处接线并换行，净增 1 行；内部事件、命令参数、公共 API、模型、保存及 Worker/WASM 协议增量均为 0。
+
+本批未新增控件或样式，继续使用统一 ConfigProvider 和 `antdv-next` 的 Button、Form/Form.Item、InputNumber 及 Canvas TextArea。编号输入自身的 composition / 229 处理沿用 `DocumentListPicker`，此次补的是工作台活动文档输入的守卫，两者各保护真实输入边界。
+
+| 既有草稿文件 | 本批新增/续补内容 | 运行结果 |
+| --- | --- | --- |
+| [document-story-input.browser.test.mjs](../../packages/office-studio/tests/document-story-input.browser.test.mjs) | 新增 4 例：flat/rich header × classic 明色/grid 暗色；正文列表/页眉普通及正文普通/页眉编号两种相反上下文、真实 InputNumber/六卡、重新编号、继续前一编号、一次历史及 undo/redo、宿主与正文/footer 保留、有效编号段落上的延迟 composition 回调、公共内部 save/reopen | 0 |
+| 同一 story 草稿及 [document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) | 原有 6 个 body/flat/rich composition 用例追加两条真实 Ribbon 编号回调，验证没有内容、历史或命令事件变化；不另增加用例数 | 0 |
+
+本批新增 4 个浏览器计划用例；2026-11-27 续核累计 **24 个浏览器计划用例、0 个运行结果**。新 fixture 通过已有 `projectDocumentStoryBlocks` 生成真实 flat/rich 内容及保留的编号来源，复用 OfficeStudio/FDocument，没有 Mock 编号实现。此处保存/重开是内部模型验收草稿，不是 DOCX 或独立 Office 文件验证。其他 story、表格/代码块、全部混合预设及导入列表菜单状态、失活回调、真实系统 IME、主题焦点、WebGPU/Canvas2D 和大样本性能继续保留未验收。
+
+三份代码/草稿文件的 Vue SFC、5 段 TypeScript/JavaScript AST（包含两份 fixture module）、1 份模板、两份 `.mjs` Node 语法及 137 项本地 import 路径均通过静态检查，限定 diff 检查通过。未执行测试、类型检查、构建、Rust/WASM、dev server、浏览器或基准；语法和来源检查不提升功能验收状态。
+
+本批 DOC-02 的 140 项本地链接、24 项固定提交源路径、26 项引用定义、2 项引用锚点和两个方案/续核稳定锚点唯一性均通过；DOC-03 的 42 项本地链接、20 项固定提交源路径和 2 项引用锚点也通过。本批四个修改文件的限定 diff 检查通过，代码及草稿保持稳定。
+
+<a id="home-paragraph-indent-spacing"></a>
+
+## 14. 缩进、行距与段距续核
+
+续核日期：2026-11-27（Asia/Shanghai）。本批补齐缩进动作在活动输入/composition 期间的守卫，正常执行继续使用既有命令。**运行结果为 0，状态仍为未验收**；第 12 节对齐模型及完整 Picker 仍待确认，本批未实施。
+
+| 固定来源 | 入口及可观察契约 |
+| --- | --- |
+| [docs-ui/menu/schema.ts][u-doc-schema]、[paragraph-menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/paragraph-menu.ts) | 固定 START / LAYOUT 没有直接缩进、行距或段距根。缩进位于段落浮动菜单的 indent 组，组 order 1；增加/减少 order 0/1，ID 为 `doc.menu.paragraph-t.indent.increase/decrease`。两个 factory 只定义按钮和非 Docs 隐藏，没有定义本地的边界 disabled 规则。 |
+| [ParagraphMenu.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/ParagraphMenu.tsx) | 缩进读取实际 formatting range 首段的直接 indentFirstLine，按 ±20 修改，最低为 0，再执行段落设置命令；该分支未截断到 100。 |
+| [doc-paragraph-setting.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/doc-paragraph-setting.command.ts)、[controller](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/controllers/doc-paragraph-setting.controller.ts) | `doc-paragraph-setting.command` 按 range 的 segmentId 读取正文/header/footer，更新选中段落，进入一次 RichTextEditingMutation / FormatParagraph 历史；面板宽 300。 |
+| [line-spacing.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/paragraph-setting/line-spacing.ts)、[hook/utils.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/paragraph-setting/hook/utils.ts) | auto 范围 1–5、step 0.1；atLeast/exact 范围 1–100。模式转换使用真实 glyph/line metrics；fixed 显示保留 2 位、存储保留 4 位。hook 在 16ms 内合并 mode/value 后调用同一段落命令。 |
+
+完整标签、grid 行列、classic 顺序、六个行距选项、段前/段后 14 个叶及面板字段沿用 [DOC-02 段落缩进与间距清点](DOC-02-paragraph-spacing-indent.md)。本批涉及 **0 个固定常驻顶部根、4 个既有本地扩展顶部根**：减少缩进、增加缩进、行距、段落间距，仍位于 Home / `doc-layout-extensions`；本批新增根、上下文叶及独立溢出功能均为 0。宽度不足时共享 Ribbon 呈现同一入口，不增计功能。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 `execute` 原有活动输入/composition 守卫缺少 `doc.command.change-paragraph-indent`；本批将它加入已有列表，在 flat story 宿主转换和实际 mutation 之前拒绝延迟回调。生产只改这一行，没有修改模型、命令参数、Facade、历史或 Office/Worker/WASM 协议。
+
+缩进 capability 已使用 `paragraphContext.model/selection`，本批没有改写它。正文/rich story 使用活动块宿主，flat story 使用真实 UTF-16 范围及既有投影；正常执行仍走 `activateStoryBlockEditing`、[prepareDocumentParagraphIndent](../../packages/office-studio/src/features/document/commands/document-commands.ts)、权限及整段锁预检，然后统一提交。普通段仍从各自首行缩进加减 20px、范围 0–100；列表仍修改真实 level 并保留相对编号定义的缩进差值。
+
+行距和段距使用同一 `doc.command.format-paragraph`，已受原守卫保护；[段落面板](../../packages/office-studio/src/components/document/DocumentParagraphSettingsPanel.vue) 也沿用该命令及自身 composition 暂存。规则切换读取 [已有段落状态与 metrics](../../packages/office-studio/src/components/document/document-paragraph-settings-state.ts)，历史与内部保存仍由 OfficeStudio / FDocument 管理，没有并行状态或第二套历史。
+
+差异保持明确：固定缩进分支取首段直接值并统一 patch，本地每段相对增减且设 100 上限；fixed 精度、本地 px 与公开 scalar 的换算、无 metrics 的字号回退、默认段后 8/12、完整继承及 signed 导入缩进仍按前述证据保留差异或未核实。本批不改这些模型或 Office 单位契约，也不以新增守卫宣称完整功能对齐。
+
+| 既有草稿 | 本批内容 | 运行结果 |
+| --- | --- | --- |
+| [document-story-input.browser.test.mjs](../../packages/office-studio/tests/document-story-input.browser.test.mjs) | 新增 4 例：flat/rich header × classic 明色/grid 暗色；正文已到缩进上限、页眉仍可增减的相反上下文，真实缩进按钮、fixed 24px 状态转 auto 1.5、段前/后真实菜单、每次内容历史、undo/redo、活动 host、正文/footer/其他段保留、有效目标上的延迟 composition 回调、内部 save/reopen | 0 |
+| 同一 story 草稿及 [document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) | 原有 6 个 body/flat/rich composition 用例追加缩进 ±1、行距/段距延迟回调及四根控件禁用断言；不另增用例数。Home 草稿的既有入口查找补齐 grid 与共享溢出选择器 | 0 |
+
+本批新增 4 个浏览器计划用例；2026-11-27 续核累计 **28 个浏览器计划用例、0 个运行结果**。草稿直接复用真实 Workbench、`antdv-next` 的 Button/Select/Menu/TextArea、OfficeStudio/FDocument 和 story 投影，没有 Mock 格式实现。生产未新增可替换控件、原生输入桥或样式；统一主题路径保留。正文/页脚及其他 story 的完整交互、全部锁/权限与范围组合、真实系统 IME、主题与焦点、独立 Office 文件、WebGPU/Canvas2D 及性能/内存继续未验收。
+
+静态检查已通过：5 段脚本（含两份 fixture module）、1 份模板、137 项本地 import、两份 `.mjs` Node 语法；本证据的 147 项本地链接、30 项固定提交源路径、26 项引用定义、2 项引用锚点及 3 个稳定锚点唯一性均通过。固定仓库 HEAD 与引用提交一致，四个修改文件的限定 diff 检查通过。未运行测试、类型检查、构建、Rust/WASM、dev server、浏览器或基准；静态通过不提升功能验收状态。
+
+<a id="home-character-input-session"></a>
+
+## 15. Home 字符入口的工作台活动会话
+
+续核日期：2026-11-27（Asia/Shanghai）。本批只补工作台失活时的字符入口状态，**运行结果为 0，DOC-02 仍未验收**。第 14 节的 28 个浏览器计划用例是此前 2026-11-27 续核累计快照，并非单个文件总数；本批另增 2 个计划用例，续核累计 30 个，不能用这些数量证明全量覆盖。
+
+固定依据继续使用 Univer v1.6.0、commit `eaf4cfa04fabdbcfc922c692f3450459f8a29546`：[Docs schema 的 FORMAT 分组][u-doc-schema] 中，本次核对字体、字号、B/I/U/删除线、上下标及两个颜色常驻根，共 10 项；段落样式为该组另一个根，本批新增入口为 0。grid 第一行按段落样式、字体、字号排列；第二行依次为 B/I/U/删除线、上标、下标、高亮、字色。classic 中上下标按 order 4/5、字号/字体按 order 6/7 排列，两种布局保持原声明。
+
+[menu.ts 的 FontFamilySelectorMenuItemFactory、FontSizeSelectorMenuItemFactory 及字符按钮 factory][u-doc-menu] 共用 disableMenuWhenNoDocRange，合并实际文本/矩形范围、相交代码块与编辑权限；状态读取 getFontStyleAtCursor，并经 shouldSuppressDocMenuStateRefresh 避免宿主交互抑制期间刷新。[SetInlineFormatCommand][u-inline] 拒绝缺少活动范围/模型/body，折叠范围只缓存下一次输入样式，展开范围提交同一 RichTextEditingMutation。固定上游未定义本项目的 Vue KeepAlive 生命周期，本地通过已有输入会话实现对应活动边界，不复制其内部服务。
+
+[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的 textFormattingDisabled 使用字符专用值优先于 editingDisabled，使 story 格式能力可以独立判断。此前 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 只传 !textFormattingState.available，导致 KeepAlive 失活时字符控件仍显示可用，而真实 execute 已返回 false。本批在专用值中合并 !inputStateActive；ribbonTabs 显式读取现有 storyActionVersion，由 onActivated/onDeactivated 的原递增触发控件重算，恢复不依赖额外 focus 或 selection。相邻段落入口、只读可用的 UI operation 及每条命令的独立权限/锁条件保持原行为。
+
+生产修改两处表达式，净增 1 行；继续使用原 FDocument/Studio 输入会话、权限、内容命令、一次历史和保存路径。API、命令参数、DTO、模型、Office 写出及 Worker/WASM 协议变更均为 0；没有新增可替换控件或原生输入桥，统一 ConfigProvider 与 antdv-next 的 Button、Select/Input、Canvas TextArea 沿用既有主题路径。
+
+[document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) 的既有真实 Workbench/FDocument 夹具增加 KeepAlive 隐藏/恢复；一个 test.each 声明提供 light/classic 和 dark/grid 两例。草稿核对 10 个真实 Ribbon 状态和 12 个 Ant 输入/按钮，失活时检查全部禁用并发送 10 种合法字符回调，要求模型、历史与命令事件不变；恢复后在重新 focus/selection 前检查全部启用，再通过真实字号输入提交一次内容历史，执行 undo/redo 与内部 JSON 模型重开。该重开沿用原夹具 replaceFixtureModel，不将领域快照宣称为公开 FDocument.save 数据或 Office 文件验证。
+
+该 Home 浏览器文件当前有 29 处 test 声明、37 个计划案例：21 个普通案例、4 处 test.each 展开 8 例、4 处数据 for-of 展开 8 例。本批新增 1 处声明、2 例，文件总数与前述跨 Home/story 的续核累计分别记录，运行结果均为 0。限定静态检查通过：三个脚本（Vue、浏览器草稿及解码后的内嵌夹具）、一个模板及三文件 diff；没有执行产品模块或启动 fixture。
+
+完整 flat/rich 及其他 story、全部范围/锁/权限组合、真实 Windows IME、弹层主题与焦点、独立 Office 文件、WebGPU/Canvas2D、性能与内存继续未验收；前述完整对齐模型及字符 Picker 方案仍待确认，本批未实施。
+
+<a id="home-list-preset-mixed-state"></a>
+
+## 16. Home 混合列表预设的激活状态
+
+续核日期：2026-11-27（Asia/Shanghai）。本批按既有 Home 清点继续核对 LAYOUT 中的有序、无序与清单三个常驻根，修正前两根的混合预设激活状态；新增入口为 0，清单命令和状态保持。**运行结果为 0，DOC-02 / DOC-05 仍未验收**。
+
+固定参考仍为 Univer v1.6.0、commit `eaf4cfa04fabdbcfc922c692f3450459f8a29546`：[schema.ts][u-doc-schema] 定义三根 order 7/8/9，grid 为有序 r2c1、无序 r1c2、清单 r2c2。两种列表各沿用六卡弹层，清单是单按钮，扩展/溢出/上下文入口没有增量。[menu.ts][u-doc-menu] 的 listValueFactory$ 读取实际 segment 中所选段落，经 resolveDocumentParagraphBullet 解析直接或样式列表；只有全部段落的 listType 相同才给出值，三个 factory 再按 ORDER_LIST、BULLET_LIST、CHECK_LIST 前缀计算 activated。不同 preset 即使同属有序或无序，根状态也不激活。
+
+[ListOperationCommand / ChangeListTypeCommand][u-list-command] 仍使用真实段落范围、segment 和同一 RichTextEditingMutation。固定 [switchParagraphBullet](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/docs/data-model/text-x/build-utils/paragraph.ts#L44) 的同类前缀判断与激活状态的精确预设比较不同：混合有序/无序预设点主按钮仍可整体移除列表；选择一张卡则统一应用该预设。本批保留本地 [document-commands.ts](../../packages/office-studio/src/features/document/commands/document-commands.ts) 已有类别 toggle、显式 preset、编号来源/层级、标题身份、输入会话、权限/锁、一次内容历史和保存行为，没有把激活判断写入 mutation。
+
+[document-toolbar-state.ts](../../packages/office-studio/src/components/document/document-toolbar-state.ts) 此前用 undefined 同时表示不同预设和缺少已识别预设；[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 随后回退 blockStyle，导致普通编号/无序段的混合预设被误亮。本批新增可选的 UI 状态字段 listPresetMixed，通过已有 blockListPreset 的实际结果计算，并复用于 listPreset 汇总；仅在明确混合时阻止这两个根的 activated 回退。无列表状态、旧编号默认预设、调用方未传该字段、清单及所有 disabled、弹层 capability 保持原行为。生产仅改这两个文件；公开 API、领域模型、命令参数、保存、Office/Worker/WASM 协议增量均为 0，内部工具栏状态新增一个可选字段。
+
+[document-toolbar-state.contract.test.mjs](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) 增加三个参数案例（有序、无序、编号标题）和一个旧编号案例。草稿通过真实命令建立不同预设，检查反向选区、结束于下一段 offset 0 的排除、三根状态与无选中卡，并在真实模型副本上确认混合主按钮仍整体移除列表；通过真实 Ribbon adapter / command 统一预设、恢复激活再移除列表，保持标题身份与正文。旧编号无直接 list 记录时仍使用默认 ORDER_LIST。
+
+[document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) 增加 light/classic、dark/grid × 有序/无序四例，装配现有 Workbench、OfficeStudio/FDocument 和 antdv-next。草稿检查主按钮 aria-pressed 与六卡状态、菜单打开不修改模型/历史/事件；真实选卡统一预设、一次历史、undo/redo、内部 JSON 模型重开及主按钮移除列表，保留段落/run ID 和文字。没有新建夹具文件、Mock、原生控件或样式，继续使用统一 ConfigProvider；可替换输入仍沿用 Ant Button、Form、InputNumber 和 Canvas TextArea。
+
+第 15 节的 Home 文件 29 声明/37 计划案例及续核累计 30 属上一批快照；本批另增四个浏览器计划案例、四个契约计划案例。Home 文件当前 30 处声明、41 个计划案例（21 普通、5 处 test.each 展开 12 例、4 处 for-of 展开 8 例）；toolbar-state 契约文件当前 19 处声明、21 个计划案例（18 普通、1 处 test.each 展开 3 例）。2026-11-27 浏览器续核累计为 34 例，所有运行结果为 0。静态语法/引用/diff 由主线统一收尾。本次没有补足全部自定义 Office 编号定义之间的状态区分、完整 story/表格、全部锁/权限/范围、原生 IME、主题/焦点、浏览器/Office 文件或性能验收；完整字符 Picker 与段落继承方案仍待确认，本批未实施。
+
+[u-list-picker]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/list-type-picker/Picker.tsx
+[u-list-picker-index]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/list-type-picker/index.ts
+[u-paragraph-resolution]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/docs/data-model/paragraph-style.ts
+[u-paragraph-line-adjustment]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/engine-render/src/components/docs/layout/block/paragraph/line-adjustment.ts
+[u-paragraph-align]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/paragraph-align.command.ts
+[u-list-command]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/list.command.ts
+[u-toolbar-shortcuts]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/shortcuts/toolbar.shortcut.ts
+[u-doc-ui-controller]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/controllers/ui.controller.ts
+[u-shortcut-utils]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/shortcuts/utils.ts
 [u-schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/menu/schema.ts
 [u-menu]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/menu/format-painter.menu.ts
 [u-controller]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/controllers/format-painter.controller.ts

@@ -25,10 +25,13 @@ initialSheet.cells['0:0'] = createCell(0, 0, '甲乙丙')
 const studio = new OfficeStudio({ workbook: initial, currentUserId: 'local-user' })
 const api = FOffice.newAPI(studio)
 const view = ref(toExcelWorkbookView(studio.editor.workbook.model))
-const dark = ref(false), variant = ref('classic'), notifications = []
+const dark = ref(false), variant = ref('classic'), notifications = [], commands = []
 watch(() => studio.editor.workbook.model, model => { view.value = toExcelWorkbookView(model) }, { flush: 'sync' })
+studio.events.addEvent('CommandExecuted', event => commands.push(copy(event)))
 window.sheetLayoutFixture = {
   snapshot: () => copy(studio.editor.workbook.model),
+  revision: () => studio.getWorkbookRevision(studio.activeWorkbookId),
+  commands: () => copy(commands),
   history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit.undo.length, redo: unit.redo.length } },
   notifications: () => copy(notifications),
   selected: () => copy(studio.getSelectionState()),
@@ -209,6 +212,76 @@ test('formula and canvas bridges keep one draft while multiline changes and them
   await editor().press('Tab')
   assert.equal((await snapshot()).sheets[0].cells['0:0'].value, 'formula\nbar')
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
+})
+
+for (const host of ['cell', 'formula']) for (const variant of ['classic', 'grid']) test('layout entries preserve the ' + host + ' draft in ' + variant + ' until cancel, then use rotation history and internal reopen', async () => {
+  await page.evaluate(({ host, variant }) => {
+    window.sheetLayoutFixture.seed([{ value: '甲乙丙' }, { column: 1, value: 'outside' }])
+    window.sheetLayoutFixture.appearance(false, variant)
+    if (host === 'formula') window.sheetLayoutFixture.layout('setFormula', '=1/4')
+  }, { host, variant })
+  await select()
+  const before = await snapshot(), depth = await history()
+  const revision = await page.evaluate(() => window.sheetLayoutFixture.revision())
+  const input = host === 'cell' ? editor() : formula()
+  if (host === 'cell') await grid().press('F2')
+  if (host === 'formula') await input.focus()
+  const draft = host === 'cell' ? '未提交布局' : '=9+1'
+  await input.fill(draft)
+  const commands = await page.evaluate(() => window.sheetLayoutFixture.commands())
+  for (const composing of [false, true]) {
+    if (composing) {
+      await input.dispatchEvent('compositionstart')
+      await page.evaluate(variant => window.sheetLayoutFixture.appearance(true, variant), variant)
+    }
+    for (const id of ['sheet.menu.horizontal-align', 'sheet.menu.vertical-align', 'sheet.menu.text-wrap',
+      'sheet.command.set-shrink-to-fit', 'sheet.menu.text-rotation']) {
+      const button = (await homeItem(id)).getByRole('button')
+      await expect(button).toBeDisabled(); await button.evaluate(element => element.click())
+    }
+    for (const request of [
+      { id: 'sheet.command.set-align', params: 'right' },
+      { id: 'sheet.command.set-vertical-align', params: 'top' },
+      { id: 'sheet.command.set-wrap-strategy', params: 'clip' },
+      { id: 'sheet.command.set-wrap', params: true },
+      { id: 'sheet.command.toggle-wrap' },
+      { id: 'sheet.command.set-shrink-to-fit' },
+      { id: 'sheet.command.set-text-rotation', params: 'v' },
+      { id: 'sheet.command.set-horizontal-text-align', params: 3 },
+      { id: 'sheet.command.set-vertical-text-align', params: 1 },
+      { id: 'sheet.command.set-text-wrap', params: 3 },
+      { id: 'sheet.command.set-horizontal-alignment', params: 'right' },
+      { id: 'sheet.command.set-vertical-alignment', params: 'top' },
+    ]) {
+      await page.getByTestId('workbench-ribbon').evaluate((element, value) => element.__vueParentComponent.emit('execute', value.id, value.params), request)
+    }
+    await expect(input).toHaveValue(draft); await expect(grid()).not.toBeFocused()
+    await expect(page.locator('.ribbon-command-menu:visible')).toHaveCount(0)
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth)
+    assert.equal(await page.evaluate(() => window.sheetLayoutFixture.revision()), revision)
+    assert.deepEqual(await page.evaluate(() => window.sheetLayoutFixture.commands()), commands)
+  }
+  await input.dispatchEvent('compositionend')
+  await expect((await homeItem('sheet.menu.text-rotation')).getByRole('button')).toBeDisabled()
+  await input.press('Escape'); await expect(grid()).toBeFocused()
+  assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth)
+  await chooseMenu('sheet.menu.text-rotation', '竖排')
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].style.rotationVertical).toBe(true)
+  const rotated = await snapshot()
+  for (const key of ['value', 'formula', 'display', 'dataType', 'cachedDataType', 'richText']) {
+    assert.deepEqual(rotated.sheets[0].cells['0:0'][key], before.sheets[0].cells['0:0'][key])
+  }
+  assert.deepEqual(rotated.sheets[0].cells['0:0'].style.font, before.sheets[0].cells['0:0'].style.font)
+  assert.deepEqual(rotated.sheets[0].cells['0:1'], before.sheets[0].cells['0:1'])
+  assert.deepEqual(await history(), { undo: depth.undo + 1, redo: 0 })
+  await command('sheet.command.undo'); await expect.poll(snapshot).toEqual(before)
+  await command('sheet.command.redo'); await expect.poll(snapshot).toEqual(rotated)
+  await page.evaluate(value => window.sheetLayoutFixture.reopen(JSON.stringify(value)), rotated)
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].style.rotationVertical).toBe(true)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].value, before.sheets[0].cells['0:0'].value)
+  assert.equal((await snapshot()).sheets[0].cells['0:0'].formula, before.sheets[0].cells['0:0'].formula)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  await expect(canvas()).toHaveAttribute('data-layout-test-mount', 'original')
 })
 
 test('TextArea retains validation choices and an IME Enter cannot accept a highlighted option or commit', async () => {

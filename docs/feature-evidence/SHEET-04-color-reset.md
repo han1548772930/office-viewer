@@ -53,3 +53,23 @@
 边框主区已按固定 `CellBorderSelectorMenuItemFactory` 的状态契约接线：上游在 `SetBorderBasicCommand` 执行后按 `BorderStyleManagerService.type` 显示当前预设图标；本地 [sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 从既有 `borderPreset` 生成 [SheetBorderIcon.vue](../../packages/office-studio/src/components/spreadsheet/SheetBorderIcon.vue)，与弹层复用 15 个预设预览，保留原 preset 参数和拒绝后的 accepted state。[尺寸证据](SHEET-RIBBON-custom-popup-sizing.md)记录五种斜线 SVG、classic/grid、API 更新和保护邻格拒绝的浏览器草稿；均未运行。
 
 七个入口继续使用共享 Ribbon 或 `antdv-next` 颜色/边框控件及主题 token。本轮只执行静态来源、差异和链接检查；所有测试、类型检查、构建、Rust/WASM、浏览器、dev 和基准仍后置。完整权限/绘图上下文、明暗主题、hover/箭头几何、焦点与真实 IME、撤销重做/Office 重开和大样本继续保留未验收。增大/减小字号的实现与新增草稿见[2026-11-27 字号续核](SHEET-04-05-rich-text-font-editing.md#2026-11-27-增大减小字号续核)。
+
+## 2026-11-27 继承颜色重置续修
+
+继续读取固定版 `packages/sheets/src/commands/commands/set-style.command.ts` 的四个 mark 命令与颜色 set/reset、`packages/sheets-ui/src/menu/menu.ts` 的 activated/value 订阅、`packages/sheets-ui/src/commands/commands/inline-format.command.ts` 的整格/行内分派，以及 `packages/sheets/src/basics/cell-style.ts` 的 `handleStyle/mergeStyle`。固定底层将 `cl.rgb/bg.rgb` 写为 null 后移除空值；普通文字重置仍写主题 gray.900。项目保留上文既有的显式无色契约，不把这两条上游路径宣称为同一保存语义。四个开关的整体选区/运行混合判断与上游主格翻转差异继续保留。
+
+静态发现 [sheet-font-format-command.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-font-format-command.ts) 曾让颜色 null 与 mark null 共用删除作者字段的分支；有默认、行列、主题或目录引用颜色时，重置随后会重新组合出继承颜色。这与本项目“颜色 null 表示显式无色”的既有要求矛盾。本次仅区分这两条路径：
+
+| 动作 | 处理及保存行为 |
+| --- | --- |
+| 普通选区文字/填充颜色 null | 使用既有 `resetPositions` 扫描已存在的目标格，再复用颜色写入循环，将 `authoredStyle.font.color` 或 `authoredStyle.fill` 置为 null；清除对应文字运行颜色覆写，保留引用与其他格式。 |
+| 字体 mark null | 继续删除对应直接/run 字段并恢复有效继承，不改混合翻转。 |
+| 清除格式 | 继续使用既有独立清除命令恢复继承，本批没有修改该命令。 |
+
+重置不新增空白格；多选重叠去重、筛除行跳过、手动隐藏行保留、保护检查及内容历史仍走原入口。普通选区、Studio、Facade 和 standalone view 复用修正后的实现；编辑中的局部文字重置仍走原输入会话与运行格式路径。本批没有新增接口、UI、Worker/WASM 协议或根入口，这一行仍为 **7 个常驻根**，扩展、独立 overflow 和上下文根增量均为 **0**。
+
+[sheet-font-color.contract.test.mjs](../../packages/office-studio/tests/sheet-font-color.contract.test.mjs) 新增 2 条声明：默认/行列/目录引用颜色的 model/view 重置、重叠与稀疏目标、筛除及手动隐藏、no-op、原始值/公式缓存/运行扩展保留；以及 Facade 的两条历史、撤销重做、改变来源颜色后的快照重开。文件声明从 24 增为 **26**。[sheet-font-color.browser.test.mjs](../../packages/office-studio/tests/sheet-font-color.browser.test.mjs) 新增 1 条真实 Workbench 夹具草稿，从 19 增为 **20**，覆盖两种 Ribbon 重置、空白邻格、显式作者 null、运行/链接保留、历史、重开后的自动色状态、最近色与 Canvas 焦点。全部未运行。
+
+本批沿用共享 Ribbon 与 `antdv-next` 颜色控件、Form 和主题 token，没有新增可替换控件。实际明暗主题、hover/focus、焦点恢复、Windows IME、Office 文件重开和大样本性能继续未验收；快照草稿不代替 XLSX/独立 Office 验证。静态检查结果另行记录，不提升功能验收状态。
+
+限定静态检查通过：上述 4 份修改文件包含的 4 段 TS/JS（含内嵌夹具）语法、21 处本地导入、17 条 Markdown 本地链接及 1 处锚点，以及冲突标记和限定 diff 空白检查。上游 HEAD 已复核为固定提交。没有执行测试、类型检查、构建、Rust/WASM、dev、浏览器或基准，所有功能继续未验收。

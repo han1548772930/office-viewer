@@ -88,7 +88,7 @@ Code 桌面浮动区为字体、语言、More 三个 Ant 触发控件，移动�
 | [document-structured-popmenus.contract.test.mjs](../../packages/office-studio/tests/document-structured-popmenus.contract.test.mjs) | 13：7 挂载实际执行，分组/显隐、原容器转换、嵌套 Code 的栏目标、下方容器能力、完整 More patch 和权限/不存在目标原子性 |
 | [document-structured-facade.contract.test.mjs](../../packages/office-studio/tests/document-structured-facade.contract.test.mjs) | 8：实际 OfficeStudio 注册/事件/一次历史、font/More/source 联合事务、内容锁/权限/取消/无效参数、自定义登记解除、legacy 混合 runs、转换/undo/redo/body/保存重开 |
 | [document-structured-canvas.contract.test.mjs](../../packages/office-studio/tests/document-structured-canvas.contract.test.mjs) | 1：字体改变真实 glyph 度量、命中和 Canvas scene.font，逻辑 ID/源码不变；使用可复现人工度量，不是浏览器字体或性能验收 |
-| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 第三批 7：实际 Canvas/Ant 桌面字体/More、移动 Drawer、取消/旧目标、T/空段插入、表格后真实 Quote/Column、辅助 header 内容插入；新增 table/blank 样本及 cellBlockId 几何定位。2026-11-27 另增 1 个桌面触发器边界草稿，见第 5 节 |
+| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 第三批 7：实际 Canvas/Ant 桌面字体/More、移动 Drawer、取消/旧目标、T/空段插入、表格后真实 Quote/Column、辅助 header 内容插入；新增 table/blank 样本及 cellBlockId 几何定位。2026-11-27 另增 1 个桌面触发器边界草稿，见第 5 节；第 7 节再增 2 个声明 / 4 个计划案例，第 8 节再增 1 个声明 / 2 个计划案例 |
 | [document-code-blocks.contract.test.mjs](../../packages/office-studio/tests/document-code-blocks.contract.test.mjs) | 更新旧 fontFamily 返回值和未知 language 不再丢失的预期，没有新增用例 |
 
 静态核对仅为 UTF-8 源码阅读、rg、git status/diff 和声明/来源核对；未执行测试、类型、构建或浏览器。修正了命令标签缺项、legacy 字体漏转发、混合字体同首值无操作、table clip 锚点、Drawer 默认焦点竞争及语言别名原型键误识别；原型键断言并入既有语言保真草稿，56 个新增用例的口径不变。草稿数量不是已通过记录。
@@ -104,3 +104,37 @@ Code 桌面浮动区为字体、语言、More 三个 Ant 触发控件，移动�
 5. **平台与性能**：规定前端/Rust/WASM/浏览器检查，WebGPU/Canvas2D、首屏/滚动/编辑/缩放、Worker/WASM 复制/取消与内存、大样本前后基准均未执行。本批不声称性能优化或整条链路零拷贝。
 
 中央对齐表与 BACKEND_REQUIREMENTS 由主任务维护。本证据只记录前端真实落盘、接口和未验收项，不把临时后置工作改为交付范围缩减。
+
+<a id="code-panel-composition-and-column-readonly"></a>
+
+## 7. 2026-11-27 Code 属性组合输入与多栏数只读补充
+
+状态：**未验收**。本次只补三个现有生产组件、一个既有浏览器草稿和本证据；三个组件新增 22 行、删除 6 行，不含 Workbench 中此前批次的在途改动。没有新增常驻、扩展、溢出或上下文入口，原入口分类计数不变。
+
+入口依据仍为固定 [Code ES](../../.research.local/univer-1.6.0/packages/docs-code-ui/lib/es/index.js) 的 `Pt/Ft/It/M` 菜单分支（常驻 order 7 / r1c7、浮动 order 12）及六个 paragraph 挂载；Column 沿用[初批 paragraph schema 记录](DOC-13-14-16-17-structured-blocks.md#22-quote--callout--code-的-paragraph-context-挂载)的菜单插入命令。组合输入期间的取消、提交和迟到重开规则是本地交互补充，上游真实 IME 行为尚未核实。
+
+| 修改文件 | 落盘行为与接口 |
+| --- | --- |
+| [DocumentCodeBlockPanel.vue](../../packages/office-studio/src/components/document/DocumentCodeBlockPanel.vue) | 沿用 Ant Form/Input.TextArea，记录 compositionstart/end，同步发出新增内部事件 `composition-change(boolean)`；组合期间禁用应用、取消、关闭图标、Escape 和遮罩关闭。键盘 capture 同时处理 isComposing/keyCode 229；迟到 afterOpenChange 不转移组合输入焦点；关闭后 apply 不发出提交。 |
+| [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) | 接入该组合状态并在失活时清除；所有 Code 打开路径共用 openCodeBlockPanel 的组合守卫，applyCodeBlock 同时拒绝关闭状态和组合状态。原目标、候选、权限、内容历史与焦点恢复继续走既有链路。 |
+| [DocumentStructuredBlockPanel.vue](../../packages/office-studio/src/components/document/DocumentStructuredBlockPanel.vue) | 栏数 InputNumber 的 disabled 改为 `readOnly || !!block`，避免插入态显式 false 覆盖 Form 的只读上下文；已有组仍通过原栏操作修改数量。 |
+
+真正提交仍由 `applyCodeBlock` → document-commands → document-structure-commands → [updateDocumentStructuredCodeBlock](../../packages/office-studio/src/features/document/services/document-code-editing.ts) 发布完整候选，包含源码、配置、字体、控件/绑定和辅助 host；保存仍用 [document-output.ts](../../packages/office-studio/src/api/document-output.ts) 编码公开 body、story 与插件资源。本次没有领域 DTO、公开 API、存储格式或 Worker/WASM 协议增量；新增的 composition-change 只在两个 Vue 组件之间传递。
+
+[document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) 新增 2 个 test 声明，各按 classic/light 与 grid/dark 注册，共 **4 个计划案例**。Code 草稿使用真实 Canvas 右键、Ant 输入和实际 Modal/Workbench 回调，覆盖组合中的四类迟到重开、提交/取消/焦点回调、Escape/遮罩、完整输入状态、命令事件和历史不变；结束组合后真实提交一次历史，再撤销、重新打开后取消，调用迟到回调，最后重做和保存重开。取消后的目标仍有效，关闭守卫不会被旧 revision 条件掩盖。Column 草稿覆盖背景 Canvas 组合导致的实际禁用、栏数 4 的草稿保留、恢复后的真实四栏插入、原段落 ID、一次历史、撤销/重做和保存重开。
+
+本次仅用 Babel AST 解析计数，整个该浏览器文件为 **29 个 test 声明 / 31 个计划案例 / 0 个运行结果**；test 回调内部的场景循环不另计注册案例。上述 4 个计划案例不计入第三批原有 56 个新增用例。已回读本次源码和 diff；统一静态检查由主任务收尾，未运行测试、类型检查、构建、dev/服务、浏览器、Rust/WASM、Office 文件样本或性能基准。Ant 主题、焦点恢复和真实 Windows IME 仍未验收，全部 Pro 与完整工作台范围保持不变。
+
+<a id="structured-modal-lifecycle"></a>
+
+## 8. 2026-11-27 结构属性 Modal 生命周期接线
+
+状态：**未验收**。从 Insert 与结构上下文继续追踪后，本次只修改 CodePanel、StructuredBlockPanel、原浏览器草稿和本证据。相对第 7 节交接时的组件版本，生产新增 5 行、删除 2 行；常驻、扩展、溢出和上下文根增量均为 0。
+
+实际版本来自本项目 `node_modules/antdv-next/package.json:4` 的 `1.8.2`。已安装的 `dist/modal/interface.d.ts:68/70/112` 声明 afterClose、afterOpenChange 函数 props 和 focusTriggerAfterClose；`dist/modal/Modal.js:286/290/441` 声明对应 props，165–207 行的 restProps 将两个生命周期函数传给 Dialog，525 行的 emits 仅为 ok/cancel/update:open。上述路径都位于 `node_modules/antdv-next`。Context7 返回的 [Modal API](https://github.com/antdv-next/antdv-next/blob/main/docs/src/pages/components/modal/index.en-US.md) 同样区分 props 与事件，但文档索引没有覆盖 1.8.2，返回 main 文档不能作为本项目安装版本验证。
+
+[DocumentCodeBlockPanel.vue](../../packages/office-studio/src/components/document/DocumentCodeBlockPanel.vue) 将原事件监听改为 `:after-close` / `:after-open-change`，让现有 closed 事件和字体/语言/缩进的初始焦点函数接到真实动画生命周期；[DocumentStructuredBlockPanel.vue](../../packages/office-studio/src/components/document/DocumentStructuredBlockPanel.vue) 同样使用 afterClose 函数 prop。两者关闭默认旧触发器焦点归还，由现有 Workbench 的 closeStructureDialog 核对目标后恢复 Canvas 输入。原 composition-change、命令、候选、权限、撤销重做和保存链路继续复用，Vue 事件签名、公开 API、领域模型与 Worker/WASM 协议没有增量。
+
+[document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) 的既有组合输入草稿改为引用实际 afterOpenChange prop；另新增 1 个 test 声明，classic/light 与 grid/dark 外层展开为 **2 个计划案例**。各案例从真实文档名称 Input 获得打开前焦点，经既有 Ribbon operation 分别打开 Code 字体、Code 缩进和多栏属性，检查真实动画结束后的字段焦点；编辑源码/栏间距草稿后取消，检查模型、选区、历史不变并恢复 Canvas 输入焦点。没有手动调用生命周期函数来代替新草稿中的真实关闭流程。Quote/Callout 共用面板的取消场景和未接入工作台打开意图的 language 焦点没有新增专项草稿。
+
+仅解析 AST 计数后，当前整个浏览器文件为 **30 个 test 声明 / 33 个计划案例 / 0 个运行结果**；上节 29/31 是此前交接快照，内部场景循环仍不另计注册案例。已回读本次源码与 diff；统一静态检查由主任务收尾。测试、类型、构建、dev/服务、浏览器、Rust/WASM、Office 文件和基准全部后置，真实主题、动画、焦点与 Windows IME 仍未验收；本次接线修正不代表 Insert、结构功能或全部 Pro 已完成。

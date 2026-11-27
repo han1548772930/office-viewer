@@ -11,7 +11,7 @@ Microsoft 资料审阅日期：2026-11-21，主要以 Microsoft 365 桌面版公
 
 - 一个 Ribbon 根入口是合并菜单 schema 后位于某个标签和分组中的顶层项。split、menu、select 的子项不增加根入口计数，动态菜单按其根菜单计一次。Docs 的 10×10 表格尺寸格是 Table 的子菜单，不另算 100 个按钮。
 - 插件 schema 注入的常驻 Ribbon 项计入固定版 tab 根入口。依选择状态才出现的 contextual tab、右键菜单、浮动对象工具栏、工作表标签菜单和页脚菜单分开统计。
-- 本地数值统计 `createSheetRibbon` / `createDocumentRibbon` 的常规根声明，包含条件隐藏项；Sheets 动态函数分类按当前 catalog 的 9 类静态展开。嵌入组件缺省 classic，示例缺省 grid，两种变体共享 schema。额外入口仍计入本地数量，但不因此认为与上游功能等价；整组进入 More 不增加入口数。
+- 本地数值统计 `createSheetRibbon` / `createDocumentRibbon` 的常规根声明，包含条件隐藏项；Sheets 函数根按当前目录的 8 个真实类别加常用七项投影展开，共 9 根。嵌入组件缺省 classic，示例缺省 grid，两种变体共享 schema。额外入口仍计入本地数量，但不因此认为与上游功能等价；整组进入 More 不增加入口数。
 - Univer 商业 Pro 插件实现源码不在固定检出中。Pro 清单依据项目的公开功能规格和已有 feature ID，不把推测的闭源按钮登记为上游源码事实。
 
 ## Univer 固定入口统计
@@ -54,12 +54,12 @@ v1.6.0 OSS 常规 Ribbon 静态根声明为 **63 项**，2026-11-27 当前本地
 | --- | ---: | ---: | --- |
 | START / 开始 | 30 | 32 | 本地 clipboard 5、font 11、layout 6、number 5、tools 5。搜索功能与快捷键面板位于工具组 r2c2 / r1c2，范围主题在 r1c4 跨两行。查找单元格保留在 Data；面板读取 Ribbon 元数据和当前编辑器的真实快捷键。 |
 | INSERT / 插入 | 9 | 9 | 本地 media 4、cells 5。图片、超链接、图表、迷你图走媒体组，三项快速验证和数据条/图标集走单元格组。线程评论和全部动态行为仍待核对。 |
-| FORMULAS / 公式 | 12 | 12 | 固定版是 11 类函数菜单与 1 个计算选项；本地为 9 个 catalog 根分类、计算模式/编辑公式/重算 3 项。[参数表单、NA 信息根与选区禁用](SHEET-09-formulas-entry-review.md)已接；根数相同仍缺工程、数据库及完整函数目录，自动范围/批量插入和迭代设置仍未齐。 |
+| FORMULAS / 公式 | 12 | 12 | 固定版是 11 个函数菜单与 1 个计算选项；本地为 8 个真实类别加常用投影共 9 个函数根、计算模式/编辑公式/重算 3 项。[常用七项与真实分类](SHEET-09-formulas-entry-review.md#common-function-projection)已接；根数相同仍缺工程、数据库及完整函数目录，自动范围/批量插入和迭代设置仍未齐。 |
 | DATA / 数据 | 6 | 12 | 本地 organization 5（排序、筛选和 3 个大纲根）、rules 2、pivot 4、data-tools 1。按实际 items 数组及 outlineItems 展开复算，纠正旧合计。 |
 | VIEW / 视图 | 6 | 6 | 本地 display 4、visibility 2；背景根在冻结后、order 0.5、r1c2 跨两行，设置/删除两子项接实际模型；十字高亮属于固定 OSS 入口。背景历史/资源重开、两后端和所有动态状态仍未验收。 |
 | 合计 | **63** | **71** | 本地包含扩展项，常规数量、上下文数量与功能完成度分别记录。 |
 
-Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。零根项的组不进入数量；根声明按菜单 schema 的产品归属静态投影。固定 desktop 装配与 factory 决定最终显隐，尚未执行。本地公式按当前 118 项 catalog 的 9 类静态展开；没有执行求值引擎。
+Sheets 固定源码的组顺序为 START HISTORY/FORMAT/LAYOUT/NUMBER/OTHERS；INSERT EDIT/MEDIA/CELL/OTHERS；FORMULAS BASIC/OTHERS；DATA FORMULAS/RULES/ORGANIZATION/ANALYSIS/OTHERS；VIEW DISPLAY/VISIBILITY。零根项的组不进入数量；根声明按菜单 schema 的产品归属静态投影。固定 desktop 装配与 factory 决定最终显隐，尚未执行。本地公式唯一目录195项、8个真实类别，数学74、统计21、文本25、日期27、信息9；加常用投影后函数根9、函数菜单出现项202，插入函数子项另计1，全部子项203。六个三角分支、PI/角度转换、八个反三角分支及随后47个数学名称分别记录；投影、分类、原 ROUND 和本批五个原函数修正不增加唯一名称。118/126/131、三角批137项9类、投影批137项8类、角度转换140、反三角148、双曲对数160、奇偶整商164、阶乘组合168、ROUND系列172、CEILING/FLOOR179、整数聚合183、SUMSQ184、数组求和189和转换193均为历史快照，没有执行求值引擎。
 
 2026-11-26–27 顶部复核另补 [Sheets 快捷条件格式](SHEET-14-quick-formatting.md)、[Sheets 上下文搜索](COMMON-02-sheet-context-feature-search.md)、[Docs 命名段落样式](DOC-named-paragraph-styles.md)与两产品快捷键面板接线。搜索的 `contextCommand` 现在转发 key、commandId 和完整 params；Sheets Canvas 与右键共用实际上下文，Docs 保留结构/字段目标及既有可用性判断。新增的快捷键面板根为每产品 1 个；条件格式子项、搜索结果及溢出副本均不新增根数。
 
@@ -85,7 +85,75 @@ Docs 表格覆盖层的禁用 hover/focus 已同步修正；[完整 Picker 大�
 
 后续批复用真实样式投影补齐[切片器/时间线预览和默认选中](SHEET-RIBBON-custom-popup-sizing.md#slicer-style-preview-continuation)，保持 14/12 内置目录、作者样式及额外默认重置动作；样式块改为 72px/4px padding，本地主 gallery 三列与上游七列继续单列差异。[快捷下拉预设](SHEET-13-quick-dropdown-date.md#快捷预设尺寸复核)与[页眉页脚 Form row](DOC-03-header-footer-ribbon-sizing.md#页眉页脚面板与插表对话框续核)也已小修，后者仍无 Modal 生产打开路径。四份生产文件、两份既有草稿均无常驻、扩展、溢出或上下文根增量，Sheets 71 / Docs 54 保持不变；全部运行验证后置。
 
-本轮最终静态检查通过：16 个 TS/JS、5 个 Vue 模板、5 个样式块、3 段内嵌脚本、179 处本地引用；7 份证据/清单的 538 条链接、71 处锚点及 23 个文本文件空白/冲突标记检查通过。该结果只覆盖本轮限定文件，不执行产品或运行验收，当前所有功能仍未验收。
+前批续核修正[字体参数拒绝顺序与共享受控输入](SHEET-04-font-family-size.md)、[富内容页眉页脚宿主导航](DOC-03-header-footer-ribbon-sizing.md#rich-story-navigation)及[文本取整/WEEKDAY](SHEET-09-formulas-entry-review.md#scalar-function-continuation)。当时函数目录 126 项、9 类是既有代码静态清点，八个信息谓词不计作该批新增；常驻、扩展、上下文、溢出根及函数子项增量均为 0，Sheets 71 / Docs 54 不变。编辑/历史/保存重开、主题和合成组合输入草稿已补，全部未运行；完整功能与真实 IME/Office/性能仍未验收。
+
+前批继续补[颜色 null 的稀疏显式重置](SHEET-04-color-reset.md#2026-11-27-继承颜色重置续修)、[正文/flat/rich story 组合输入期间的字符格式/清除状态与执行守卫](DOC-02-clear-formatting.md#home-format-composition)、[公式单格引用、文本转换与 UTF-16](SHEET-09-formulas-entry-review.md#scalar-input-continuation)，并接回 LEFT/MID/RIGHT/WEEKDAY/VALUE 五个目录子项。该批唯一函数数 **131**、分类 **9**，该批函数子项 +5；常驻、扩展、上下文、溢出根增量为 0，Sheets 71 / Docs 54 不变。仍使用既有 Ant 控件、命令、权限、历史与保存链路；全部草稿未运行，完整功能和运行验收继续未完成。
+
+随后[LEN/UPPER/LOWER/TRIM](SHEET-09-formulas-entry-review.md#scalar-text-reference-continuation)补单格/INDEX 与错误传播，TRIM 按普通/全角空格规则保留 Tab/换行/NBSP；真实求值和 Facade 编辑/重算/历史/快照重开草稿已补，均未运行。目录和各入口口径不变。
+
+快捷键续批补齐[Sheets 字号步进](SHEET-04-font-family-size.md#2026-11-27-字号快捷键续修)与[Docs 上下标](DOC-02-clear-formatting.md#fixed-vertical-shortcuts)：Sheets 使用 Ctrl/Cmd+Shift+句号/逗号，Docs 使用 Ctrl/Cmd+句号/逗号且无 Shift；既有 Ribbon 项登记 shortcut，复用原命令、输入范围及历史。Docs 内部 toggle-format 的 field 扩展两个取值，公共 API、持久模型、保存和 Worker/WASM 协议无新增。未新增常驻、扩展、上下文或溢出根，131 项目录与 Sheets 71 / Docs 54 保持；浏览器、IME、Office 和性能均未验收，草稿未运行。
+
+此前限定批的静态检查通过：16 个 TS/JS、5 个 Vue 模板、5 个样式块、3 段内嵌脚本、179 处本地引用；7 份证据/清单的 538 条链接、71 处锚点及 23 个文本文件空白/冲突标记检查通过。字体、story、颜色与公式续批的[静态收尾](../UNIVER_TOOLBAR_PARITY.md#font-story-formula-static-close)另覆盖当时 27 个修改文件：23 段脚本、3 个模板、3 个样式块、314 处本地引用及八份 Markdown 的链接/锚点均通过。静态检查不执行产品或运行验收，当前所有功能仍未验收。
+
+前批[三角标量续接](SHEET-09-formulas-entry-review.md#trigonometric-scalar-continuation)新增六个计算分支与数学子项，当时唯一目录 **137 项、9 类**，数学 15；常驻、扩展、上下文和溢出根增量为 0，Sheets 71 / Docs 54 保持。标量转换、范围/INDEX、原错误、数值上限及 Facade 编辑/重算/历史/native 保存重开的草稿已补，全部未运行。common 随后按[独立投影](SHEET-09-formulas-entry-review.md#common-function-projection)修正；数组/spill、完整目录和 Office/性能仍未齐或未验收。
+
+同批[Docs 删除线/对齐/列表七条快捷键](DOC-02-clear-formatting.md#home-format-layout-shortcuts)补入现有命令与正文/flat/rich story 桥，本组 12 条绑定都有静态接线，四个既有根和四个对齐子项数量不增加；相同对齐幂等与固定恢复 UNSPECIFIED 的差异保留。浏览器计划新增 6 例、该阶段累计 20 例、运行 0；内部 toggle-format.field 新增 strike，公共 API、领域模型及持久化协议无新增。
+
+[Sheets 前五根续核](SHEET-08-clipboard-ui-2026-11-22.md#sheets-start-history-five-roots-review)追到真实命令/历史/保存，[格式刷](SHEET-04-format-painter.md#sheets-format-painter-history-run-style-review)修复完整选区的扩大/撤销/重做，并复用已有 model/view run 字体清除方法；值、正文和未知扩展保留。新增合同/浏览器草稿 4/1 条，当前两文件声明 60/56，均未运行。[清除格式的 merge interceptor](SHEET-02-merge-clear.md#sheets-clear-formatting-dispatch-review)有真实固定依据，共享 clear ID 公开派发仍缺；paste formats 的 run 字体随后按[本批证据](SHEET-08-clipboard-ui-2026-11-22.md#sheets-format-paste-run-style-review)修复。各入口根数量、完整 Sheets/Docs/Pro 范围与未验收状态保持。
+
+[前批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#trig-shortcut-painter-static-close)覆盖当时累计 34 个修改文件：23 个代码/草稿文件的 28 段脚本、3 个模板、3 个样式块和 353 处本地引用通过；十一份 Markdown 的本地链接/锚点、文本与 diff、固定 HEAD 和参考工作树均通过。当时137项/9类仅为静态快照，不覆盖本批新增；全部产品运行验证继续后置，完整 65 组仍未验收。
+
+[常用七项投影](SHEET-09-formulas-entry-review.md#common-function-projection)已复用原目录及 Ant 函数表单；SUM 归数学，AVERAGE/COUNT/COUNTA/MIN/MAX 归统计。当时唯一137项/8类、函数根9，菜单出现项144与插入函数子项1分开记录；菜单出现项 +7 不计作新算法或功能验收。三份既有草稿补精确顺序、同一目录对象、真实求值、分类/派发和原 SUM 编辑/历史/native 重开，全部未运行。
+
+同批[NA 参数错误](SHEET-09-formulas-entry-review.md#na-argument-count)恢复固定 #N/A，[格式粘贴目标字体/内容事件](SHEET-08-clipboard-ui-2026-11-22.md#sheets-format-paste-run-style-review)保留正文、完整权限、recent 历史并隔离纯格式值事件；对应既有草稿未运行。[Docs 显式0与继承方案](DOC-02-clear-formatting.md#paragraph-alignment-unspecified)涉及23个生产文件、345–580行及220–360行草稿，已请求较大改动确认，尚未实施。当前根数量与65组未验收状态保持。
+
+[本批静态收尾](../UNIVER_TOOLBAR_PARITY.md#common-clipboard-static-close)覆盖累计41个修改文件：35段脚本、4个模板、4个样式块、537处本地引用及14份mjs语法通过；目录137项/8类、常用7项、函数根9及函数菜单出现项144分别记录。十一份Markdown链接/锚点、文本/diff、固定HEAD与参考工作树检查通过，全部运行验证后置，65组继续未验收。
+
+[前一批数学与编号续作](../UNIVER_TOOLBAR_PARITY.md#math-numbering-values-continuation)增加11个数学标量分支和子项，当时目录148项/8类、数学27、函数根9、函数菜单出现项155和插入函数子项1分别记录。Docs 编号能力改用活动段落上下文，restart/continue 复用活动输入和 composition 守卫；相关公式/Facade/Ribbon/浏览器草稿未运行，Docs 两份草稿24个计划、运行0。根数量、全部65组和数组/Office/性能验收状态保持。
+
+同批 [values 与强制字符串](SHEET-08-clipboard-ui-2026-11-22.md#sheets-values-forced-string-review)补旧公式目标的正文与 rich/image/body 清理并保留目标样式/独立链接，原权限/验证/事件/历史复用；4条合同与1条浏览器计划未运行，完整 rich 分类仍有缺口。既有六个三角函数改用固定 #N/A 参数数目错误，未增加目录或入口。
+
+[前一批静态收尾](../UNIVER_TOOLBAR_PARITY.md#math-numbering-values-static-close)覆盖当时累计41个修改文件：35段脚本、4个模板、4个样式块、541处本地引用及14份mjs语法通过；目录148项/8类、常用七项、函数根9与菜单出现项155分别确认。文档链接/锚点、文本/diff及固定参考版本通过，运行验证仍后置。
+
+[此前双曲、指数对数与 ATAN2](SHEET-09-formulas-entry-review.md#hyperbolic-log-atan2-scalar-continuation)、[EVEN/ODD/QUOTIENT/SQRTPI](SHEET-09-formulas-entry-review.md#even-odd-quotient-sqrtpi-scalar-continuation)和[FACT/FACTDOUBLE/COMBIN/COMBINA](SHEET-09-formulas-entry-review.md#factorial-combination-scalar-continuation)在既有引擎/目录共补20个数学标量分支和子项，该批唯一168项/8类、数学47、函数根9，函数菜单出现项175、插入函数子项1、全部子项176。原 Ant 表单/输入、权限、历史和 native 保存复用；四份既有公式/Facade/Ribbon/浏览器草稿已补且未运行。所有根口径、65组和完整数组/Office/性能验收状态保持。
+
+同批 Docs [缩进/行距/段距](DOC-02-clear-formatting.md#home-paragraph-indent-spacing)补活动输入/composition 守卫，新增4例后 Home/story累计28个浏览器计划、运行0；Sheets [公式粘贴/隐藏列宽/recent](SHEET-08-clipboard-ui-2026-11-22.md#sheets-special-paste-modes-review)补普通值/稀疏空格、cut 引用、隐藏/span/outline及零宽列，合同55/浏览器26/专项115，运行0。原 Ant 控件、命令/权限、事件/历史/native保存沿用，默认宽/权限粒度、单位/继承、数组和Office差异仍保留，根数量不增加。
+
+既有[TRUE/FALSE/NOW/TODAY 数目错误](SHEET-09-formulas-entry-review.md#zero-argument-function-arity)恢复固定 #N/A 与参数错误优先级，原时钟/日期系统、名称和入口保持；公式/NA Facade 七格编辑、历史和 native重开草稿未运行。
+
+Sheets [普通整段字体 run](SHEET-08-clipboard-ui-2026-11-22.md#sheets-uniform-rich-text-paste-review)复用原解析和字体 view patch，external HTML 将普通字体归 cell 样式、values 保留目标字体/独立链接；其余正文与 forced-string 沿原行为，完整 body 和非图片 publicBody 仍缺。新增2 UI/1浏览器草稿，当前57/27/专项118、运行0，前述55/26/115为特殊模式批快照；无新模型/API/协议或根，Office/IME/性能未验收。
+
+Docs [表格工作台会话边界](DOC-06-enhanced-tables.md#table-workbench-input-session)纳入失活/composition，并读取原生命周期版本保证恢复重算；该批表格草稿新增4例，当时共12声明/18计划、运行0。真实命令/权限/历史/native保存复用，无新根或协议。
+
+随后[表格属性与 UI 操作](DOC-06-enhanced-tables.md#table-ui-operation-sessions)补属性打开和 create/open-table 的原会话/权限条件、四处属性显式 disabled；浮动偏好只拦失活回调，活动只读/IME 切换保持且无内容历史。既有草稿新增2声明/12计划，当前14声明/30计划、运行0；创建/通用右键目标绑定、完整辅助 host 及真实主题/焦点/IME/Office/性能仍未验收，模型/API/保存/协议和根增量0。
+
+[前批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#math-table-uniform-static-close)覆盖当时累计45个修改文件：39段脚本、5个模板、5个样式块、591处本地引用与15份mjs语法通过，AST确认当时168项/8类、数学47、常用七项、函数根9和175个函数菜单出现项。文档链接/锚点、固定源路径、文本/diff和固定参考版本通过；未执行产品或运行验证，全部65组继续未验收。
+
+随后[ROUND 系列与 TRUNC](SHEET-09-formulas-entry-review.md#rounding-scalar-continuation)补四个数学标量名称和原 ROUND 语义，当时172项/8类、数学51、函数根9、菜单出现项179、picker 子项1、全部子项180。三条公式/一条五依赖 Facade 草稿及原 Ribbon/Ant 表单循环均未运行，模型/命令/权限/历史/native 保存复用；数组/Office/性能未验收。
+
+Docs [Home 字符活动会话](DOC-02-clear-formatting.md#home-character-input-session)给专用字符状态合入失活，原生命周期版本触发恢复；10个字符根与独立命令能力保持。该批 Home 草稿新增2例，单文件当时29声明/37计划，跨 Home/story 续核累计30，运行0；API/模型/保存/协议与根增量0，完整 story/权限/锁/主题/IME/Office/性能未验收。
+
+Sheets [格式刷输入会话](SHEET-04-format-painter.md#sheets-format-painter-input-session-review)让新采样/UI应用/确认与输入/组字状态共用判断，原 Ribbon 不再提前提交格式刷输入草稿；样本与取消保留，取消确认检查工作簿归属。Ant 确定按钮同步禁用，关闭时按输入状态恢复焦点；原两草稿各新增1声明，当前61/57、合计118、运行0。公开 API/模型/保存/协议及根增量0，真实弹窗同时输入/Windows IME/Office/性能未验收。
+
+[前批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#rounding-character-painter-static-close)覆盖当时累计47个修改文件：18份生产、17份草稿/夹具、12份文档。41段脚本、6个模板、5个样式块、604处本地引用及15份mjs语法通过；AST确认当时172项/8类、数学51、常用七项、函数根9、179个函数菜单出现项和picker子项1，无重名。文档链接/锚点、固定源路径、文本/diff与固定版本通过；未执行产品或运行验证，全部65组继续未验收。
+
+继续 [CEILING / FLOOR 七个变体](SHEET-09-formulas-entry-review.md#ceiling-floor-scalar-continuation)，旧版带符号步长、MATH模式、PRECISE默认与ISO独立名称均按真实源码接原引擎。该批179项/8类、数学58、函数根9、菜单出现项186、picker子项1、全部子项187，无新增根；三条公式、一条七依赖 Facade 和原派发/Ant参数表单草稿未运行，完整数组/自动插入/Office/IME/性能未验收。
+
+Docs [Home 混合列表预设](DOC-02-clear-formatting.md#home-list-preset-mixed-state)使有序/无序根按精确预设混合状态停止误激活，原清单、类别toggle、旧编号和能力保持。两生产文件净增4行，内部可选listPresetMixed新增1字段；新增4契约/4浏览器计划，当前19/21与30/41声明/计划、跨Home/story续核累计34，运行0。API/领域/保存/协议/根增量0，自定义Office编号/完整story/主题/IME/Office/性能未验收。
+
+Sheets [清除格式输入会话](SHEET-02-merge-clear.md#sheets-clear-formatting-input-session-review)在原第4根和两格式清除UI命令使用 canQuickFormatSelection，编辑/组字/失活/绘图/权限不足时先于finishEdit拒绝；新增可选内部clearFormatEditable，生产+4/-1，根增量0。合同25、浏览器12声明/预计13用例，运行0；原命令/模型/历史/native保存沿用，共享clear-formatting、clear-range formatOnly与真实IME/主题/焦点/Office/性能仍未验收。
+
+[前批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#ceiling-list-clear-static-close)覆盖当时累计49个修改文件：19份生产、18份草稿/夹具、12份文档。44段脚本、6个模板、5个样式块、621处本地引用及16份mjs语法通过；AST确认当时179项/8类、数学58、常用七项、函数根9、186个函数菜单出现项和picker子项1，无重名。草稿声明/计划口径、文档链接/锚点、固定源路径、文本/diff与固定版本已复核；全部运行验证后置，65组继续未验收。
+
+续接 [GCD / LCM / MULTINOMIAL / MROUND](SHEET-09-formulas-entry-review.md#integer-aggregate-mround-continuation)，保留整数聚合的数字文本/布尔拒绝、稀疏区域错误顺序、2^53/170边界和 MROUND 原始转换/单格限制/epsilon。当前183项/8类、数学62、函数根9、菜单出现项190、picker子项1、全部子项191，新增根0；三条公式、一条四依赖 Facade 与原派发/Ant参数表单循环未运行，完整函数/数组/Office/IME/性能未验收。
+
+Sheets [合并输入会话](SHEET-02-merge-clear.md#sheets-merge-input-session-review)使父/四子项和全部11个 UI 合并命令在编辑/组字时共用 mergeEditable/canQuickFormatSelection，finishEdit 前拒绝并保留草稿；原领域/API/确认/历史/native保存不改。Docs [页面设置 UI 事务](DOC-03-section-breaks.md#doc-page-settings-ui-transaction)补文档权限、成功关闭和 ID/API 切换清理，沿用 Ant Form/Modal/Alert 与主题；公共命令/节尺寸/表格缩放/同 ID 重开仍未实现。两子任务入口增量0，草稿未运行，65组状态保持。
+
+[前批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#integer-merge-page-static-close)覆盖累计52个修改文件：20份生产、19份草稿/夹具、13份文档；47段脚本、7模板、6样式、632处本地引用与17份mjs语法通过。AST确认183项/8类、数学62、常用七项、函数根9、190个函数菜单出现项和picker子项1，无重名；声明/计划区分，Docs外层for漏计已纠正。文档、diff和固定版本通过，运行验证全部后置，65组仍未验收。
+
+本批 [ABS/SQRT/INT/MOD/POWER 与 SUMSQ](SHEET-09-formulas-entry-review.md#abs-sqrt-int-mod-power-sumsq-continuation)修正五个原名称并新增平方和，当前184项/8类、数学63、函数根9、菜单出现项191、picker子项1、全部子项192；四条公式、两条Facade及原派发/Ant表单循环草稿未运行。Sheets [数字格式输入会话](SHEET-06-regional-currency.md#number-format-input-session-review)补五根禁用与提交前守卫，Docs [全屏/缩放焦点](DOC-03-section-breaks.md#doc-view-fullscreen-focus)补任意根全屏先退出和旧请求取消；入口增量0。
+
+[本批统一静态收尾](../UNIVER_TOOLBAR_PARITY.md#scalar-numfmt-view-static-close)覆盖累计54文件：20生产、20草稿/夹具、14文档；49脚本、7模板、6样式、639引用与18份mjs语法通过。AST目录和声明/计划已核对，测试/类型/构建/浏览器/Rust/WASM/Office/基准后置，全部65组继续未验收。
 
 固定版还有 MAIN_AREA、COL_HEADER、ROW_HEADER、FOOTER_TABS、绘图对象上下文菜单。脚本记录 Sheets 130 个右键/浮动层级节点，包含父子层级，不当作根数。本地行列结构/显隐右键传 sheetId/ranges，尺寸入口传命中 sheetId/index；标签复制、颜色与保护亦有实现切片，关联资源、veryHidden 和全部权限/保存闭环仍未验收。具体来源和差异见 Sheets 清点文档。
 
@@ -103,7 +171,7 @@ Docs 表格覆盖层的禁用 hover/focus 已同步修正；[完整 Picker 大�
 
 - [ ] DOC-01 文档模型、渲染与分页布局。
 - [ ] DOC-02 字符格式、段落格式和混合选区状态；[段距/缩进、当前宿主首段状态](DOC-02-paragraph-spacing-indent.md)、[分隔线真实命令/边框/Canvas](DOC-02-horizontal-line.md)及[特殊字符公共命令/整值/事件](DOC-03-header-footer-ribbon-sizing.md#doc-special-character)已落盘，草稿未运行；六个上下文子项挂载、结构 gap、非空段落下边框、旧 flat story 和完整 Picker 仍缺。
-- [ ] DOC-03 分页、分栏、分节及页眉页脚。
+- [ ] DOC-03 分页、分栏、分节及页眉页脚；[富内容页眉↔页脚宿主导航、焦点与正文范围恢复](DOC-03-header-footer-ribbon-sizing.md#rich-story-navigation)已补，草稿未运行，完整工作流与 Office 仍未验收。
 - [ ] DOC-04 大纲、标题折叠和正文目录；目录入口、上下文更新/删除、跳转、页码与前导符完整闭环。
 - [ ] DOC-05 列表和增强列表。
 - [ ] DOC-06 表格、表格上下文命令、尺寸、合并拆分和样式；[顶部 create-table 操作、3×5 尺寸弹窗、公开内容命令及默认整页正文宽](DOC-06-enhanced-tables.md)已接既有插表事务，Studio 操作注册转发、结构 gap、完整 story 插表和 headless 连续分节物理页差异仍缺，草稿未运行。
@@ -135,7 +203,7 @@ Docs 表格覆盖层的禁用 hover/focus 已同步修正；[完整 Picker 大�
 - [ ] SHEET-06 数字格式和 1900/1904 日期系统。
 - [ ] SHEET-07 冻结、网格线、视口和缩放；[冻结图表作者输入与共享绘图命中](SHEET-21-drawing-workbench-affine.md)，未验收。
 - [ ] SHEET-08 剪贴板和选择性粘贴；[图片作者 affine/HTML/PNG 取消与资源](SHEET-19-images.md)，未验收。
-- [ ] SHEET-09 公式、函数和定义名称；[固定 12 根与本地 11 根、参数表单/实时禁用及历史重开草稿](SHEET-09-formulas-entry-review.md)，完整目录、自动范围/批量插入和迭代计算仍未完成，草稿未运行。
+- [ ] SHEET-09 公式、函数和定义名称；[固定与本地各12根、当前184项目录及分类差异](SHEET-09-formulas-entry-review.md)、[单格引用/数值文本/UTF-16](SHEET-09-formulas-entry-review.md#scalar-input-continuation)、[五个目录补项及 VALUE 转换](SHEET-09-formulas-entry-review.md#value-input-continuation)、[六个三角标量分支](SHEET-09-formulas-entry-review.md#trigonometric-scalar-continuation)、[PI/角度转换](SHEET-09-formulas-entry-review.md#pi-angle-conversion-continuation)、[八个反三角标量分支](SHEET-09-formulas-entry-review.md#inverse-trigonometric-scalar-continuation)、[双曲/指数对数/ATAN2](SHEET-09-formulas-entry-review.md#hyperbolic-log-atan2-scalar-continuation)、[奇偶取整/整商/SQRTPI](SHEET-09-formulas-entry-review.md#even-odd-quotient-sqrtpi-scalar-continuation)、[阶乘/组合数](SHEET-09-formulas-entry-review.md#factorial-combination-scalar-continuation)、[ROUND 系列与 TRUNC](SHEET-09-formulas-entry-review.md#rounding-scalar-continuation)、[CEILING / FLOOR 变体](SHEET-09-formulas-entry-review.md#ceiling-floor-scalar-continuation)、[GCD/LCM/MULTINOMIAL/MROUND](SHEET-09-formulas-entry-review.md#integer-aggregate-mround-continuation)、[ABS/SQRT/INT/MOD/POWER与SUMSQ](SHEET-09-formulas-entry-review.md#abs-sqrt-int-mod-power-sumsq-continuation)，完整目录/数组、自动范围/批量插入和迭代计算仍未完成，草稿未运行。
 - [ ] SHEET-10 高级公式（Pro 目标）。
 - [ ] SHEET-11 筛选；[条件状态、派生行重置、重应用 operation/主题及两根/八子项证据](SHEET-11-12-sort-filter-entry-review.md)已落盘，单格/单行连续区域扩展待确认，草稿未运行。
 - [ ] SHEET-12 排序；[真实活动列、历史/重开草稿及连续区域方案](SHEET-11-12-sort-filter-entry-review.md)已补，扩展和自定义范围选择待确认，未验收。
@@ -204,6 +272,8 @@ Microsoft 的标签和可用项会随桌面/Web、版本、许可、视口和当
 官方来源：[Word Ribbon 标签和功能说明](https://support.microsoft.com/en-us/accessibility/word/keyboard-shortcuts-in-word)、[Word 功能区结构与自定义](https://support.microsoft.com/en-us/word/customize-the-ribbon-in-word)、[Word 邮件合并](https://support.microsoft.com/en-us/word/use-mail-merge-for-bulk-email-letters-labels-and-envelopes)、[Word 引文和书目](https://support.microsoft.com/en-us/word/add-or-change-sources-citations-and-bibliographies)、[Word 修订跟踪](https://support.microsoft.com/en-us/word/training/track-changes-in-word)、[Word 文档比较](https://support.microsoft.com/en-us/word/compare-document-differences-using-the-legal-blackline-option)、[Word 口述输入](https://support.microsoft.com/en-us/word/dictate-your-documents-in-word)、[Word 无障碍检查](https://support.microsoft.com/en-us/accessibility/word/make-your-word-documents-accessible-to-everyone-with-accessibility-assistant)。
 
 官方来源：[Excel Ribbon 标签和功能说明](https://support.microsoft.com/en-us/accessibility/excel/keyboard-shortcuts-in-excel)、[Excel 数据导入与 Power Query](https://support.microsoft.com/en-us/excel/power-query-for-excel-help)、[Excel Office Scripts / Automate](https://support.microsoft.com/en-us/excel/office-scripts/introduction-to-office-scripts-in-excel)、[Excel 记录 Office Scripts](https://support.microsoft.com/en-us/excel/office-scripts/record-your-actions-as-office-scripts)、[Excel Analyze Data](https://support.microsoft.com/en-us/excel/analyze-data-in-excel)、[Excel 页面设置](https://support.microsoft.com/en-us/excel/page-setup)、[Excel 批注与 Note](https://support.microsoft.com/en-us/accessibility/excel/use-a-screen-reader-to-work-with-comments-in-excel)、[Excel 工作簿保护](https://support.microsoft.com/en-us/excel/protect-a-workbook)、[Excel 排序与筛选](https://support.microsoft.com/en-gb/excel/sort-data-in-a-range-or-table-in-excel)。
+
+本次续批[罗马/进制转换](SHEET-09-formulas-entry-review.md#roman-radix-conversion-continuation)和[随机函数](SHEET-09-formulas-entry-review.md#rand-randbetween-continuation)增加六个数学目录子项和实际求值分支；[清除内容](SHEET-02-merge-clear.md#sheets-clear-content-input-session-review)、[保护范围新建](SHEET-30-range-protection-toolbar.md#range-protection-toolbar-create-intent-review)及[链接弹窗组合输入](DOC-08-document-hyperlinks.md#hyperlink-popup-composition)沿原根/命令修正草稿和目标状态。常驻、扩展、上下文与溢出新增根均为0，Sheets71/Docs54和65组未验收状态保持。模型/历史/native重开及真实Ant交互草稿未运行；目录计数、静态语法与运行验收分别记录。
 
 ## 后续 Microsoft 365 补充项
 

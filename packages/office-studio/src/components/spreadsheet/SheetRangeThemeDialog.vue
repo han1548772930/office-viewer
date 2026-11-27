@@ -71,7 +71,7 @@ function afterOpenChange(open: boolean): void {
 <template>
   <Modal :open="Boolean(request)" :title="tr('sheet.range-theme.title', '范围主题')" :width="draft ? 760 : 480"
     :mask="{ closable: false }" :focus-trigger-after-close="false" :after-open-change="afterOpenChange"
-    @cancel="emit('cancel')" @after-close="emit('closed')">
+    @cancel="emit('cancel')" :after-close="() => emit('closed')">
     <div data-sheet-range-theme-dialog :style="{ maxHeight: '70vh', overflowY: 'auto' }" @compositionstart="composing = true" @compositionend="composing = false">
       <p :style="{ color: token.colorTextSecondary }">{{ tr('sheet.range-theme.description', '范围主题包含表头、末行和行列条纹。单元格格式优先于范围主题。') }}</p>
       <Form layout="vertical" :model="formModel" @submit.prevent>

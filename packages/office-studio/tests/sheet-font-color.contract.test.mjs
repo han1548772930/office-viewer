@@ -5,6 +5,7 @@ import { createBlankWorkbook, createCell } from '../src/domain/model.ts'
 import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { SHEET_COLOR_PRESETS, SHEET_STANDARD_COLORS, rememberSheetColor, sheetBorderColor, sheetColorDraftValue, sheetColorHex, sheetOpaqueColorHex } from '../src/features/sheet-workbench/sheet-colors.ts'
 import { applySheetFontFormatCommand, applySheetViewFontFormatCommand, assertSheetFontFormatRanges, fontFormatActionForCommand, sheetFontFormatCommandForShortcut, sheetFontFormatInputRanges } from '../src/features/sheet-workbench/sheet-font-format-command.ts'
+import { initializeWorkbookCellStyles } from '../src/features/sheet-workbench/sheet-style-inheritance.ts'
 import { sheetToolbarColorLocales } from '../src/i18n/sheets/locales/toolbar-colors.ts'
 import { supportedOfficeLocales } from '../src/i18n/regional-settings.ts'
 
@@ -188,6 +189,54 @@ test('sparse full-row resets touch existing cells only in both model and standal
   assert.ok(Object.values(sheet.cells).every(cell => cell.style.font.italic))
 })
 
+test('color resets retain explicit no-color overrides above inherited and referenced styles in both paths', () => {
+  const workbook = sample(), sheet = workbook.sheets[0]
+  workbook.defaultStyle = { font: { color: '#111111' }, fill: '#222222' }
+  workbook.styles = { colored: { font: { color: '#f05252' }, fill: '#ffeecc' } }
+  sheet.defaultStyle = { font: { color: '#3f83f8' }, fill: '#ebf5ff' }
+  sheet.columnStyles = { 0: { font: { color: '#84e1bc' }, fill: '#edebfe' } }
+  sheet.rowStyles = { 2: { font: { color: '#ac94fa' }, fill: '#fce8f3' } }
+  sheet.cells['0:0'].authoredStyleReference = 'colored'
+  sheet.cells['0:0'].richText = [{ id: 'source', text: '00123', color: '#ac94fa',
+    font: { color: '#ac94fa', italic: true, vendor: 7 }, hyperlink: 'https://example.test', vendor: { keep: true } }]
+  sheet.autoFilter = { range: range(0, 2), columns: {}, filteredRows: [1] }
+  sheet.hiddenRows = [2]
+  initializeWorkbookCellStyles(workbook)
+  const view = toExcelWorkbookView(workbook).sheets[0], before = content(sheet)
+  const filtered = structuredClone(sheet.cells['1:0']), outside = structuredClone(sheet.cells['4:4'])
+  const ranges = [range(0, 2, 0, 2), range(2)]
+  for (const field of ['color', 'background']) {
+    const action = { kind: 'color', field, value: null }
+    assert.equal(applySheetFontFormatCommand(sheet, ranges, action, 'local-user', [1], undefined, workbook), true)
+    assert.equal(applySheetViewFontFormatCommand(view, ranges, action), true)
+    for (const row of [0, 2]) {
+      assert.equal(field === 'color' ? sheet.cells[row + ':0'].style.font.color : sheet.cells[row + ':0'].style.fill, null)
+      assert.equal(view.cells['A' + (row + 1)][field], null)
+    }
+    const cleared = structuredClone(sheet), clearedView = structuredClone(view)
+    assert.equal(applySheetFontFormatCommand(sheet, ranges, action, 'local-user', [1], undefined, workbook), false)
+    assert.equal(applySheetViewFontFormatCommand(view, ranges, action), false)
+    assert.deepEqual(sheet, cleared)
+    assert.deepEqual(view, clearedView)
+  }
+  assert.deepEqual(sheet.cells['1:0'], filtered)
+  assert.deepEqual(sheet.cells['4:4'], outside)
+  assert.equal(Object.keys(sheet.cells).length, 5)
+  assert.equal(Object.keys(view.cells).length, 5)
+  assert.equal(sheet.cells['0:0'].authoredStyleReference, 'colored')
+  assert.equal(sheet.cells['0:0'].authoredStyle.font.color, null)
+  assert.equal(sheet.cells['0:0'].authoredStyle.fill, null)
+  assert.deepEqual(sheet.cells['0:0'].richText, [{ id: 'source', text: '00123', font: { italic: true, vendor: 7 },
+    hyperlink: 'https://example.test', vendor: { keep: true } }])
+  assert.deepEqual(view.cells.A1.richText, sheet.cells['0:0'].richText)
+  assert.deepEqual(content(sheet), before)
+  const roundtrip = applyExcelWorkbookView(workbook, { ...toExcelWorkbookView(workbook), sheets: [view] })
+  for (const row of [0, 2]) {
+    assert.equal(roundtrip.sheets[0].cells[row + ':0'].style.font.color, null)
+    assert.equal(roundtrip.sheets[0].cells[row + ':0'].style.fill, null)
+  }
+})
+
 test('model and standalone formatting produce the same fields without altering values or formula caches', () => {
   const workbook = sample(), sheet = workbook.sheets[0], view = toExcelWorkbookView(workbook).sheets[0]
   const before = content(sheet), ranges = [range(0, 2)]
@@ -282,6 +331,37 @@ test('Facade marks and colors use registered commands, preserve content and shar
   assert.deepEqual(content(model.sheets[0]), before)
   assert.equal(model.sheets[0].cells['0:0'].style.font.italic, true)
   assert.equal(model.sheets[0].cells['0:0'].style.fill, '#ff8000')
+}))
+
+test('inherited color resets share history and reopen as explicit no-color after the source palette changes', () => withStudio((studio, api) => {
+  const source = sample()
+  source.id = 'inherited-color-history'
+  source.defaultStyle = { font: { color: '#3f83f8' }, fill: '#ebf5ff' }
+  source.styles = { colored: { font: { color: '#f05252' }, fill: '#ffeecc' } }
+  source.sheets[0].cells['0:0'].authoredStyleReference = 'colored'
+  const book = api.createWorkbook(source), target = book.getActiveSheet().getRange('A1:A2')
+  const before = content(studio.getWorkbookModel(book.getId()).sheets[0])
+  target.setFontColor(null).setBackground(null)
+  assert.equal(studio.editor.history.units[book.getId()].undo.length, 2)
+  target.setFontColor(null).setBackground(null)
+  assert.equal(studio.editor.history.units[book.getId()].undo.length, 2)
+  book.undo()
+  assert.equal(studio.getWorkbookModel(book.getId()).sheets[0].cells['0:0'].style.fill, '#ffeecc')
+  book.undo()
+  assert.equal(studio.getWorkbookModel(book.getId()).sheets[0].cells['0:0'].style.font.color, '#f05252')
+  book.redo()
+  book.redo()
+  const saved = book.save()
+  saved.defaultStyle = { font: { color: '#aabbcc' }, fill: '#ddeeff' }
+  saved.styles.colored = { font: { color: '#112233' }, fill: '#445566' }
+  const reopened = api.createWorkbook({ ...saved, id: 'inherited-color-reopened' })
+  const model = studio.getWorkbookModel(reopened.getId())
+  for (const row of [0, 1]) {
+    assert.equal(model.sheets[0].cells[row + ':0'].style.font.color, null)
+    assert.equal(model.sheets[0].cells[row + ':0'].style.fill, null)
+  }
+  assert.equal(model.sheets[0].cells['0:0'].authoredStyleReference, 'colored')
+  assert.deepEqual(content(model.sheets[0]), before)
 }))
 
 test('alias commands default to the current selection and support explicit coordinate-style ranges', () => withStudio((studio, api) => {

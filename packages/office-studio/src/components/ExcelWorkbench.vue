@@ -97,7 +97,7 @@ import SheetImageSaveDialog from './spreadsheet/SheetImageSaveDialog.vue'
 import { SHEET_IMAGE_COMMAND_IDS } from '../features/sheet-images/sheet-image-commands.ts'
 import { measureSpreadsheetText } from '../rendering/spreadsheet/text-metrics.ts'
 import type { SheetNumberFormatPreview } from '../rendering/spreadsheet/scene.ts'
-import { buildSheetFunctionFormula, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
+import { buildSheetFunctionFormula, SHEET_COMMON_FUNCTION_CATALOG, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow, findVisibleSheetColumn } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
 import { planQuickValidation } from '../features/sheet-validation/quick-validation.ts'
@@ -349,8 +349,9 @@ const conditionalFormattingRange = ref('A1')
 const conditionalFormattingContext = shallowRef<{ studio?: OfficeStudio; unitId: string | undefined; sheetId: string; expectedRevision?: number;
   standaloneSnapshot?: string; initialType?: ConditionalFormatPanelInitialType }>()
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
-const functionOptions = computed(() => SHEET_FUNCTION_CATALOG
-  .filter(entry => functionCategory.value === null || entry.category === functionCategory.value)
+const functionEntries = computed(() => functionCategory.value === '常用与统计' ? SHEET_COMMON_FUNCTION_CATALOG
+  : SHEET_FUNCTION_CATALOG.filter(entry => functionCategory.value === null || entry.category === functionCategory.value))
+const functionOptions = computed(() => functionEntries.value
   .map(entry => ({ label: `${entry.name} · ${entry.label}`, value: entry.name })))
 const sortBusy = ref(false)
 const sortProgress = ref('')
@@ -777,6 +778,8 @@ const canInsertFormula = computed(() => workbenchActive.value && canFormatSelect
   && !editComposing.value && selectedDrawingRefs.value.length === 0)
 const canQuickFormatSelection = computed(() => workbenchActive.value && canFormatSelection.value
   && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
+const canStartRangeTheme = computed(() => canQuickFormatSelection.value && !rangeThemePending.value
+  && !cellShiftPending.value)
 const canQuickFormatWorksheet = computed(() => workbenchActive.value && !!activeSheet.value
   && canEditWorksheetProtection(activeSheet.value, userId.value)
   && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
@@ -791,6 +794,7 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
   ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value,
   active: () => workbenchActive.value,
+  editing: () => Boolean(editingKey.value) || editComposing.value,
   canStart: () => {
     const sheet = activeSheet.value, source = selectedModelRanges().at(-1)
     return !!sheet && !!source && canEditWorksheetProtection(sheet, userId.value) && canEditProtectedRanges(sheet, [source], userId.value)
@@ -860,8 +864,15 @@ const ribbonTabs = computed(() => createSheetRibbon({
   clipboardCapabilities: clipboardCapabilities.value,
   region: officeRegion.value,
   fontList: officeFonts?.value, fontEditable: canFormatSelection.value && !editComposing.value,
+  clearFormatEditable: canQuickFormatSelection.value,
+  clearContentEditable: canQuickFormatSelection.value,
+  mergeEditable: canQuickFormatSelection.value,
+  numberFormatEditable: canQuickFormatSelection.value,
+  borderEditable: canQuickFormatSelection.value,
+  layoutEditable: canQuickFormatSelection.value,
   formulaEditable: canInsertFormula.value,
-  rangeThemeEditable: canFormatSelection.value && !editComposing.value && !rangeThemePending.value && !cellShiftPending.value,
+  rangeProtectionEditable: canQuickFormatSelection.value,
+  rangeThemeEditable: canStartRangeTheme.value,
   imageEditable: canFormatSelection.value && !editComposing.value && !imageUiOpen.value,
   backgroundImageEditable: Boolean(activeSheet.value && canEditWorksheetProtection(activeSheet.value, userId.value) && !editComposing.value && !imageUiOpen.value),
   hasBackgroundImage: Boolean(activeSheet.value?.backgroundImage),
@@ -1181,7 +1192,7 @@ function navigateSheetHyperlink(target: string): void {
 }
 
 function hyperlinkSelectionKey(): string {
-  const range = selectedRanges.value[0]
+  const range = selectedRanges.value[activeSelectionIndex.value] ?? selectedRanges.value.at(-1)
   return range ? `${columnName(range.startColumn)}${range.startRow + 1}` : selectedKey.value
 }
 
@@ -2363,7 +2374,7 @@ function findPrevious() { moveFindMatch(-1) }
 function applyFindReplace(replaceAll: boolean) {
   const matches = searchMatches.value
   const selectedIndex = matches.findIndex(match => match.sheetId === activeSheetId.value && match.key === selectedKey.value)
-  const targetIndex = selectedIndex >= 0 ? selectedIndex : nextSheetMatchIndex(matches, activeSheetId.value, selectedKey.value, 1)
+  const targetIndex = selectedIndex >= 0 ? selectedIndex : nextSheetMatchIndex(matches, activeSheetId.value, selectedKey.value, 1, findDirection.value, workbook.value.sheets.map(sheet => sheet.id))
   const patches = createSheetReplacePatches(workbook.value.sheets, matches, {
     text: searchText.value, replacement: replaceText.value, findBy: findBy.value, direction: findDirection.value,
     scope: findScope.value, caseSensitive: findCaseSensitive.value, wholeCell: findWholeCell.value,
@@ -2676,11 +2687,10 @@ function runOutlineCommand(action: SheetOutlineAction, context?: Pick<ChangeShee
   }
 }
 function openFunctionPanel(category?: string): void {
-  if (category !== undefined && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category)) return
+  if (category !== undefined && category !== '常用与统计' && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category)) return
   functionCategory.value = category ?? null
-  if (category && !SHEET_FUNCTION_CATALOG.some(entry => entry.category === category && entry.name === functionName.value)) {
-    const firstFunction = SHEET_FUNCTION_CATALOG.find(entry => entry.category === category)
-    if (firstFunction) functionName.value = firstFunction.name
+  if (category && !functionEntries.value.some(entry => entry.name === functionName.value)) {
+    functionName.value = functionEntries.value[0]!.name
   }
   functionArguments.value = ''
   functionError.value = ''
@@ -2745,13 +2755,25 @@ function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 's
 }
 
 async function executeRibbon(commandId: string, params?: unknown) {
+  const newRangeProtectionRequested = commandId === 'sheet.operation.open-range-protection'
+    && typeof params === 'object' && params !== null && 'mode' in params && params.mode === 'add'
+  if (newRangeProtectionRequested && !canQuickFormatSelection.value) return
+  if ((commandId === OPEN_SHEET_RANGE_THEME_OPERATION || commandId === SHEET_RANGE_THEME_COMMANDS.set
+    || commandId === SHEET_RANGE_THEME_COMMANDS.remove) && !canStartRangeTheme.value) return
   if (['sheet.operation.open-function', 'sheet.operation.insert-function', 'sheet.operation.start-formula'].includes(commandId)
     && !canInsertFormula.value) return
   if (SHEET_IMAGE_COMMAND_IDS.includes(commandId)) { await runImageCommand(commandId, params); return }
   if (resolveSheetClipboardCommand(commandId)) { await runClipboardCommand(commandId, params); return }
   if (SHEET_FILL_COMMAND_IDS.some(id => id === commandId)) { runFillCommand(commandId, params); return }
   if (SHEET_FONT_FORMAT_COMMAND_IDS.includes(commandId) && runInlineFontFormatCommand(commandId, params)) return
-  if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo' && !finishEdit()) return
+  if (SHEET_CLEAR_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
+  if (SHEET_MERGE_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
+  if ([...Object.values(SHEET_NUMBER_FORMAT_COMMANDS), 'sheet.operation.open-custom-number-format', 'sheet.operation.open.numfmt.panel'].includes(commandId)
+    && !canQuickFormatSelection.value) return
+  if (SHEET_BORDER_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
+  if (SHEET_LAYOUT_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
+  if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo'
+    && !SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId) && !finishEdit()) return
   if ((SHEET_OUTLINE_COMMAND_IDS as readonly string[]).includes(commandId)) {
     try { runOutlineAlias(commandId, params) } catch (error) { emit('notify', { type: 'warning', message: error instanceof Error ? error.message : '大纲操作失败。' }) }
     return
@@ -2821,13 +2843,16 @@ async function executeRibbon(commandId: string, params?: unknown) {
           activateSheet(sheet.id)
           if ('range' in params && typeof params.range === 'string') validationPanelRange.value = params.range
           else { const bounds = selectionBounds(selectedRanges.value); if (bounds) validationPanelRange.value = rangeNotation(bounds) }
-          protectionStartNew.value = 'mode' in params && params.mode === 'add'
+          protectionStartNew.value = newRangeProtectionRequested
           protectionPanelOpen.value = true
         }
         return
       }
       const bounds = selectionBounds(selectedRanges.value)
-      if (bounds) { validationPanelRange.value = rangeNotation(bounds); protectionStartNew.value = false; protectionPanelOpen.value = true }
+      if (!bounds) return
+      validationPanelRange.value = rangeNotation(bounds)
+      protectionStartNew.value = newRangeProtectionRequested
+      protectionPanelOpen.value = true
     },
     'sheet.operation.outline-group-rows': () => changeOutline('row', 'group'),
     'sheet.operation.outline-toggle-rows': () => changeOutline('row', 'toggle'),
@@ -2920,7 +2945,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
   }
   if ((!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom') || commandId === 'sheet.operation.set-zoom'
     || SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId)) && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value) {
-    void nextTick(() => { if (workbenchActive.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
+    void nextTick(() => { if (workbenchActive.value && !editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value
+      && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
   }
 }
 
@@ -3035,26 +3061,40 @@ onActivated(() => { workbenchActive.value = true })
       @context-command="(_key, commandId, params) => executeSheetContextCommand(commandId, params)" @shortcut-panel="value => { shortcutPanelOpen = value }" @execute="executeRibbon" />
     <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @format-command="executeRibbon" @format-keydown="handleInlineFormatHistoryKey" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
     <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
-    <div v-if="searchOpen" class="sheet-find-panel" role="search" @keydown.stop @keydown.esc.prevent="closeSearch">
+    <Form v-if="searchOpen" layout="inline" class="sheet-find-panel" role="search" @submit.prevent @keydown.stop @keydown.esc.prevent="closeSearch">
       <div class="find-input-row">
         <Search :size="15" />
-        <Input ref="searchInput" v-model:value="searchText" size="small" :placeholder="t('find.find-placeholder', 'Find')" :aria-label="t('find.find', 'Find')" @press-enter="executeRibbon('sheet.operation.find-next')" />
+        <FormItem no-style>
+          <Input ref="searchInput" v-model:value="searchText" size="small" :placeholder="t('find.find-placeholder', 'Find')" :aria-label="t('find.find', 'Find')" @press-enter="executeRibbon('sheet.operation.find-next')" />
+        </FormItem>
         <span class="search-count">{{ searchText ? t('find.match-count', '{count} matches').replace('{count}', String(searchMatches.length)) : t('find.enter-query', 'Enter search text') }}</span>
         <Button size="small" :disabled="!searchMatches.length" :title="t('find.previous-match', 'Previous match')" :aria-label="t('find.previous-match', 'Previous match')" @click="executeRibbon('sheet.operation.find-previous')"><ArrowUp :size="14" /></Button>
         <Button size="small" :disabled="!searchMatches.length" :title="t('find.next-match', 'Next match')" :aria-label="t('find.next-match', 'Next match')" @click="executeRibbon('sheet.operation.find-next')"><ArrowDown :size="14" /></Button>
         <Button type="text" size="small" :aria-label="t('find.close', 'Close find and replace')" @click="closeSearch"><X :size="15" /></Button>
       </div>
       <div class="find-options-row">
-        <Input ref="replaceInput" v-model:value="replaceText" size="small" :placeholder="t('find.replace-placeholder', 'Replace with')" :aria-label="t('find.replace', 'Replace')" @press-enter="executeRibbon('sheet.operation.replace')" />
+        <FormItem no-style>
+          <Input ref="replaceInput" v-model:value="replaceText" size="small" :placeholder="t('find.replace-placeholder', 'Replace with')" :aria-label="t('find.replace', 'Replace')" @press-enter="executeRibbon('sheet.operation.replace')" />
+        </FormItem>
         <Button size="small" :disabled="!searchMatches.some(match => match.replaceable)" @click="executeRibbon('sheet.operation.replace')"><Replace :size="14" />{{ t('find.replace', 'Replace') }}</Button>
         <Button size="small" :disabled="!searchMatches.some(match => match.replaceable)" @click="executeRibbon('sheet.operation.replace-all')"><ListRestart :size="14" />{{ t('find.replace-all', 'Replace All') }}</Button>
-        <Select v-model:value="findScope" size="small" :aria-label="t('find.scope', 'Find range')" :options="[{ value: 'sheet', label: t('find.current-sheet', 'Current Sheet') }, { value: 'workbook', label: t('find.workbook', 'Workbook') }]" />
-        <Select v-model:value="findDirection" size="small" :aria-label="t('find.direction', 'Find direction')" :options="[{ value: 'row', label: t('find.by-row', 'By row') }, { value: 'column', label: t('find.by-column', 'By column') }]" />
-        <Select v-model:value="findBy" size="small" :aria-label="t('find.find-by', 'Find by')" :options="[{ value: 'value', label: t('find.value', 'Value') }, { value: 'formula', label: t('find.formula', 'Formula') }]" />
-        <Checkbox v-model:checked="findCaseSensitive">{{ t('find.case-sensitive', 'Match case') }}</Checkbox>
-        <Checkbox v-model:checked="findWholeCell">{{ t('find.whole-cell', 'Match entire cell') }}</Checkbox>
+        <FormItem no-style>
+          <Select v-model:value="findScope" size="small" :aria-label="t('find.scope', 'Find range')" :options="[{ value: 'sheet', label: t('find.current-sheet', 'Current Sheet') }, { value: 'workbook', label: t('find.workbook', 'Workbook') }]" />
+        </FormItem>
+        <FormItem no-style>
+          <Select v-model:value="findDirection" size="small" :aria-label="t('find.direction', 'Find direction')" :options="[{ value: 'row', label: t('find.by-row', 'By row') }, { value: 'column', label: t('find.by-column', 'By column') }]" />
+        </FormItem>
+        <FormItem no-style>
+          <Select v-model:value="findBy" size="small" :aria-label="t('find.find-by', 'Find by')" :options="[{ value: 'value', label: t('find.value', 'Value') }, { value: 'formula', label: t('find.formula', 'Formula') }]" />
+        </FormItem>
+        <FormItem no-style>
+          <Checkbox v-model:checked="findCaseSensitive">{{ t('find.case-sensitive', 'Match case') }}</Checkbox>
+        </FormItem>
+        <FormItem no-style>
+          <Checkbox v-model:checked="findWholeCell">{{ t('find.whole-cell', 'Match entire cell') }}</Checkbox>
+        </FormItem>
       </div>
-    </div>
+    </Form>
 
     <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" :styles="sheetSplitterStyles" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
@@ -3135,7 +3175,7 @@ onActivated(() => { workbenchActive.value = true })
     <SheetImageSaveDialog :request="imageSaveRequest" :busy="imageBusy" :error="imageError" @confirm="confirmImageSave" @cancel="cancelImageSave" @closed="afterImageClose" />
     <SheetCellShiftConfirmationDialog :request="cellShiftRequest" :error="cellShiftError" @confirm="confirmCellShift" @cancel="cancelCellShift" @closed="afterCellShiftClose" />
     <SheetMergeConfirmationDialog :request="mergeRequest" :error="mergeError" @confirm="confirmMerge" @cancel="cancelMerge" @closed="afterMergeClose" />
-    <SheetMergeConfirmationDialog :request="painterRequest" :error="painterError" @confirm="confirmPainter" @cancel="cancelPainterConfirmation" @closed="afterPainterClose" />
+    <SheetMergeConfirmationDialog :request="painterRequest" :error="painterError" :disabled="Boolean(editingKey) || editComposing" @confirm="confirmPainter" @cancel="cancelPainterConfirmation" @closed="afterPainterClose" />
     <SheetFooter v-if="chrome.footer" :sheets="availableSheets" :sheet-order="workbook.sheets.map(sheet => sheet.id)" :workbook-id="workbook.id" :revision="studio?.getWorkbookRevision(workbook.id)" :history-generation="studio?.editor.history.captureSavepoint(workbook.id).generation" :active-sheet-id="activeSheetId" :zoom="zoom" :statistics="selectedStatistics" :number-format="activeCell.rawNumberFormat ?? activeCell.numberFormat" @activate="activateSheet" @add="addSheet" @rename="renameSheet" @copy="copySheet" @tab-color="setSheetTabColor" @move="moveSheet" @protect-sheet="openWorksheetProtection" @unprotect-sheet="removeWorksheetProtection" @delete="deleteSheet" @hide="hideSheet" @show="showSheet" @update:zoom="zoom = $event" />
     <PivotTablePanel v-if="pivotPanelOpen && activeSheet" v-model:open="pivotPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="pivotSource" />
     <PivotChartPanel v-if="pivotChartContext" :key="pivotChartContext.key" :open="pivotChartPanelOpen" :studio="pivotChartContext.studio" :workbook-id="pivotChartContext.unitId" :sheet-id="pivotChartContext.sheetId"
@@ -3178,7 +3218,7 @@ onActivated(() => { workbenchActive.value = true })
 .hyperlink-actions { display: flex; justify-content: space-between; gap: 8px; }
 .chart-insert-error { margin: 8px 0 0; color: #c2413a; }
 .chart-insert-hint { margin: 0; color: #8490a0; font-size: 11px; }
-.sheet-find-panel { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; box-sizing: border-box; min-width: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; color: #526071; background: #f8faff; }
+.sheet-find-panel { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; box-sizing: border-box; min-width: 0; border-bottom: 1px solid v-bind('sheetThemeToken.colorBorderSecondary'); padding: 6px 12px; color: v-bind('sheetThemeToken.colorTextSecondary'); background: v-bind('sheetThemeToken.colorBgContainer'); }
 .find-input-row, .find-options-row { display: flex; min-width: 0; align-items: center; gap: 6px; }
 .find-input-row :deep(.ant-input) { width: min(300px, 32vw); min-width: 100px; }
 .find-options-row :deep(.ant-input) { width: min(240px, 25vw); min-width: 100px; }

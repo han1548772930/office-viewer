@@ -1,25 +1,59 @@
-# SHEET-17 插入媒体组评论接入方案
+# SHEET-17 批注与线程评论接入方案
 
 <a id="media-comment-entry-review-2026-11-27"></a>
 
-本文件是较大改动前的静态方案，尚未新增 Sheets 评论产品能力。当前 Sheets 没有线程模型、内容命令、面板或 Ribbon 评论入口；已有 [Docs 消息结构](../../packages/office-studio/src/domain/model.ts) 和 [Docs 评论服务](../../packages/office-studio/src/features/document/comments/thread-comments.ts) 可复用作者、时间、消息语义，不应把 Docs 段落锚点套到 Sheets。
+本文件是较大改动前的静态方案，尚未新增 Sheets 批注或评论产品能力。当前 Sheets 没有普通 Note / ThreadComment 模型、对应内容命令、弹层或评论面板，也没有 Ribbon / 右键入口；已有 [Docs 消息结构](../../packages/office-studio/src/domain/model.ts) 和 [Docs 评论服务](../../packages/office-studio/src/features/document/comments/thread-comments.ts) 可复用作者、时间、消息语义，不应把 Docs 段落锚点套到 Sheets。
 
 固定来源为 `E:\rust_test\univer`，版本 `v1.6.0`，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。范围遵循 [SHEET-17](../UNIVER_FEATURE_PARITY.md)：普通 Note 与 ThreadComment 分模型，单元格和绘图评论均纳入；本地快照保存不能替代真实多人持久同步。
 
-## 固定版入口清点
+<a id="note-entry-model-review-2026-11-27"></a>
 
-入口位置来自 [schema.ts](../../../univer/packages/sheets-thread-comment-ui/src/menu/schema.ts)，标题、状态与快捷键来自 [menu.ts](../../../univer/packages/sheets-thread-comment-ui/src/menu/menu.ts)。标题列保留真实语言包 key，避免按图标猜功能。
+## 固定版普通 Note 入口与内容契约
 
-| 类别 | 标题 key | 位置与顺序 | operation ID | 状态 |
+位置来自 [Note schema](../../../univer/packages/sheets-note-ui/src/menu/schema.ts)，状态来自 [note.menu.ts](../../../univer/packages/sheets-note-ui/src/menu/note.menu.ts)，中文标签来自 [Note zh-CN](../../../univer/packages/sheets-note-ui/src/locale/zh-CN.ts)。三个入口都在 MAIN_AREA / OTHERS，分组 order 0，条目 order 0；schema 按添加、删除、显示/隐藏声明，没有常驻 Ribbon 或 grid 位置。
+
+| 标签 / title key | operation / command ID | 显隐、禁用与激活 |
+| --- | --- | --- |
+| 添加批注 / `rightClick.addNote` | `sheet.operation.add-note-popup` | Sheets 显示且活动格没有 Note 时显示；工作簿、工作表和选区需可编辑 |
+| 删除批注 / `rightClick.deleteNote` | `sheet.command.delete-note` | 活动格已有 Note 时显示；工作簿、工作表和选区需可编辑 |
+| 显示/隐藏批注 / `rightClick.toggleNote` | `sheet.command.toggle-note-popup` | 活动格已有 Note 时显示；`note.show === true` 激活；禁用只检查工作簿和工作表编辑权限，不套范围编辑权限 |
+
+title key 的完整前缀为 `sheets-note-ui`。普通 Note 独立统计为 **0 常驻、3 上下文、0 浮动工具栏、0 快捷键**；Note UI 未声明扩展或溢出根。导出的 `SHEET_NOTE_CONTEXT_MENU_ID = 'sheet.menu.note'` 未用作该 schema 的菜单根，不另外计一个入口。与下文线程评论独立计数，不能把三个入口或命令数当成功能完成证明。
+
+[AddNotePopupOperation](../../../univer/packages/sheets-note-ui/src/commands/operations/add-note-popup.operation.ts) 参数为 `{ trigger?: string }`，读取末选区 `primary.actualRow/actualColumn` 打开非临时 popup，默认 trigger 为 `add-note`。打开 popup 自身不写历史；[Note.tsx](../../../univer/packages/sheets-note-ui/src/views/Note.tsx) 在无 Note 且可编辑时准备空内容，经更新命令创建；文本和尺寸变更也经同一更新命令。
+
+| 内容命令 | 参数与模型行为 | 撤销/重做 |
+| --- | --- | --- |
+| `sheet.command.update-note` | `{ unitId, sheetId, row, col, note: ISheetNote, silent?: boolean }`；新增和更新共用 | 已有 Note 恢复原对象；新 Note 撤销时移除 |
+| `sheet.command.delete-note` | 可显式传 `{ unitId, sheetId, row, col }`，缺省取末选区的实际活动格 | redo 移除；undo 恢复完整 Note |
+| `sheet.command.toggle-note-popup` | 无内容参数；末选区实际活动格的 `show` 取反 | 同一 toggle mutation 组成 undo/redo；显示状态属于可保存内容 |
+
+上述三条命令来自 [note.command.ts](../../../univer/packages/sheets-note/src/commands/commands/note.command.ts)，都登记工作簿内容历史。四条 mutation 为 `sheet.mutation.update-note`、`sheet.mutation.remove-note`、`sheet.mutation.toggle-note-popup`、`sheet.mutation.update-note-position`，来源为 [note.mutation.ts](../../../univer/packages/sheets-note/src/commands/mutations/note.mutation.ts)；位置 mutation 使用 `{ unitId, sheetId, noteId?, row?, col?, newPosition: { row, col }, silent? }`，不把坐标变换当作重新创建 Note。
+
+[ISheetNote / SheetsNoteModel](../../../univer/packages/sheets-note/src/models/sheets-note.model.ts) 保存 `id/row/col/width/height/note/show?`，其中 `note` 是字符串；固定模型没有作者、富文本 body 或回复。popup 宽高以 CSS pixel 应用，默认取配置或 160×72，并允许编辑者调整尺寸。下文拟模型补 `width/height`，`visible` 对应固定 `show`，需随内容历史和保存恢复；保留 Office 作者、富文本与 VML 属于本地保真扩展，不称为固定 DTO 的同形复制。
+
+[SHEET_NOTE_EDIT_PERMISSIONS / TOGGLE_PERMISSIONS](../../../univer/packages/sheets-note/src/const.ts) 区分更新/删除的范围编辑与 toggle 的工作簿/工作表编辑；[权限 controller](../../../univer/packages/sheets-note/src/controllers/sheets-note-permission.controller.ts) 是命令执行边界。更新跨格时检查新旧位置，显式删除参数检查目标单格；无参数删除分支调用 permissionCheckWithoutRange，不能称为与显式单格检查完全相同。固定 mutation 刻意不在 undo/协作/ref 更新时再次检查权限；本地接入仍按既有历史恢复和当前权限契约验收。普通 Note 不复用线程评论的 workbook comment 或作者限定权限。
+
+[Note 资源 controller](../../../univer/packages/sheets-note/src/controllers/sheets-note-resource.controller.ts) 以 `SHEET_NOTE_PLUGIN` 保存 `{ [sheetId]: { [row]: { [col]: ISheetNote } } }`，包含宽高和 show，加载时写回 NoteModel，卸载时清除该工作簿资源。工作表删除组织 remove/update undo，复制重新生成 Note ID；这些资源随宿主结构历史恢复。该 JSON 是插件快照，不是 Office comments/VML part。
+
+公开 API 的 [FRange Note mixin](../../../univer/packages/sheets-note/src/facade/f-range.ts) 提供 `getNote/createOrUpdateNote/deleteNote`；创建/更新选该 range 起点，尺寸、文字和 show 由调用参数传入。[FWorksheet Note mixin](../../../univer/packages/sheets-note/src/facade/f-worksheet.ts) 提供该工作表全部 Note 查询。菜单取末选区实际活动格与 API 取 range 起点须分别验收。
+
+## 固定版线程评论入口清点
+
+入口位置来自 [schema.ts](../../../univer/packages/sheets-thread-comment-ui/src/menu/schema.ts)，状态与快捷键来自 [menu.ts](../../../univer/packages/sheets-thread-comment-ui/src/menu/menu.ts)，中文标签来自 [线程评论 zh-CN](../../../univer/packages/sheets-thread-comment-ui/src/locale/zh-CN.ts)。标题列同时保留真实语言包 key。
+
+| 类别 | 标签 / title key | 位置与顺序 | operation ID | 状态 |
 | --- | --- | --- | --- | --- |
-| 常驻 | `menu.openComments` | MEDIA 第 1 行、第 3 列；order 2 | `sheet.operation.toggle-comment-panel` | Sheets 显示；工作簿/工作表可查看；侧栏当前为评论时激活 |
-| 常驻 | `menu.addComment` | MEDIA 第 2 行、第 3 列；order 2.1 | `sheet.operation.show-comment-modal` | Sheets 显示；工作簿可评论、工作表和当前范围可查看 |
-| 上下文 | `menu.addComment` | MAIN_AREA / OTHERS；order 0 | `sheet.operation.show-comment-modal` | 同单元格添加入口 |
-| 上下文 | `menu.addComment` | DRAWING / OTHERS；order 0 | `sheet.operation.add-drawing-comment` | 工作簿可评论、工作表可查看；对象属于当前工作簿/活动表 |
-| 浮动工具栏 | `menu.addComment` | SHEET；order 10 | `sheet.operation.add-drawing-comment` | 同绘图入口，不构造单元格查看范围 |
+| 常驻 | 打开评论 / `menu.openComments` | MEDIA 第 1 行、第 3 列；order 2 | `sheet.operation.toggle-comment-panel` | Sheets 显示；工作簿/工作表可查看；侧栏当前为评论时激活 |
+| 常驻 | 添加评论 / `menu.addComment` | MEDIA 第 2 行、第 3 列；order 2.1 | `sheet.operation.show-comment-modal` | Sheets 显示；工作簿可评论、工作表和当前范围可查看 |
+| 上下文 | 添加评论 / `menu.addComment` | MAIN_AREA / OTHERS；order 0 | `sheet.operation.show-comment-modal` | 同单元格添加入口 |
+| 上下文 | 添加评论 / `menu.addComment` | DRAWING / OTHERS；order 0 | `sheet.operation.add-drawing-comment` | 工作簿可评论、工作表可查看；对象属于当前工作簿/活动表 |
+| 浮动工具栏 | 添加评论 / `menu.addComment` | SHEET；order 10 | `sheet.operation.add-drawing-comment` | 同绘图入口，不构造单元格查看范围 |
 | 快捷键 | 添加评论 | Ctrl/Cmd+Alt+M | `sheet.operation.show-comment-modal` | `whenSheetEditorFocused`，执行时仍检查权限 |
 
-标题 key 的完整前缀为 `sheets-thread-comment-ui`。分类计数为 **2 常驻、2 上下文、1 浮动工具栏、1 快捷键**；本插件 schema 未额外声明扩展或溢出根。4 个 operation 是打开/切换评论面板、打开单元格弹层、添加绘图评论，不能与 5 个内容命令混算。classic 分组顺序沿用 schema 的 order；具体尺寸和最终布局需浏览器核实。
+标题 key 的完整前缀为 `sheets-thread-comment-ui`。桌面线程评论独立统计为 **2 常驻、2 上下文、1 浮动工具栏、1 快捷键**；本插件 schema 未额外声明扩展或溢出根。4 个 operation 是打开/切换评论面板、打开单元格弹层、添加绘图评论，不能与 5 个内容命令或普通 Note 混算。classic 分组顺序沿用 schema 的 order；具体尺寸和最终布局需浏览器核实。
+
+[mobile schema](../../../univer/packages/sheets-thread-comment-ui/src/menu/mobile-schema.ts) 使用相同常驻、上下文和浮动位置；mobile 添加 operation 共用 `sheet.operation.show-comment-modal` ID，不增加一个桌面入口或内容命令。[mobile menu](../../../univer/packages/sheets-thread-comment-ui/src/menu/mobile-menu.ts) 的单元格右键标签在该位置已有未解决线程时使用“打开评论”，否则为“添加评论”；移动交互仍未验收。
 
 [const.ts](../../../univer/packages/sheets-thread-comment-ui/src/types/const.ts) 给出准确的 `sheet.operation.show-comment-modal`。另一个 operation 为 `sheet.operation.open-comment-panel`。这 4 个入口 operation 没有外部内容 DTO，读取当前上下文；[comment.operation.ts](../../../univer/packages/sheets-thread-comment-ui/src/commands/operations/comment.operation.ts) 的行为如下：
 
@@ -27,7 +61,7 @@
 - 绘图入口取当前焦点的第一个对象，要求其 unit/subunit 等于当前工作簿和活动表；draft anchor 为 `{ kind: 'sheet-drawing', pageId: subUnitId, elementId: drawingId }`。
 - 评论面板宽 360；可见、活动线程和 draft 是 UI 状态，不属于内容历史。
 
-## 内容命令、模型和保存
+## 线程评论内容命令、模型和保存
 
 准确来源为 [comment.command.ts](../../../univer/packages/thread-comment/src/commands/commands/comment.command.ts)；update payload 来自 [comment.mutation.ts](../../../univer/packages/thread-comment/src/commands/mutations/comment.mutation.ts)。
 
@@ -46,6 +80,8 @@
 [tc-resource.ts](../../../univer/packages/thread-comment/src/common/tc-resource.ts) 按 subunit 保存根与 children，经 datasource `saveToSnapshot` 写入资源；[Sheets 资源 controller](../../../univer/packages/sheets-thread-comment/src/controllers/sheets-thread-comment-resource.controller.ts) 把工作表删除/复制关联的 add/delete mutation 纳入结构命令历史。这些机制须分别追踪，不能把 resource snapshot 当作 Office 文件转换或远端服务。
 
 公开 API 还包括 [FRange](../../../univer/packages/sheets-thread-comment/src/facade/f-range.ts) 的 `getComment/getComments/addCommentAsync/clearCommentAsync/clearCommentsAsync`，[FThreadComment](../../../univer/packages/sheets-thread-comment/src/facade/f-thread-comment.ts) 的 `getIsRoot/getCommentData/getReplies/getRange/getRichText/deleteAsync/updateAsync/resolveAsync/replyAsync`，以及 [FWorkbook](../../../univer/packages/sheets-thread-comment/src/facade/f-workbook.ts)、[FWorksheet](../../../univer/packages/sheets-thread-comment/src/facade/f-worksheet.ts) 的查询/清除和 [FUniver](../../../univer/packages/sheets-thread-comment/src/facade/f-univer.ts) 的 builder。绘图线程的 `getRange()` 不伪造单元格范围。
+
+本续批回读本地 [SpreadsheetSheet](../../packages/office-studio/src/domain/model.ts)、[ExcelSheetView](../../packages/office-studio/src/services/excelViewAdapter.ts)、[OfficeStudio](../../packages/office-studio/src/api/office-studio.ts)、[Workbench](../../packages/office-studio/src/components/ExcelWorkbench.vue)、[Ribbon](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 和 [右键菜单](../../packages/office-studio/src/components/spreadsheet/sheet-context-menu.ts)，确认两类资源均无领域字段、内容命令和界面接线；没有发现可复用现有 Sheets 评论命令修补的小型错接。现有 commitWorkbook / prepareWorkbookChange 可提供工作簿隔离候选、版本与内容历史，仍需下文权限和资源接入，不把 Docs 评论实现算作 Sheets 能力。
 
 ## 拟新增本地类型与边界
 
@@ -89,6 +125,8 @@ export interface SheetNote {
   anchor: SheetCellCommentAnchor
   authorName: string
   body: DocumentParagraph[]
+  width: number
+  height: number
   visible: boolean
   metadata?: Record<string, unknown>
 }
@@ -180,12 +218,14 @@ export type SheetCommentContentCommand =
 | Rust/Office | 新 Sheets 评论 sidecar/writer 专属模块；`parser.rs/model.rs`、共享 IO DTO、`xlsx_parts.rs`、`xlsx.rs` 接入 | 700–1100 行，须独立确认模块归属 |
 | 验证 | 专属模型/权限/命令/资源合同、Office fixtures、浏览器输入和 Worker/WASM 边界测试 | 350–550 行，只测试真实回归与闭环 |
 
-本地/Office 接入估计 2100–3250 行；真实持久评论服务、认证/人员与多人版本协议需要另行确认服务文件和规模，仍在交付范围内。本批只持有本证据文件及 SHEET-16 专属修正，不修改上述共享文件。`workbook-outline-resources.ts` 已核对，仅导入 outline resource，不是通用评论钩子；不向该文件塞入评论业务。
+本地/Office 接入估计 2100–3250 行；真实持久评论服务、认证/人员与多人版本协议需要另行确认服务文件和规模，仍在交付范围内。本续批仅修改本证据，不修改上述共享文件。`workbook-outline-resources.ts` 已核对，仅导入 outline resource，不是通用评论钩子；不向该文件塞入评论业务。
 
 ## 必要验收与当前状态
 
 后续单元/契约应验证两类 anchor、作者限定、只读可评论者、不可查看目标、解决/重开、根删除/回复删除、富文本/mentions、旧异步结果及文档隔离历史；资源合同覆盖轴/移位/排序/稀疏空格/隐藏行/跨表剪切/工作表复制/真实绘图删除和对应撤销。
 
+普通 Note 独立验证三个右键入口、新增/更新/删除、末选区实际活动格与 API range 起点、宽高调整、show 持久状态和对应内容撤销/重做；覆盖不可编辑目标、跨格新旧位置权限，以及工作表复制/删除后尺寸、文字和 show 恢复。Note 的 Office 作者/富文本/VML 保真仍须真实文件往返，不能用线程评论消息测试替代。
+
 浏览器必须覆盖两个常驻根、两类上下文、浮动工具栏、快捷键、单元格 popup 和面板闭环，检查 antdv-next 主题/禁用/焦点恢复/IME；Office 样本必须经过导入→编辑→导出→重新导入验证 Note、完整线程、人员和锚点，不能仅比较 JSON。真实多人验收需要两个认证主体、服务重启后持久恢复及版本冲突，不能用本地数组或 BroadcastChannel 证明完成。
 
-本批仅静态阅读和证据链接核对；测试、类型检查、构建、Rust/WASM、浏览器、文件样本和性能基准全部后置，未启动 dev。本方案中的 UI、Office 与多人能力均为未实现/未验收，不能标为 SHEET-17 完成。
+本续批只补本文的普通 Note 入口、DTO/尺寸、权限、内容历史和资源保存证据，以及两类独立分类口径；未修改生产代码、领域模型或测试草稿。测试、类型检查、构建、Rust/WASM、浏览器、文件样本和性能基准全部后置，未启动 dev。本方案中的 UI、Office 与多人能力均为未实现/未验收，原 2100–3250 行及 Office/持久服务方案仍待确认，不能标为 SHEET-17 完成。

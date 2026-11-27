@@ -64,3 +64,21 @@
 保留差异：显式 API 范围省略 primary / value 时，本地按目标末段起点翻转；固定命令即使带 range 也读取当前选区 primary。本地避免借用其他表的活动主格。固定 API 的分布对齐与全部自动行高 interceptor 不在本次主格和显隐修复中验收。
 
 [sheet-layout-format.contract.test.mjs](../../packages/office-studio/tests/sheet-layout-format.contract.test.mjs) 新增 3 个真实 model / view 契约草稿：实际 primary 与末段缺省值、继承主格和稀疏范围、非法主格的事务原子性；扩展既有 Studio / Facade 用例覆盖实际选区、显式范围、显式 primary、撤销重做及内部保存重开。主线在 [sheet-cell-layout.browser.test.mjs](../../packages/office-studio/tests/sheet-cell-layout.browser.test.mjs) 补真实工作台的 primary / 状态草稿。全部测试、类型、构建、Rust/WASM、浏览器、主题 / 焦点 / IME 与文件样本验证继续后置，本次仍未验收。
+
+<a id="layout-input-session-review"></a>
+
+## 2026-11-27 布局输入会话续核
+
+本批属于 SHEET-04 的 Ribbon 状态和 Sheets 输入控制器。固定版 `packages/sheets-ui/src/menu/menu.ts` 的水平、垂直、换行、缩小字体与文字方向 factory 分别位于 633、708、783、840、911 行；禁用调用位于 682、757、832、867、963 行，均未传 `supportCellEdit=true`。`menu-util.ts:163` 默认不支持单格编辑，191–192 行禁用当前单格编辑器可见或公式栏焦点状态。原本地 `layoutDisabled = fontDisabled` 未覆盖普通输入，迟到的布局 execute 仍会先 `finishEdit` 提交草稿；组字期间已有字体禁用不能代替这一条件。
+
+[ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 复用既有 `canQuickFormatSelection`，传递可选 `SheetRibbonState.layoutEditable`，并在自动提交前检查已有 `SHEET_LAYOUT_FORMAT_COMMAND_IDS`。[sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 的原布局禁用值加入 `state.layoutEditable === false`，同步五个格式根及 15 个子项；原合并禁用基值继续继承布局状态，合并仍经前批自己的 11 ID 会话守卫。未传字段保持调用方行为，普通字体草稿格式能力保持独立。两份生产文件本批差异为 `+4/-1` 行，不新增 UI handler、Ribbon 入口、领域/API、算法、保存或 Worker/WASM 协议。
+
+十二个已定义布局 ID 为 `sheet.command.set-align`、`set-vertical-align`、`set-wrap-strategy`、`set-wrap`、`toggle-wrap`、`set-shrink-to-fit`、`set-text-rotation`，以及原 `set-horizontal-text-align`、`set-vertical-text-align`、`set-text-wrap`、`set-horizontal-alignment`、`set-vertical-alignment` 五个别名，均带相同前缀。此处只在既有 UI 分发前拦截，不将 API/别名定义计为新增 UI handler；外部 API 和原 model/view 命令不变。
+
+绘图显隐已由前批实现，本批仅回读：水平、垂直、换行、文字方向和合并根在普通绘图焦点下隐藏，shrink 根保留 Sheets 显隐并由能力禁用，与固定 factory 一致。原主格有效样式读回、wrap/shrink 互斥、角度/竖排、筛选行处理、选区权限、内容历史与内部保存契约保留。本组仍为常驻根 6、子项 19，More 为同一集合的投影；没有新增插件或上下文根。分布对齐、全部自动行高与旧证据中的其他缺口没有据此验收。
+
+[原旋转/缩小合同草稿](../../packages/office-studio/tests/sheet-rotation-shrink.contract.test.mjs) 新增 1 声明/1 计划，当前 7 声明/7 计划；核对可选能力、字体/工作表权限、六根/十九子项的位置与 invocation、禁用期间主格激活态、字体独立性及原绘图显隐。原 shrink 用例的两处 `params: true/false` 预期改为真实 `params: undefined`：固定 `set-style.command.ts:579` 的 `SetShrinkToFitCommand` 在省略 value 时读取实际 primary，本地前批已移除 Ribbon 显式值，仍由共享命令翻转；本批只纠正旧草稿，不更改该实现或早期历史运行记录。
+
+[原单格布局浏览器草稿](../../packages/office-studio/tests/sheet-cell-layout.browser.test.mjs) 新增 1 声明，按 cell/formula × classic/grid 展开 4 个计划用例；原 12 声明/16 计划更新为 13 声明/20 计划。夹具只补真实 revision/成功命令观察，仍使用原 Studio、Facade、Canvas2D 与 ConfigProvider。普通输入、合成 composition 和明转暗期间核对五根禁用、十二个合法参数的迟到 execute 不提交草稿、不改模型/revision/历史/成功命令；组字结束但仍编辑则继续禁用。Escape 后从真实菜单应用竖排，保留原值/公式/字体及邻格，覆盖一次格式历史、撤销重做和内部 JSON 重开。公式样本通过现有 `FRange.setFormula` 创建，未新增产品测试接口。
+
+本批只读实际源码/diff、写原草稿并核对声明数量；测试、类型、构建、dev/浏览器、Rust/WASM、Office 样本和基准均未执行，运行数为 0。所有功能状态继续未验收。绘图显隐仅有 schema 草稿；原生 Windows IME、主题/焦点、独立 view 输入集成、两渲染后端、复杂 Office 样本和真实性能仍需统一验证。

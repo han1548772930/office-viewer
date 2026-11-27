@@ -1,9 +1,10 @@
 import { createCell, defaultCellStyle, type CellScalar, type CellStyle, type SpreadsheetCell, type WorkbookModel } from '../../domain/model.ts'
-import { inferSheetCellValueType, normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
+import { inferSheetCellValueType, isForcedSheetCellValueType, normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { cloneModel } from '../../domain/serialization.ts'
-import { applyExcelCellView, toExcelCellView } from '../../services/excelViewAdapter.ts'
+import { applyExcelCellView, sheetViewCellStylePatch, toExcelCellView } from '../../services/excelViewAdapter.ts'
 import { translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
 import { editSheetCellText } from './sheet-cell-edit.ts'
+import { clearSheetCellRichTextFonts, sheetCellRichTextRunView } from './sheet-cell-rich-text-style.ts'
 import { formatSheetValue, isSheetTextNumberFormat } from './sheet-number-format.ts'
 import type { SheetPasteMode } from './sheet-paste.ts'
 import { explicitSheetCellStyle, isDefaultSheetCellStyle } from './sheet-style-region.ts'
@@ -32,15 +33,28 @@ function invalidateContentMetadata(cell: SpreadsheetCell): void {
   if (cell.metadata) { delete cell.metadata.formulaError; delete cell.metadata.publicBody; delete cell.metadata.sheetImagePublicDrawingId }
 }
 
+function hasUniformSheetClipboardRun(cell: SpreadsheetCell): boolean {
+  if (cell.image || cell.metadata?.publicBody || cell.richText?.length !== 1
+    || typeof cell.value !== 'string' || /[\r\n]/.test(cell.value)) return false
+  if (cell.richText[0]!.text !== cell.value) return false
+  return Object.keys(clearSheetCellRichTextFonts(cell.richText).runs![0]!).every(key => key === 'text' || key === 'id')
+}
+
 function externalCell(source: SpreadsheetCell, target: SpreadsheetCell, options: SheetClipboardCellOptions): SpreadsheetCell {
-  if (source.image || source.formula || typeof source.value !== 'string' || source.richText?.length
-    || normalizeSheetCellValueType(source.dataType) === 'force_string') return cloneModel(source)
+  if (source.image || source.formula || typeof source.value !== 'string'
+    || isForcedSheetCellValueType(source.dataType)) return cloneModel(source)
+  const uniformRun = hasUniformSheetClipboardRun(source)
+  if (source.richText?.length && !uniformRun) return cloneModel(source)
   const base = options.externalFormat === 'text' ? cloneModel(target) : cloneModel(source)
   if (options.externalFormat === 'html' && source.style.numberFormat === 'General' && isSheetTextNumberFormat(target.style.numberFormat)) {
     base.style.numberFormat = target.style.numberFormat
   }
-  const parsed = editSheetCellText(toExcelCellView(base), source.value, options.date1904, options.region)
+  const baseView = toExcelCellView(base)
+  const parsed = editSheetCellText(options.externalFormat === 'html' && uniformRun
+    ? sheetCellRichTextRunView(baseView, source.richText![0]!) : baseView, source.value, options.date1904, options.region)
   return applyExcelCellView({ row: source.row, col: source.col }, { ...parsed, richText: null, hyperlink: source.hyperlink ?? null,
+    authoredStyle: options.externalFormat === 'html' && uniformRun
+      ? { ...parsed.authoredStyle, ...sheetViewCellStylePatch(parsed) } : parsed.authoredStyle,
     metadata: source.metadata ? cloneModel(source.metadata) : null }, undefined, { date1904: options.date1904, numberFormatLocale: options.region })
 }
 
@@ -52,25 +66,28 @@ export function createSheetClipboardPastedCell(
   const target = originalTarget ? cloneModel(originalTarget) : createCell(position.row, position.col, null)
   if (options.targetStyle) target.style = cloneModel(options.targetStyle)
   const source = originalSource && options.externalFormat ? externalCell(originalSource, target, options) : originalSource
-  if (mode === 'formulas') {
-    if (!source?.formula) return originalTarget ? cloneModel(originalTarget) : undefined
-    target.formula = options.preserveFormulaReferences || options.externalFormat ? source.formula
+  if (mode === 'formulas' && source?.formula) {
+    target.formula = options.externalFormat ? source.formula
       : translateFormulaReferenceAreas(source.formula, options.rowDelta, options.columnDelta)
     target.value = null; target.display = target.formula; target.dataType = 'formula'; target.cachedDataType = null
     delete target.richText; delete target.sparkline; delete target.image; invalidateContentMetadata(target)
     return { ...target, id: `${position.row}:${position.col}`, ...position }
   }
-  if (mode === 'values') {
-    const value = source?.formula && options.externalFormat ? source.formula : source?.value ?? null
+  if (mode === 'formulas' && options.externalFormat && !originalTarget?.formula) return originalTarget ? cloneModel(originalTarget) : undefined
+  if (mode === 'values' || mode === 'formulas') {
+    const value = source?.formula && options.externalFormat ? source.formula
+      : (mode === 'formulas' || originalTarget?.formula) && source?.richText && !source.formula
+        ? source.richText.map(run => run.text).join('') || source.value : source?.value ?? null
     target.value = value; target.formula = null; target.cachedDataType = null
     target.dataType = source?.formula && !options.externalFormat ? source.cachedDataType ?? inferSheetCellValueType(value)
       : source?.formula ? 'text' : source?.dataType ?? inferSheetCellValueType(value)
     if (normalizeSheetCellValueType(target.dataType) === 'formula') target.dataType = inferSheetCellValueType(value)
     target.display = presentation(value, target, options)
-    if (source?.richText && !source.formula) target.richText = cloneModel(source.richText)
+    if (mode === 'values' && source?.richText && !source.formula && !originalTarget?.formula
+      && !hasUniformSheetClipboardRun(source)) target.richText = cloneModel(source.richText)
     else delete target.richText
     delete target.sparkline; invalidateContentMetadata(target)
-    if (source?.image && !source.formula) {
+    if (mode === 'values' && source?.image && !source.formula && !originalTarget?.formula) {
       target.image = options.preserveFormulaReferences ? cloneModel(source.image) : copySheetCellImage(source.image)
       if (source.metadata?.publicBody) target.metadata = { ...target.metadata, publicBody: cloneModel(source.metadata.publicBody),
         sheetImagePublicDrawingId: source.metadata.sheetImagePublicDrawingId ?? source.image.id }
@@ -90,6 +107,7 @@ export function createSheetClipboardPastedCell(
     if (!source && !originalTarget) return undefined
     target.style = explicitSheetCellStyle(source?.style ?? defaultCellStyle())
     target.authoredStyle = cloneModel(target.style)
+    target.richText = clearSheetCellRichTextFonts(target.richText).runs ?? undefined
     delete target.themeStyle
     delete target.authoredStyleReference; delete target.clearedStyleProperties
     if (!target.formula) target.display = presentation(target.value, target, options)

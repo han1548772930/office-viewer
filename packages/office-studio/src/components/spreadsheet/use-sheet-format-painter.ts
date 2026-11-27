@@ -22,6 +22,7 @@ interface SheetFormatPainterContext {
   userId(): string
   region(): string
   active(): boolean
+  editing(): boolean
   canStart(): boolean
   hasObjectSelection(): boolean
   applyView(view: ExcelWorkbookView): void
@@ -40,7 +41,8 @@ export function useSheetFormatPainter(context: SheetFormatPainterContext) {
   const painter = computed(() => context.workbook().id && context.studio() ? context.studio()!.sheetFormatPainter : standalone)
   const painterState = computed(() => painter.value.state)
   const painterActive = computed(() => painterState.value.mode !== 'off' && painterState.value.unitId === unitId())
-  const painterUnavailable = computed(() => !context.active() || !context.canStart() || context.hasObjectSelection() || !context.ranges().length)
+  const painterUnavailable = computed(() => !context.active() || context.editing() || !context.canStart()
+    || context.hasObjectSelection() || !context.ranges().length)
   const formatPainterCanvas = computed<SheetFormatPainterCanvasState | null>(() => {
     const state = painterState.value
     if (!painterActive.value || state.mode === 'off' || !state.sourceSheetId || !state.sourceRange) return null
@@ -121,6 +123,7 @@ export function useSheetFormatPainter(context: SheetFormatPainterContext) {
   function runFormatPainterCommand(commandId: string, params?: unknown): boolean {
     const supplied = sheetFormatPainterCommandInput(params), action = formatPainterActionForCommand(commandId, supplied)
     if (!action || !context.active()) return false
+    if ((action.kind === 'apply' || action.kind === 'confirm') && context.editing()) return false
     if ((action.kind === 'activate' || action.kind === 'set-mode' && action.mode !== 'off') && !painterActive.value && painterUnavailable.value) return false
     const input: SheetFormatPainterCommandInput = { ...supplied, unitId: supplied.unitId ?? unitId(),
       sheetId: supplied.sheetId ?? supplied.subUnitId ?? context.sheetId(), ranges: supplied.ranges ?? supplied.selections ?? (supplied.range ? [supplied.range] : context.ranges()) }
@@ -140,7 +143,10 @@ export function useSheetFormatPainter(context: SheetFormatPainterContext) {
       return accepted
     }
     if (action.kind === 'cancel') { clearPainterSession(); return true }
-    if (action.kind === 'cancel-confirmation') return painter.value.cancelConfirmation(input.requestId)
+    if (action.kind === 'cancel-confirmation') {
+      if (input.unitId !== painterState.value.unitId) return false
+      return painter.value.cancelConfirmation(input.requestId)
+    }
     if (action.kind === 'confirm') {
       const request = painter.value.getConfirmation(), state = pending.value
       if (!request || !state || 'studio' in state || request.requestId !== input.requestId) throw new Error('格式刷确认请求已经失效。')
@@ -183,7 +189,7 @@ export function useSheetFormatPainter(context: SheetFormatPainterContext) {
     try { runFormatPainterCommand(SHEET_FORMAT_PAINTER_COMMANDS.confirm, { requestId: pending.value.request.requestId, expectedRevision: pending.value.request.baseRevision }) }
     catch (error: unknown) { painterError.value = error instanceof Error ? error.message : '格式刷应用失败，数据没有修改。' }
   }
-  function afterPainterClose(): void { void nextTick(() => { if (context.active() && !pending.value) context.focus() }) }
+  function afterPainterClose(): void { void nextTick(() => { if (context.active() && !pending.value && !context.editing()) context.focus() }) }
   return { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, painterError,
     runFormatPainterCommand, armFormatPainter, cancelFormatPainter, clearPainterSession,
     finishFormatPainterSelection, confirmPainter, cancelPainterConfirmation, afterPainterClose }

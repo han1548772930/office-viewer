@@ -13,7 +13,7 @@ import {
 } from 'lucide-vue-next'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts.ts'
-import { SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
+import { SHEET_COMMON_FUNCTION_CATALOG, SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
 import SheetBorderSelector from './SheetBorderSelector.vue'
@@ -51,7 +51,14 @@ export interface SheetRibbonState {
   clipboardCapabilities?: SheetClipboardCapabilities
   fontList?: OfficeFontList
   fontEditable?: boolean
+  clearFormatEditable?: boolean
+  clearContentEditable?: boolean
+  mergeEditable?: boolean
+  numberFormatEditable?: boolean
+  borderEditable?: boolean
+  layoutEditable?: boolean
   formulaEditable?: boolean
+  rangeProtectionEditable?: boolean
   rangeThemeEditable?: boolean
   imageEditable?: boolean
   backgroundImageEditable?: boolean
@@ -125,7 +132,7 @@ const functionCategoryOrder = [
   '常用与统计', '财务', '逻辑', '文本', '日期与时间', '查找与引用', '数学', '统计', '工程', '信息', '数据库',
 ]
 const supportedFunctionCategories = new Set(SHEET_FUNCTION_CATALOG.map(entry => entry.category))
-const functionCategories = functionCategoryOrder.filter(category => supportedFunctionCategories.has(category))
+const functionCategories = functionCategoryOrder.filter(category => category === '常用与统计' || supportedFunctionCategories.has(category))
 const functionCategoryIcons: Record<string, Component> = {
   '常用与统计': FunctionSquare, 数学: Sigma, 逻辑: Workflow, 统计: ChartNoAxesColumnIncreasing,
   文本: TextCursor, '日期与时间': CalendarDays,
@@ -150,10 +157,12 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const quickDisabled = !state.dataValidationAvailable || state.quickValidationEditable === false
   const quick = (id: string, title: string, params: string, icon?: Component) => button(id, title, { commandId: 'sheet.operation.quick-data-validation', params, icon, disabled: quickDisabled })
   const tr: OfficeTranslator = translate ?? ((_key, fallback) => fallback)
-  const numberFormatDisabled = !state.hasSheet || state.fontEditable === false
+  const numberFormatDisabled = !state.hasSheet || state.fontEditable === false || state.numberFormatEditable === false
   const fontDisabled = !state.hasSheet || state.fontEditable === false
+  const borderDisabled = fontDisabled || state.borderEditable === false
   const formulaDisabled = !state.hasSheet || state.formulaEditable === false || state.drawingFocused === true
-  const layoutDisabled = fontDisabled
+  const layoutDisabled = fontDisabled || state.layoutEditable === false
+  const mergeDisabled = layoutDisabled || state.mergeEditable === false
   const selectedWrapStrategy = state.wrapStrategy !== undefined ? state.wrapStrategy : state.wrap === undefined ? null : state.wrap ? 'wrap' : 'overflow'
   const mixedLabel = tr('common.mixed', '混合')
   const mark = (id: string, title: string, icon: Component, value: boolean | undefined, column: number, shortcut: string) => button(id, title, {
@@ -253,7 +262,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.command.undo', '撤销', { icon: Undo2, disabled: !state.canUndo, shortcut: 'Ctrl+Z', gridLayout: { row: 1, column: 1, iconSize: 18 } }),
           button('sheet.command.redo', '重做', { icon: Redo2, disabled: !state.canRedo, shortcut: 'Ctrl+Y', gridLayout: { row: 2, column: 1, iconSize: 18 } }),
           button('sheet.operation.format-painter', '格式刷', { icon: Brush, activated: Boolean(state.painterActive), disabled: !state.painterActive && (!state.hasSheet || state.painterUnavailable === true), subId: 'sheet.operation.continuous-format-painter', gridLayout: { row: 1, column: 2, showLabel: false } }),
-          button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, gridLayout: { row: 2, column: 2, showLabel: false } }),
+          button('sheet.command.clear-format', '清除格式', { icon: RemoveFormatting, disabled: !state.hasSheet || state.clearFormatEditable === false, gridLayout: { row: 2, column: 2, showLabel: false } }),
           { ...button('sheet.command.paste', '粘贴', { icon: ClipboardPaste, shortcut: 'Ctrl+V',
             ...(pasteRoot ? { hidden: pasteRoot.hidden, disabled: !state.hasSheet || pasteRoot.disabled, disabledReason: pasteRoot.reason } : {}),
             gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }), type: pasteType, children: [
@@ -268,21 +277,21 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
         { id: 'font', title: '字体', order: 10, items: [
           { id: 'sheet.command.set-font-family', commandId: 'sheet.command.set-font-family', type: 'select', edit: { kind: 'font' }, title: '字体', width: 180, disabled: !state.hasSheet || state.fontEditable === false, value: state.fontFamily, placeholder: '混合', gridLayout: { row: 1, column: 1, columnSpan: 4, width: 180, minWidth: 120 }, options: ribbonFontOptions(state.fontFamily, state.fontList) },
           { id: 'sheet.command.set-font-size', commandId: 'sheet.command.set-font-size', type: 'select', edit: { kind: 'number', min: 6, max: 400 }, title: '字号', width: 72, disabled: !state.hasSheet || state.fontEditable === false, value: state.fontSize, placeholder: '混合', gridLayout: { row: 1, column: 5, width: 72 }, options: fontSizeOptions },
-          button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 6 } }),
-          button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown, disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 7 } }),
+          button('sheet.command.increase-font-size', '增大字号', { icon: AArrowUp, shortcut: 'Ctrl+Shift+.', disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 6 } }),
+          button('sheet.command.decrease-font-size', '减小字号', { icon: AArrowDown, shortcut: 'Ctrl+Shift+,', disabled: !state.hasSheet || state.fontEditable === false, gridLayout: { row: 1, column: 7 } }),
           mark('sheet.command.toggle-bold', '加粗', Bold, state.bold, 1, 'Ctrl+B'),
           mark('sheet.command.toggle-italic', '斜体', Italic, state.italic, 2, 'Ctrl+I'),
           mark('sheet.command.toggle-underline', '下划线', Underline, state.underline, 3, 'Ctrl+U'),
           mark('sheet.command.toggle-strike', '删除线', Strikethrough, state.strike, 4, 'Ctrl+Shift+X'),
           palette('sheet.menu.text-color', '文字颜色', 'color', Palette, 7),
           palette('sheet.menu.fill', '填充颜色', 'background', PaintBucket, 6),
-          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: borderIcon, params: state.borderPreset ?? 'all', disabled: fontDisabled, gridLayout: { row: 2, column: 5 },
+          { id: 'sheet.menu.borders', type: 'split', commandId: 'sheet.command.set-borders', title: '边框', icon: borderIcon, params: state.borderPreset ?? 'all', hidden: state.drawingFocused, disabled: borderDisabled, gridLayout: { row: 2, column: 5 },
             popupComponent: SheetBorderSelector, popupCommandId: 'sheet.command.set-borders', popupProps: {
               value: state.borderOptions ?? { style: 'thin', color: '#1f2937' }, preset: state.borderPreset ?? 'all', selectedColor: state.borderColor, mixed: state.borderColor === undefined, translate: tr, 'onUpdate:value': state.onBorderOptions,
             }, children: [
-              ...Object.entries(sheetBorderLabels).map(([value, label]) => button(`sheet.menu.border.${value}`, label, { commandId: 'sheet.command.set-borders', params: value, disabled: fontDisabled })),
-              { id: 'sheet.menu.border-style', type: 'menu', title: '边框样式', disabled: fontDisabled, children: Object.entries(sheetBorderStyleLabels).map(([value, label]) => button(`sheet.menu.border-style.${value}`, tr(`sheet.border.style.${value}`, label), { commandId: 'sheet.command.set-border-style', params: value, disabled: fontDisabled })) },
-              { id: 'sheet.menu.border-color', type: 'menu', title: '边框颜色', disabled: fontDisabled, children: SHEET_STANDARD_COLORS.map(value => button(`sheet.menu.border-color.${value}`, value.toUpperCase(), { commandId: 'sheet.command.set-border-color', params: value, swatch: value, disabled: fontDisabled })) },
+              ...Object.entries(sheetBorderLabels).map(([value, label]) => button(`sheet.menu.border.${value}`, label, { commandId: 'sheet.command.set-borders', params: value, disabled: borderDisabled })),
+              { id: 'sheet.menu.border-style', type: 'menu', title: '边框样式', disabled: borderDisabled, children: Object.entries(sheetBorderStyleLabels).map(([value, label]) => button(`sheet.menu.border-style.${value}`, tr(`sheet.border.style.${value}`, label), { commandId: 'sheet.command.set-border-style', params: value, disabled: borderDisabled })) },
+              { id: 'sheet.menu.border-color', type: 'menu', title: '边框颜色', disabled: borderDisabled, children: SHEET_STANDARD_COLORS.map(value => button(`sheet.menu.border-color.${value}`, value.toUpperCase(), { commandId: 'sheet.command.set-border-color', params: value, swatch: value, disabled: borderDisabled })) },
             ] },
         ] },
         { id: 'layout', title: '布局', order: 20, items: [
@@ -314,11 +323,11 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             activated: angle === 'v' ? state.rotationVertical === true : state.rotationVertical !== true && state.rotation === angle,
             icon: angle === 'v' ? TextCursor : angle === 0 ? Baseline : angle === -45 ? RotateCcw : angle === 45 ? RotateCw : angle === -90 ? RotateCcw : RotateCw,
           })) },
-          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, hidden: state.drawingFocused, disabled: layoutDisabled || !state.canMerge && !state.canUnmerge, activated: state.mergeActive === true, gridLayout: { row: 2, column: 3 }, children: [
-            button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
-            button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
-            button('sheet.command.merge-horizontal', '水平合并', { commandId: 'sheet.command.merge', params: 'horizontal', icon: TableCellsMerge, disabled: layoutDisabled || !state.canMerge }),
-            button('sheet.command.unmerge', '取消合并', { icon: TableCellsSplit, disabled: layoutDisabled || !state.canUnmerge }),
+          { id: 'sheet.menu.merge', type: 'menu', title: '合并单元格', icon: TableCellsMerge, hidden: state.drawingFocused, disabled: mergeDisabled || !state.canMerge && !state.canUnmerge, activated: state.mergeActive === true, gridLayout: { row: 2, column: 3 }, children: [
+            button('sheet.command.merge-all', '全部合并', { commandId: 'sheet.command.merge', params: 'all', icon: TableCellsMerge, disabled: mergeDisabled || !state.canMerge }),
+            button('sheet.command.merge-vertical', '垂直合并', { commandId: 'sheet.command.merge', params: 'vertical', icon: TableCellsMerge, disabled: mergeDisabled || !state.canMerge }),
+            button('sheet.command.merge-horizontal', '水平合并', { commandId: 'sheet.command.merge', params: 'horizontal', icon: TableCellsMerge, disabled: mergeDisabled || !state.canMerge }),
+            button('sheet.command.unmerge', '取消合并', { icon: TableCellsSplit, disabled: mergeDisabled || !state.canUnmerge }),
           ] },
         ] },
         { id: 'number', title: '数字', order: 30, items: [
@@ -336,10 +345,10 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
           button('sheet.command.decrease-decimals', '减少小数位', { icon: DecimalsArrowLeft, disabled: numberFormatDisabled, gridLayout: { row: 2, column: 4 } }),
         ] },
         { id: 'tools', title: '工具', order: 40, items: [
-          button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+          button('sheet.operation.open-range-protection', '保护范围', { icon: ShieldCheck, params: { mode: 'add' }, disabled: !state.hasSheet || state.rangeProtectionEditable === false, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
           shortcutPanelRibbonItem(tr('shortcut-panel.title', '快捷键面板'), state.shortcutPanelOpen),
           featureSearchRibbonItem(tr('feature-search.title', '搜索功能')),
-          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, order: 3, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+          button('sheet.command.clear-content', '清除内容', { icon: RemoveFormatting, order: 3, showLabel: true, disabled: !state.hasSheet || state.clearContentEditable === false, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
           button(OPEN_SHEET_RANGE_THEME_OPERATION, '范围主题', { icon: Palette, order: 4, showLabel: true, disabled: state.rangeThemeEditable === false || !state.hasSheet,
             gridLayout: { row: 1, column: 4, rowSpan: 2, showLabel: true } }),
         ] },
@@ -450,7 +459,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             icon: functionCategoryIcons[category] ?? FunctionSquare,
             disabled: formulaDisabled,
             gridLayout: index === 0 ? { row: 1, column: 1, rowSpan: 2, showLabel: false } : undefined,
-            children: [...SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category).map(entry => button(
+            children: [...(category === '常用与统计' ? SHEET_COMMON_FUNCTION_CATALOG : SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category)).map(entry => button(
               `sheet.function.${entry.name}`,
               entry.name,
               { commandId: 'sheet.operation.insert-function', params: entry.name, disabled: formulaDisabled },

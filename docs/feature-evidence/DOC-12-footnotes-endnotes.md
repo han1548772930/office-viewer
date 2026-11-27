@@ -17,7 +17,7 @@ References 标签顺序 3；Footnote / Endnote 分组顺序分别 1 / 2。每组
 | 下一条 | `docs.operation.next-footnote` / `docs.operation.next-endnote` | r1c3，order 2 | 按真实引用位置严格向后寻找，不循环。 |
 | 设置 | `docs.operation.open-footnote-settings` / `docs.operation.open-endnote-settings` | r2c2，colSpan 2，order 3 | 文档与当前节作用域、继承/显式设置、位置/编号/起始值/重启/脚注列、尾注延后；草稿未应用时阻止隐式切作用域。 |
 
-分类计数：固定版扩展 Ribbon 根入口 8，分组 2；本项目增加管理根入口 1（`doc.operation.open-notes`），辅助检查/管理视图单独记账；上下文返回引用 1（`docs.operation.navigate-footnote`），不计入常驻根入口。当前没有另外声称已盘点 Docs 全部插件、溢出入口或 Ribbon 功能完成。classic 布局使用相同分组/顺序，实际尺寸、显隐、键盘和最终交互未作浏览器验收。
+分类计数：固定版扩展 Ribbon 根入口 8，分组 2；本项目增加管理根入口 1（`doc.operation.open-notes`），辅助检查/管理视图单独记账；上下文返回引用命令 1（`docs.operation.navigate-footnote`），上游挂在 MAIN_AREA / PARAGRAPH 的 OTHERS 两处，不计入常驻根入口。2026-11-27 已回读固定发行包的 schema 与菜单工厂，此分类补充不计本轮新增能力。当前没有另外声称已盘点 Docs 全部插件、溢出入口或 Ribbon 功能完成。classic 布局使用相同分组/顺序，实际尺寸、显隐、键盘和最终交互未作浏览器验收。
 
 `docs.operation.navigate-footnote` 的公开参数为 `{unitId?,noteId?,toReference?}`；指定 ID 默认进入注释，无 ID 默认回到当前引用，显式 `toReference` 覆盖。自定义标记不消耗自动编号；`eachPage` 使用实际物理页而非印刷页码。现代文档 flavor、链接故事、嵌套表格路径与无引用孤立定义都保留来源；不靠集合索引猜引用地址。
 
@@ -55,3 +55,17 @@ scoped view 与 edit 独立判断。preview、note panel、Canvas 导航与分�
 已补 Notes 设置/管理/独立检查的真实 Workbench 浏览器草稿，但尚未运行浏览器闭环；明暗主题、弹层、焦点归还、滚动/缩放、Windows IME、观察者重入和历史跳转均未验收。公开 Body/native DOCX 包含控件、字段、图片、复杂表格、额外特殊定义的保存重开由根任务继续处理；浏览器草稿里的本地领域模型保存使用 `saveModel()`，不把内部快照重开等同于公开 `save()` / `getSnapshot()` 或 Office 文件往返。纯图片/分隔故事必须由 Body/native 适配保留来源中真实 `w:p` 或公开 paragraph；UI 不生成临时 paragraph 充当保真输入。没有 Office 文件样本就保持未验收。缺少完整 nested table DocumentPoint 路径的引用不可直接导航，需独立检查；性能、大样本内存、首屏/滚动/编辑/缩放/长任务、跨 Worker/WASM 字节与取消均无实测。
 
 本记录不缩减 Sheets/Docs/Pro 的完整目标，也不将未完成项改写为永久禁用、展示入口或提示消息。
+
+<a id="note-insert-selection-permission"></a>
+
+## 2026-11-27 非空选区插入的权限目标
+
+状态：**未验收**。固定 v1.6.0 的 `docs-reference-ui/lib/es/index.js` 中插入操作使用 `Math.max(startOffset, endOffset)`；八个根入口的 ID、顺序和 grid 位置已按同文件 schema 回读。上游设置菜单只按传统 flavor 显隐，本项目设置入口仍允许打开只读 Form，由作用域能力决定字段和提交是否可用，不能把该入口当成遗漏编辑禁用。
+
+[document-note-command-state.ts](../../packages/office-studio/src/features/document/commands/document-note-command-state.ts) 和 [document-note-editing.ts](../../packages/office-studio/src/features/document/notes/document-note-editing.ts) 已按非空选区的逻辑末端判断权限、字段/内容锁并插入引用，保留原选中文字；此前 [document-note-mutations.ts](../../packages/office-studio/src/features/document/notes/document-note-mutations.ts) 的入站权限仍检查整个选区，导致起点段落无编辑权限而末端可编辑时，按钮可用、命令却拒绝。本次生产只改该文件两行：复用 `orderedSelection` 与 `collapsedSelection`，将 insert 权限目标收窄到真实插入点。候选末尾对实际变更的块、注释、编号和设置仍执行原权限判断，若重编号确实修改其他被拒绝区域，仍拒绝整批提交；没有新增守卫、权限服务、API/DTO、历史或 Worker/WASM 协议。
+
+[document-notes.contract.test.mjs](../../packages/office-studio/tests/document-notes.contract.test.mjs) 增加一个声明，内部覆盖脚注/尾注及正反选区四个场景。草稿直接调用原能力、候选规划与 OfficeStudio 注册命令，检查起点 paragraph edit deny 和 richText contentLocked 下的正文/控件不变、末端引用、真实 note 输入 host、一次历史、撤销重做与 saveModel 重开；末端 edit deny 时，按钮能力与命令均拒绝，模型、revision、历史和输入会话不变。模型比较捕获真实快照，不依赖 getModel 返回的活动对象身份。
+
+[document-note-workbench.browser.test.mjs](../../packages/office-studio/tests/document-note-workbench.browser.test.mjs) 复用原 fixture，仅增加调用既有 `FDocument.setInputSelection` 的选区入口；新增一个声明展开四个计划案例，分别检查两类注释的 classic/light 正向与 grid/dark 反向选区。通过真实 Ribbon 按钮检查取消后模型/历史不变、末端引用与原选中文字保留、单次 CommandExecuted/历史、note host/Canvas 输入焦点、撤销重做/saveModel 重开及末端拒绝时的禁用状态。现有 ConfigProvider、Ant 按钮与 Input.TextArea 输入桥不变，未新建 fixture、测试文件或 UI 控件。
+
+仅执行源码/diff 回读和 Babel AST 计数：两个草稿文件本次前均为 **11 个声明 / 11 个计划案例**；当前契约为 **12 / 12**，浏览器为 **12 / 15**，运行结果均为 **0**。契约声明内部的 kind/方向循环不额外计注册案例。统一静态检查由主线收尾；测试、类型、构建、dev/服务、浏览器、Rust/WASM、公开 Body/native DOCX 样本和基准均后置。新增 saveModel 草稿只覆盖本地模型重开，不能代替公开 save/getSnapshot 或 Office 文件保真；真实主题、弹层、焦点和 Windows IME 仍未验收。

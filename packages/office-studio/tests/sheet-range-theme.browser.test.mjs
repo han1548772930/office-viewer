@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, test } from 'vitest'
 import { chromium, expect } from '@playwright/test'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
+import { OPEN_SHEET_RANGE_THEME_OPERATION, SHEET_RANGE_THEME_COMMANDS } from '../src/features/sheet-workbench/sheet-range-theme-command.ts'
 
 // Drafts only. No dev server or browser was started while writing these scenarios.
 const route = '/__sheet-range-theme__', fixture = readFileSync(new URL('./fixtures/sheet-range-theme.html', import.meta.url), 'utf8')
@@ -79,6 +80,45 @@ test('a changed model rejects the captured dialog revision and sheet switching c
   assert.equal((await snapshot()).sheets[0].rangeThemeRules?.length ?? 0, 0)
   await page.evaluate(() => window.rangeThemeFixture.switchSheet()); await expect(dialog()).toBeHidden()
   assert.equal((await snapshot()).activeSheetId, 'other'); assert.equal((await snapshot()).sheets[1].rangeThemeRules?.length ?? 0, 0)
+})
+
+test('range-theme input sessions retain drafts and dialog cancellation returns Canvas focus through the Ant afterClose callback', async () => {
+  for (const host of ['cell', 'formula']) for (const variant of ['classic', 'grid']) {
+    await page.goto(baseURL); await expect(grid()).toBeVisible()
+    await page.evaluate(value => window.rangeThemeFixture.appearance(false, value), variant); await select('A1')
+    const before = await snapshot(), depth = await page.evaluate(() => window.rangeThemeFixture.history())
+    const input = host === 'cell' ? page.locator('.canvas-cell-input input, .canvas-cell-input textarea') : page.getByRole('textbox', { name: '公式编辑', exact: true })
+    if (host === 'cell') await grid().press('F2')
+    if (host === 'formula') await input.focus()
+    await input.fill('未提交主题草稿')
+    const rangeTheme = page.locator('[data-ribbon-item="sheet.operation.open-range-theme"]:visible').first().getByRole('button')
+    for (const composing of [false, true]) {
+      if (composing) {
+        await input.dispatchEvent('compositionstart')
+        await page.evaluate(value => window.rangeThemeFixture.appearance(true, value), variant)
+      }
+      await expect(rangeTheme).toBeDisabled(); await rangeTheme.evaluate(element => element.click())
+      for (const intent of [
+        { commandId: OPEN_SHEET_RANGE_THEME_OPERATION, params: undefined },
+        { commandId: SHEET_RANGE_THEME_COMMANDS.set, params: { themeName: 'default' } },
+        { commandId: SHEET_RANGE_THEME_COMMANDS.remove, params: undefined },
+      ]) {
+        await page.getByTestId('workbench-ribbon').evaluate((element, value) => element.__vueParentComponent.emit('execute', value.commandId, value.params), intent)
+      }
+      await expect(dialog()).toBeHidden(); await expect(input).toHaveValue('未提交主题草稿'); await expect(grid()).not.toBeFocused()
+      assert.deepEqual(await snapshot(), before); assert.deepEqual(await page.evaluate(() => window.rangeThemeFixture.history()), depth)
+    }
+    await input.dispatchEvent('compositionend', { data: '未提交主题草稿' }); await expect(rangeTheme).toBeDisabled()
+    await input.press('Escape'); await expect(grid()).toBeFocused(); await expect(rangeTheme).toBeEnabled(); await open()
+    await expect(rangeTheme).toBeDisabled()
+    await page.getByTestId('workbench-ribbon').evaluate((element, commandId) => element.__vueParentComponent.emit('execute', commandId, { themeName: 'default' }), SHEET_RANGE_THEME_COMMANDS.set)
+    await expect(dialog()).toBeVisible(); assert.deepEqual(await snapshot(), before)
+    assert.deepEqual(await page.evaluate(() => window.rangeThemeFixture.history()), depth)
+    await dialog().getByRole('button', { name: '取消', exact: true }).click()
+    await expect(dialog()).toBeHidden(); await expect(grid()).toBeFocused(); await expect(nameBox()).toHaveValue('A1')
+    await expect(rangeTheme).toBeEnabled(); assert.deepEqual(await snapshot(), before)
+    assert.deepEqual(await page.evaluate(() => window.rangeThemeFixture.history()), depth)
+  }
 })
 
 test('grid layout, dark theme and Canvas Ant input use the applied style and return focus after Escape', async () => {

@@ -53,7 +53,7 @@ import type { RibbonGroup, RibbonItem, RibbonVariant } from '../platform/ribbon/
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme'
 import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
-import { createDocumentRibbon, documentCommandFromRibbon, documentTableContextMenuItems, documentTocContextMenuItems, type DocumentTocContextActionStates } from './document/document-ribbon'
+import { createDocumentRibbon, documentCommandFromRibbon, documentRibbonSelectionHasCode, documentTableContextMenuItems, documentTocContextMenuItems, type DocumentTocContextActionStates } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentStoryToolbarState, documentToolbarState, type DocumentToolbarState } from './document/document-toolbar-state'
 import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
 import { documentParagraphPagination } from '../features/document/model/document-paragraph-pagination'
@@ -197,6 +197,7 @@ const showOutline = computed({ get: () => documentOutlineEnabled(model.value, ou
 const isFocusMode = ref(false)
 const isFullscreen = ref(false)
 const workbenchRef = ref<HTMLElement | null>(null)
+const fullscreenDocument = shallowRef<Document>()
 const workbenchWidth = ref(1440)
 const visibleBlockId = ref<string>()
 const outlineNavigationTarget = ref<string>()
@@ -338,6 +339,7 @@ const codeDialogTarget = shallowRef<StructureDialogTarget>()
 const codeDialogData = shallowRef<DocumentCodeBlockData>()
 const codeDialogBlockId = ref<string>()
 const codeDialogFocus = ref<'font' | 'language' | 'settings'>()
+const codeDialogComposing = ref(false)
 const structureDialog = shallowRef<{ open: boolean; kind: 'quote' | 'callout' | 'columns'; block?: DocumentBlock; target: StructureDialogTarget }>()
 const latexPanelOpen = ref(false)
 const latexPanelRef = ref<InstanceType<typeof DocumentLatexPanel>>()
@@ -380,6 +382,8 @@ const permissionTargets = computed(() => documentPermissionTargetOptions(model.v
 const canManagePermissionRules = computed(() => canManageDocumentPermissions(permissionContext.value))
 const canComment = computed(() => resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'comment').allowed)
 const documentInputComposing = computed(() => storyComposing.value || canvasRef.value?.isBodyComposing() === true)
+const pageSettingsDisabled = computed(() => !inputStateActive || documentInputComposing.value
+  || !resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'edit').allowed)
 const noteInsertState = computed(() => documentNoteInsertState(model.value, selection.value, {
   permission: permissionContext.value, host: editingHost.value,
   disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
@@ -410,6 +414,7 @@ const deletableCommentIds = computed(() => Object.values(model.value.comments ??
   .map(comment => comment.id))
 const activeTextBlock = computed(() => !selection.value.tableSelection && !legacyStoryActive.value ? blockAtPoint(editingModel.value, selection.value.focus) : undefined)
 const activeStructuredBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value))
+const selectionHasCode = computed(() => !legacyStoryActive.value && documentRibbonSelectionHasCode(editingModel.value, selection.value))
 const activeCodeBlock = computed(() => legacyStoryActive.value ? undefined : documentStructuredBlockAtSelection(editingModel.value, selection.value, 'code') ?? activeTextBlock.value)
 const activeCodeBlockData = computed(() => activeCodeBlock.value && codeBlockData(activeCodeBlock.value))
 const activeLatexFormula = computed(() => legacyStoryActive.value ? undefined : selectedLatexFormula(editingModel.value, selection.value))
@@ -423,11 +428,12 @@ const toolbarState = computed<DocumentToolbarState>(() => {
   return documentToolbarState(editingModel.value, selection.value, pendingMarks.value)
 })
 const tableRibbonContext = computed<DocumentTableRibbonContext>(() => {
+  void storyActionVersion.value
   const id = toolbarState.value.table?.blockId, source = id && findDocumentBlock(editingModel.value, id), table = source && tableForBlock(source)
   const fragment = layoutSource.value === model.value ? editingLayout.value.tableFragments?.find(fragment => fragment.tableId === id && !fragment.repeatedHeader) : undefined
   const heights = fragment?.rows.map(row => row.contentHeight ?? row.height)
   return { model: editingModel.value, selection: selection.value, permission: permissionContext.value, mode: pageMode.value,
-    composing: documentInputComposing.value || legacyStoryActive.value || !!editingHost.value && storyLinkedToPrevious.value, floatingToolbarOpen: tableFloatingToolbarOpen.value,
+    composing: !inputStateActive || documentInputComposing.value || legacyStoryActive.value || !!editingHost.value && storyLinkedToPrevious.value, floatingToolbarOpen: tableFloatingToolbarOpen.value,
     lastBackgroundColor: tableColors.value.background, lastBorderColor: tableColors.value.border,
     ...(table && heights?.length === table.rows.length ? { measuredRowHeights: heights } : {}) }
 })
@@ -463,11 +469,11 @@ const currentStoryRange = computed<DocumentStoryRange | undefined>(() => legacyS
   ? { sectionId: headerFooterSectionId.value, story: storyKey.value, ...clampDocumentTextRange(storyValue.value ?? '', storySelection.value) } : undefined)
 watch([model, () => props.documentApi, currentStoryRange, editingHost, selection, pendingMarks], () => { storyActionVersion.value++ }, { flush: 'sync' })
 const currentStorySelection = computed(() => currentStoryRange.value ?? storySelection.value)
-const textFormattingState = computed(() => storyComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
+const textFormattingState = computed(() => documentInputComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
   : currentStoryRange.value ? documentStoryTextFormattingState(model.value, currentStoryRange.value, permissionContext.value)
   : legacyStoryActive.value ? { available: false, reason: '当前页眉页脚片段不可用。' }
   : documentTextFormattingState(editingModel.value, selection.value, permissionContext.value))
-const clearFormattingState = computed(() => storyComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
+const clearFormattingState = computed(() => documentInputComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
   : documentClearFormattingState(currentStoryRange.value ? model.value : editingModel.value, selection.value, permissionContext.value, currentStoryRange.value))
 const currentTocPageNumbers = computed(() => layoutSource.value === model.value ? documentTocPageNumbers(layout.value.headings, layout.value.pages) : {})
 const selectedTocActionStates = computed<Record<DocumentTocUpdateMode | 'delete', DocumentTocActionState>>(() => {
@@ -627,6 +633,10 @@ const ribbonShortcuts = computed(() => [
   { title: t('shortcut-panel.select-all', '全选'), shortcut: 'Ctrl+A' },
   { title: t('workspace.save', '保存'), shortcut: 'Ctrl+S' },
   { title: t('shortcut-panel.refresh-fields', '更新选中字段'), shortcut: 'F9' },
+  { title: t('items.doc-align-left', '左对齐'), shortcut: 'Ctrl+Shift+L' },
+  { title: t('items.doc-align-center', '居中'), shortcut: 'Ctrl+Shift+E' },
+  { title: t('items.doc-align-right', '右对齐'), shortcut: 'Ctrl+Shift+R' },
+  { title: t('items.doc-align-justify', '两端对齐'), shortcut: 'Ctrl+Shift+J' },
   ...(!legacyStoryActive.value ? [
     { title: t('shortcut-panel.insert-paragraph', '插入段落'), shortcut: 'Enter' },
     { title: t('shortcut-panel.line-break', '插入换行'), shortcut: 'Shift+Enter' },
@@ -662,6 +672,7 @@ const insertModalAvailable = computed(() => modalKind.value === 'link'
   ? !!hyperlinkDialog.value && structureTargetCurrent(hyperlinkDialog.value.target) && hyperlinkState.value.available
   : pictureReplacementState.value.available)
 const ribbonTabs = computed(() => {
+  void storyActionVersion.value
   const control = selectedContentControl.value
   const resetPlaceholder = control && contentControlValueCommandState(model.value,
     { id: 'doc.command.reset-content-control-placeholder', params: { controlId: control.id } },
@@ -689,7 +700,7 @@ const ribbonTabs = computed(() => {
     fontList: officeFonts?.value,
     lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
     defaultTextColor: DOCUMENT_DEFAULT_TEXT_COLOR, defaultHighlightColor: themeToken.value.colorPrimary,
-    numbering: { canRestart: canRestartDocumentNumbering(editingModel.value, selection.value, permissionContext.value), canContinue: canContinueDocumentNumbering(editingModel.value, selection.value, permissionContext.value) },
+    numbering: { canRestart: canRestartDocumentNumbering(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value), canContinue: canContinueDocumentNumbering(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value) },
     indentation: { canDecrease: canChangeDocumentParagraphIndent(paragraphContext.value.model, paragraphContext.value.selection, -1, permissionContext.value), canIncrease: canChangeDocumentParagraphIndent(paragraphContext.value.model, paragraphContext.value.selection, 1, permissionContext.value) },
     painterActive: !!painter.value, painterUnavailable: !canEditContextSelection.value || legacyStoryActive.value,
     clearFormatting: clearFormattingState.value,
@@ -697,8 +708,10 @@ const ribbonTabs = computed(() => {
     hyperlink: hyperlinkState.value,
     shortcutPanelOpen: shortcutPanelOpen.value,
     mode: pageMode.value,
-    editingDisabled: legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value,
-    textFormattingDisabled: !textFormattingState.value.available,
+    editingDisabled: !inputStateActive || documentInputComposing.value || (legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value),
+    selectionHasCode: selectionHasCode.value,
+    pageSettingsDisabled: pageSettingsDisabled.value,
+    textFormattingDisabled: !inputStateActive || !textFormattingState.value.available,
     namedStyleDisabled: !inputStateActive || documentInputComposing.value || !namedStyleState.value.available
       || (legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value),
     namedStyleDisabledReason: namedStyleState.value.reason,
@@ -734,6 +747,7 @@ const ribbonTabs = computed(() => {
       temporary: control.temporary,
       checkboxStyle: contentControlCheckboxStyle(control),
       dateFormat: control.dateFormat,
+      dateValue: control.dateValue,
       parentId: control.parentId,
       placement: control.placement,
       canSelectParent: !!parentSelection && !!props.documentApi && inputStateActive
@@ -760,7 +774,9 @@ let pictureImageAbort: AbortController | undefined
 function abortPictureImageRead() { imageRequest++; pictureImageAbort?.abort(); pictureImageAbort = undefined; pictureImageBusy.value = false }
 let clipboardRequest = 0
 onMounted(() => {
-  document.addEventListener('fullscreenchange', syncFullscreen)
+  fullscreenDocument.value = workbenchRef.value?.ownerDocument
+  fullscreenDocument.value?.addEventListener('fullscreenchange', syncFullscreen)
+  syncFullscreen()
   const api = props.documentApi
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   if (!workbenchRef.value) return
@@ -768,13 +784,20 @@ onMounted(() => {
   resizeObserver.observe(workbenchRef.value)
 })
 onActivated(() => {
+  const hostDocument = workbenchRef.value?.ownerDocument
+  if (fullscreenDocument.value !== hostDocument) {
+    fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen)
+    fullscreenDocument.value = hostDocument
+    hostDocument?.addEventListener('fullscreenchange', syncFullscreen)
+  }
+  syncFullscreen()
   inputStateActive = true
   storyActionVersion.value++
   const api = props.documentApi
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   refreshDocumentFieldsOnOpen()
 })
-onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); document.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++ })
+onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++ })
 onDeactivated(() => {
   inputStateActive = false
   inputStateEpoch++
@@ -792,6 +815,7 @@ onDeactivated(() => {
   commentsPanelOpen.value = false
   closeLatexPopup(true)
   codeBlockPanelOpen.value = false
+  codeDialogComposing.value = false
   codeDialogTarget.value = undefined
   codeDialogBlockId.value = undefined
   codeDialogFocus.value = undefined
@@ -799,9 +823,11 @@ onDeactivated(() => {
   notesPanelOpen.value = false
   noteSettings.value = undefined
   showFind.value = false
-  if (document.fullscreenElement === workbenchRef.value) {
-    void document.exitFullscreen().catch((error: unknown) => notify(error instanceof Error ? error.message : '无法退出全屏'))
-  }
+  const workbench = workbenchRef.value
+  if (!workbench) return
+  const hostDocument = workbench.ownerDocument
+  if (hostDocument.fullscreenElement !== workbench) return
+  void hostDocument.exitFullscreen().catch((error: unknown) => notify(error instanceof Error ? error.message : '无法退出全屏'))
 })
 const previousTabBeforeTable = ref('home')
 watch(latexPanelOpen, open => {
@@ -839,6 +865,7 @@ watch(modalOpen, open => { insertModalComposing.value = false; if (!open) abortP
 watch(() => props.fileName, (value) => { if (value) documentTitle.value = value })
 watch(() => props.documentApi, (next, previous, onCleanup) => {
   inputStateEpoch++
+  if (next !== previous) pageSettingsOpen.value = false
   if (previous && previous !== next) canvasRef.value?.cancelInput(false)
   if (previous && previous.id !== next?.id && previous.getInputState()) previous.clearInputMarks()
   standalonePendingMarks.value = {}
@@ -862,6 +889,7 @@ watch(() => props.modelValue, (value) => {
   modelReceived = true
   if (typeof value === 'string' || next.id !== model.value.id) painter.value = undefined
   const sameDocument = next.id === model.value.id
+  if (!sameDocument) pageSettingsOpen.value = false
   if (!sameDocument) { canvasRef.value?.cancelInput(false); blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined; notesPanelOpen.value = false; noteSettings.value = undefined; notesError.value = '' }
   model.value = normalizeDocument(next)
   documentTitle.value = next.name
@@ -1082,7 +1110,12 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     && (command.id === 'doc.command.insert-page-break'
       || command.id === 'doc.command.insert-column-break'
       || command.id === 'doc.command.insert-section-break')) return false
-  if ((isDocumentStructureCommand(command) || isDocumentImageCommand(command)) && (!inputStateActive || documentInputComposing.value)) return false
+  if ((isDocumentStructureCommand(command) || isDocumentImageCommand(command) || isDocumentTableCommand(command)
+    || ['doc.command.format-text', 'doc.command.format-paragraph', 'doc.command.set-block-type', 'doc.command.change-list-type',
+      'doc.command.restart-list-numbering', 'doc.command.continue-list-numbering', 'doc.command.change-paragraph-indent',
+      'doc.command.horizontal-line', 'doc.command.insert-divider', 'doc.command.insert-horizontal-line-bellow',
+      'doc.command.create-table', 'doc.command.insert-table'].includes(command.id))
+    && (!inputStateActive || documentInputComposing.value)) return false
   if (!command.host && legacyStoryActive.value && documentCommandSupportsBlockHost(command)
     && command.id !== 'doc.command.format-text' && command.id !== 'doc.command.clear-formatting') activateStoryBlockEditing()
   if (editingHost.value && documentCommandSupportsBlockHost(command)) {
@@ -1090,8 +1123,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
     command = { ...command, host: { ...editingHost.value } }
   }
   if (isDocumentTableCommand(command)) {
-    const state = documentInputComposing.value ? { available: false, reason: '请先完成当前输入法输入' }
-      : documentTableCommandState(editingModel.value, selection.value, command, permissionContext.value)
+    const state = documentTableCommandState(editingModel.value, selection.value, command, permissionContext.value)
     if (!state.available) { if (state.reason) notify(state.reason); return false }
   }
   if (command.id === 'doc.command.clear-formatting' && !clearFormattingState.value.available) return false
@@ -1227,6 +1259,7 @@ function closeStructureDialog(target?: StructureDialogTarget) {
   }
 }
 function openCodeBlockPanel(blockId?: string, focus?: 'font' | 'language' | 'settings') {
+  if (codeDialogComposing.value) return
   const target = captureStructureTarget()
   if (!target || selection.value.tableSelection) return
   const block = blockId ? findDocumentBlock(editingModel.value, blockId) : activeCodeBlock.value
@@ -1235,6 +1268,7 @@ function openCodeBlockPanel(blockId?: string, focus?: 'font' | 'language' | 'set
   codeDialogTarget.value = target; codeDialogBlockId.value = block?.id; codeDialogFocus.value = focus; codeDialogData.value = data ? { ...data } : undefined; codeBlockPanelOpen.value = true
 }
 function applyCodeBlock(data: DocumentCodeBlockData) {
+  if (!codeBlockPanelOpen.value || codeDialogComposing.value) return
   const target = codeDialogTarget.value
   if (!target || !structureTargetCurrent(target)) { notify('文档或代码块输入位置已变化，请重新打开代码块设置。'); return }
   const existing = codeDialogBlockId.value ? findDocumentBlock(editingModel.value, codeDialogBlockId.value) : undefined,
@@ -1612,7 +1646,7 @@ function onContentControlCommand(request: DocumentContentControlCommandRequest) 
     }
   } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
 }
-function toggleFormat(field: 'bold' | 'italic' | 'underline', source?: DocumentModel, story?: DocumentStoryRange) {
+function toggleFormat(field: 'bold' | 'italic' | 'underline' | 'strike' | 'subscript' | 'superscript', source?: DocumentModel, story?: DocumentStoryRange) {
   if (source || story) {
     const api = props.documentApi, scope = storyActionVersion.value
     const current = () => {
@@ -1628,6 +1662,10 @@ function toggleFormat(field: 'bold' | 'italic' | 'underline', source?: DocumentM
       if (api) syncCurrentInput(api)
       return
     }
+  }
+  if (field === 'subscript' || field === 'superscript') {
+    execute({ id: 'doc.command.format-text', ...(story ? { story } : {}), patch: { verticalAlign: currentMarks.value.verticalAlign === field ? 'baseline' : field } })
+    return
   }
   execute({ id: 'doc.command.format-text', ...(story ? { story } : {}), patch: { [field]: currentMarks.value[field] !== true } })
 }
@@ -1645,6 +1683,7 @@ function changePageSetup() {
   applyPageSetup(documentOrientedPage(model.value.page, orientation.value, paperSize.value))
 }
 function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMode.value) {
+  if (!inputStateActive || documentInputComposing.value) return
   if (!canDocumentPermission('edit')) return
   const error = documentPageSettingsError(page)
   if (error) { notify(error); return }
@@ -1654,7 +1693,8 @@ function applyPageSetup(page: DocumentPageSetup, mode: DocumentPageMode = pageMo
   paperSize.value = documentPaperSize(page)
   orientation.value = page.width > page.height ? 'landscape' : 'portrait'
   publish(next)
-  void nextTick(() => canvasRef.value?.focus())
+  pageSettingsOpen.value = false
+  scheduleInputFocus(() => canvasRef.value?.focus())
 }
 function applyHeaderFooter(patch: SectionHeaderFooterPatch, input?: DocumentStoryInputCommit, sectionId = headerFooterSectionId.value) {
   const feedback: { selectionCurrent: boolean; modelRevision?: number } = { selectionCurrent: true }
@@ -1983,7 +2023,7 @@ function selectDocumentContextMenuItem(info: { key: string | number; commandId?:
   if (action) runContextMenuAction(info.commandId ? { ...action, commandId: info.commandId, params: info.params } : action, context)
 }
 function openTableProperties(params?: unknown) {
-  if (documentInputComposing.value || legacyStoryActive.value || !params || typeof params !== 'object' || Array.isArray(params)) return
+  if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value || !params || typeof params !== 'object' || Array.isArray(params)) return
   const parsed = documentCommandFromRibbon('doc.command.table-set-background', { ...params, color: null })
   if (!parsed || !isDocumentTableCommand(parsed)) return
   const tableId = parsed.tableId ?? toolbarState.value.table?.blockId, block = tableId && findDocumentBlock(editingModel.value, tableId), table = block && tableForBlock(block)
@@ -2104,7 +2144,7 @@ function onImageOperation(request: DocumentImageCanvasOperationRequest) {
 }
 function insertImage(paragraphMenuPlacement?: 'below') { imageEditor.show('insert', undefined, paragraphMenuPlacement) }
 function insertLink(params?: unknown) {
-  if (!inputStateActive || documentInputComposing.value) return
+  if (!inputStateActive || documentInputComposing.value || insertModalComposing.value) return
   const resolved = resolveDocumentHyperlinkOperation(model.value, 'doc.operation.show-hyper-link-edit-popup', params, permissionContext.value)
   if (!resolved) return
   if (resolved.kind === 'link') {
@@ -2514,13 +2554,17 @@ function canDocumentPermission(action: 'edit' | 'copy' | 'comment' | 'print' | '
   if (!decision.allowed) notify(`当前用户没有${({ edit: '编辑', copy: '复制', comment: '评论', print: '打印', export: '导出' })[action]}权限。`)
   return decision.allowed
 }
-function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
+function syncFullscreen() { isFullscreen.value = workbenchRef.value?.ownerDocument.fullscreenElement === workbenchRef.value }
 async function toggleFullscreen() {
   const workbench = workbenchRef.value
   if (!workbench) return
+  const hostDocument = workbench.ownerDocument
   try {
-    if (document.fullscreenElement === workbench) await document.exitFullscreen()
-    else await workbench.requestFullscreen()
+    if (hostDocument.fullscreenElement) {
+      await hostDocument.exitFullscreen()
+      return
+    }
+    await workbench.requestFullscreen()
   } catch (error) {
     notify(error instanceof Error ? error.message : '无法切换全屏')
   }
@@ -2816,6 +2860,10 @@ function handleStoryAction(raw: unknown) {
   if (targetCurrent()) canvasRef.value?.focusStory()
 }
 function handleBlockStoryAction(action: NonNullable<ReturnType<typeof parseHeaderFooterAction>>, location: StoryLocation, key: DocumentStoryKey) {
+  if (action.action === 'navigate') {
+    openStory({ page: location.page, area: action.area })
+    return
+  }
   if (headerFooterActionDisabled({ disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value, contentDisabled: storyLinkedToPrevious.value,
     refreshDisabled: documentInputComposing.value || !canRefreshFields.value }, action)) return
   const sectionId = headerFooterSectionId.value
@@ -2879,7 +2927,11 @@ function onRibbonExecute(id: string, params?: unknown) {
   if ((id === 'doc.command.unwrap-structured-block' || id === 'doc.command.exit-structured-block' || id === 'doc.command.remove-structured-block')
     && params && typeof params === 'object' && 'blockId' in params && typeof params.blockId === 'string') { execute({ id, blockId: params.blockId }); return }
   if (id === 'doc.operation.open-table-properties') { openTableProperties(params); return }
-  if (id === 'doc.operation.toggle-table-floating-toolbar') { tableFloatingToolbarOpen.value = !tableFloatingToolbarOpen.value; return }
+  if (id === 'doc.operation.toggle-table-floating-toolbar') {
+    if (!inputStateActive) return
+    tableFloatingToolbarOpen.value = !tableFloatingToolbarOpen.value
+    return
+  }
   if (id === 'ui.operation.activate-format-painter' || id === 'ui.operation.continuous-format-painter') { activatePainter(id === 'ui.operation.continuous-format-painter'); return }
   if (id === 'doc.operation.header-footer-control') { handleStoryAction(params); return }
   if (id === 'doc.operation.close-header-footer') { closeStory(); return }
@@ -2955,7 +3007,10 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.command.refresh-header-footer-fields': execute({ id, locale: officeLocale.value.replaceAll('_', '-'), timestamp: Date.now() }); break
     case 'doc.command.update-selected-fields': refreshSelectedFields(model.value, currentStoryRange.value); break
     case 'doc.operation.create-table':
-    case 'doc.operation.open-table': tableInsertOpen.value = true; break
+    case 'doc.operation.open-table':
+      if (!inputStateActive || documentInputComposing.value || legacyStoryActive.value || !canEditContextSelection.value) break
+      tableInsertOpen.value = true
+      break
     case 'doc.operation.open-image':
     case 'doc.command.insert-float-image': insertImage(params && typeof params === 'object' && Reflect.get(params, 'paragraphMenuPlacement') === 'below' ? 'below' : undefined); break
     case 'doc.operation.edit-doc-image': if (selectedImageIds.value.length === 1) imageEditor.show('edit', selectedImageId.value); break
@@ -3075,9 +3130,15 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.toggle-outline': showOutline.value = !showOutline.value; break
     case 'doc.operation.toggle-focus': isFocusMode.value = !isFocusMode.value; void nextTick(() => canvasRef.value?.focus()); break
     case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
-    case 'doc.operation.set-zoom': if (typeof params === 'number') { setZoom(params); void nextTick(() => canvasRef.value?.focus()) }; break
+    case 'doc.operation.set-zoom':
+      if (typeof params !== 'number') break
+      setZoom(params)
+      scheduleInputFocus(() => canvasRef.value?.focus())
+      break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
-    case 'doc.operation.open-page-settings': pageSettingsOpen.value = true; break
+    case 'doc.operation.open-page-settings':
+      if (!pageSettingsDisabled.value) pageSettingsOpen.value = true
+      break
     case 'doc.operation.open-header-footer': {
       const preferredPage = layout.value.lines.find(line => line.target.blockId === selection.value.focus.blockId && line.start <= selection.value.focus.offset && line.end >= selection.value.focus.offset)?.page ?? activePageIndex.value
       const page = findDocumentStoryPage(layout.value, { area: 'header', preferredPage })
@@ -3086,8 +3147,21 @@ function onRibbonExecute(id: string, params?: unknown) {
     }
     case 'sidebar.operation.doc-paragraph-setting-panel': setParagraphSettingsPanelOpen(true); break
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
-    case 'doc.command.set-paper-size': if (params === 'Custom') pageSettingsOpen.value = true; else if (params === 'A4' || params === 'Letter') { paperSize.value = params; changePageSetup() }; break
-    case 'doc.command.set-orientation': if (params === 'portrait' || params === 'landscape') { orientation.value = params; changePageSetup() }; break
+    case 'doc.command.set-paper-size':
+      if (pageSettingsDisabled.value) break
+      if (params === 'Custom') { pageSettingsOpen.value = true; break }
+      if (params === 'A4' || params === 'Letter') {
+        paperSize.value = params
+        changePageSetup()
+      }
+      break
+    case 'doc.command.set-orientation':
+      if (pageSettingsDisabled.value) break
+      if (params === 'portrait' || params === 'landscape') {
+        orientation.value = params
+        changePageSetup()
+      }
+      break
   }
 }
 defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
@@ -3209,13 +3283,13 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     <DocumentContentControlPanel v-model:open="contentControlPanelOpen" :selected-control-id="selectedContentControlId" :document-api="documentApi" :read-only="!canEditContextSelection || legacyStoryActive" @error="notify" />
     <DocumentTableInsertDialog v-model:open="tableInsertOpen" :disabled="!inputStateActive || documentInputComposing || legacyStoryActive || !canEditContextSelection" @insert="insertTableFromDialog" />
     <DocumentTablePropertiesDialog v-if="tableProperties" :open="tableProperties.open" :model="editingModel" :selection="selection" :permission="permissionContext"
-      :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="documentInputComposing"
+      :table-id="tableProperties.tableId" :range="tableProperties.range" :kind="tableProperties.kind" :type="tableProperties.type" :composing="tableRibbonContext.composing"
       :layout="editingLayoutSource === model ? editingLayout : undefined"
       @update:open="open => { if (tableProperties) tableProperties = { ...tableProperties, open } }" @submit="applyTableProperties" @closed="closeTableProperties" />
-    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" @apply="applyPageSetup" />
+    <DocumentPageSettings v-model:open="pageSettingsOpen" :page="model.page" :mode="pageMode" :disabled="pageSettingsDisabled" @apply="applyPageSetup" />
     <DocumentHeaderFooterPanel v-model:open="headerFooterPanelOpen" :model="model" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :read-only="!canEditHeaderFooterSection" :editable-stories="editableHeaderFooterStories" @apply="applyHeaderFooter" @position="applySectionSettings(headerFooterSectionId, $event)" @insert-page-field="insertPageField" @closed="canvasRef?.focus()" />
     <DocumentSectionSettingsPanel v-model:open="sectionSettingsPanelOpen" :section-id="headerFooterSectionId" :setup="activeSectionSetup" :section-options="sectionOptions" @apply="applySectionSettings" @select-section="selectSection" />
-    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" :initial-focus="codeDialogFocus" @apply="applyCodeBlock" @closed="closeStructureDialog(codeDialogTarget)" />
+    <DocumentCodeBlockPanel v-model:open="codeBlockPanelOpen" :initial="codeDialogData" :initial-focus="codeDialogFocus" @apply="applyCodeBlock" @composition-change="value => codeDialogComposing = value" @closed="closeStructureDialog(codeDialogTarget)" />
     <DocumentStructuredBlockPanel v-if="structureDialog" :open="structureDialog.open" :kind="structureDialog.kind" :block="structureDialog.block"
       :read-only="!canEditContextSelection || documentInputComposing" @submit="applyStructurePanel" @command="executeStructurePanelCommand"
       @update:open="open => { if (structureDialog) structureDialog = { ...structureDialog, open } }" @closed="closeStructureDialog(structureDialog?.target)" />

@@ -1,9 +1,11 @@
 import type { CellRange, SheetConditionalFormatRule, SheetDataValidationRule, SpreadsheetSheet } from '../../domain/model.ts'
+import { inferSheetCellValueType, normalizeSheetCellValueType } from '../../domain/sheet-cell-value.ts'
 import { sheetColumnWidth } from '../../domain/sheet-axis.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { conditionalFormatFormulaAnchor, mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { formulaRelativeReferenceSignature } from '../formula/formula-references.ts'
 import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from '../sheet-validation/validation-formulas.ts'
+import { clearSheetCellRichTextFonts } from './sheet-cell-rich-text-style.ts'
 import { sheetRangesIntersect, subtractSheetCommandRange } from './sheet-range-command.ts'
 import { sheetRangeThemeChangedRanges } from './sheet-range-theme-structure.ts'
 
@@ -153,6 +155,32 @@ export function sheetClipboardChangedSheetRanges(before: SpreadsheetSheet, after
   const oldMerges = new Set(before.mergedRanges.map(range => JSON.stringify(range))), newMerges = new Set(after.mergedRanges.map(range => JSON.stringify(range)))
   result.push(...before.mergedRanges.filter(range => !newMerges.has(JSON.stringify(range))), ...after.mergedRanges.filter(range => !oldMerges.has(JSON.stringify(range))))
   result.push(...sheetClipboardChangedColumnWidthRanges(before, after))
+  return compactSheetClipboardRanges(result)
+}
+
+/** Modeled run fonts and cell presentation do not change the stored value content. */
+export function sheetClipboardChangedValueRanges(before: SpreadsheetSheet, after: SpreadsheetSheet): CellRange[] {
+  const result: CellRange[] = []
+  for (const key of new Set([...Object.keys(before.cells), ...Object.keys(after.cells)])) {
+    const original = before.cells[key], next = after.cells[key]
+    const originalContent = JSON.stringify([
+      original?.value ?? null, original?.formula ?? null,
+      normalizeSheetCellValueType(original?.dataType) ?? inferSheetCellValueType(original?.value ?? null),
+      normalizeSheetCellValueType(original?.cachedDataType) ?? null,
+      clearSheetCellRichTextFonts(original?.richText).runs ?? null,
+      original?.hyperlink ?? null, original?.image ?? null, original?.sparkline ?? null,
+    ])
+    const nextContent = JSON.stringify([
+      next?.value ?? null, next?.formula ?? null,
+      normalizeSheetCellValueType(next?.dataType) ?? inferSheetCellValueType(next?.value ?? null),
+      normalizeSheetCellValueType(next?.cachedDataType) ?? null,
+      clearSheetCellRichTextFonts(next?.richText).runs ?? null,
+      next?.hyperlink ?? null, next?.image ?? null, next?.sparkline ?? null,
+    ])
+    if (originalContent === nextContent) continue
+    const cell = next ?? original!
+    result.push({ startRow: cell.row, endRow: cell.row, startCol: cell.col, endCol: cell.col })
+  }
   return compactSheetClipboardRanges(result)
 }
 

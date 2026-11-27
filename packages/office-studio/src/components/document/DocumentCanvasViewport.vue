@@ -77,7 +77,7 @@ const emit = defineEmits<{
   'update:story-selection': [range: { start: number; end: number }, preserveInputStyle?: boolean]
   'story-composing': [value: boolean]
   'code-block-exit': [blockId: string]
-  'toggle-format': [field: 'bold' | 'italic' | 'underline', source?: DocumentModel, story?: DocumentStoryRange]
+  'toggle-format': [field: 'bold' | 'italic' | 'underline' | 'strike' | 'subscript' | 'superscript', source?: DocumentModel, story?: DocumentStoryRange]
   'refresh-fields': [source: DocumentModel, story?: DocumentStoryRange, bodySelection?: DocumentSelection]
   'update:selection': [selection: DocumentSelection]
   'selection-committed': []
@@ -131,6 +131,14 @@ function storyBeforeInput(event: InputEvent) {
   captureStoryInput(event)
   if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); emit(event.inputType === 'historyUndo' ? 'undo' : 'redo') }
 }
+const paragraphShortcutCommands: Partial<Record<string, DocumentCommand>> = {
+  KeyL: { id: 'doc.command.format-paragraph', patch: { align: 'left' } },
+  KeyE: { id: 'doc.command.format-paragraph', patch: { align: 'center' } },
+  KeyR: { id: 'doc.command.format-paragraph', patch: { align: 'right' } },
+  KeyJ: { id: 'doc.command.format-paragraph', patch: { align: 'justify' } },
+  Digit7: { id: 'doc.command.set-block-type', type: 'numbered' },
+  Digit8: { id: 'doc.command.set-block-type', type: 'bullet' },
+}
 function storyKeys(event: KeyboardEvent) {
   if (!storyEventIsCurrent(event)) return
   if (event.isComposing || event.keyCode === 229) return
@@ -146,10 +154,20 @@ function storyKeys(event: KeyboardEvent) {
     emit('refresh-fields', source, { sectionId: page.sectionId, story: storyKey, ...range })
     return
   }
-  if (key === 'escape') emit('close-story')
-  else if (mod && key === 's') emit('save')
-  else if (mod && (key === 'z' || key === 'y')) { if (key === 'y' || event.shiftKey) emit('redo'); else emit('undo') }
-  else if (mod && ['b', 'i', 'u'].includes(key)) {
+  const paragraphShortcut = mod && event.shiftKey && !event.altKey ? paragraphShortcutCommands[event.code] : undefined
+  if (paragraphShortcut) {
+    if (props.storyReadonly || storyComposing.value || selectedImageIds.value.length || document.activeElement !== storyElement()) return
+    const source = props.model
+    syncStorySelection(event)
+    if (!storyEventIsCurrent(event) || source !== props.model) return
+    event.preventDefault(); event.stopPropagation()
+    emit('command', paragraphShortcut)
+    return
+  }
+  const verticalShortcut = mod && !event.altKey && !event.shiftKey && (event.code === 'Comma' || event.code === 'Period')
+  const strikeShortcut = mod && !event.altKey && event.shiftKey && event.code === 'KeyX'
+  if (mod && ['b', 'i', 'u'].includes(key) || verticalShortcut || strikeShortcut) {
+    if ((verticalShortcut || strikeShortcut) && (selectedImageIds.value.length || document.activeElement !== storyElement())) return
     event.preventDefault(); event.stopPropagation()
     if (props.storyReadonly || storyComposing.value) return
     const source = props.model, location = props.story, page = location && layout.value.pageHeaderFooters[location.page]
@@ -157,11 +175,22 @@ function storyKeys(event: KeyboardEvent) {
     if (!page || page.isParityBlank || !storyKey) return
     syncStorySelection(event)
     if (!storyEventIsCurrent(event) || source !== props.model) return
+    if (strikeShortcut) {
+      emit('toggle-format', 'strike', source, { sectionId: page.sectionId, story: storyKey, ...range })
+      return
+    }
+    if (verticalShortcut) {
+      emit('toggle-format', event.code === 'Comma' ? 'subscript' : 'superscript', source, { sectionId: page.sectionId, story: storyKey, ...range })
+      return
+    }
     emit('toggle-format', key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline', source, { sectionId: page.sectionId, story: storyKey, ...range })
     return
   }
-  else return
+  if (key !== 'escape' && (!mod || !['s', 'z', 'y'].includes(key))) return
   event.preventDefault(); event.stopPropagation()
+  if (key === 'escape') { emit('close-story'); return }
+  if (key === 's') { emit('save'); return }
+  emit(key === 'y' || event.shiftKey ? 'redo' : 'undo')
 }
 const preview = shallowRef<DocumentModel | null>(null)
 const compositionSelection = shallowRef<DocumentSelection | null>(null)
@@ -1367,6 +1396,20 @@ function keydown(event: KeyboardEvent) {
         pageOrigin: { x: page?.x ?? 0, y: page?.y ?? 0 }, pointerId: -1, zoom: props.zoom }, delta[0] * step, delta[1] * step)
       imageCommand({ id: 'doc.command.update-image', imageId: target.imageId, patch: result.patch }); return
     }
+  }
+  const paragraphShortcut = command && event.shiftKey && !event.altKey ? paragraphShortcutCommands[event.code] : undefined
+  if (paragraphShortcut) {
+    if (selectedImageIds.value.length || document.activeElement !== inputElement()) return
+    event.preventDefault(); event.stopPropagation()
+    dispatchCommand(paragraphShortcut)
+    return
+  }
+  if (command && !event.altKey && (event.shiftKey ? event.code === 'KeyX' : event.code === 'Comma' || event.code === 'Period')) {
+    if (selectedImageIds.value.length || document.activeElement !== inputElement()) return
+    event.preventDefault(); event.stopPropagation()
+    if (event.code === 'KeyX') { emit('toggle-format', 'strike'); return }
+    emit('toggle-format', event.code === 'Comma' ? 'subscript' : 'superscript')
+    return
   }
   if (event.key === 'Escape') { tableOverlay.value?.cancelInteraction(); cancelSelectionDrag(); tablePreview.value = undefined }
   if (key === 'f9' && !command && !event.altKey && !event.shiftKey) {

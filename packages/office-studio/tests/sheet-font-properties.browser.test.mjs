@@ -149,6 +149,53 @@ test('mixed-selection steppers use the active cell instead of a mixed selector f
   assert.deepEqual((await commands()).map(event => event.id), ['sheet.command.increase-font-size', 'sheet.command.decrease-font-size'])
 })
 
+test('font-size keyboard shortcuts use the active cell and share command history and snapshot reopen', async () => {
+  await selectRange('A1:A3')
+  const before = content(await snapshot())
+  await grid().press('Control+Shift+.')
+  await expect.poll(fonts).toEqual([['Courier New', 10], ['Courier New', 10], ['Courier New', 10]])
+  await grid().press('Control+Shift+,')
+  await expect.poll(fonts).toEqual([['Courier New', 9], ['Courier New', 9], ['Courier New', 9]])
+  assert.deepEqual((await commands()).map(event => event.id), ['sheet.command.increase-font-size', 'sheet.command.decrease-font-size'])
+  assert.deepEqual(await history(), { undo: 2, redo: 0 }); assert.deepEqual(content(await snapshot()), before)
+  await expect(grid()).toBeFocused(); await expect(canvas()).toHaveAttribute('data-font-test-mount', 'original')
+  await grid().press('Control+z')
+  await expect.poll(fonts).toEqual([['Courier New', 10], ['Courier New', 10], ['Courier New', 10]])
+  await grid().press('Control+y')
+  await expect.poll(fonts).toEqual([['Courier New', 9], ['Courier New', 9], ['Courier New', 9]])
+  const saved = JSON.stringify(await snapshot())
+  await page.evaluate(value => window.sheetFontFixture.reopen(value), saved)
+  await expect.poll(fonts).toEqual([['Courier New', 9], ['Courier New', 9], ['Courier New', 9]])
+  assert.deepEqual(content(await snapshot()), before)
+})
+
+test('font-size shortcuts preserve native text selection and publish one rich-text transaction on Enter', async () => {
+  await selectRange('A3'); await grid().press('F2'); await expect(editor()).toBeFocused()
+  const before = await snapshot(), input = editor()
+  await input.evaluate(element => {
+    const prefix = element.value.length - '00123'.length
+    element.setSelectionRange(prefix + 1, prefix + 3)
+    element.dispatchEvent(new Event('select', { bubbles: true }))
+  })
+  const selection = await input.evaluate(element => [element.selectionStart, element.selectionEnd])
+  await input.press('Control+Shift+.'); await expect(await fontInput('size')).toHaveValue('31')
+  await input.press('Control+Shift+,'); await expect(await fontInput('size')).toHaveValue('30')
+  await input.press('Control+Shift+.'); await expect(await fontInput('size')).toHaveValue('31')
+  await expect(input).toBeFocused()
+  assert.deepEqual(await input.evaluate(element => [element.selectionStart, element.selectionEnd]), selection)
+  assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual((await commands()).map(event => event.id), Array(3).fill('sheet.operation.format-cell-input'))
+  await input.press('Enter'); await expect(editor()).toHaveCount(0); await expect(grid()).toBeFocused()
+  const saved = await snapshot(), cell = saved.sheets[0].cells['2:0']
+  assert.equal(cell.value, '00123'); assert.equal(cell.dataType, 'text'); assert.equal(cell.style.font.size, 30)
+  assert.equal(cell.richText.filter(run => run.font?.size === 31).map(run => run.text).join(''), '01')
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await grid().press('Control+z'); assert.deepEqual((await snapshot()).sheets[0].cells['2:0'], before.sheets[0].cells['2:0'])
+  await grid().press('Control+y'); assert.deepEqual((await snapshot()).sheets[0].cells['2:0'], cell)
+  await page.evaluate(value => window.sheetFontFixture.reopen(value), JSON.stringify(saved))
+  assert.deepEqual((await snapshot()).sheets[0].cells['2:0'], cell)
+})
+
 test('toolbar input bounds and imported API font-size step behavior remain distinct', async () => {
   await selectRange('A1')
   await submitFont('size', '500')
@@ -243,6 +290,41 @@ test('font input ignores composing Enter and Escape until a normal commit key ar
     assert.equal((await fonts())[0][1], 9); assert.deepEqual(await history(), { undo: 0, redo: 0 })
   }
   await input.press('Enter'); await expect.poll(async () => (await fonts())[0][1]).toBe(24); assert.deepEqual(await history(), { undo: 1, redo: 0 })
+})
+
+test('controlled composition drafts and font suggestion clicks each submit one shared command', async () => {
+  await selectRange('A1')
+  const before = content(await snapshot()), input = await fontInput('size')
+  await input.fill('')
+  await input.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })))
+  for (const value of ['2', '24']) {
+    await input.evaluate((element, text) => {
+      element.value = text
+      element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: text }))
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertCompositionText', isComposing: true }))
+    }, value)
+    await expect(input).toHaveValue(value)
+    assert.deepEqual((await fonts())[0], ['Courier New', 9])
+    assert.deepEqual(await commands(), []); assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  }
+  await input.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', isComposing: true })))
+  assert.deepEqual(await commands(), [])
+  await input.evaluate(element => {
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '24' }))
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, data: '24', inputType: 'insertText', isComposing: false }))
+  })
+  await expect(input).toHaveValue('24')
+  await input.press('Enter')
+  await expect.poll(async () => (await fonts())[0]).toEqual(['Courier New', 24])
+  assert.deepEqual((await commands()).map(event => event.id), ['sheet.command.set-font-size'])
+  assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  const family = await fontInput('family')
+  await family.focus(); await family.press('ArrowDown')
+  await page.locator('.ant-select-dropdown:visible').getByRole('option', { name: 'Arial', exact: true }).click()
+  await expect.poll(async () => (await fonts())[0]).toEqual(['Arial', 24])
+  await expect(family).toHaveValue('Arial'); await expect(grid()).toBeFocused()
+  assert.deepEqual((await commands()).map(event => event.id), ['sheet.command.set-font-size', 'sheet.command.set-font-family'])
+  assert.deepEqual(await history(), { undo: 2, redo: 0 }); assert.deepEqual(content(await snapshot()), before)
 })
 
 test('portaled font suggestions follow ConfigProvider dark theme and RTL without changing content', async () => {

@@ -63,6 +63,29 @@ API 与工作台继续使用 `planSheetConditionalFormatsCommand`、`commitWorkb
 
 真实浏览器下的菜单/More、两种布局、明暗主题、禁用态、焦点恢复和 Windows IME 尚未运行验证。复杂条件计算、Office 原生往返、真实大样本性能仍按 [条件格式 Office 专项](SHEET-14-conditional-format-office-roundtrip.md) 和 [规则/格式刷证据](SHEET-04-format-painter.md) 保留未验收状态，本批没有关闭 SHEET-14 的完整目标。
 
+<a id="conditional-scope-list-review"></a>
+
+## 2026-11-27 管理列表范围续核
+
+状态：只读核对与待确认方案；本节没有条件格式生产改动或新增运行结果，SHEET-14 仍未验收。
+
+重新读取固定 [manage-rule.ts][manage]、[open-conditional-formatting-panel.ts][panel]、[RuleEdit.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleEdit.tsx) 与 [RuleList.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleList.tsx)。十项管理菜单、六类新建、编辑提交、删除与排序均有真实上游命令。本地 `saveDraft → mergeConditionalFormatRuleDraft → submit → sheet.command.set-conditional-formats` 已接完整列表规划、变化规则的旧/新范围权限、宿主与版本检查及工作簿隔离历史；未变化时不增加版本或历史。面板采用一次完整列表应用，与固定版逐条 SetCf/AddCf/DeleteCf/MoveCf 的提交时机不同。
+
+两项候选已排除：本地模板单独放行 `highlightSubtype === 'timePeriod'`，日期期间 Select 可以显示；现有平均值求值明确处理等于、不等于及两个包含等号的比较，并非全部退为大于。Drawer 已使用函数 prop `after-open-change`，没有本次范围主题 Modal 的回调接线问题。本轮未运行交互、历史或重开检查，不能由静态接线推定这些场景已验收。
+
+确认的缺口在管理列表范围：固定 `RuleList` 默认 `selectValue = '2'`，提供工作表与当前选区两项；选区模式用 `getCurrentLastSelection()` 和 `Rectangle.intersects` 过滤交叠规则，并订阅选择、工作表和规则 mutation。其选区模式列表清除会删除匹配的整条规则，区别于顶部“清除所选区域的规则”的范围差集。本地 [ConditionalFormattingPanel.vue](../../packages/office-studio/src/components/spreadsheet/ConditionalFormattingPanel.vue) 仅遍历整表 `localRules`，`defaultRange` 只为新建草稿提供初始范围，没有列表范围 Select 或实时选择过滤。这项尚未实现，不能以已有十项菜单宣称管理列表等价。
+
+待确认实施范围为 4 文件，预计 130–190 行：
+
+| 文件 | 预计行数 | 实施内容 |
+| --- | ---: | --- |
+| `components/spreadsheet/ConditionalFormattingPanel.vue` | 40–60 | 用 Ant Select 提供工作表/当前选区，过滤展示规则；保留完整 `localRules` 作为提交源，列表清除按匹配规则 ID 删除，隐藏规则不被过滤掉的提交覆盖 |
+| `components/ExcelWorkbench.vue` | 10–20 | 传入真实当前最后选区并随选择变化更新，沿用既有宿主与关闭生命周期；文件由主任务负责 |
+| `tests/sheet-format-painter.browser.test.mjs` | 60–90 | 原真实 fixture 覆盖两布局、范围切换、选择变化、未显示规则保留、清除/排序权限及一次历史、撤销重做和内部重开 |
+| `docs/feature-evidence/SHEET-14-quick-formatting.md` | 20 | 补明确来源、列表清除与顶部清除的差异、实施与未运行证据 |
+
+本方案仅增加轻量 UI 范围状态和现有规则事务的调用，不新增领域模型、公开 API、第二套历史或 Worker/WASM 协议；未实施。固定版范围预览高亮、完整 Office 行为、原生 IME、两种 Canvas 后端与大样本仍另留未完成或未验收项。
+
 [schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
 [quick]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/quick-insert.menu.ts
 [manage]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/manage-rule.ts

@@ -15,7 +15,9 @@ import { FOffice } from '/packages/office-studio/src/api/facade'
 import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
 import { createBlankWorkbook, createBlankSheet, createCell } from '/packages/office-studio/src/domain/model'
 import { sheetColumnWidth } from '/packages/office-studio/src/domain/sheet-axis'
-import { applyExcelWorkbookView, toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { applyExcelWorkbookView, parseCellKey, toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { SpreadsheetGeometry } from '/packages/office-studio/src/rendering/spreadsheet/layout'
+import { createSpreadsheetScene } from '/packages/office-studio/src/rendering/spreadsheet/scene'
 const copy = value => JSON.parse(JSON.stringify(value))
 const original = createBlankWorkbook()
 original.id = 'clipboard-browser-fixture'; original.name = '剪贴板工作台'; original.calculationMode = 'manual'
@@ -31,7 +33,7 @@ original.sheets[0].cells['1:0'] = createCell(1, 0, 5)
 original.sheets[0].columnWidths = { 0: 123, 1: 156 }
 const standalone = new URLSearchParams(location.search).has('standalone')
 let base = copy(original), clipboard = { text: '', html: '' }, delayed = false, readCount = 0, canceled = false
-const pending = [], writes = [], nativeEvents = [], commands = [], notices = [], updates = []
+const pending = [], writes = [], nativeEvents = [], commands = [], notices = [], updates = [], valueChanges = [], dimensionChanges = [], changeEvents = []
 function items(content) {
   if (content.media) return [{ types: ['image/png'], getType: async () => new Blob(['media'], { type: 'image/png' }) }]
   if (!content.text && !content.html) return []
@@ -56,6 +58,8 @@ function connect(studio) {
     commands.push({ id: event.id, params: copy(event.params ?? {}) })
     if (canceled && event.id.startsWith('sheet.command.paste')) event.cancel = true
   })
+  studio.events.addEvent('SheetValueChanged', event => { valueChanges.push(copy(event)); changeEvents.push({ kind: 'value', ...copy(event) }) })
+  studio.events.addEvent('SheetDimensionsChanged', event => { dimensionChanges.push(copy(event)); changeEvents.push({ kind: 'dimension', ...copy(event) }) })
   return studio
 }
 const owner = shallowRef(standalone ? undefined : connect(new OfficeStudio({ workbook: original })))
@@ -73,6 +77,7 @@ function replace(value) {
 }
 window.sheetClipboardFixture = {
   snapshot: () => copy(current()), commands: () => copy(commands), notifications: () => copy(notices),
+  valueChanges: () => copy(valueChanges), dimensionChanges: () => copy(dimensionChanges), changeEvents: () => copy(changeEvents),
   columnWidth: (column, sheet = 0) => sheetColumnWidth(current().sheets[sheet], column),
   nativeEvents: () => copy(nativeEvents), board: () => copy(clipboard), writes: () => copy(writes), reads: () => readCount,
   setBoard: content => { clipboard = copy(content) }, delay: value => { delayed = value; if (value) { readCount = 0; pending.length = 0 } },
@@ -96,6 +101,54 @@ window.sheetClipboardFixture = {
   switchUnit: () => api().createWorkbook({ ...copy(original), id: 'clipboard-browser-other' }),
   edit: () => api().getActiveWorkbook().getActiveSheet().getRange('J12').setValue('new edit'),
   reopenSameId: () => replace(copy(current())),
+  reopenSaved: () => {
+    const saved = api().getActiveWorkbook().save()
+    api().createWorkbook({ ...saved, id: saved.id + '-reopened' })
+  },
+  richFormats: () => {
+    const value = copy(current()), source = createCell(0, 0, 'source'), target = createCell(4, 4, 'target runs')
+    source.style.font = { family: 'Courier New', size: 16, bold: true, italic: false, underline: true, strike: false, color: '#123456' }
+    source.richText = [{ id: 'source-run', text: 'source', font: { family: 'Arial', size: 40 } }]
+    source.authoredStyle = copy(source.style); target.style = copy(source.style); target.authoredStyle = copy(target.style)
+    target.richText = [
+      { id: 'target-first', text: 'target ', hyperlink: 'https://target.test/run', vendor: { keep: 1 },
+        font: { family: 'Arial', size: 32, bold: false, italic: true, underline: false, strike: true, color: '#ff0000', language: 'ja-JP' } },
+      { id: 'target-second', text: 'runs', fontFamily: 'Arial', fontSize: 28, bold: false, italic: true,
+        underline: false, strike: true, color: '#ff0000', vendor: { keep: 2 } },
+    ]
+    target.hyperlink = 'https://target.test/cell'; target.metadata = { vendor: { retain: true } }
+    value.sheets[0].cells['0:0'] = source; value.sheets[0].cells['4:4'] = target
+    value.sheets[0].dataValidations = [{ id: 'reject-value-edits', type: 'custom', formula1: '=FALSE()', allowBlank: false,
+      showErrorMessage: true, errorStyle: 'stop', error: 'Value edits are blocked', ranges: [{ startRow: 4, endRow: 4, startCol: 4, endCol: 4 }] }]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId); valueChanges.length = 0
+  },
+  specialPasteModes: () => {
+    const value = copy(current()), source = value.sheets[0].cells['0:0'], target = createCell(4, 4, 'old text')
+    source.richText = [
+      { id: 'source-first', text: 'ri', font: { family: 'Arial', size: 24 }, vendor: { keep: 1 } },
+      { id: 'source-second', text: 'ch', font: { family: 'Times New Roman', size: 18, italic: true } },
+    ]
+    source.style.border = { top: { style: 'thin', color: '#cc3300' } }; source.authoredStyle = copy(source.style)
+    target.style.font.family = 'Courier New'; target.style.font.size = 16
+    target.style.border = { bottom: { style: 'double', color: '#224466' } }; target.authoredStyle = copy(target.style)
+    target.richText = [{ id: 'target-run', text: 'old text', font: { family: 'Arial', size: 32 } }]
+    target.hyperlink = 'https://target.test/cell'; target.metadata = { vendor: { keep: true } }
+    value.sheets[0].cells['0:2'] = createCell(0, 2, 8); value.sheets[0].cells['4:4'] = target
+    value.sheets[0].cells['4:5'] = { ...createCell(4, 5, 92), formula: '=90+2', dataType: 'formula', cachedDataType: 'number', display: '92' }
+    value.sheets[0].cells['4:6'] = createCell(4, 6, 'old number')
+    value.sheets[0].columnWidths = { 0: 123, 1: 156, 2: 0, 4: 190, 5: 200, 6: 180 }; value.sheets[0].hiddenColumns = [5]
+    replace(value); owner.value?.editor.history.clear(owner.value.activeWorkbookId)
+    valueChanges.length = 0; dimensionChanges.length = 0; changeEvents.length = 0
+  },
+  sceneAt: address => {
+    const position = parseCellKey(address), rendered = view.value.sheets.find(sheet => sheet.id === current().activeSheetId)
+    const geometry = new SpreadsheetGeometry(rendered), viewport = { width: 1440, height: 900, scrollLeft: 0, scrollTop: 0, zoom: 1 }
+    const rect = geometry.cellRect(position.row, position.col, viewport)
+    const scene = createSpreadsheetScene(geometry, viewport, { activeCell: '', selectedCells: [], selectedRanges: [], suppressFillHandle: true })
+    const text = scene.commands.filter(command => command.kind === 'text'
+      && command.x >= rect.x && command.x < rect.x + rect.width && command.y >= rect.y && command.y < rect.y + rect.height)
+    return { text: text.map(command => command.text), fonts: text.map(command => command.font) }
+  },
   replaceHost: async () => {
     const previous = owner.value; owner.value = connect(new OfficeStudio({ workbook: copy(current()) }))
     view.value = toExcelWorkbookView(owner.value.editor.workbook.model); await nextTick(); previous.dispose()

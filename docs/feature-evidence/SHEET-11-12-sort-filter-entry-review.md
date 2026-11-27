@@ -1,6 +1,6 @@
 # SHEET-11 / SHEET-12 顶部排序与筛选核对
 
-状态：2026-11-27 静态核对固定版 Data 入口，修正独立筛选配置 mutation 的派生行重置；续批将重新应用筛选改为不写内容历史，并接入弹层主题 token。新草稿未运行，功能未验收。真实功能 ID 为 SHEET-11（筛选）和 SHEET-12（排序）；SHEET-07 属于冻结、网格线、视口和缩放。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
+状态：2026-11-27 静态核对固定版 Data 入口，修正独立筛选配置 mutation 的派生行重置；续批将重新应用筛选改为不写内容历史，并接入弹层主题 token。本次补齐[折叠大纲行的排序位置](#sort-collapsed-outline-rows-review)。新草稿未运行，功能未验收。真实功能 ID 为 SHEET-11（筛选）和 SHEET-12（排序）；SHEET-07 属于冻结、网格线、视口和缩放。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
 
 ## 固定入口、顺序与状态
 
@@ -111,3 +111,23 @@
 [现有浏览器草稿](../../tests/browser/sheet-data-toolbar.spec.ts) 的搜索后全选、提交范围及提交前零内容/历史变更断言由主线追加，未运行。面板继续使用已有 antdv-next Input、Button、Checkbox 和 Form；本批没有新增控件、业务引擎或 Worker/WASM 协议。SFC、脚本和样式语法、证据链接与限定空白检查已通过，真实主题、焦点、输入法及大样本性能未验收。
 
 保留差异：本地仍是同步单串包含搜索、扁平候选和每页 20 项；固定版使用分词树搜索、500ms 节流和树叶统计。固定版无勾选时禁止应用，本地已有空选择隐藏全部数据行的行为继续保留。清除搜索后的勾选重建，以及 `selectionMode:'exclude' / recordSelection` 在面板中的回读与保存保真尚未补齐，本次不将这些行为标为完成。
+
+<a id="sort-collapsed-outline-rows-review"></a>
+
+## 2026-11-27 折叠大纲行的排序位置续修
+
+本次按 DATA / Organization 从排序、筛选到组合及本地分组显示/设置逐项复读。入口、常驻/扩展/上下文分类和命令沿前文及 [SHEET-27 Organization 清点](SHEET-27-outline.md#2026-11-27-organization-续核)；排序/筛选仍为两根、八个本地子项，本次新增根及子项均 0。`_extendSelection`、单格/单行 smart filter、自定义保持/扩展/取消仍归上述约 215–305 行的待确认方案，没有实施或缩减这些目标。
+
+[固定 sort-range 命令第 73–80 行](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-sort/src/commands/commands/sheets-sort.command.ts#L73) 分别跳过 `getRowFiltered` 与 `getRowRawVisible=false` 的行。[固定 Worksheet 第 923 行](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/sheets/worksheet.ts#L923) 将 raw visible 委托 RowManager。已读取的 [Pro v1.6.0 outline core ES](../../.research.local/univer-1.6.0/packages/sheets-outline/lib/es/index.js) 中 `Je/Ye/Xe` 在行组折叠/展开时生成 SetRowHiddenMutation / SetRowVisibleMutation；因此固定版折叠行进入上述排序排除链，不能只按普通手动隐藏理解该状态。
+
+本地大纲保留独立 `outline` 与隐藏原因，不把折叠写入 `hiddenRows`。原 [sort-filter-engine.ts](../../packages/office-studio/src/features/sheet-sort-filter/sort-filter-engine.ts) 的 `getSortableRowOffsets` 只查筛选、手动数组/spans 和零高度，遗漏折叠行。这会让隐藏的组内记录参加数值/文本排序，并在可见行位置出现。
+
+现复用 [getSheetOutlineHiddenSpans](../../packages/office-studio/src/features/sheet-outline/sheet-outline.ts)，在唯一行索引入口排除该轴的折叠范围；extent 使用领域 rowCount 或既有 Office 缺省上限。数值输入的 destinationOffsets 和一般比较的完整 permutation 共用该结果，非参与行仍保留原位置。展开行组后重新参与；列组折叠不屏蔽行。没有新建大纲模型、隐藏数组或第二套排序算法。
+
+真实写入沿 FWorksheet.sortRange → sheet.command.sort-range → 原范围权限/revision 校验 → sortRange → commitWorkbook。组状态、手动隐藏、源单元格完整记录和原内容历史/内部保存链保留；本批未处理其他关联资源变换的既有缺口。生产只改 sort-filter-engine.ts，增量 **+7/-1**；现有行循环展开以保持条件可读，无新增模型、公共 API、命令 ID、Worker 控制 DTO 或 WASM 内存协议。
+
+[原排序契约草稿](../../packages/office-studio/tests/sheet-sort-filter-engine.contract.test.mjs) 新增 1 声明，直接使用真实构造器与实现，覆盖折叠行组/列组、数值准备与一般比较、完整索引、同时存在的筛选/手动/零高度隐藏、组内公式和 metadata、展开后参与。[原数字格式浏览器草稿](../../packages/office-studio/tests/sheet-number-format.browser.test.mjs) 沿已存在的排序 fixture 新增 1 个 test.each 声明、classic/grid 两个计划用例：通过真实排序菜单执行，检查可见整行重排、折叠/手动隐藏行记录与组状态不变，一次内容历史、undo/redo 和内部模型保存重开。没有新增测试文件、fixture 或产品测试接口。
+
+本批四文件为排序引擎、上述两份原草稿和本页。当前排序契约 **10 声明/10 计划**；数字格式浏览器 **32 声明/39 计划**（25 个直接声明、6 个两例 test.each、1 个两例外层 for），本批合计新增 2 声明/3 计划，全部运行 0。数值契约检查真实索引准备和展开，没有执行 Worker/Rust/WASM；浏览器草稿使用小样本，不能据此宣称大样本或性能达标。
+
+本批没有 UI 变更，实际入口、菜单和 Canvas 输入沿用现有 antdv-next / ConfigProvider。只完成源码/diff 回读、来源和声明/计划计数；统一语法/引用收尾由主线执行。测试、类型检查、构建、dev、浏览器、Rust/WASM、Office 文件及基准全部后置。真实主题/焦点/IME、两渲染后端、全部权限与关联资源、Office/协作保真和大样本仍 **未验收**；内部保存重开草稿不替代 XLSX 独立重开。

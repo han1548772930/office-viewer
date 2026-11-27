@@ -49,13 +49,45 @@ test('text direction entries dispatch supported rotation degrees and reflect mix
 test('shrink-to-fit toggles the selected value through the workbook formatting command', () => {
   const disabled = itemsFor({ shrinkToFit: false }).find(item => item.id === 'sheet.command.set-shrink-to-fit')
   const enabled = itemsFor({ shrinkToFit: true }).find(item => item.id === 'sheet.command.set-shrink-to-fit')
-  assert.deepEqual(ribbonInvocation(disabled), { commandId: 'sheet.command.set-shrink-to-fit', params: true })
+  assert.deepEqual(ribbonInvocation(disabled), { commandId: 'sheet.command.set-shrink-to-fit', params: undefined })
   assert.equal(disabled.activated, false)
-  assert.deepEqual(ribbonInvocation(enabled), { commandId: 'sheet.command.set-shrink-to-fit', params: false })
+  assert.deepEqual(ribbonInvocation(enabled), { commandId: 'sheet.command.set-shrink-to-fit', params: undefined })
   assert.equal(enabled.activated, true)
   const wrapped = itemsFor({ shrinkToFit: true, wrap: true }).find(item => item.id === 'sheet.command.set-shrink-to-fit')
   assert.equal(wrapped.disabled, true)
   assert.equal(wrapped.activated, false)
+})
+
+test('layout input capability disables source roots and choices while preserving primary state and font editing', () => {
+  for (const context of [
+    { layoutEditable: undefined, disabled: false },
+    { layoutEditable: true, disabled: false },
+    { layoutEditable: false, disabled: true },
+    { layoutEditable: true, fontEditable: false, disabled: true },
+    { layoutEditable: true, hasSheet: false, disabled: true },
+  ]) {
+    const tabs = createSheetRibbon({ ...state, ...context, canMerge: true, canUnmerge: true, mergeEditable: true,
+      align: 'center', vertical: 'top', wrap: false, wrapStrategy: 'clip', rotation: 45, shrinkToFit: true })
+    const layout = tabs.find(tab => tab.id === 'home').groups.find(group => group.id === 'layout').items
+    assert.deepEqual(layout.map(item => item.id), ['sheet.menu.horizontal-align', 'sheet.menu.vertical-align', 'sheet.menu.text-wrap',
+      'sheet.command.set-shrink-to-fit', 'sheet.menu.text-rotation', 'sheet.menu.merge'])
+    assert.deepEqual(layout.map(item => item.gridLayout), [{ row: 1, column: 1 }, { row: 2, column: 1 }, { row: 1, column: 2 },
+      { row: 2, column: 2 }, { row: 1, column: 3 }, { row: 2, column: 3 }])
+    const choices = layout.flatMap(item => [item, ...(item.children ?? [])])
+    assert.equal(choices.length, 25); assert.ok(choices.every(item => item.disabled === context.disabled))
+    assert.ok(choices.filter(item => item.type !== 'menu').every(item => Boolean(ribbonInvocation(item)) === !context.disabled))
+    assert.equal(layout[0].children.find(item => item.params === 'center').activated, true)
+    assert.equal(layout[1].children.find(item => item.params === 'top').activated, true)
+    assert.equal(layout[2].children.find(item => item.params === 'clip').activated, true)
+    assert.equal(layout[3].activated, true)
+    assert.equal(layout[4].children.find(item => item.params === 45).activated, true)
+    assert.equal(tabs.find(tab => tab.id === 'home').groups.find(group => group.id === 'font').items[4].disabled,
+      context.hasSheet === false || context.fontEditable === false)
+  }
+  const drawing = itemsFor({ drawingFocused: true, layoutEditable: false })
+  assert.ok(['sheet.menu.horizontal-align', 'sheet.menu.vertical-align', 'sheet.menu.text-wrap', 'sheet.menu.text-rotation', 'sheet.menu.merge']
+    .every(id => drawing.find(item => item.id === id).hidden === true))
+  assert.equal(drawing.find(item => item.id === 'sheet.command.set-shrink-to-fit').hidden, undefined)
 })
 
 test('wrap and shrink-to-fit clear each other when enabled', () => {

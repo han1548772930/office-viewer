@@ -1,6 +1,6 @@
 import type { DocumentModel } from '../../../domain/model'
 import { cloneModel } from '../../../domain/serialization'
-import { collapsedSelection, runText, runsForTarget, type DocumentSelection } from '../model/document-model'
+import { collapsedSelection, orderedSelection, runText, runsForTarget, type DocumentSelection } from '../model/document-model'
 import { documentModelForBlockHost } from '../services/document-block-host'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
 import { assertDocumentPermission, permissionTargetsForSelection, type DocumentPermissionContext } from '../permissions/document-permissions'
@@ -30,7 +30,7 @@ export function prepareDocumentNoteMutation(before: DocumentModel, request: Docu
   if (!['insert', 'delete', 'update', 'update-text', 'settings'].includes(request.type)) throw new TypeError('未知的注释命令。')
   if (permission) {
     assertDocumentPermission(before.permissionRules ?? [], permission, 'edit', request.type === 'insert'
-      ? permissionTargetsForSelection(before, request.selection) : request.type === 'delete' || request.type === 'update'
+      ? permissionTargetsForSelection(before, collapsedSelection(orderedSelection(before, request.selection).end)) : request.type === 'delete' || request.type === 'update'
         ? documentNotePermissionTargets(before, request.kind, request.noteId) : [])
   }
   const candidate = cloneModel(before), plan: DocumentNoteMutationPlan = { model: candidate, changed: false }

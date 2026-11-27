@@ -17,6 +17,8 @@ import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWo
 import { createBlankDocument } from '/packages/office-studio/src/domain/model'
 import { createParagraph, createRun, defaultParagraphStyle, normalizeDocument, runText } from '/packages/office-studio/src/features/document/model/document-model'
 import { documentStoryParagraphs } from '/packages/office-studio/src/features/document/model/document-story'
+import { projectDocumentStoryBlocks } from '/packages/office-studio/src/features/document/model/document-story-blocks'
+import { presetNumberingDefinition } from '/packages/office-studio/src/features/document/model/document-lists'
 import { EMPTY_SECTION_HEADER_FOOTER } from '/packages/office-studio/src/features/document/services/section-header-footer'
 import { createTextMeasurer, documentStoryCaretRect, documentStoryLayoutLines, caretRect, layoutDocument } from '/packages/office-studio/src/features/document/layout/document-layout'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
@@ -130,6 +132,45 @@ window.documentStoryFixture = {
     const next = copy(model.value), paragraphs = next.sectionHeaderFooters.first.storyContent.header.paragraphs
     paragraphs[0].metadata = { namedStyleType: 'title' }
     paragraphs[1].metadata = { namedStyleType: 'heading4' }
+    replace(next, true)
+  },
+  richStories: () => {
+    const next = copy(model.value), section = next.sectionHeaderFooters.first
+    section.header = 'Rich header'; section.footer = 'Rich footer'; section.pageFields = []
+    section.storyContent = {
+      header: projectDocumentStoryBlocks({ blocks: [createParagraph(section.header)], runs: [], paragraphs: [] }, 'display').content,
+      footer: projectDocumentStoryBlocks({ blocks: [createParagraph(section.footer)], runs: [], paragraphs: [] }, 'display').content,
+    }
+    replace(next, true)
+  },
+  numberingStory: (kind, bodyNumbered, headerNumbered) => {
+    const next = copy(initial), section = next.sectionHeaderFooters.first
+    if (bodyNumbered) { next.blocks[0].type = 'numbered'; next.blocks[0].list = { id: 'body-numbering', preset: 'ORDER_LIST' } }
+    const blocks = ['Previous', 'Gap', 'Current'].map(value => createParagraph(value, next.defaultStyle.text))
+    if (headerNumbered) for (const index of [0, 2]) {
+      const id = 'header-numbering-' + index, definition = presetNumberingDefinition('ORDER_LIST')
+      blocks[index].type = 'numbered'; blocks[index].list = { id, preset: 'ORDER_LIST' }
+      blocks[index].metadata = { numberingListId: id, numberingDefinition: { ...definition, instance: { numId: id } } }
+    }
+    section.header = blocks.map(block => runText(block.runs)).join('\\n'); section.pageFields = []
+    const content = projectDocumentStoryBlocks({ blocks, runs: [], paragraphs: [] }, 'display').content
+    if (kind === 'flat') delete content.blocks
+    section.storyContent = { ...section.storyContent, header: content }
+    replace(next, true)
+  },
+  paragraphStory: kind => {
+    const next = copy(initial), section = next.sectionHeaderFooters.first
+    next.blocks[0].style.indentFirstLine = 100
+    const styles = [{ indentFirstLine: 0 }, { indentFirstLine: 10 }, { indentFirstLine: 20, spacingRule: 'exact', lineHeight: 24, spaceBefore: 6, spaceAfter: 18 }]
+    const blocks = ['Previous', 'Gap', 'Current'].map((text, index) => {
+      const block = createParagraph(text, next.defaultStyle.text)
+      block.style = { ...block.style, ...styles[index] }
+      return block
+    })
+    section.header = blocks.map(block => runText(block.runs)).join('\\n'); section.pageFields = []
+    const content = projectDocumentStoryBlocks({ blocks, runs: [], paragraphs: [] }, 'display').content
+    if (kind === 'flat') delete content.blocks
+    section.storyContent = { ...section.storyContent, header: content }
     replace(next, true)
   },
   appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
@@ -256,6 +297,433 @@ async function staleStoryEvents() {
     element.dispatchEvent(new FocusEvent('blur', { bubbles: false }))
   })
 }
+
+for (const variant of ['classic', 'grid']) test('rich header and footer navigation switches the real block host without editing content and restores the body range in ' + variant, async () => {
+  await page.evaluate(layout => {
+    window.documentStoryFixture.richStories()
+    window.documentStoryFixture.appearance(layout === 'grid', layout)
+    window.documentStoryFixture.externalBodySelection(2, 6)
+  }, variant)
+  const before = await snapshot(), previousHistory = await history()
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+  await expect(bodyBridge()).toBeFocused()
+  const footer = page.getByRole('button', { name: '转到页脚', exact: true })
+  await expect(footer).toBeEnabled()
+  await footer.click()
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'footer' })
+  await expect(footer).toBeDisabled()
+  await expect(bodyBridge()).toBeFocused()
+  const header = page.getByRole('button', { name: '转到页眉', exact: true })
+  await expect(header).toBeEnabled()
+  await header.click()
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+  await expect(header).toBeDisabled()
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), previousHistory)
+  await page.getByRole('button', { name: '关闭页眉和页脚', exact: true }).click()
+  await expect.poll(async () => (await inputState()).location).toEqual({
+    kind: 'body', selection: { anchor: { blockId: 'body', offset: 2 }, focus: { blockId: 'body', offset: 6 } },
+  })
+  await expect(bodyBridge()).toBeFocused()
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.sectionHeaderFooters, before.sectionHeaderFooters)
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+  await page.getByRole('button', { name: '转到页脚', exact: true }).click()
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'footer' })
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, saved.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+test.each([['flat', 'classic', false], ['flat', 'grid', true], ['rich', 'classic', false], ['rich', 'grid', true]])('header composition disables Home character formats and clear in %s, %s, dark %s', async (kind, variant, dark) => {
+  await page.evaluate(({ kind, variant, dark }) => {
+    if (kind === 'rich') window.documentStoryFixture.richStories()
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  const input = kind === 'flat' ? storyBridge() : bodyBridge()
+  await expect(input).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await input.focus()
+  if (kind === 'rich') await input.press('Control+A')
+  const before = await snapshot(), previousCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  if (kind === 'flat') await startComposition()
+  if (kind === 'rich') await input.evaluate(element => {
+    element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }))
+    element.value = '拼'
+    element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: '拼' }))
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: '拼', isComposing: true }))
+  })
+  await input.evaluate(element => {
+    element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ',', code: 'Comma', ctrlKey: true }))
+    element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: '.', code: 'Period', metaKey: true }))
+    for (const [code, key] of [['KeyX', 'X'], ['KeyL', 'L'], ['KeyE', 'E'], ['KeyR', 'R'], ['KeyJ', 'J'], ['Digit7', '&'], ['Digit8', '*']]) {
+      for (const modifier of ['ctrlKey', 'metaKey']) element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key, code, shiftKey: true, [modifier]: true }))
+    }
+  })
+  for (const id of ['doc-bold', 'doc-italic', 'doc-underline', 'doc-strike', 'doc-subscript', 'doc-superscript', 'doc-clear-format']) {
+    await expect((await homeItem(id)).getByRole('button')).toBeDisabled()
+  }
+  for (const id of ['doc-font-family', 'doc-font-size']) await expect((await homeItem(id)).getByRole('combobox')).toBeDisabled()
+  for (const id of ['doc-align', 'doc-numbered', 'doc-bullet']) {
+    for (const button of await (await homeItem(id)).getByRole('button').all()) await expect(button).toBeDisabled()
+  }
+  for (const id of ['doc-indent-less', 'doc-indent-more', 'doc-paragraph-spacing']) await expect((await homeItem(id)).getByRole('button')).toBeDisabled()
+  await expect((await homeItem('doc-line-height')).getByRole('combobox')).toBeDisabled()
+  for (const id of ['doc-text-color', 'doc-highlight']) for (const selector of ['.document-color-main', '.document-color-arrow button']) {
+    await expect((await homeItem(id)).locator(selector)).toBeDisabled()
+  }
+  await page.locator('[data-testid="workbench-ribbon"]').evaluate(element => {
+    element.__vueParentComponent.emit('execute', 'doc.command.format-text', { patch: { bold: true } })
+    element.__vueParentComponent.emit('execute', 'doc.command.format-paragraph', { patch: { align: 'center' } })
+    element.__vueParentComponent.emit('execute', 'doc.command.set-block-type', { type: 'numbered' })
+    element.__vueParentComponent.emit('execute', 'doc.command.change-list-type', { listType: 'BULLET_LIST' })
+    element.__vueParentComponent.emit('execute', 'doc.command.restart-list-numbering', { start: 7 })
+    element.__vueParentComponent.emit('execute', 'doc.command.continue-list-numbering')
+    element.__vueParentComponent.emit('execute', 'doc.command.change-paragraph-indent', { direction: 1 })
+    element.__vueParentComponent.emit('execute', 'doc.command.change-paragraph-indent', { direction: -1 })
+    element.__vueParentComponent.emit('execute', 'doc.command.format-paragraph', { patch: { spacingRule: 'auto', lineHeight: 2 } })
+    element.__vueParentComponent.emit('execute', 'doc.command.format-paragraph', { patch: { spaceBefore: 18, spaceAfter: 24 } })
+    for (const id of ['doc.command.horizontal-line', 'doc.command.insert-divider', 'doc.command.insert-horizontal-line-bellow']) {
+      element.__vueParentComponent.emit('execute', id)
+    }
+    element.__vueParentComponent.emit('execute', 'ui.command.clear-formatting')
+  })
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), previousCommands)
+  await expect(input).toBeFocused()
+  await input.evaluate((element, rich) => {
+    element.value = rich ? '中文' : 'A😀\uFFFC 中文\nTail'
+    element.setSelectionRange(rich ? 2 : 7, rich ? 2 : 7)
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: '中文', isComposing: true }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中文' }))
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '中文' }))
+  }, kind === 'rich')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.header).toBe(kind === 'rich' ? '中文' : 'A😀 中文\nTail')
+  assert.deepEqual((await snapshot()).blocks, before.blocks)
+  assert.deepEqual(await history(), { undo: 1, redo: 0, dirty: true })
+  for (const id of ['doc-bold', 'doc-italic', 'doc-underline', 'doc-strike', 'doc-subscript', 'doc-superscript', 'doc-clear-format']) {
+    await expect((await homeItem(id)).getByRole('button')).toBeEnabled()
+  }
+  await expect(input).toBeFocused()
+  const state = await inputState()
+  assert.equal(state.location.kind, kind === 'flat' ? 'story' : 'body')
+  if (kind === 'rich') assert.deepEqual(state.location.host, { kind: 'story', sectionId: 'first', story: 'header' })
+  if (kind === 'flat') await nativeSelection(5, 7)
+  if (kind === 'rich') await input.press('Control+A')
+  await (await homeItem('doc-subscript')).getByRole('button').click()
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text.includes('中文') && run.verticalAlign === 'subscript')).toBe(true)
+  await expect(input).toBeFocused()
+  await (await homeItem('doc-clear-format')).getByRole('button').click()
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text.includes('中文') && run.verticalAlign === undefined && run.italic === false)).toBe(true)
+  assert.deepEqual((await snapshot()).blocks, before.blocks)
+  assert.deepEqual(await history(), { undo: 3, redo: 0, dirty: true })
+  await expect(input).toBeFocused()
+})
+
+test.each([['flat', 'classic', false], ['flat', 'grid', true], ['rich', 'classic', false], ['rich', 'grid', true]])('numbering capabilities use the active header and keep restart, continuation and delayed composition callbacks in %s, %s, dark %s', async (kind, variant, dark) => {
+  await page.evaluate(({ kind, variant, dark }) => {
+    window.documentStoryFixture.numberingStory(kind, true, false)
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  const initialInput = kind === 'flat' ? storyBridge() : bodyBridge()
+  await expect(initialInput).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await initialInput.focus()
+  if (kind === 'flat') await nativeSelection(13)
+  if (kind === 'rich') await initialInput.press('Control+End')
+  const plainHeader = await snapshot()
+  await (await homeItem('doc-numbered')).locator('.ribbon-split-arrow').click()
+  const unavailable = page.locator('.doc-list-picker:visible')
+  await expect(unavailable.getByRole('spinbutton', { name: '起始编号', exact: true })).toBeDisabled()
+  await expect(unavailable.getByRole('button', { name: '重新编号', exact: true })).toBeDisabled()
+  await expect(unavailable.getByRole('button', { name: '继续前一编号', exact: true })).toBeDisabled()
+  assert.deepEqual(await snapshot(), plainHeader)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+
+  await page.goto(baseURL)
+  await page.evaluate(({ kind, variant, dark }) => {
+    window.documentStoryFixture.numberingStory(kind, false, true)
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  await expect(initialInput).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await initialInput.focus()
+  if (kind === 'flat') await nativeSelection(13)
+  if (kind === 'rich') await initialInput.press('Control+End')
+  const before = await snapshot()
+  await (await homeItem('doc-numbered')).locator('.ribbon-split-arrow').click()
+  const picker = page.locator('.doc-list-picker:visible')
+  const start = picker.getByRole('spinbutton', { name: '起始编号', exact: true })
+  await expect(start).toBeEnabled()
+  await expect(start).toHaveClass(/ant-input-number-input/)
+  await expect(picker.locator('.doc-list-card')).toHaveCount(6)
+  await expect(picker.getByRole('button', { name: '继续前一编号', exact: true })).toBeEnabled()
+  await start.fill('7')
+  await picker.getByRole('button', { name: '重新编号', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].metadata.numberingDefinition.instance.levelStartOverrides['0']).toBe(7)
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+  await expect(bodyBridge()).toBeFocused()
+  assert.deepEqual((await snapshot()).blocks, before.blocks)
+  assert.equal((await snapshot()).sectionHeaderFooters.first.header, before.sectionHeaderFooters.first.header)
+  assert.equal((await snapshot()).sectionHeaderFooters.first.footer, before.sectionHeaderFooters.first.footer)
+  assert.deepEqual(await history(), { undo: 1, redo: 0, dirty: true })
+  await bodyBridge().press('Control+z')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters).toEqual(before.sectionHeaderFooters)
+  await bodyBridge().press('Control+y')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].metadata.numberingDefinition.instance.levelStartOverrides['0']).toBe(7)
+  await (await homeItem('doc-numbered')).locator('.ribbon-split-arrow').click()
+  await expect(picker.getByRole('button', { name: '继续前一编号', exact: true })).toBeEnabled()
+  await picker.getByRole('button', { name: '继续前一编号', exact: true }).click()
+  await expect.poll(async () => {
+    const blocks = (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks
+    return blocks[2].metadata.numberingListId === blocks[0].metadata.numberingListId
+  }).toBe(true)
+  await expect(bodyBridge()).toBeFocused()
+  assert.deepEqual(await history(), { undo: 2, redo: 0, dirty: true })
+  const numbered = await snapshot(), previousHistory = await history(), previousCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  await bodyBridge().dispatchEvent('compositionstart', { data: '' })
+  for (const button of await (await homeItem('doc-numbered')).getByRole('button').all()) await expect(button).toBeDisabled()
+  await page.locator('[data-testid="workbench-ribbon"]').evaluate(element => {
+    element.__vueParentComponent.emit('execute', 'doc.command.restart-list-numbering', { start: 11 })
+    element.__vueParentComponent.emit('execute', 'doc.command.continue-list-numbering')
+  })
+  assert.deepEqual(await snapshot(), numbered)
+  assert.deepEqual(await history(), previousHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), previousCommands)
+  await expect(bodyBridge()).toBeFocused()
+  await bodyBridge().dispatchEvent('compositionend', { data: '' })
+  await (await homeItem('doc-numbered')).locator('.ribbon-split-arrow').click()
+  await expect(picker.getByRole('button', { name: '继续前一编号', exact: true })).toBeDisabled()
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.blocks, before.blocks)
+  assert.deepEqual(saved.sectionHeaderFooters, numbered.sectionHeaderFooters)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, saved.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+test.each([['flat', 'classic', false], ['flat', 'grid', true], ['rich', 'classic', false], ['rich', 'grid', true]])('paragraph indent and spacing use the active header, real menus, history and internal reopen in %s, %s, dark %s', async (kind, variant, dark) => {
+  await page.evaluate(({ kind, variant, dark }) => {
+    window.documentStoryFixture.paragraphStory(kind)
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  const initialInput = kind === 'flat' ? storyBridge() : bodyBridge()
+  await expect(initialInput).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await initialInput.focus()
+  if (kind === 'flat') await nativeSelection(13)
+  if (kind === 'rich') await initialInput.press('Control+End')
+  const before = await snapshot()
+  await expect((await homeItem('doc-indent-more')).getByRole('button')).toBeEnabled()
+  await expect((await homeItem('doc-indent-less')).getByRole('button')).toBeEnabled()
+  await expect(await homeItem('doc-line-height')).toContainText('固定值 24 px')
+  await (await homeItem('doc-indent-more')).getByRole('button').click()
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].style.indentFirstLine).toBe(40)
+  await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+  await expect(bodyBridge()).toBeFocused()
+  assert.deepEqual(await history(), { undo: 1, redo: 0, dirty: true })
+  await bodyBridge().press('Control+z')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters).toEqual(before.sectionHeaderFooters)
+  await bodyBridge().press('Control+y')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].style.indentFirstLine).toBe(40)
+  await (await homeItem('doc-indent-less')).getByRole('button').click()
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].style.indentFirstLine).toBe(20)
+  await (await homeItem('doc-line-height')).getByRole('combobox').click()
+  await page.locator('.ant-select-dropdown:visible').getByText('1.5 倍', { exact: true }).click()
+  await expect.poll(async () => {
+    const style = (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].style
+    return [style.spacingRule, style.lineHeight]
+  }).toEqual(['auto', 1.5])
+  for (const [key, title, value] of [['spaceBefore', '段前间距', 18], ['spaceAfter', '段后间距', 24]]) {
+    await (await homeItem('doc-paragraph-spacing')).getByRole('button').click()
+    await page.getByRole('menuitem', { name: title, exact: true }).click()
+    await page.locator('[data-ribbon-item="doc-' + key + '-' + value + '"]:visible').click()
+    await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[2].style[key]).toBe(value)
+    await expect(bodyBridge()).toBeFocused()
+  }
+  const formatted = await snapshot(), previousHistory = await history(), previousCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  assert.deepEqual(previousHistory, { undo: 5, redo: 0, dirty: true })
+  assert.deepEqual(formatted.blocks, before.blocks)
+  assert.equal(formatted.sectionHeaderFooters.first.header, before.sectionHeaderFooters.first.header)
+  assert.equal(formatted.sectionHeaderFooters.first.footer, before.sectionHeaderFooters.first.footer)
+  assert.deepEqual(formatted.sectionHeaderFooters.first.storyContent.header.paragraphs.slice(0, 2).map(paragraph => paragraph.style),
+    before.sectionHeaderFooters.first.storyContent.header.paragraphs.slice(0, 2).map(paragraph => paragraph.style))
+  await bodyBridge().dispatchEvent('compositionstart', { data: '' })
+  for (const id of ['doc-indent-less', 'doc-indent-more', 'doc-paragraph-spacing']) await expect((await homeItem(id)).getByRole('button')).toBeDisabled()
+  await expect((await homeItem('doc-line-height')).getByRole('combobox')).toBeDisabled()
+  await page.locator('[data-testid="workbench-ribbon"]').evaluate(element => {
+    element.__vueParentComponent.emit('execute', 'doc.command.change-paragraph-indent', { direction: 1 })
+    element.__vueParentComponent.emit('execute', 'doc.command.change-paragraph-indent', { direction: -1 })
+    element.__vueParentComponent.emit('execute', 'doc.command.format-paragraph', { patch: { spacingRule: 'auto', lineHeight: 2 } })
+    element.__vueParentComponent.emit('execute', 'doc.command.format-paragraph', { patch: { spaceBefore: 0, spaceAfter: 0 } })
+  })
+  assert.deepEqual(await snapshot(), formatted)
+  assert.deepEqual(await history(), previousHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), previousCommands)
+  await expect(bodyBridge()).toBeFocused()
+  await bodyBridge().dispatchEvent('compositionend', { data: '' })
+  await expect((await homeItem('doc-indent-more')).getByRole('button')).toBeEnabled()
+  await expect((await homeItem('doc-line-height')).getByRole('combobox')).toBeEnabled()
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.blocks, before.blocks)
+  assert.deepEqual(saved.sectionHeaderFooters, formatted.sectionHeaderFooters)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, saved.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+test.each([['flat', 'classic', false], ['flat', 'grid', true], ['rich', 'classic', false], ['rich', 'grid', true]])('fixed strike, alignment and list shortcuts retain the active header host, history and internal reopen in %s, %s, dark %s', async (kind, variant, dark) => {
+  await page.evaluate(({ kind, variant, dark }) => {
+    if (kind === 'rich') window.documentStoryFixture.richStories()
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  const initialInput = kind === 'flat' ? storyBridge() : bodyBridge()
+  await expect(initialInput).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await initialInput.focus()
+  if (kind === 'flat') await nativeSelection(5, 9)
+  if (kind === 'rich') await initialInput.press('Control+A')
+  const before = await snapshot(), selectedText = kind === 'flat' ? 'word' : 'Rich header'
+  const previousCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  await initialInput.evaluate(element => {
+    for (const [code, key] of [['KeyX', 'X'], ['KeyL', 'L'], ['KeyE', 'E'], ['KeyR', 'R'], ['KeyJ', 'J'], ['Digit7', '&'], ['Digit8', '*']]) {
+      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key, code, ctrlKey: true }))
+      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key, code, ctrlKey: true, shiftKey: true, altKey: true }))
+    }
+  })
+  await page.getByRole('tab', { name: '开始', exact: true }).focus()
+  await initialInput.evaluate(element => {
+    for (const [code, key] of [['KeyX', 'X'], ['KeyL', 'L'], ['KeyE', 'E'], ['KeyR', 'R'], ['KeyJ', 'J'], ['Digit7', '&'], ['Digit8', '*']]) element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key, code, metaKey: true, shiftKey: true }))
+  })
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), previousCommands)
+  await initialInput.focus()
+  for (const [shortcut, strike] of [['Control+Shift+X', true], ['Meta+Shift+X', false]]) {
+    await initialInput.press(shortcut)
+    await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === selectedText && run.strike === strike)).toBe(true)
+    await expect(initialInput).toBeFocused()
+  }
+  for (const [index, [shortcut, align]] of [['Control+Shift+R', 'right'], ['Meta+Shift+L', 'left'], ['Control+Shift+E', 'center'], ['Meta+Shift+J', 'justify']].entries()) {
+    await (index === 0 ? initialInput : bodyBridge()).press(shortcut)
+    await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0].style.align).toBe(align)
+    await expect.poll(async () => (await inputState()).location.host).toEqual({ kind: 'story', sectionId: 'first', story: 'header' })
+    await expect(bodyBridge()).toBeFocused()
+  }
+  const aligned = await snapshot()
+  await bodyBridge().press('Control+Shift+J')
+  assert.deepEqual(await snapshot(), aligned)
+  assert.deepEqual(await history(), { undo: 6, redo: 0, dirty: true })
+  for (const [shortcut, type, preset] of [['Control+Shift+7', 'numbered', 'ORDER_LIST'], ['Meta+Shift+7', 'paragraph', undefined], ['Meta+Shift+8', 'bullet', 'BULLET_LIST'], ['Control+Shift+8', 'paragraph', undefined]]) {
+    await bodyBridge().press(shortcut)
+    await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0].type).toBe(type)
+    const block = (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0]
+    if (preset) assert.equal(block.list.preset, preset)
+    if (!preset) assert.equal(block.list, undefined)
+    await expect(bodyBridge()).toBeFocused()
+  }
+  const formatted = await snapshot()
+  assert.deepEqual(formatted.blocks, before.blocks)
+  assert.equal(formatted.sectionHeaderFooters.first.header, before.sectionHeaderFooters.first.header)
+  assert.equal(formatted.sectionHeaderFooters.first.footer, before.sectionHeaderFooters.first.footer)
+  assert.deepEqual(formatted.sectionHeaderFooters.first.storyContent.footer, before.sectionHeaderFooters.first.storyContent.footer)
+  assert.deepEqual(formatted.sectionHeaderFooters.first.storyContent.header.paragraphs.slice(1).map(paragraph => paragraph.style), before.sectionHeaderFooters.first.storyContent.header.paragraphs.slice(1).map(paragraph => paragraph.style))
+  for (const [index, field] of formatted.sectionHeaderFooters.first.pageFields.entries()) {
+    const original = before.sectionHeaderFooters.first.pageFields[index]
+    assert.deepEqual([field.story, field.field, field.offset, field.cachedResult, field.textStyle.fontFamily, field.textStyle.fontSize], [original.story, original.field, original.offset, original.cachedResult, original.textStyle.fontFamily, original.textStyle.fontSize])
+  }
+  assert.equal(formatted.sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === selectedText && run.fontSize === before.sectionHeaderFooters.first.storyContent.header.runs[0].fontSize), true)
+  assert.deepEqual(await history(), { undo: 10, redo: 0, dirty: true })
+  await bodyBridge().press('Control+z')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0].type).toBe('bullet')
+  await bodyBridge().press('Control+y')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0].type).toBe('paragraph')
+  await bodyBridge().press('Meta+z')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.blocks[0].type).toBe('bullet')
+  assert.deepEqual(await history(), { undo: 9, redo: 1, dirty: true })
+  await page.evaluate(() => window.documentStoryFixture.readonly())
+  const readonly = await snapshot(), readonlyHistory = await history(), readonlyCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  await bodyBridge().focus()
+  await bodyBridge().evaluate(element => {
+    for (const [code, key] of [['KeyX', 'X'], ['KeyL', 'L'], ['KeyE', 'E'], ['KeyR', 'R'], ['KeyJ', 'J'], ['Digit7', '&'], ['Digit8', '*']]) element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key, code, ctrlKey: true, shiftKey: true }))
+  })
+  assert.deepEqual(await snapshot(), readonly)
+  assert.deepEqual(await history(), readonlyHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), readonlyCommands)
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.blocks, before.blocks)
+  assert.equal(saved.sectionHeaderFooters.first.storyContent.header.blocks[0].type, 'bullet')
+  assert.equal(saved.sectionHeaderFooters.first.storyContent.header.blocks[0].list.preset, 'BULLET_LIST')
+  assert.equal(saved.sectionHeaderFooters.first.storyContent.header.blocks[0].style.align, 'justify')
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, saved.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
+
+test.each([['flat', 'classic', false], ['flat', 'grid', true], ['rich', 'classic', false], ['rich', 'grid', true]])('fixed vertical shortcuts keep the active header, body, history and saved input format in %s, %s, dark %s', async (kind, variant, dark) => {
+  await page.evaluate(({ kind, variant, dark }) => {
+    if (kind === 'rich') window.documentStoryFixture.richStories()
+    window.documentStoryFixture.appearance(dark, variant)
+  }, { kind, variant, dark })
+  await (await homeItem('doc-header-footer')).getByRole('button').click()
+  const input = kind === 'flat' ? storyBridge() : bodyBridge()
+  await expect(input).toBeFocused()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await input.focus()
+  if (kind === 'flat') await nativeSelection(5, 9)
+  if (kind === 'rich') await input.press('Control+A')
+  const before = await snapshot(), selectedText = kind === 'flat' ? 'word' : 'Rich header'
+  for (const [shortcut, verticalAlign] of [['Control+Comma', 'subscript'], ['Meta+Period', 'superscript'], ['Control+Period', undefined], ['Meta+Comma', 'subscript'], ['Control+Comma', undefined]]) {
+    await input.press(shortcut)
+    await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === selectedText && run.verticalAlign === verticalAlign)).toBe(true)
+    await expect(input).toBeFocused()
+  }
+  assert.deepEqual((await snapshot()).blocks, before.blocks)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters.first.pageFields, before.sectionHeaderFooters.first.pageFields)
+  assert.deepEqual(await history(), { undo: 5, redo: 0, dirty: true })
+  const formatted = await snapshot(), previousCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  await input.evaluate(element => {
+    element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: '<', code: 'Comma', ctrlKey: true, shiftKey: true }))
+    element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: '.', code: 'Period', ctrlKey: true, altKey: true }))
+  })
+  await page.getByRole('tab', { name: '开始', exact: true }).focus()
+  await input.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: '.', code: 'Period', ctrlKey: true })))
+  assert.deepEqual(await snapshot(), formatted)
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), previousCommands)
+  assert.deepEqual(await history(), { undo: 5, redo: 0, dirty: true })
+  await input.focus()
+  await input.press('Control+z')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === selectedText && run.verticalAlign === 'subscript')).toBe(true)
+  await input.press('Control+y')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === selectedText && run.verticalAlign === undefined)).toBe(true)
+  await input.press('ArrowRight')
+  const collapsed = await snapshot()
+  await input.press('Control+Comma')
+  assert.deepEqual(await snapshot(), collapsed)
+  assert.deepEqual(await history(), { undo: 5, redo: 0, dirty: true })
+  await input.press('!')
+  await expect.poll(async () => (await snapshot()).sectionHeaderFooters.first.header).toBe(kind === 'flat' ? 'A😀 word!\nTail' : 'Rich header!')
+  assert.equal((await snapshot()).sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === '!' && run.verticalAlign === 'subscript'), true)
+  assert.deepEqual((await snapshot()).blocks, before.blocks)
+  assert.deepEqual(await history(), { undo: 6, redo: 0, dirty: true })
+  await page.evaluate(() => window.documentStoryFixture.readonly())
+  await expect((await homeItem('doc-subscript')).getByRole('button')).toBeDisabled()
+  const readonly = await snapshot(), readonlyHistory = await history(), readonlyCommands = await page.evaluate(() => window.documentStoryFixture.commands())
+  await input.focus()
+  await input.press('Control+Period')
+  assert.deepEqual(await snapshot(), readonly)
+  assert.deepEqual(await history(), readonlyHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentStoryFixture.commands()), readonlyCommands)
+  const saved = await page.evaluate(() => window.documentStoryFixture.saveReopen())
+  assert.deepEqual(saved.blocks, before.blocks)
+  assert.equal(saved.sectionHeaderFooters.first.storyContent.header.runs.some(run => run.text === '!' && run.verticalAlign === 'subscript'), true)
+  assert.deepEqual((await snapshot()).sectionHeaderFooters, saved.sectionHeaderFooters)
+  assert.deepEqual(await history(), { undo: 0, redo: 0, dirty: false })
+})
 
 for (const variant of ['classic', 'grid']) test('legacy header named styles use the story selection, real history and saved reopen in ' + variant, async () => {
   await page.evaluate(layout => { window.documentStoryFixture.namedStyles(); window.documentStoryFixture.appearance(false, layout) }, variant)

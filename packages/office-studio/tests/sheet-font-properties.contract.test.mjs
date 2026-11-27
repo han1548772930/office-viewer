@@ -6,7 +6,7 @@ import { applyExcelWorkbookView, cellKey, toExcelWorkbookView } from '../src/ser
 import {
   applySheetFontFormatCommand, applySheetViewFontFormatCommand, fontFormatActionForCommand,
   nextSheetFontFormatSize, normalizeSheetFontSize, SHEET_FONT_FORMAT_COMMAND_IDS,
-  sheetFontFormatCommandInput, sheetFontFormatInputRanges,
+  sheetFontFormatCommandForShortcut, sheetFontFormatCommandInput, sheetFontFormatInputRanges,
 } from '../src/features/sheet-workbench/sheet-font-format-command.ts'
 
 const range = (startRow, endRow = startRow, startCol = 0, endCol = startCol) => ({ startRow, endRow, startCol, endCol })
@@ -53,6 +53,33 @@ test('font-size aliases and both stepper aliases are registered with the exact f
     }
   }
   assert.equal(new Set(SHEET_FONT_FORMAT_COMMAND_IDS).size, SHEET_FONT_FORMAT_COMMAND_IDS.length)
+})
+
+test('font-size shortcuts accept fixed punctuation key codes and shifted keys with Ctrl or Cmd', () => {
+  const bindings = [
+    [{ key: '.' }, 'sheet.command.increase-font-size'],
+    [{ key: '>' }, 'sheet.command.increase-font-size'],
+    [{ key: 'Unidentified', keyCode: 190 }, 'sheet.command.increase-font-size'],
+    [{ key: '<', keyCode: 190 }, 'sheet.command.increase-font-size'],
+    [{ key: ',' }, 'sheet.command.decrease-font-size'],
+    [{ key: '<' }, 'sheet.command.decrease-font-size'],
+    [{ key: 'Unidentified', keyCode: 188 }, 'sheet.command.decrease-font-size'],
+    [{ key: '>', keyCode: 188 }, 'sheet.command.decrease-font-size'],
+  ]
+  for (const modifiers of [{ ctrlKey: true, metaKey: false }, { ctrlKey: false, metaKey: true }]) {
+    for (const [key, commandId] of bindings) {
+      const event = { ...modifiers, shiftKey: true, ...key }
+      assert.equal(sheetFontFormatCommandForShortcut(event), commandId)
+      assert.deepEqual(fontFormatActionForCommand(commandId), { kind: 'size-step', direction: commandId === 'sheet.command.increase-font-size' ? 1 : -1 })
+      for (const extra of [{ shiftKey: false }, { ctrlKey: false, metaKey: false }, { altKey: true }, { isComposing: true }, { keyCode: 229 }, { defaultPrevented: true }]) {
+        assert.equal(sheetFontFormatCommandForShortcut({ ...event, ...extra }), undefined)
+      }
+    }
+  }
+  assert.equal(sheetFontFormatCommandForShortcut({ key: 'X', ctrlKey: true, metaKey: false, shiftKey: true }), 'sheet.command.toggle-strike')
+  for (const key of ['b', 'i', 'u', '[', ']']) {
+    assert.equal(sheetFontFormatCommandForShortcut({ key, ctrlKey: true, metaKey: false, shiftKey: true }), undefined)
+  }
 })
 
 test('command input preserves explicit objects and wraps all supported raw scalars without losing null or false', () => {
@@ -176,7 +203,7 @@ test('default and null property no-ops keep empty model and view worksheets spar
 test('direct property handlers reject malformed actions before changing either model or view', () => {
   const sheet = sample().sheets[0], view = toExcelWorkbookView({ ...sample(), sheets: [sheet] }).sheets[0]
   const beforeModel = structuredClone(sheet), beforeView = structuredClone(view)
-  for (const action of [{ kind: 'family', value: '' }, { kind: 'family', value: 12 }, { kind: 'size', value: 0 }, { kind: 'size-step', direction: 2 }]) {
+  for (const action of [{ kind: 'family', value: '' }, { kind: 'family', value: 12 }, { kind: 'size', value: 0 }, { kind: 'size', value: NaN }, { kind: 'size', value: Infinity }, { kind: 'size-step', direction: 2 }]) {
     assert.throws(() => applySheetFontFormatCommand(sheet, [range(0, 2)], action))
     assert.throws(() => applySheetViewFontFormatCommand(view, [range(0, 2)], action))
     assert.deepEqual(sheet, beforeModel); assert.deepEqual(view, beforeView)
@@ -199,6 +226,22 @@ test('implicit size-step primary comes from the last range while unselected cell
   assert.equal(applySheetViewFontFormatCommand(view, targets, { kind: 'size-step', direction: -1 }), true)
   assert.deepEqual([0, 1, 2].map(row => sheet.cells[row + ':0'].style.font.size), [29, 19, 29])
   assert.deepEqual(['A1', 'A2', 'A3'].map(key => view.cells[key].fontSize), [29, 19, 29])
+})
+
+test('a sparse primary resolves inherited size before applying one step to model and view targets', () => {
+  const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]
+  workbook.defaultStyle = { font: { family: 'Inter', size: 27 } }
+  sheet.defaultStyle = { font: { size: 31.5 } }
+  sheet.cells['0:0'] = createCell(0, 0, 'kept')
+  sheet.cells['0:0'].style.font.size = 9
+  const view = toExcelWorkbookView(workbook).sheets[0], targets = [range(0, 1)], action = { kind: 'size-step', direction: 1 }
+  const primary = { row: 1, col: 0 }
+  assert.equal(applySheetFontFormatCommand(sheet, targets, action, 'local-user', [], primary, workbook), true)
+  assert.equal(applySheetViewFontFormatCommand(view, targets, action, 'local-user', primary), true)
+  assert.deepEqual([0, 1].map(row => sheet.cells[row + ':0'].style.font.size), [32.5, 32.5])
+  assert.deepEqual(['A1', 'A2'].map(key => view.cells[key].fontSize), [32.5, 32.5])
+  assert.equal(sheet.cells['0:0'].value, 'kept')
+  assert.equal(view.cells.A1.value, 'kept')
 })
 
 test('out-of-selection, fractional, missing or null primary positions reject an entire step transaction', () => {

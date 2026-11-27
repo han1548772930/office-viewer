@@ -243,6 +243,37 @@ test('manual and filtered rows keep their positions; Worker offsets expand to a 
   assert.throws(() => engine.expandVisibleSortOrder(4, [0, 3], [1, 1]), /permutation/)
 })
 
+test('collapsed outline rows retain their cells in both sort paths alongside other hidden-row reasons', () => {
+  const sheet = makeSheet(8, 2)
+  setRows(sheet, [
+    ['Item', 'Number'], ['first', 30], ['outline-first', 99], ['outline-last', 98],
+    ['hidden-manually', 40], ['hidden-by-filter', 20], ['zero-height', 10], ['last', 5],
+  ])
+  sheet.outline = { ...api.createSheetOutlineState(), groups: [
+    { id: 'collapsed-rows', axis: 'row', start: 2, end: 3, collapsed: true },
+    { id: 'collapsed-column', axis: 'column', start: 1, end: 1, collapsed: true },
+  ] }
+  sheet.hiddenRows = [4]; sheet.rowHeights = { 6: 0 }
+  sheet.cells['2:1'].formula = '=100-1'; sheet.cells['2:1'].metadata = { marker: 'retain' }
+  engine.setAutoFilter(sheet, fullRange(7, 1))
+  engine.setFilterCriteria(sheet, 0, { kind: 'values', selectedItems: ['first', 'outline-first', 'outline-last', 'hidden-manually', 'zero-height', 'last'] })
+  const before = JSON.parse(JSON.stringify(sheet))
+  const criteria = [{ column: 1, direction: 'ascending' }]
+  const numeric = engine.getNumericSortColumns(sheet, fullRange(7, 1), criteria, { hasHeader: true })
+  assert.deepEqual(numeric.destinationOffsets, [0, 6]); assert.deepEqual(numeric.columns, [[30, 5]])
+  const order = engine.getSortedRowOrder(sheet, fullRange(7, 1), criteria, { hasHeader: true })
+  assert.deepEqual(order, [6, 1, 2, 3, 4, 5, 0])
+  assert.deepEqual(engine.expandVisibleSortOrder(7, numeric.destinationOffsets, [1, 0]), order)
+  engine.sortRange(sheet, fullRange(7, 1), criteria, order, { hasHeader: true })
+  assert.equal(sheet.cells['1:0'].value, 'last'); assert.equal(sheet.cells['7:0'].value, 'first')
+  for (const row of [2, 3, 4, 5, 6]) for (const column of [0, 1]) {
+    assert.deepEqual(sheet.cells[`${row}:${column}`], before.cells[`${row}:${column}`])
+  }
+  assert.deepEqual(sheet.outline, before.outline); assert.deepEqual(sheet.hiddenRows, [4])
+  sheet.outline.groups[0].collapsed = false
+  assert.deepEqual(engine.getSortableRowOffsets(sheet, fullRange(7, 1), { hasHeader: true }), [0, 1, 2, 6])
+})
+
 test('invalid sort permutations and merged-cell intersections cannot partially mutate a sheet', () => {
   const sheet = makeSheet(3, 2)
   setRows(sheet, [['Key', 'Payload'], [2, 'two'], [1, 'one']])

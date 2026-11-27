@@ -64,3 +64,21 @@ horizontal-line 复用既有 `insertBlocks`，分隔线置于拆分后的 head �
 - 正文、表格、story、note 的生产输入闭环、主题、焦点、Windows IME 与大样本性能/内存未测量。没有运行结果，不能把契约草稿或静态接线标为已验收。
 
 限定 `git diff --check` 通过；新增文件无尾随空白。静态核对 15 个文档本地链接、6 个固定源码链接、两个新源文件的 8 个相对 import 和两个契约的 19 个 SSR 模块路径，均存在。静态检查只证明本批 diff、导入和引用路径可复查；整个 DOC-02、Docs/Sheets 及 Pro 功能的完整交付目标保持不变。
+
+<a id="doc-horizontal-line-code-input"></a>
+
+## CODE 选区禁用与迟到输入命令续修（2026-11-27）
+
+状态：**已落盘、未验收**。本批继续 INSERT / MEDIA 的既有分隔线根；常驻、插件扩展、独立溢出和上下文入口增量均为零，原 1 个顶部根与 6 处上下文挂载继续保留。固定版本、命令 ID、order 4、grid r2c5 和三个既有命令/别名没有变化。
+
+固定 [HorizontalLineFactory](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts#L1412) 使用 [disableMenuWhenNoDocRange](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts#L331)，除无范围、文档 Edit 权限外，会检查所有相交的 CODE text ranges，交集使用包含边界的 `<=`。只读取 focus 的代码块祖先会漏过跨块和反向范围，不能据此认定对齐。固定 [horizontal-line / bellow](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/doc-horizontal-line.command.ts) 仍复用 BreakLineCommand；bellow 的结构 gap 语义保持原待实现项。
+
+[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的同步 `documentRibbonSelectionHasCode` 复用现有 orderedSelection / textTargets、表格选区目标和 documentBlockChildContainers，按整个选区的目标身份遍历 CODE 及其子内容，包含正反向跨块、零偏移边界、引用中的 CODE 和表格范围。可选内部 `DocumentRibbonContext.selectionHasCode` 驱动既有分隔线根；旧调用方继续支持原 structuredBlock/code 状态。[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 缓存此派生结果，使用当前 editingModel 和 selection；传统独立 story 不误读正文 CODE。原输入、权限和主题禁用继续生效，没有增加模型字段或第二套范围引擎。
+
+Workbench 的原 inactive/composition 守卫增加 `doc.command.horizontal-line`、`doc.command.insert-divider` 和 `doc.command.insert-horizontal-line-bellow`，在迟到 Ribbon 回调进入 mutation 前返回。正常插入、别名、内容权限、Facade 命令、文档历史和保存路径继续复用既有实现；公共 API、领域模型、Worker/WASM 及跨边界协议未变。
+
+既有 [toolbar-state 契约草稿](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) 增加两处 each 声明、十个计划案例，使用真实 wrap-structured-block 创建 CODE / quote 和真实表格范围，覆盖七种正文/嵌套/边界方向及三个表格范围；原七场景另核对旧上下文禁用判定。[Home 浏览器草稿](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) 增加两个正反向范围案例，使用真实 FDocument 生成 CODE，实际 Ribbon 禁用分隔线，移出 CODE 后实际插入并撤销，核对代码内容、历史与焦点。原 Home/Story 的六个合成 composition 案例和 Home 两个 KeepAlive 失活案例追加三个迟到命令，核对模型、命令事件和历史保持；没有新增这些案例的数量。[Story 草稿](../../packages/office-studio/tests/document-story-input.browser.test.mjs) 的四个场景覆盖 flat/rich 及 classic/grid 和初始主题。合成 DOM composition 不作为真实 Windows IME 证据。
+
+按 AST 读取全部 test 声明并展开 each 与显式外层 for，当前 toolbar-state 为 **22 声明 / 36 计划**，Home 为 **31 / 43**，Story 为 **27 / 57**。本批增量分别为 2/10、1/2、0/0；此前 20/26 与 30/41 属上一批快照。未修改的 [horizontal-line 契约](../../packages/office-studio/tests/document-horizontal-line.contract.test.mjs) 保持 9/9，[toolbar 浏览器草稿](../../packages/office-studio/tests/document-toolbar.browser.test.mjs) 保持 24/29。AST 只作计数；本批测试、类型检查、构建、dev、浏览器、Rust/WASM、服务及基准执行均为 **0**，统一生产语法、引用、链接和 diff 收尾由主线完成。
+
+本批没有新增产品 UI；既有 Ribbon、输入桥与主题继续沿 Vue / `antdv-next` / ConfigProvider。完整浏览器运行、主题/RTL、焦点与原生 IME、性能/内存均未验收。前述六处上下文/gap、非空段落下边框绘制、完整继承及 Office 文件往返缺口保持原范围，未以本批禁用与输入守卫标为完成。

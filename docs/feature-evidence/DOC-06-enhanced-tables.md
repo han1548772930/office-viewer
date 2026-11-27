@@ -193,3 +193,47 @@
 相邻的[分隔线](DOC-02-horizontal-line.md)与[分隔符](DOC-03-section-breaks.md)本轮仅复核现有注册、默认值与执行路径。结构 gap、非空段落下边框绘制、分隔符完整辅助 host 状态、插表模式/位置和物理页差异继续保留缺口。实际弹层尺寸、主题、hover、关闭后焦点、原生 IME、浏览器、Office 文件样本与性能均未验收。
 
 本轮限定静态检查通过：两个 Vue 脚本/模板、一个浏览器草稿及一段夹具脚本、两个样式块、126 处本地引用；两份专项文档的 48 条本地链接均存在，五个修改文件无尾随空白或冲突标记，限定 diff 检查通过。首次解析器入口未在根依赖中暴露，随后改用实际安装的 `vue/compiler-sfc` 与 Vite 的 PostCSS 依赖完成检查；没有安装依赖、执行产品模块或运行测试。
+
+<a id="table-workbench-input-session"></a>
+
+## 2026-11-27 表格命令的工作台输入会话边界
+
+本批沿用已完成的表格清点：一个常驻 Insert 根及一个插入子项；Pro 替换同一根，不重复计数；17 个 Pro 上下文 Ribbon 根，Style 5 / Layout 6 / Data 2 / Options 4；OSS 右键两个结构根、七个叶项；独立 overflow 根为 0。本次新增入口数为 0，这些计数不代表功能完成。
+
+固定来源继续使用 v1.6.0、commit `eaf4cfa04fabdbcfc922c692f3450459f8a29546`：
+
+- [schema.ts:345–353、457–492](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/schema.ts#L345) 定义 Insert / MEDIA、order 2、grid r1c2 和右键插入四向、删除行/列/表；[menu.ts:1156–1193](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts#L1156) 与 [context-menu.ts:93–150、235–397](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/context-menu.ts#L93) 根据真实 Docs 文本/表格范围、模型、skeleton 与编辑权限判断入口状态。OSS 根隐藏于页眉页脚；Pro 发布代码的 Insert factory `ni`（字符串位置 7660）及 `ai` 使用当前表格选区显隐，不能直接套用 OSS 的辅助 story 限制。
+- [doc-create-table.operation.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/doc-create-table.operation.ts) 默认 3×5，确认进入 [doc-table-create.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-create.command.ts)；后者使用插入范围、segment、实际物理页宽，合成正文和 tableSource 的一次 mutation。[doc-table-insert.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-insert.command.ts) 的四向包装器复用插行/插列，[doc-table-delete.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/table/doc-table-delete.command.ts) 在行列全部删除时转删表；均更新同一正文/tableSource 事务。
+- [doc-state-change-manager.service.ts:214–257](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/services/doc-state-change-manager.service.ts#L214) 按 unitId 聚合 undo/redo mutations；[f-document.ts:348](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs/src/facade/f-document.ts#L348) 经资源加载器保存文档及资源。Pro 的 `H` / `U`（21846 / 22640）和 `Ja` / `Ya` / `Za`（23688）、`Qa`（26117）静态记录共享命令 factory、表格选区显隐和上下文复用；发布类型或代码读取不构成运行验收。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 tableRibbonContext 将输入会话失活并入已有 composing 状态，供按命令能力判断的表格 Ribbon 项、七个基础右键项和附加属性入口使用。execute 的既有入口守卫加入 `isDocumentTableCommand`，并显式加入不属于该谓词的 `doc.command.create-table` / `doc.command.insert-table`；失活或编辑器组合输入期间，延迟内容回调在辅助 host 转换及候选提交之前返回 false。后续表格能力分支继续调用真实 documentTableCommandState，移除已由入口处理的重复组合输入判断。
+
+inputStateActive 沿用原普通 let；tableRibbonContext 显式读取既有 storyActionVersion，使用 onActivated / onDeactivated 原有的递增保证失活和恢复均重新计算 composing。失活时 clearInputMarks 经 FDocument / Studio 进入 [document-input-store.ts](../../packages/office-studio/src/features/document/stores/document-input-store.ts) 的 clearMarks，即使 marks 已为空也替换 units shallowRef、设 valid:false，pendingMarks → toolbarState 原链路也会失效。恢复时 applyInputState 会拒绝该失效 session，因此控件重算不能只依赖重新应用输入状态；本批使用生命周期版本，不改全局活动标志或 API/session 规则。
+
+本次改动属于 Vue 工作台输入会话边界。表格命令、detached planner、真实跨度/预算、模式、ACL、内容控件锁、锚点更新、一次发布和按文档隔离历史均沿用原链路；标准 FDocument / Studio envelope 内容命令仍可在没有 UI 输入会话时调用。公开 flat 创建命令原有的有效正文输入要求保持。接口、领域模型、保存格式及 Worker/WASM 协议变更均为 0；没有新建计算路径或可替换 UI。
+
+[document-table-workbench.browser.test.mjs](../../packages/office-studio/tests/document-table-workbench.browser.test.mjs) 在原夹具加入最小 KeepAlive 隐藏/恢复，并补一个 test.each 声明、四个计划案例：light/classic 和 dark/grid 分别覆盖合成 composition 与工作台失活。草稿读取真实 Ribbon 状态，检查已打开右键菜单的实时禁用；向真实 Ribbon 发送合法 create、旧 insert、插行和背景回调，检查模型、内容历史及模型变化事件不变。恢复后在任何 focus、selection 或右键操作前检查六个表格控件重新启用，再通过实际右键插行，检查原单元格 ID、一次历史、Canvas 输入焦点、撤销/重做和公开保存后内部重开的领域 blocks；不将 FDocument.save() 的公开数据误读为领域模型。既有插表弹窗草稿同步实际 grid 选择器。
+
+本批结束时该文件共 12 个 test 声明、18 个计划案例，本批新增四个；运行结果为 0，下一节继续补充。所有控件继续使用既有 antdv-next / ConfigProvider；当时限定静态检查通过：三个脚本（Vue、浏览器草稿及已解码夹具）、一个模板、123 处本地 import、35 条本地链接、18 处固定上游链接源路径、两个稳定锚点，以及该 mjs 的 Node 语法和三文件 diff 检查。实际主题弹层、hover、焦点恢复、原生 Windows IME、浏览器与 Office 文件样本仍未验收；合成事件不代表原生 IME 已通过。
+
+本批没有修改打开属性、create/open-table 或浮动切换，其后续会话小修见下一节；通用右键回调与打开时选区的绑定契约仍待核实。本地增强嵌套能力未改成 OSS 限制。完整 story 表格、结构 gap、原生 Office 往返及大样本 Canvas2D/WebGPU、Worker/Rust/WASM 与内存/复制基准继续保持未验收。DOC-06 总体状态不变。
+
+<a id="table-ui-operation-sessions"></a>
+
+## 2026-11-27 表格属性与 UI 操作的会话状态
+
+本批继续使用前节固定 v1.6.0 来源和已有入口分类，新增入口为 0。Pro `docs-table-ui/lib/types/commands/toggle-docs-table-floating-toolbar.operation.d.ts`、`services/docs-table-floating-menu.service.d.ts`、`views/menu.d.ts` 声明切换操作、enabled$ 与菜单 factory；发布 ES 的 `pi`（11701）为 `docs-table-ui.operation.toggle-floating-toolbar`，仅调用 service.toggle()，`va`（19608）将 enabled$ 映射到 activated$，没有 edit 权限或 composition 条件。该操作是 UI 偏好，不是内容 mutation；本地保留活动只读和组合输入时的开关行为。Insert factory `ni`（7660）及 schema `Za`（23688）继续对应既有常驻根与上下文选项位置。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 openTableProperties 在原组合输入/legacy story 入口守卫中加入输入会话失活；create/open-table 在打开前复用既有插表弹窗的活动会话、组合输入、legacy story 与 canEditContextSelection 判断。浮动切换只拒绝失活后的延迟回调，活动只读或组合输入时仍可修改 UI 偏好，不发布模型或内容历史。属性弹窗的 composing 改用 tableRibbonContext.composing，复用前节生命周期版本依赖，同时覆盖失活、组合输入和已有 linked story 状态。
+
+[DocumentTablePropertiesDialog.vue](../../packages/office-studio/src/components/document/DocumentTablePropertiesDialog.vue) 的四处显式 disabled 合并 composing：表格/单元格背景 ColorPicker、行高 InputNumber 和四边 margin InputNumber 的共用表达式。现有清除背景、自动行高和继承边距条件继续生效。实际安装的 antdv-next `ColorPicker.js:32` 使用 `props.disabled ?? contextDisabled.value`，`input-number/index.js:86` 使用 `customDisabled.value ?? disabledContext.value`；显式 false 会覆盖 Form 上下文，本批直接修正这四处表达式，保留 Form、Modal、取消操作和表单草稿。
+
+属性通用编辑权限、requestModel/requestRange、原 applyTableProperties 的 host 比对、host 改变时关闭属性、创建确认使用当前选区/host、session 与内容命令规则均保持。属性提交继续进入 [table-commands.ts](../../packages/office-studio/src/features/document/commands/table-commands.ts) 的真实能力判断和 [table-mutations.ts](../../packages/office-studio/src/features/document/commands/table-mutations.ts) 的 detached 候选、ACL/锁/锚点与一次发布，内容历史按文档隔离；没有为只读查看添加通用 edit 门槛，也没有新增创建目标快照。
+
+保存仍经 [document-output.ts](../../packages/office-studio/src/api/document-output.ts) / [document-body-table.ts](../../packages/office-studio/src/api/document-body-table.ts) 的公开 body/tableSource 与扩展元数据。项目原生 [docx_table_styles.rs](../../crates/office-writer/src/docx_table_styles.rs) 读取真实宽度、对齐、偏移、内边距、背景/边框、行高规则、跨页拆分及重复表头；[DOC-22](DOC-22-native-tables.md) 记录 writer、作者扩展和原生来源边界。本批没有改保存/写出链路，静态读取不证明实际 Office 往返。
+
+[document-table-workbench.browser.test.mjs](../../packages/office-studio/tests/document-table-workbench.browser.test.mjs) 新增两个 test.each 声明、12 个计划案例：属性声明八例，分别在 light/classic、dark/grid 下覆盖 table、row、cell、background，每例顺序检查 composition 和 KeepAlive 失活两轮；另一声明四例检查失活/组合输入期间的延迟属性、create、旧 open 与浮动切换，并通过真实 FDocument 权限 API 验证只读创建拒绝和浮动偏好仍可切换且无内容历史。
+
+属性草稿使用真实 Ant 色值/数字输入准备可提交的修改，读取实际控件和按钮禁用状态，检查取消保留、Form submit 不改变模型/历史/事件；恢复后在重新 focus/selection 前检查控件启用，再通过真实应用提交一次历史，撤销/重做及公开保存后内部重开领域 blocks。控件数量有明确断言，不允许空集合使禁用检查通过。没有新建夹具文件、Mock、API、DTO、领域模型或 Worker/WASM 协议。
+
+该浏览器文件当前共 14 个 test 声明、30 个计划案例；本批新增 2 个声明、12 个案例，属性声明的两轮检查仍属各自同一个计划案例。运行结果为 0，主线统一静态检查与后续运行验证另行记录。本批沿用现有 antdv-next 与主题 ConfigProvider；真实主题弹层、hover、焦点/Windows 原生 IME、完整辅助 host 表格、创建/右键目标绑定、浏览器/Office 文件样本和性能继续保持未验收，DOC-06 总体状态不变。

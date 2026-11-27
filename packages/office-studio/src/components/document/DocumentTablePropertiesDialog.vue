@@ -192,7 +192,7 @@ function addOption() { form.options.push({ id: documentId('table-option'), label
         </div>
         <FormItem name="changeBackground" label="更改表格背景"><Switch v-model:checked="form.changeBackground" /></FormItem>
         <div v-if="form.changeBackground" class="table-property-grid">
-          <FormItem name="background" label="背景色"><ColorPicker v-model:value="form.background" value-format="hex" :disabled-alpha="true" :disabled="form.clearBackground" /></FormItem>
+          <FormItem name="background" label="背景色"><ColorPicker v-model:value="form.background" value-format="hex" :disabled-alpha="true" :disabled="composing || form.clearBackground" /></FormItem>
           <FormItem name="clearBackground" label="清除背景"><Switch v-model:checked="form.clearBackground" /></FormItem>
         </div>
         <FormItem name="changeBorder" label="更改所有边框"><Switch v-model:checked="form.changeBorder" /></FormItem>
@@ -204,12 +204,12 @@ function addOption() { form.options.push({ id: documentId('table-option'), label
       </template>
       <template v-if="kind === 'row'">
         <FormItem name="heightRule" label="行高规则"><Select v-model:value="form.heightRule" :placeholder="mixed.heightRule ? '混合值（保持）' : undefined" :options="[{ value: 'auto', label: '自动' }, { value: 'atLeast', label: '最小值' }, { value: 'exact', label: '固定值' }]" /></FormItem>
-        <FormItem name="height" label="行高（px）"><InputNumber v-model:value="form.height" :placeholder="mixed.height ? '混合值（保持）' : form.height === undefined ? '自动' : undefined" :min="1" :disabled="form.heightRule === 'auto'" /></FormItem>
+        <FormItem name="height" label="行高（px）"><InputNumber v-model:value="form.height" :placeholder="mixed.height ? '混合值（保持）' : form.height === undefined ? '自动' : undefined" :min="1" :disabled="composing || form.heightRule === 'auto'" /></FormItem>
         <FormItem name="allowSplit" label="允许跨页拆分同一行"><Checkbox v-model:checked="form.allowSplit" :indeterminate="form.allowSplit === undefined">允许</Checkbox></FormItem>
       </template>
       <FormItem v-if="kind === 'column'" name="width" label="所选列宽（px）"><InputNumber v-model:value="form.width" :placeholder="mixed.width ? '混合值（保持）' : undefined" :min="1" /></FormItem>
       <template v-if="kind === 'background'">
-        <FormItem name="background" label="背景色"><ColorPicker v-model:value="form.background" value-format="hex" :disabled-alpha="true" :disabled="form.clearBackground" /><span v-if="mixed.background && form.background === undefined && !form.clearBackground" class="table-property-note">混合值（保持）</span></FormItem>
+        <FormItem name="background" label="背景色"><ColorPicker v-model:value="form.background" value-format="hex" :disabled-alpha="true" :disabled="composing || form.clearBackground" /><span v-if="mixed.background && form.background === undefined && !form.clearBackground" class="table-property-note">混合值（保持）</span></FormItem>
         <FormItem name="clearBackground" label="清除单元格背景"><Switch v-model:checked="form.clearBackground" /></FormItem>
       </template>
       <template v-if="kind === 'border'">
@@ -222,7 +222,7 @@ function addOption() { form.options.push({ id: documentId('table-option'), label
         <FormItem name="inheritMargin" :label="kind === 'cell' ? '继承表格默认内边距' : '使用默认内边距'"><Checkbox v-if="kind === 'cell'" v-model:checked="form.inheritMargin" :indeterminate="form.inheritMargin === undefined">继承</Checkbox><Switch v-else v-model:checked="form.inheritMargin" /></FormItem>
         <div class="table-property-grid">
           <FormItem v-for="side in (['top', 'right', 'bottom', 'left'] as const)" :key="side" :name="['margin', side]" :label="({ top: '上', right: '右', bottom: '下', left: '左' })[side] + '内边距（px）'">
-            <InputNumber v-model:value="form.margin[side]" :placeholder="mixed.margin[side] ? '混合值（保持）' : undefined" :min="0" :disabled="form.inheritMargin === true" />
+            <InputNumber v-model:value="form.margin[side]" :placeholder="mixed.margin[side] ? '混合值（保持）' : undefined" :min="0" :disabled="composing || form.inheritMargin === true" />
           </FormItem>
         </div>
       </template>

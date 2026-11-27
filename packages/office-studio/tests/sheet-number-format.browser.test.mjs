@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, test } from 'vitest'
 import { chromium, expect } from '@playwright/test'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
+import { SHEET_NUMBER_FORMAT_COMMANDS } from '../src/features/sheet-workbench/sheet-number-format-command.ts'
+import { createSheetOutlineState } from '../src/features/sheet-outline/sheet-outline.ts'
 
 const fixturePath = '/__sheet-number-format-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Sheets number format commands</title><style>body{margin:0}#app{height:100vh;min-width:0}</style></head><body><div id="app"></div><script type="module">
@@ -40,6 +42,7 @@ studio.events.addEvent('CommandExecuted', event => { commands.push(copy(event)) 
 studio.events.addEvent('BeforeCommandExecute', event => { if (canceled.value && event.id === 'sheet.command.set-number-format') event.cancel = true })
 window.sheetFormatFixture = {
   snapshot: () => copy(studio.editor.workbook.model),
+  revision: () => studio.getWorkbookRevision(studio.activeWorkbookId),
   history: () => {
     const unit = studio.editor.history.units[studio.activeWorkbookId]
     return { undo: unit.undo.length, redo: unit.redo.length }
@@ -462,6 +465,56 @@ test('a recalculated formula cache does not invalidate its source draft', async 
   assert.equal(saved.sheets[0].cells['0:2'].formula, '=A1/50')
   assert.deepEqual(await history(), { undo: 1, redo: 0 })
   await expect(grid()).toBeFocused()
+})
+
+test('number-format entries preserve cell and formula drafts until cancel, then use their existing format history and internal reopen', async () => {
+  await page.setViewportSize({ width: 1800, height: 900 })
+  for (const host of ['cell', 'formula']) for (const variant of ['classic', 'grid']) {
+    await page.goto(baseURL); await expect(grid()).toBeVisible()
+    await page.evaluate(value => window.sheetFormatFixture.variant(value), variant); await selectRange('A1')
+    await canvas().evaluate(element => { element.dataset.formatTestMount = 'input-session' })
+    const before = await snapshot(), depth = await history(), revision = await page.evaluate(() => window.sheetFormatFixture.revision())
+    const input = host === 'cell' ? cellEditor() : formula()
+    if (host === 'cell') await grid().press('F2')
+    if (host === 'formula') await input.focus()
+    await input.fill('99.875')
+    const commands = await page.evaluate(() => window.sheetFormatFixture.commands())
+    for (const composing of [false, true]) {
+      if (composing) {
+        await input.dispatchEvent('compositionstart')
+        await page.evaluate(() => window.sheetFormatFixture.appearance(true))
+      }
+      for (const id of [
+        'sheet.command.set-number-format', 'sheet.number-format.percent', 'sheet.number-format.currency',
+        'sheet.command.increase-decimals', 'sheet.command.decrease-decimals',
+      ]) {
+        const button = (await homeItem(id)).getByRole('button')
+        await expect(button).toBeDisabled(); await button.evaluate(element => element.click())
+      }
+      for (const id of [...Object.values(SHEET_NUMBER_FORMAT_COMMANDS), 'sheet.operation.open-custom-number-format', 'sheet.operation.open.numfmt.panel']) {
+        await page.getByTestId('workbench-ribbon').evaluate((element, commandId) => element.__vueParentComponent.emit('execute', commandId, { pattern: '0.0000' }), id)
+      }
+      await expect(input).toHaveValue('99.875'); await expect(grid()).not.toBeFocused()
+      await expect(page.locator('.sheet-number-format-menu:visible')).toHaveCount(0)
+      await expect(page.locator('.sheet-number-format-panel')).toBeHidden()
+      assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth)
+      assert.equal(await page.evaluate(() => window.sheetFormatFixture.revision()), revision)
+      assert.deepEqual(await page.evaluate(() => window.sheetFormatFixture.commands()), commands)
+      await expect(canvas()).toHaveAttribute('data-format-test-mount', 'input-session')
+    }
+    await input.dispatchEvent('compositionend', { data: '99.875' })
+    await expect((await homeItem('sheet.command.set-number-format')).getByRole('button')).toBeDisabled()
+    await input.press('Escape'); await expect(grid()).toBeFocused()
+    await chooseFormat('百分比'); await expect(grid()).toBeFocused()
+    const formatted = await snapshot()
+    assert.equal(formatted.sheets[0].cells['0:0'].style.numberFormat, '0.00%')
+    assert.deepEqual(content(formatted), content(before)); assert.deepEqual(await history(), { undo: depth.undo + 1, redo: 0 })
+    const saved = await page.evaluate(() => window.sheetFormatFixture.save())
+    await clickCommand('sheet.command.undo'); assert.deepEqual(await snapshot(), before)
+    await clickCommand('sheet.command.redo'); assert.deepEqual(await snapshot(), formatted)
+    await page.evaluate(value => window.sheetFormatFixture.reopen(JSON.stringify(value)), saved); await expect(grid()).toBeVisible()
+    assert.deepEqual((await snapshot()).sheets[0].cells, formatted.sheets[0].cells)
+  }
 })
 
 test('the ordered format menu and percent button apply their distinct defaults through public history', async () => {
@@ -952,6 +1005,40 @@ test.each(['classic', 'grid'])('%s sorting uses the current primary column and p
   const saved = await page.evaluate(() => JSON.stringify(window.sheetFormatFixture.save()))
   await page.evaluate(value => window.sheetFormatFixture.reopen(value), saved)
   assert.deepEqual((await snapshot()).sheets[0].cells, sorted.sheets[0].cells)
+})
+
+test.each(['classic', 'grid'])('%s sorting keeps collapsed and manually hidden rows in place through history and reopening', async variant => {
+  await page.evaluate(({ variant, outline }) => {
+    window.sheetFormatFixture.variant(variant)
+    window.sheetFormatFixture.seedCells([
+      { row: 0, column: 0, value: 'first' }, { row: 0, column: 1, value: 30 },
+      { row: 1, column: 0, value: 'outline-first' }, { row: 1, column: 1, value: 99 },
+      { row: 2, column: 0, value: 'outline-last' }, { row: 2, column: 1, value: 98 },
+      { row: 3, column: 0, value: 'hidden-manually' }, { row: 3, column: 1, value: 40 },
+      { row: 4, column: 0, value: 'last' }, { row: 4, column: 1, value: 10 },
+    ], false, { outline, hiddenRows: [3] })
+    window.sheetFormatFixture.select([{ startRow: 0, endRow: 4, startCol: 0, endCol: 1 }], { row: 0, column: 1 }, 0)
+  }, { variant, outline: { ...createSheetOutlineState(), groups: [{ id: 'collapsed-sort-rows', axis: 'row', start: 1, end: 2, collapsed: true }] } })
+  const before = await snapshot()
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await ribbonItem('sheet.menu.sort').getByRole('button', { name: '排序', exact: true }).click()
+  await page.getByRole('menuitem', { name: '升序', exact: true }).click()
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].value).toBe('last')
+  const sorted = await snapshot()
+  assert.equal(sorted.sheets[0].cells['4:0'].value, 'first')
+  for (const row of [1, 2, 3]) for (const column of [0, 1]) {
+    assert.deepEqual(sorted.sheets[0].cells[`${row}:${column}`], before.sheets[0].cells[`${row}:${column}`])
+  }
+  assert.deepEqual(sorted.sheets[0].outline, before.sheets[0].outline)
+  assert.deepEqual(sorted.sheets[0].hiddenRows, [3]); assert.deepEqual(await history(), { undo: 1, redo: 0 })
+  await page.getByRole('tab', { name: '开始', exact: true }).click(); await clickCommand('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].cells, before.sheets[0].cells)
+  await clickCommand('sheet.command.redo')
+  const saved = await page.evaluate(() => JSON.stringify(window.sheetFormatFixture.save()))
+  await page.evaluate(value => window.sheetFormatFixture.reopen(value), saved)
+  const reopened = await snapshot()
+  assert.deepEqual(reopened.sheets[0].cells, sorted.sheets[0].cells)
+  assert.deepEqual(reopened.sheets[0].outline, before.sheets[0].outline); assert.deepEqual(reopened.sheets[0].hiddenRows, [3])
 })
 
 test.each(['classic', 'grid'])('%s clear and reapply filter actions require actual criteria and clear returns them to disabled', async variant => {

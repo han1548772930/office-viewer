@@ -61,7 +61,13 @@ export interface SheetFontFormatShortcutInput {
 export function sheetFontFormatCommandForShortcut(event: SheetFontFormatShortcutInput): string | undefined {
   if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return undefined
   const key = event.key.toLowerCase()
-  if (event.shiftKey) return key === 'x' ? SHEET_FONT_FORMAT_COMMANDS.strike : undefined
+  if (event.shiftKey) {
+    if (event.keyCode === 190) return SHEET_FONT_FORMAT_COMMANDS.increaseFontSize
+    if (event.keyCode === 188) return SHEET_FONT_FORMAT_COMMANDS.decreaseFontSize
+    if (key === '.' || key === '>') return SHEET_FONT_FORMAT_COMMANDS.increaseFontSize
+    if (key === ',' || key === '<') return SHEET_FONT_FORMAT_COMMANDS.decreaseFontSize
+    return key === 'x' ? SHEET_FONT_FORMAT_COMMANDS.strike : undefined
+  }
   return key === 'b' ? SHEET_FONT_FORMAT_COMMANDS.bold : key === 'i' ? SHEET_FONT_FORMAT_COMMANDS.italic : key === 'u' ? SHEET_FONT_FORMAT_COMMANDS.underline : undefined
 }
 
@@ -196,18 +202,20 @@ export function applySheetFontFormatCommand(sheet: SpreadsheetSheet, ranges: rea
   if (!ranges.length) return false
   assertEditable(sheet, ranges, userId)
   const filtered = new Set(filteredRows)
-  for (const cell of Object.values(sheet.cells)) if (!filtered.has(cell.row) && inScope(ranges, cell.row, cell.col)) {
-    adoptSheetCellStyleEdits(sheet, cell, styleContext)
-    cell.style = resolveSheetCellStyle(sheet, cell.row, cell.col, cell, styleContext)
-  }
   if (action.kind === 'family' || action.kind === 'size' || action.kind === 'size-step') {
     const main = action.kind === 'size-step' ? fontPrimary(ranges, primary) : undefined
-    const property = fontProperty(action, main ? resolveSheetCellStyle(sheet, main.row, main.col, sheet.cells[`${main.row}:${main.col}`], styleContext).font.size : fontDefaults.size)
+    const primaryCell = main ? cloneModel(sheet.cells[`${main.row}:${main.col}`] ?? createCell(main.row, main.col)) : undefined
+    if (primaryCell && !filtered.has(primaryCell.row)) adoptSheetCellStyleEdits(sheet, primaryCell, styleContext)
+    const property = fontProperty(action, main ? resolveSheetCellStyle(sheet, main.row, main.col, primaryCell, styleContext).font.size : fontDefaults.size)
     const reset = action.kind !== 'size-step' && action.value === null
     const targets = reset ? resetPositions(Object.values(sheet.cells), ranges, filtered) : positions(ranges, filtered)
     let changed = false
     for (const { row, col } of targets) {
       const key = `${row}:${col}`, current = sheet.cells[key]
+      if (current) {
+        adoptSheetCellStyleEdits(sheet, current, styleContext)
+        current.style = resolveSheetCellStyle(sheet, row, col, current, styleContext)
+      }
       const rich = setSheetCellRichTextFont(current?.richText, 'family' in property ? 'family' : 'size', reset ? null : 'family' in property ? property.family : property.size)
       const cell = current ?? createCell(row, col)
       if (!current) cell.style = sheetInheritedCellStyle(sheet, row, col, styleContext)
@@ -229,21 +237,25 @@ export function applySheetFontFormatCommand(sheet: SpreadsheetSheet, ranges: rea
     }
     return changed
   }
-  if ((action.kind === 'color' || action.kind === 'mark') && action.value === null) {
+  for (const cell of Object.values(sheet.cells)) if (!filtered.has(cell.row) && inScope(ranges, cell.row, cell.col)) {
+    adoptSheetCellStyleEdits(sheet, cell, styleContext)
+    cell.style = resolveSheetCellStyle(sheet, cell.row, cell.col, cell, styleContext)
+  }
+  if (action.kind === 'mark' && action.value === null) {
     let changed = false
     for (const cell of Object.values(sheet.cells)) {
       if (filtered.has(cell.row) || !inScope(ranges, cell.row, cell.col)) continue
-      const field = action.kind === 'mark' ? action.field : action.field === 'color' ? 'color' : undefined
-      const rich = field ? setSheetCellRichTextFont(cell.richText, field, null) : undefined
-      const cleared = clearSheetCellStyleProperties(cell, [field ? `font.${field}` : 'fill'])
-      if (!cleared && !rich?.changed) continue
+      const rich = setSheetCellRichTextFont(cell.richText, action.field, null)
+      const cleared = clearSheetCellStyleProperties(cell, [`font.${action.field}`])
+      if (!cleared && !rich.changed) continue
       cell.style = resolveSheetCellStyle(sheet, cell.row, cell.col, cell, styleContext)
-      if (rich?.changed) cell.richText = rich.runs ?? undefined
+      if (rich.changed) cell.richText = rich.runs ?? undefined
       changed = true
     }
     return changed
   }
-  const targets = [...positions(ranges, filtered)]
+  const targets = action.kind === 'color' && action.value === null
+    ? [...resetPositions(Object.values(sheet.cells), ranges, filtered)] : [...positions(ranges, filtered)]
   const value = action.kind === 'mark' ? action.value ?? !targets.every(({ row, col }) => {
     const cell = sheet.cells[`${row}:${col}`]
     return sheetCellFontValues(toExcelCellView(cell ?? { ...createCell(row, col), style: sheetInheritedCellStyle(sheet, row, col, styleContext) }), action.field).every(value => value === true)

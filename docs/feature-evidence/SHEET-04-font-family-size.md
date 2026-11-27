@@ -46,3 +46,29 @@ family/size 为 null 时仅扫描已有单元格，跳过筛除行，不新增�
 - 独立工作簿只读、设置样式权限与绘图内文字上下文仍需整体能力验收；当前工作表/范围编辑保护及 UI 禁用不能推导完整权限等价。
 - 字体文件加载、字体回退/度量、真实中文输入法、每个语言与主题下的焦点、XLSX 导出/独立 Excel 重开、源主题字体及默认样式保真没有本批实测结果。
 - 非重置大范围设置仍需 Worker/批量模型与取消路径。本批没有同数据集前后耗时、帧时间、主线程长任务、传输或内存基准，不声明性能优化或大样本达标。
+
+## 2026-11-27 字体参数拒绝顺序续核
+
+继续核对上述四个字体根入口和固定版 `inline-format.command.ts` 的主格字号步进，再追踪本地 model/view 应用函数。固定版先读取主格组合样式、形成单一目标字号，再派发范围字体命令；本项目继续保留 6/400 单侧步进、显式 primary、筛除行、重叠去重和稀疏 reset 契约。
+
+本地 `applySheetFontFormatCommand` 原先在检查字体动作和步进主格之前，就把选区已有单元格的命令式样式吸收到 `authoredStyle` 并写回组合样式。新建单元格的 `authoredStyle` 为 `{}`；非法字体、字号、步进方向或 primary 虽然抛出错误，直接 model 调用仍可能提前改变作者样式。此为参数拒绝顺序问题，不新增权限或数值范围规则。
+
+现在字体分支先解析动作；字号步进只使用主格的独立副本吸收既有作者样式并读取真实组合字号，空主格按同一继承来源解析。动作有效后才逐目标吸收样式并应用字体；非字体开关、文字色和背景色路径继续沿用原逻辑。没有克隆整片选区、增加校验层或更改公开命令 ID、Facade、快照字段及 WASM 协议。原值、公式/cache、富文本、继承/null 和工作簿历史仍由原有链路处理。
+
+既有 [合同草稿](../../packages/office-studio/tests/sheet-font-properties.contract.test.mjs)的非法动作、无效 primary、实际主格字号和 model/view 断言直接覆盖此顺序。追加 NaN/Infinity 拒绝场景和一个空主格继承字号、model/view 同步应用的回归草稿；全部未运行。该批不新增 Ribbon 根、子菜单或已验收项。没有执行合同、浏览器、类型、构建、Rust/WASM 或基准；运行拒绝原子性、编辑/撤销/保存重开、真实 IME 和 Office 仍保持未验收。
+
+主任务同时把共享 `RibbonEditableSelect.vue` 的受控草稿从 `search` 改接 `change`，保留 `select → finish(source)` 和原有 Enter/Escape 组合输入守卫。[本地组件文档](../llm.md)的 AutoComplete FAQ 要求受控输入使用 change；安装的 `antdv-next/dist/auto-complete/index.js` 分开发出 change/search，`@v-c/select/dist/Select.js` 的点选先 triggerChange 再 triggerSelect。现有 [浏览器夹具](../../packages/office-studio/tests/sheet-font-properties.browser.test.mjs)补一条真实 Workbench 草稿：合成 compositionstart/update/input/end 期间保留受控文字且不提交，结束后 Enter 提交一次字号命令，随后字体建议点选只提交一次字体命令并归还画布焦点，数值/公式内容与历史边界保持。此为未运行的合成事件草稿，不能代替真实 Windows 输入法、主题/溢出和 Office 验收。
+
+本次限定静态审查通过：生产 TS、两份既有测试 JS 与内嵌夹具脚本共 4 段语法、11 处相对导入、专项文档 11 条本地链接，以及 4 份文件的冲突标记和 diff 空白。合同声明由 25 条增至 26 条、浏览器声明由 13 条增至 14 条；这些为草稿数量，实际执行用例为 0，不提升功能验收状态。
+
+## 2026-11-27 字号快捷键续修
+
+固定版 `packages/sheets-ui/src/controllers/shortcuts/style.shortcut.ts:66–82` 为增大、减小字号注册 `SetRangeFontIncreaseCommand` / `SetRangeFontDecreaseCommand`，绑定 `CTRL_COMMAND + SHIFT + PERIOD/COMMA`；`shortcuts/utils.ts` 使用 Sheets/输入编辑器焦点并排除普通绘图的 `whenSheetFocusedInlineFormat`。`packages/ui/src/services/shortcut/keycode.ts:97–99、172–173` 定义逗号 188、句号 190 和显示字符；`shortcut.service.ts:405–428` 按 keyCode 和 Ctrl/Cmd、Shift、Alt 形成 binding。参考版本和提交与本文开头一致。
+
+本地 [字体快捷键匹配](../../packages/office-studio/src/features/sheet-workbench/sheet-font-format-command.ts)此前仅支持加粗、斜体、下划线和删除线；现在增加 Ctrl/Cmd+Shift+句号/逗号，优先使用既有 keyCode 190/188，并接受 `.`/`>`、`,`/`<` 字符。保留 Shift 要求，以及 Alt、组合输入、229 和已处理事件守卫。[Ribbon 字号按钮](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts)增加与固定字符映射一致的 `Ctrl+Shift+.` / `Ctrl+Shift+,` 提示，classic 顺序、grid 1/6 和 1/7、显隐和禁用契约保持。沿用本地其他字体快捷键同时识别 Ctrl 或 Cmd 的方式，未增加平台探测；Mac 原生键盘与全部布局尚未验证。
+
+[ExcelWorkbench](../../packages/office-studio/src/components/ExcelWorkbench.vue)已有画布/输入桥焦点限制，匹配后仍走 `executeRibbon → runInlineFontFormatCommand / runFontFormatCommand`。非编辑态复用活动格字号、多选/筛除/保护、统一命令和工作簿历史；文本编辑态复用 `sheet.operation.format-cell-input`、原生选区和草稿，仅 Enter 提交内容历史。未新增公开 API、事件字段、模型字段、UI 控件或 Worker/WASM 协议；四个字体根及字体组 11 根保持，本批根入口增量为 0。
+
+[字体合同草稿](../../packages/office-studio/tests/sheet-font-properties.contract.test.mjs)追加一条真实 helper 与命令动作断言，涵盖 Ctrl/Cmd、shifted/unshifted 字符、固定键码优先、Alt/IME/229/已处理事件和原删除线；声明由 26 条增至 27 条。[UI Ribbon 合同草稿](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)追加提示、位置、派发及无工作表/无编辑权限断言，保留主任务的 LEFT/MID/RIGHT/VALUE/WEEKDAY 函数派发断言。[字体浏览器草稿](../../packages/office-studio/tests/sheet-font-properties.browser.test.mjs)追加混合选区键盘步进、内容保留/焦点/撤销重做/快照重开，以及局部文字选区和一次 Enter 内容事务；声明由 14 条增至 16 条。
+
+本批限定静态核对通过：两份生产 TS、三份既有测试 JS 与内嵌夹具脚本共 6 段语法，47 处本地导入、17 条文档本地链接，以及 6 份文件的冲突标记和 diff 空白。全部仍为未运行草稿，实际执行用例为 0；未执行测试、类型检查、构建、Rust/WASM、开发服务、浏览器或基准。真实键盘、Windows IME、主题/溢出、文件导出/Office 重开与性能继续保持未验收。

@@ -3,6 +3,7 @@ import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAut
 import { sheetRowHeight, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
 import { compilePivotRecordSelection, normalizePivotRecordSelection } from '../pivot/services/pivot-filter-predicate.ts'
 import { sheetCellRecordValue } from '../sheet-workbench/sheet-record-value.ts'
+import { getSheetOutlineHiddenSpans } from '../sheet-outline/sheet-outline.ts'
 export type { SheetSortDirection, SheetSortCriterion, SheetFilterConditionOperator, SheetValueFilter, SheetConditionFilter,
   SheetFilterCriteria, SheetAutoFilter } from '../../domain/model.ts'
 type FilteredSpreadsheetSheet = SpreadsheetSheet & { autoFilter?: SheetAutoFilter }
@@ -182,8 +183,13 @@ export function getSortableRowOffsets(sheet: FilteredSpreadsheetSheet, range: Ce
   const first = range.startRow + (options.hasHeader ? 1 : 0)
   const filtered = new Set(sheet.autoFilter ? refreshAutoFilter(sheet) : [])
   const manuallyHidden = new Set(sheet.hiddenRows ?? [])
+  const outlineHidden = sheet.outline ? getSheetOutlineHiddenSpans(sheet.outline, 'row', sheet.rowCount ?? 1_048_576) : []
   const result: number[] = []
-  for (let row = first; row <= range.endRow; row += 1) if (!filtered.has(row) && !manuallyHidden.has(row) && !sheetAxisSpanAt(sheet.rowHiddenSpans, row)?.value && sheetRowHeight(sheet, row) > 0) result.push(row - first)
+  for (let row = first; row <= range.endRow; row += 1) {
+    if (filtered.has(row) || manuallyHidden.has(row) || sheetAxisSpanAt(sheet.rowHiddenSpans, row)?.value
+      || sheetAxisSpanAt(outlineHidden, row)?.value) continue
+    if (sheetRowHeight(sheet, row) > 0) result.push(row - first)
+  }
   return result
 }
 

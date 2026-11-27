@@ -66,6 +66,11 @@ window.painterFixture = {
     const model = copy(initial), source = model.sheets[0]
     if (mode === 'merged' || mode === 'conditional-merged') source.mergedRanges = [{ startRow: 0, endRow: 0, startCol: 0, endCol: 1 }]
     if (mode === 'frozen') { source.freeze = { rows: 1, columns: 1 }; source.hiddenRows = [2] }
+    if (mode === 'rich-fonts') {
+      Object.assign(source.cells['0:0'].style, { rotation: 0, shrinkToFit: false, indent: 0, wrap: false, wrapStrategy: 'overflow' })
+      source.cells['3:4'].style = copy(source.cells['0:0'].style)
+      source.cells['3:4'].richText = [{ text: '00123', fontSize: 32, color: '#ff0000', id: 'target-run', vendor: { keep: true } }]
+    }
     if (mode === 'conditional' || mode === 'conditional-merged') {
       for (const cell of Object.values(source.cells)) cell.style = defaultCellStyle()
       source.conditionalFormats = [
@@ -123,6 +128,7 @@ window.painterFixture = {
         && item.width === rect.width && item.height === rect.height).map(item => item.fill),
       rectColors: cellCommands.filter(item => item.kind === 'rect').map(item => item.fill),
       text: cellCommands.filter(item => item.kind === 'text').map(item => item.text),
+      fonts: cellCommands.filter(item => item.kind === 'text').map(item => item.font),
     }
   },
   rect: (address, header) => {
@@ -207,8 +213,26 @@ test('single-click brush expands the target block and shares history, undo/redo 
   assert.equal((await history()).undo, 1); await expect(canvas()).toHaveAttribute('data-painter-test-mount', 'original')
   assert.deepEqual((await page.evaluate(() => window.painterFixture.commands())).map(event => event.id), ['sheet.operation.format-painter', 'sheet.command.apply-format-painter'])
   await command('sheet.command.undo'); await expect.poll(async () => (await cell('3:3')).style.font.size).toBe(11)
-  await command('sheet.command.redo'); const saved = await snapshot(); await page.evaluate(model => window.painterFixture.reopen(model), saved)
+  await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('D4')
+  await command('sheet.command.redo'); await expect(page.getByRole('textbox', { name: '名称框', exact: true })).toHaveValue('D4:E5')
+  const saved = await snapshot(); await page.evaluate(model => window.painterFixture.reopen(model), saved)
   await expect.poll(async () => (await cell('3:3')).style.font.size).toBe(18); assert.deepEqual(contents(await snapshot()), before)
+})
+
+test('run-only painting updates Canvas font and one history entry while preserving target text', async () => {
+  await page.evaluate(() => window.painterFixture.seed('rich-fonts'))
+  const before = await cell('3:4')
+  await select('A1'); await arm(); await clickCell('E4'); await expect.poll(async () => (await state()).mode).toBe('off')
+  const painted = await cell('3:4')
+  assert.deepEqual(painted.richText, [{ text: '00123', id: 'target-run', vendor: { keep: true } }])
+  assert.equal(painted.value, before.value); assert.equal((await history()).undo, 1); await expect(grid()).toBeFocused()
+  const fonts = await page.evaluate(() => window.painterFixture.sceneAt('E4').fonts)
+  assert.ok(fonts.length > 0); assert.ok(fonts.every(font => font.includes('18px') && font.includes('Courier New')))
+  assert.deepEqual(await page.evaluate(() => window.painterFixture.valueChanges()), [])
+  await command('sheet.command.undo'); assert.deepEqual((await cell('3:4')).richText, before.richText)
+  await command('sheet.command.redo'); assert.deepEqual((await cell('3:4')).richText, painted.richText)
+  const saved = await snapshot(); await page.evaluate(model => window.painterFixture.reopen(model), saved)
+  assert.deepEqual((await cell('3:4')).richText, painted.richText); assert.equal((await cell('3:4')).value, before.value)
 })
 
 test('double-click brush keeps continuous mode for successive pointer targets and Esc cancels it', async () => {
@@ -321,7 +345,13 @@ test('merge painting confirms discarded content and records formatting and topol
 
 test('canceling a merge confirmation preserves the source and restores Canvas focus', async () => {
   await page.evaluate(() => window.painterFixture.seed('merged')); await select('A1'); await arm(); const before = await snapshot()
-  await clickCell('D4'); await modal().getByRole('button', { name: '取消', exact: true }).click()
+  await clickCell('D4'); await expect(modal()).toBeVisible()
+  const pending = await state(), depth = await history(), baseRevision = await revision()
+  assert.equal(await page.evaluate(requestId => window.painterFixture.command('sheet.operation.cancel-format-painter-confirmation', undefined,
+    { unitId: 'other', requestId }), pending.confirmationId), false)
+  await expect(modal()).toBeVisible(); assert.deepEqual(await state(), pending); assert.deepEqual(await history(), depth)
+  assert.equal(await revision(), baseRevision); assert.deepEqual(await snapshot(), before)
+  await modal().getByRole('button', { name: '取消', exact: true }).click()
   await expect(modal()).toBeHidden(); await expect(grid()).toBeFocused()
   assert.equal((await state()).mode, 'once'); assert.deepEqual(await snapshot(), before); assert.equal((await history()).undo, 0)
   await clickCell('G7'); await expect.poll(async () => (await cell('6:6')).style.font.size).toBe(18)
@@ -406,6 +436,65 @@ test('a composing cell editor preserves its draft and brush until separate edit 
   await editor().dispatchEvent('compositionend', { data: '42' }); await editor().press('Escape'); await expect(editor()).toHaveCount(0)
   assert.equal((await state()).mode, 'once'); await grid().press('Escape'); assert.equal((await state()).mode, 'off')
   assert.equal((await cell('0:0')).value, 123.456); assert.equal((await history()).undo, 0)
+})
+
+test('input sessions block new brush sampling, preserve active drafts, and defer pending merge confirmation during composition', async () => {
+  for (const standalone of [false, true]) for (const host of ['cell', 'formula']) {
+    await page.goto(baseURL + (standalone ? '?standalone' : '')); await expect(grid()).toBeVisible(); await select('A1')
+    const before = await snapshot(), depth = await history(), baseRevision = await revision()
+    const input = host === 'cell' ? editor() : page.getByRole('textbox', { name: '公式编辑', exact: true })
+    if (host === 'cell') await grid().press('F2')
+    if (host === 'formula') await input.focus()
+    await input.fill('42'); await expect(await brush()).toBeDisabled()
+    await input.dispatchEvent('compositionstart'); await expect(await brush()).toBeDisabled()
+    await (await brush()).evaluate(element => element.click())
+    await expect(input).toHaveValue('42'); await expect(grid()).not.toHaveClass(/format-painter-active/)
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth); assert.equal(await revision(), baseRevision)
+    await input.dispatchEvent('compositionend', { data: '42' }); await input.press('Escape'); await expect(grid()).toBeFocused()
+    await arm()
+    if (host === 'cell') await grid().press('F2')
+    if (host === 'formula') await input.focus()
+    await input.fill('77'); await input.dispatchEvent('compositionstart')
+    await page.evaluate(() => window.painterFixture.appearance(true))
+    const button = await brush(); await expect(button).toBeEnabled(); await button.click()
+    await expect(grid()).not.toHaveClass(/format-painter-active/); await expect(grid()).not.toBeFocused()
+    await expect(input).toBeVisible(); await expect(input).toHaveValue('77')
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth); assert.equal(await revision(), baseRevision)
+    assert.deepEqual(await page.evaluate(() => window.painterFixture.valueChanges()), [])
+    await input.dispatchEvent('compositionend', { data: '77' }); await input.focus(); await input.press('Escape')
+    await expect(grid()).toBeFocused(); assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth)
+  }
+  for (const standalone of [false, true]) {
+    await page.goto(baseURL + (standalone ? '?standalone' : '')); await expect(grid()).toBeVisible()
+    await page.evaluate(() => window.painterFixture.seed('merged')); await select('A1'); await arm(); await clickCell('D4')
+    await expect(modal()).toBeVisible()
+    const before = await snapshot(), depth = await history(), baseRevision = await revision(), painterBefore = await state()
+    const input = page.getByRole('textbox', { name: '公式编辑', exact: true })
+    const confirm = modal().getByRole('button', { name: '继续合并', exact: true })
+    await expect(confirm).toBeEnabled(); await input.dispatchEvent('compositionstart')
+    await expect(confirm).toBeDisabled(); await expect(modal().getByRole('button', { name: '取消', exact: true })).toBeEnabled()
+    await page.evaluate(() => window.painterFixture.appearance(true)); await expect(confirm).toBeDisabled()
+    await confirm.evaluate(element => element.click()); await expect(modal()).toBeVisible()
+    await expect(grid()).toHaveClass(/format-painter-active/)
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth)
+    assert.equal(await revision(), baseRevision); assert.deepEqual(await state(), painterBefore)
+    assert.deepEqual(await page.evaluate(() => window.painterFixture.valueChanges()), [])
+    await input.dispatchEvent('compositionend', { data: '' }); await expect(confirm).toBeEnabled(); await confirm.click()
+    await expect(modal()).toBeHidden(); await expect(grid()).toBeFocused()
+    assert.equal((await cell('3:4')).value, null)
+    assert.equal((await history()).undo, depth.undo + (standalone ? 0 : 1))
+    if (standalone) assert.equal((await history()).emits, depth.emits + 1)
+    await page.evaluate(() => window.painterFixture.seed('merged')); await select('A1'); await arm(); await clickCell('D4')
+    await expect(modal()).toBeVisible()
+    const cancelBefore = await snapshot(), cancelDepth = await history(), cancelRevision = await revision()
+    await input.dispatchEvent('compositionstart'); await expect(confirm).toBeDisabled()
+    await modal().getByRole('button', { name: '取消', exact: true }).click(); await expect(modal()).toBeHidden()
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await expect(grid()).not.toBeFocused(); await expect(grid()).toHaveClass(/format-painter-active/)
+    assert.deepEqual(await snapshot(), cancelBefore); assert.deepEqual(await history(), cancelDepth); assert.equal(await revision(), cancelRevision)
+    assert.deepEqual(await page.evaluate(() => window.painterFixture.valueChanges()), [])
+    await input.dispatchEvent('compositionend', { data: '' }); await grid().focus(); await expect(grid()).toBeFocused()
+  }
 })
 
 test('standalone workbench uses the same source block, content preservation and single change emission', async () => {
@@ -847,3 +936,96 @@ test('switching sheets closes condition-panel drafts before they can be submitte
   await openConditionalPanel(); await expect(conditionalPanel().locator('.conditional-rule-select')).toHaveCount(0)
   await conditionalPanel().getByRole('button', { name: '取消', exact: true }).click(); await expectConditionalClosed()
 })
+
+test.each(['classic', 'grid'].flatMap(variant => ['list', 'listMultiple'].flatMap(type =>
+  ['inline', 'reference'].map(source => ({ variant, type, source })),
+)))('$variant $type $source management preserves option colors through edits, history and snapshot reopen', async ({ variant, type, source }) => {
+  await page.evaluate(value => window.painterFixture.variant(value), variant)
+  await page.evaluate(rule => window.painterFixture.command('sheet.command.set-data-validation', undefined, { rule }), {
+    id: 'colored-validation', type,
+    ranges: [{ startRow: 3, endRow: 4, startCol: 3, endCol: 3 }],
+    formula1: source === 'reference' ? '=$A$1:$C$1' : '"Red,Green,Blue"',
+    formula2: '#dc3344,,#336699', renderMode: 'custom', allowBlank: true,
+    showDropDown: true, showErrorMessage: true, errorStyle: 'stop', showInputMessage: true,
+    promptTitle: '选项颜色', prompt: '保留现有选项颜色', metadata: { vendor: { keep: ['colors'] } },
+  })
+  await select('D4')
+  const before = await snapshot()
+  const original = before.sheets[0].dataValidations[0]
+  assert.equal((await history()).undo, 1)
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await command('sheet.menu.data-validation')
+  await page.getByRole('menuitem', { name: '管理验证规则', exact: true }).click()
+  const panel = page.getByRole('complementary', { name: '数据验证', exact: true })
+  await panel.locator('.validation-rule-main').first().click()
+  const rangeInput = panel.getByRole('textbox', { name: '数据验证应用区域', exact: true })
+  await rangeInput.fill('D4:E5')
+  await rangeInput.focus()
+  await expect(rangeInput).toHaveClass(/ant-input/)
+  const lightColor = await rangeInput.evaluate(element => getComputedStyle(element).color)
+  await page.evaluate(() => window.painterFixture.appearance(true))
+  await expect.poll(() => rangeInput.evaluate(element => getComputedStyle(element).color)).not.toBe(lightColor)
+  await expect(rangeInput).toHaveValue('D4:E5')
+  await expect(rangeInput).toBeFocused()
+  await panel.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(panel.locator('.validation-rule-main')).toHaveCount(1)
+  const edited = (await snapshot()).sheets[0].dataValidations[0]
+  assert.equal(edited.id, original.id)
+  assert.equal(edited.formula1, original.formula1)
+  assert.equal(edited.formula2, original.formula2)
+  assert.deepEqual(edited.metadata, original.metadata)
+  assert.deepEqual(edited.ranges, [{ startRow: 3, endRow: 4, startCol: 3, endCol: 4 }])
+  assert.equal((await history()).undo, 2)
+  await panel.locator('.validation-rule-main').first().click()
+  await panel.locator('#sheet-validation-type').click()
+  await page.locator('.ant-select-dropdown:visible').getByText(type === 'list' ? '下拉多选' : '下拉列表', { exact: true }).click()
+  await panel.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(panel.locator('.validation-rule-main')).toHaveCount(1)
+  const converted = (await snapshot()).sheets[0].dataValidations[0]
+  assert.equal(converted.type, type === 'list' ? 'listMultiple' : 'list')
+  assert.equal(converted.id, original.id)
+  assert.equal(converted.formula1, original.formula1)
+  assert.equal(converted.formula2, original.formula2)
+  assert.deepEqual(converted.metadata, original.metadata)
+  assert.equal((await history()).undo, 3)
+  assert.equal((await page.evaluate(() => window.painterFixture.commands())).filter(event => event.id === 'sheet.command.replace-data-validation').length, 2)
+  await panel.getByRole('button', { name: '关闭', exact: true }).click()
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await command('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].dataValidations[0], edited)
+  await command('sheet.command.undo')
+  assert.deepEqual((await snapshot()).sheets[0].dataValidations[0], original)
+  await command('sheet.command.redo')
+  await command('sheet.command.redo')
+  assert.deepEqual((await snapshot()).sheets[0].dataValidations[0], converted)
+  assert.deepEqual(contents(await snapshot()), contents(before))
+  await page.evaluate(model => window.painterFixture.reopen(model), await snapshot())
+  await expect.poll(async () => (await snapshot()).sheets[0].dataValidations[0]).toEqual(converted)
+})
+
+test.each(['classic', 'grid'].flatMap(variant => ['whole', 'checkbox', 'list', 'listMultiple'].map(type => ({ variant, type }))))(
+  '$variant $type conversion does not invent list colors from a numeric or checkbox operand', async ({ variant, type }) => {
+    await page.evaluate(value => window.painterFixture.variant(value), variant)
+    await page.evaluate(rule => window.painterFixture.command('sheet.command.set-data-validation', undefined, { rule }), {
+      id: 'uncolored-validation', type,
+      ranges: [{ startRow: 3, endRow: 4, startCol: 3, endCol: 3 }],
+      ...(type === 'whole' ? { operator: 'between', formula1: '1', formula2: '10' } : {}),
+      ...(type === 'checkbox' ? { formula1: 'TRUE', formula2: 'FALSE' } : {}),
+      ...(type === 'list' || type === 'listMultiple' ? { formula1: '"Red,Green,Blue"' } : {}),
+    })
+    await select('D4')
+    await page.getByRole('tab', { name: '数据', exact: true }).click()
+    await command('sheet.menu.data-validation')
+    await page.getByRole('menuitem', { name: '管理验证规则', exact: true }).click()
+    const panel = page.getByRole('complementary', { name: '数据验证', exact: true })
+    await panel.locator('.validation-rule-main').first().click()
+    await panel.locator('#sheet-validation-type').click()
+    await page.locator('.ant-select-dropdown:visible').getByText(type === 'list' ? '下拉多选' : '下拉列表', { exact: true }).click()
+    await panel.getByRole('button', { name: /应\s*用/ }).click()
+    await expect(panel.locator('.validation-rule-main')).toHaveCount(1)
+    const converted = (await snapshot()).sheets[0].dataValidations[0]
+    assert.equal(converted.type, type === 'list' ? 'listMultiple' : 'list')
+    assert.equal(converted.formula2, undefined)
+    assert.equal((await history()).undo, 2)
+  },
+)

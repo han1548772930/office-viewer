@@ -4,14 +4,17 @@ import { createServer } from 'vite'
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
 afterAll(() => vite.close())
 const { createBlankDocument } = await vite.ssrLoadModule('/packages/office-studio/src/domain/model.ts')
-const { createParagraph, createRun, collapsedSelection } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
+const { createParagraph, createRun, collapsedSelection, textTargets } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/model/document-model.ts')
 const { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentToolbarState } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-toolbar-state.ts')
-const { createDocumentRibbon, documentCommandFromRibbon } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-ribbon.ts')
+const { createDocumentRibbon, documentCommandFromRibbon, documentRibbonSelectionHasCode } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-ribbon.ts')
 const { normalizeDocument: importDocument } = await vite.ssrLoadModule('/packages/office-studio/src/parser/documentNormalizer.ts')
 const { executeDocumentCommand } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-commands.ts')
+const { documentStructuredBlockAtSelection } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-structure-commands.ts')
+const { createDocumentTableViewSelection } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/model/document-table-selection.ts')
 const { createRibbonMenuModel } = await vite.ssrLoadModule('/packages/office-studio/src/platform/ribbon/ribbon-command-menu.ts')
 const { layoutDocument } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/layout/document-layout.ts')
 const { documentOrientedPage, documentPageSettingsError, documentPaperSize } = await vite.ssrLoadModule('/packages/office-studio/src/components/document/document-page-settings.ts')
+const { permissionTargetsForSelection, resolveDocumentPermission } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/permissions/document-permissions.ts')
 
 test('a DOCX title retains its font slots from normalization through caret state, glyphs and range formatting', () => {
   const model = importDocument({ fileName: 'fonts.docx', format: 'docx', payload: { data: { blocks: [{ id: 'p', type: 'section_heading', details: { styleId: 'Title', inlines: [{ type: 'text', text: 'A中', style: { fontFamilyAscii: 'Arial', fontFamilyEastAsia: 'SimSun' } }] } }] } } })
@@ -118,6 +121,64 @@ test('checklist and numbered-heading controls retain their own state after apply
   assert.equal(items.find(item => item.id === 'doc-block-style').value, 'H3')
 })
 
+test.each([
+  ['numbered', 'ORDER_LIST', 'ORDER_LIST_1'],
+  ['bullet', 'BULLET_LIST', 'BULLET_LIST_1'],
+  ['heading', 'ORDER_LIST', 'ORDER_LIST_1'],
+])('different %s presets retain mixed activation until a real gallery command applies one preset', (type, firstPreset, lastPreset) => {
+  const model = createBlankDocument()
+  model.blocks = [createParagraph('First'), createParagraph('Second')]
+  for (const [index, preset] of [firstPreset, lastPreset].entries()) {
+    executeDocumentCommand(model, collapsedSelection({ blockId: model.blocks[index].id, offset: 0 }), { id: 'doc.command.change-list-type', listType: preset })
+    if (type === 'heading') executeDocumentCommand(model, collapsedSelection({ blockId: model.blocks[index].id, offset: 0 }), { id: 'doc.command.set-paragraph-named-style', namedStyle: 'heading3' })
+  }
+  const selection = { anchor: { blockId: model.blocks[0].id, offset: 0 }, focus: { blockId: model.blocks[1].id, offset: 6 } }
+  const context = { canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true }
+  const state = documentToolbarState(model, selection)
+  assert.equal(state.blockStyle, type === 'heading' ? 'H3' : type)
+  assert.equal(state.listPreset, undefined)
+  assert.equal(state.listPresetMixed, true)
+  assert.deepEqual(documentToolbarState(model, { anchor: selection.focus, focus: selection.anchor }), state)
+  const items = createDocumentRibbon({ ...context, state }).find(tab => tab.id === 'home').groups.flatMap(group => group.items)
+  assert.deepEqual(['doc-numbered', 'doc-bullet', 'doc-checklist'].map(id => items.find(item => item.id === id).activated), [false, false, false])
+  const list = items.find(item => item.id === (type === 'bullet' ? 'doc-bullet' : 'doc-numbered'))
+  assert.equal(list.popupProps.active, undefined)
+  const mixedToggle = structuredClone(model)
+  executeDocumentCommand(mixedToggle, selection, documentCommandFromRibbon(list.commandId, list.params))
+  assert.equal(mixedToggle.blocks.every(block => block.list === undefined), true)
+  assert.deepEqual(mixedToggle.blocks.map(block => block.type), type === 'heading' ? ['heading', 'heading'] : ['paragraph', 'paragraph'])
+  const firstOnly = documentToolbarState(model, { anchor: selection.anchor, focus: { ...selection.focus, offset: 0 } })
+  assert.equal(firstOnly.listPreset, firstPreset)
+  assert.equal(firstOnly.listPresetMixed, false)
+  const command = documentCommandFromRibbon(list.popupCommandId, { listType: firstPreset })
+  assert.deepEqual(command, { id: 'doc.command.change-list-type', listType: firstPreset })
+  executeDocumentCommand(model, selection, command)
+  const uniform = documentToolbarState(model, selection)
+  assert.equal(uniform.listPreset, firstPreset)
+  assert.equal(uniform.listPresetMixed, false)
+  assert.equal(uniform.blockStyle, type === 'heading' ? 'H3' : type)
+  const active = createDocumentRibbon({ ...context, state: uniform }).find(tab => tab.id === 'home').groups.flatMap(group => group.items).find(item => item.id === list.id)
+  assert.equal(active.activated, true)
+  assert.equal(active.popupProps.active, firstPreset)
+  executeDocumentCommand(model, selection, documentCommandFromRibbon(active.commandId, active.params))
+  const removed = documentToolbarState(model, selection)
+  assert.equal(removed.listPreset, undefined)
+  assert.equal(removed.listPresetMixed, false)
+  assert.equal(removed.blockStyle, type === 'heading' ? 'H3' : 'normal')
+  assert.deepEqual(model.blocks.map(block => block.runs.map(run => run.text).join('')), ['First', 'Second'])
+})
+
+test('legacy numbered paragraphs keep their default preset and active root without a direct list record', () => {
+  const model = createBlankDocument()
+  model.blocks = [createParagraph('First'), createParagraph('Second')].map(block => ({ ...block, type: 'numbered', level: 1 }))
+  const state = documentToolbarState(model, { anchor: { blockId: model.blocks[0].id, offset: 0 }, focus: { blockId: model.blocks[1].id, offset: 6 } })
+  assert.equal(state.listPreset, 'ORDER_LIST')
+  assert.equal(state.listPresetMixed, false)
+  const item = createDocumentRibbon({ state, canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false,
+    paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true }).find(tab => tab.id === 'home').groups.flatMap(group => group.items).find(item => item.id === 'doc-numbered')
+  assert.equal(item.activated, true)
+})
+
 test('paragraph state includes mixed indentation, spacing units and wrap flags across the real selection', () => {
   const model = createBlankDocument()
   const first = createParagraph('first'), second = createParagraph('second')
@@ -217,14 +278,29 @@ test('ribbon schemas derive current values, mixed toggle behavior and dispatch v
   const alignMenu = createRibbonMenuModel(items.find(item => item.id === 'doc-align').children)
   assert.deepEqual(alignMenu.selectedKeys, ['doc-align-right'])
   assert.deepEqual(alignMenu.actions.get('doc-align-center').item.params, { patch: { align: 'center' } })
+  for (const [align, shortcut] of [['left', 'Ctrl+Shift+L'], ['center', 'Ctrl+Shift+E'], ['right', 'Ctrl+Shift+R'], ['justify', 'Ctrl+Shift+J']]) {
+    const item = alignMenu.actions.get('doc-align-' + align).item
+    assert.equal(item.shortcut, shortcut)
+    assert.deepEqual(documentCommandFromRibbon(item.commandId, item.params), { id: 'doc.command.format-paragraph', patch: { align } })
+  }
   assert.equal(bold.activated, false)
   assert.deepEqual(documentCommandFromRibbon(bold.commandId, bold.params), { id: 'doc.command.format-text', patch: { bold: true } })
+  const strike = items.find(item => item.id === 'doc-strike')
+  assert.equal(strike.shortcut, 'Ctrl+Shift+X')
+  assert.deepEqual(documentCommandFromRibbon(strike.commandId, strike.params), { id: 'doc.command.format-text', patch: { strike: true } })
+  for (const [type, shortcut] of [['numbered', 'Ctrl+Shift+7'], ['bullet', 'Ctrl+Shift+8']]) {
+    const item = items.find(item => item.id === 'doc-' + type)
+    assert.equal(item.shortcut, shortcut)
+    assert.deepEqual(documentCommandFromRibbon(item.commandId, item.params), { id: 'doc.command.set-block-type', type, level: undefined })
+  }
   const superscript = items.find((item) => item.id === 'doc-superscript')
   assert.equal(superscript.activated, false)
+  assert.equal(superscript.shortcut, 'Ctrl+.')
   assert.deepEqual(documentCommandFromRibbon(superscript.commandId, superscript.params), { id: 'doc.command.format-text', patch: { verticalAlign: 'superscript' } })
   const activeSubscript = createDocumentRibbon({ state: { ...state, marks: { verticalAlign: 'subscript' } }, canUndo: true, canRedo: false, outline: true, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 125, contentControlsAvailable: true })
     .flatMap((tab) => tab.groups.flatMap((group) => group.items)).find((item) => item.id === 'doc-subscript')
   assert.equal(activeSubscript.activated, true)
+  assert.equal(activeSubscript.shortcut, 'Ctrl+,')
   assert.deepEqual(documentCommandFromRibbon(activeSubscript.commandId, activeSubscript.params), { id: 'doc.command.format-text', patch: { verticalAlign: 'baseline' } })
   assert.deepEqual(documentCommandFromRibbon(font.commandId, font.valueParams('Georgia')), { id: 'doc.command.format-text', patch: { fontFamily: 'Georgia' } })
   assert.equal(items.find((item) => item.id === 'doc-redo').disabled, true)
@@ -242,6 +318,49 @@ test('ribbon schemas derive current values, mixed toggle behavior and dispatch v
   const checklist = items.find((item) => item.id === 'doc-checklist')
   assert.equal(checklist.commandId, 'doc.command.set-block-type')
   assert.deepEqual(documentCommandFromRibbon(checklist.commandId, checklist.params), { id: 'doc.command.set-block-type', type: 'checklist', level: undefined })
+})
+
+test.each([
+  ['before caret', 0, 1, 0, 1, false],
+  ['after caret', 2, 1, 2, 1, false],
+  ['code caret', 1, 1, 1, 1, true],
+  ['forward span', 0, 1, 2, 1, true],
+  ['backward span', 2, 1, 0, 1, true],
+  ['zero end boundary', 0, 1, 1, 0, true],
+  ['backward zero boundary', 1, 0, 0, 1, true],
+])('divider disabling follows all nested CODE targets in a %s selection', (_name, anchorIndex, anchorOffset, focusIndex, focusOffset, expected) => {
+  const model = createBlankDocument()
+  model.blocks = [createParagraph('Before'), createParagraph('Code'), createParagraph('After')]
+  const codeSelection = collapsedSelection({ blockId: model.blocks[1].id, offset: 1 })
+  executeDocumentCommand(model, codeSelection, { id: 'doc.command.wrap-structured-block', blockType: 'code' })
+  const code = documentStructuredBlockAtSelection(model, codeSelection, 'code')
+  executeDocumentCommand(model, codeSelection, { id: 'doc.command.wrap-structured-block', blockType: 'quote', blockIds: [code.id] })
+  const targets = textTargets(model)
+  const selection = { anchor: { ...targets[anchorIndex], offset: anchorOffset }, focus: { ...targets[focusIndex], offset: focusOffset } }
+  const selectionHasCode = documentRibbonSelectionHasCode(model, selection)
+  assert.equal(selectionHasCode, expected)
+  const tabs = createDocumentRibbon({ state: documentToolbarState(model, selection), selectionHasCode,
+    canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 100 })
+  const divider = tabs.find(tab => tab.id === 'insert').groups.flatMap(group => group.items).find(item => item.id === 'doc-divider')
+  assert.equal(Boolean(divider.disabled), expected)
+  assert.equal(divider.commandId, 'doc.command.horizontal-line')
+  assert.equal(divider.order, 4)
+  assert.deepEqual(divider.gridLayout, { row: 2, column: 5 })
+})
+
+test.each([[0, 0, true], [1, 1, false], [0, 1, true]])('divider disabling scans CODE descendants in table columns %s–%s', (startColumn, endColumn, expected) => {
+  const model = createBlankDocument()
+  const cell = executeDocumentCommand(model, collapsedSelection({ blockId: model.blocks[0].id, offset: 0 }),
+    { id: 'doc.command.create-table', rowCount: 1, colCount: 2 })
+  executeDocumentCommand(model, { anchor: { ...cell.anchor }, focus: { ...cell.focus } },
+    { id: 'doc.command.wrap-structured-block', blockType: 'code' })
+  const selection = createDocumentTableViewSelection(model, cell.focus.blockId,
+    { startRow: 0, endRow: 0, startColumn, endColumn })
+  assert.equal(documentRibbonSelectionHasCode(model, selection), expected)
+  const divider = createDocumentRibbon({ state: documentToolbarState(model, selection), selectionHasCode: documentRibbonSelectionHasCode(model, selection),
+    canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false, paper: 'A4', orientation: 'portrait', zoom: 100 })
+    .find(tab => tab.id === 'insert').groups.flatMap(group => group.items).find(item => item.id === 'doc-divider')
+  assert.equal(Boolean(divider.disabled), expected)
 })
 
 test('break menus follow body, auxiliary, table and Code capabilities while preserving their commands and view operations', () => {
@@ -266,6 +385,8 @@ test('break menus follow body, auxiliary, table and Code capabilities while pres
   ]) {
     const tabs = createDocumentRibbon({ ...context, ...patch })
     const item = tabs.find(tab => tab.id === 'insert').groups.flatMap(group => group.items).find(item => item.id === 'doc-breaks')
+    const divider = tabs.find(tab => tab.id === 'insert').groups.flatMap(group => group.items).find(item => item.id === 'doc-divider')
+    assert.equal(Boolean(divider.disabled), name === 'read-only' || name === 'Code', name)
     assert.equal(Boolean(item.disabled), disabled, name)
     assert.equal(Boolean(item.hidden), hidden, name)
     assert.deepEqual(item.children.slice(0, 2).map(child => child.commandId), ['doc.command.insert-page-break', 'doc.command.insert-column-break'])
@@ -281,6 +402,38 @@ test('break menus follow body, auxiliary, table and Code capabilities while pres
     assert.equal(Boolean(view.find(item => item.id === 'doc-zoom').disabled), false)
     assert.equal(Boolean(view.find(item => item.id === 'doc-fullscreen').disabled), false)
   }
+})
+
+test.each([
+  ['document denial', 'document', 'deny', true, true],
+  ['explicit document allow', 'document', 'allow', false, false],
+  ['default denial', undefined, undefined, false, true],
+  ['default allow', undefined, undefined, true, false],
+  ['locked paragraph', 'paragraph', 'deny', true, false],
+])('page settings uses document Edit permission for %s independently of selected content', (_name, scope, effect, defaultAllow, disabled) => {
+  const model = createBlankDocument()
+  const selection = collapsedSelection({ blockId: model.blocks[0].id, offset: 0 })
+  model.permissionRules = scope ? [{ id: 'page-settings-edit', scope, action: 'edit', effect, userIds: ['reader'],
+    ...(scope === 'paragraph' ? { targetId: model.blocks[0].id } : {}) }] : []
+  const permission = { documentId: model.id, userId: 'reader', defaultAllow }
+  const before = structuredClone(model)
+  const context = { state: documentToolbarState(model, selection),
+    editingDisabled: !resolveDocumentPermission(model.permissionRules, permission, 'edit', permissionTargetsForSelection(model, selection)).allowed,
+    pageSettingsDisabled: !resolveDocumentPermission(model.permissionRules, permission, 'edit').allowed,
+    canUndo: false, canRedo: false, outline: false, focus: false, fullscreen: false,
+    paper: 'A4', orientation: 'portrait', zoom: 100, contentControlsAvailable: true }
+  const items = createDocumentRibbon(context).find(tab => tab.id === 'view').groups.flatMap(group => group.items)
+  const page = items.find(item => item.id === 'doc-page-settings')
+  assert.equal(page.disabled, disabled)
+  assert.equal(page.commandId, 'doc.operation.open-page-settings')
+  assert.deepEqual(page.gridLayout, { row: 1, column: 1, rowSpan: 2, showLabel: true })
+  assert.equal(Boolean(items.find(item => item.id === 'doc-zoom').disabled), false)
+  assert.equal(Boolean(items.find(item => item.id === 'doc-fullscreen').disabled), false)
+  if (scope === 'paragraph') assert.equal(context.editingDisabled, true)
+  const { pageSettingsDisabled, ...legacyContext } = context
+  assert.equal(Boolean(createDocumentRibbon(legacyContext).find(tab => tab.id === 'view').groups[0].items
+    .find(item => item.id === 'doc-page-settings').disabled), false)
+  assert.deepEqual(model, before)
 })
 
 test('paragraph Ribbon actions dispatch relative indentation and change fixed spacing to a multiplier explicitly', () => {

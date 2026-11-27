@@ -34,20 +34,25 @@ function applyCapturedFormat(
     api.events.emit('SheetFormatPainterConfirmationRequested', structuredClone(request))
     return false
   }
+  const selection = api.getSelectionState(), selectedRange = selection?.ranges[selection.activeRangeIndex]
+  const original = target.ranges.at(-1), expanded = preview.ranges.at(-1)
+  const selections = selection && original && expanded && !sheetRangesEqual(original, expanded)
+    && selectedRange?.unitId === target.unitId && selectedRange.sheetId === target.sheetId
+    && sheetRangesEqual(original, { startRow: selectedRange.startRow, endRow: selectedRange.endRow,
+      startCol: selectedRange.startColumn, endCol: selectedRange.endColumn })
+    ? { sheetId: target.sheetId, before: selection, after: { ranges: [apiRange(target.unitId, target.sheetId, expanded)],
+      activeRangeIndex: 0, primary: { row: expanded.startRow, column: expanded.startCol } } }
+    : undefined
   let contentChanged = false
   const changed = api.commitWorkbook(target.unitId, '应用格式刷', model => {
     const sheet = model.sheets.find(candidate => candidate.id === target.sheetId)!
     const result = applySheetFormatPainterCommand(sheet, source, target.ranges, { ...options, styleContext: model })
     contentChanged = result.contentChanged
     if (result.contentChanged) assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
-  }, { recalculate: preview.added.length > 0 || preview.removed.length > 0 })
+  }, { recalculate: preview.added.length > 0 || preview.removed.length > 0, selections })
   if (changed && contentChanged) api.events.emit('SheetValueChanged', { workbookId: target.unitId, sheetId: target.sheetId,
     ranges: [...preview.ranges, ...preview.added, ...preview.removed].map(range => apiRange(target.unitId, target.sheetId, range)) })
-  const selection = api.getSelection(), original = target.ranges.at(-1), expanded = preview.ranges.at(-1)
-  if (original && expanded && !sheetRangesEqual(original, expanded) && selection?.unitId === target.unitId && selection.sheetId === target.sheetId
-    && sheetRangesEqual(original, { startRow: selection.startRow, endRow: selection.endRow, startCol: selection.startColumn, endCol: selection.endColumn })) {
-    api.setSelection(target.unitId, target.sheetId, apiRange(target.unitId, target.sheetId, expanded))
-  }
+  if (!changed && selections) api.setSelections(target.unitId, target.sheetId, selections.after.ranges, selections.after)
   // A successful redundant paint consumes ONCE, but never adds content history.
   return true
 }
@@ -64,7 +69,10 @@ export function registerSheetFormatPainterCommands(api: OfficeStudio): Disposabl
       painter.cancel()
       return true
     }
-    if (action.kind === 'cancel-confirmation') return painter.cancelConfirmation(input.requestId)
+    if (action.kind === 'cancel-confirmation') {
+      if (input.unitId !== undefined && input.unitId !== state.unitId) return false
+      return painter.cancelConfirmation(input.requestId)
+    }
     if (action.kind === 'confirm') {
       const request = painter.getConfirmation()
       if (!input.requestId || !request || request.requestId !== input.requestId || request.sessionId !== state.sessionId) throw new Error('格式刷确认请求已经失效。')

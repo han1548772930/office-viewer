@@ -4,11 +4,11 @@
 
 | Classic 顺序 | Grid 位置 | Univer 命令 | 本项目入口 |
 | --- | --- | --- | --- |
-| 数字格式 | r1c1 跨 4 列，160px | `sheet.operation.open.numfmt.panel`，选择预设执行 `sheet.command.numfmt.set.numfmt` | `sheet.command.set-number-format`，更多格式打开 `sheet.operation.open-custom-number-format` |
-| 百分比 | r2c1 | `sheet.command.numfmt.set.percent` | `sheet.command.set-percent-format` |
-| 货币 | r2c2 | `sheet.command.numfmt.set.currency` | `sheet.command.set-currency-format`，接受上游命令别名 |
-| 增加小数位 | r2c3 | `sheet.command.numfmt.add.decimal.command` | `sheet.command.increase-decimals` |
-| 减少小数位 | r2c4 | `sheet.command.numfmt.subtract.decimal.command` | `sheet.command.decrease-decimals` |
+| 数字格式（order 9） | r1c1 跨 4 列，160px | `sheet.operation.open.numfmt.panel`，选择预设执行 `sheet.command.numfmt.set.numfmt` | `sheet.command.set-number-format`，更多格式打开 `sheet.operation.open-custom-number-format` |
+| 百分比（order 9.1） | r2c1 | `sheet.command.numfmt.set.percent` | `sheet.command.set-percent-format` |
+| 货币（order 9.2） | r2c2 | `sheet.command.numfmt.set.currency` | `sheet.command.set-currency-format`，接受上游命令别名 |
+| 增加小数位（order 9.3） | r2c3 | `sheet.command.numfmt.add.decimal.command` | `sheet.command.increase-decimals` |
+| 减少小数位（order 9.4） | r2c4 | `sheet.command.numfmt.subtract.decimal.command` | `sheet.command.decrease-decimals` |
 
 固定来源为 `packages/sheets-numfmt-ui/src/menu/schema.ts`、`menu.ts` 与 `number-format-options.ts`。数字组 5 个常驻根，格式菜单 13 个预设、4 个分隔、1 个面板入口。Classic 和 Grid 复用入口，More 收纳同组。扩展、独立溢出、上下文和常驻根的本批增量均为 0。固定版仅在 Sheets 显示，禁用条件读取 workbook 可编辑、worksheet 可编辑及设置样式权限和范围编辑权限。本项目保留 Sheets 工作台、工作表/范围保护和编辑会话状态判断。
 
@@ -65,3 +65,21 @@
 [Currency.tsx](../../../univer/packages/sheets-numfmt-ui/src/views/components/Currency.tsx) 和 [Accounting.tsx](../../../univer/packages/sheets-numfmt-ui/src/views/components/Accounting.tsx) 的 InputNumber 明确为 0–20 位；工具栏 [decimal.ts](../../../univer/packages/sheets-numfmt/src/utils/decimal.ts) 的算法上限则为 30 位。[CustomNumberFormatPanel.vue](../../packages/office-studio/src/components/spreadsheet/CustomNumberFormatPanel.vue) 与 [number-format-pattern.ts](../../packages/office-studio/src/features/sheet-workbench/number-format-pattern.ts) 采用对应两级限制，不能把面板 20 位上限认定为与固定版本不一致。表单及控件仍使用 [本地文档](../llm.md) 所述 Form、Select、InputNumber、Menu 的受控值、禁用和变更事件。
 
 新增记录的比较差异：[core isPatternEqualWithoutDecimal](../../../univer/packages/core/src/shared/numfmt/utils.ts) 按引擎 token 忽略小数、COLOR 和 SKIP，并对颜色后的 MINUS 特殊处理；本地 `numberFormatWithoutDecimals` 保留颜色、留位、字面量和段序后转小写。因此带附加颜色或留位的作者格式可能得到不同的预设标签/负数选项，不能仅凭函数注释宣称比较语义完全相同，也不能以内部 token 规则代替 Office 可观察行为验证。现有完整格式码保存和小数位改写行为继续保留，该比较差异仍待浏览器与文件样本验收。
+
+<a id="number-format-input-session-review"></a>
+
+## 2026-11-27 数字组输入会话续修
+
+本批仍为数字格式、百分比、货币、增加小数位、减少小数位五个根及原格式菜单，保持上表 classic order 9–9.4 和 grid 位置。常驻、插件扩展、上下文、独立溢出根和菜单子项增量均为 0，未增加按钮或格式种类。
+
+固定 [FactoryOtherMenuItem:151](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/menu.ts#L151)、[PercentMenuItem:116](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/menu.ts#L116)、[CurrencySymbolIconMenuItem:64](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/menu.ts#L64)、[AddDecimalMenuItem:80](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/menu.ts#L80) 和 [SubtractDecimalMenuItem:96](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-numfmt-ui/src/menu/menu.ts#L96) 全部复用 `getCurrentRangeDisable$`。[menu-util:163/191–192](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/menu-util.ts#L163) 缺省 supportCellEdit=false，禁用可见单元格编辑器及 FX 焦点，[225–226](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-ui/src/menu/menu-util.ts#L225) 继续处理绘图。先前证据只列权限条件，没有完整记录普通输入禁用，现补齐真实来源。
+
+原本地 [sheet-ribbon.ts](../../packages/office-studio/src/components/spreadsheet/sheet-ribbon.ts) 的 numberFormatDisabled 复用 fontEditable，普通单元格/公式输入时仍可用；[ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 的 executeRibbon 先 finishEdit，会先提交草稿再改格式或打开更多格式。现在复用已有 canQuickFormatSelection，将活动工作台、完整选区权限、editingKey、组字及绘图状态传为可选内部 numberFormatEditable；五根共同禁用，省略可选状态的原调用方保留现有行为。executeRibbon 在 finishEdit 前检查既有 SHEET_NUMBER_FORMAT_COMMANDS 的 6 个定义 ID（5 个 Ribbon 命令及 setCells）和两个已有开面板 operation，能力不可用时直接返回，只判断 ID，不重复调用 numberFormatActionForCommand 做参数解析。
+
+[RibbonItem.vue](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue) 已将 disabled 传给专有组件，且 forward / execute 使用相同 schema 状态；[SheetNumberFormatControl.vue](../../packages/office-studio/src/components/spreadsheet/SheetNumberFormatControl.vue) 已将 disabled 传入 `antdv-next` Button/Menu，选择/键盘入口拒绝禁用状态并在能力变化时关闭 Popover。本批复用这些现有行为，没有改组件、原生桥或弹层协议。普通字体草稿格式仍依原能力；更多格式面板继续按原 watcher 在开始单元格输入、权限/文档变化时关闭。
+
+输入取消后的预设仍应用活动段，快捷命令和更多格式确认仍应用全部选区；同一 model/view 计划保留精确格式码、地区符号、数值/公式缓存，Studio 以 recalculate:false 进入既有文档历史和内部快照。公开 API、格式解析/分类、小数位算法、事件字段、Office writer 和 Worker/WASM 协议均无新增，只有可选内部 UI 状态。程序化 Studio/Facade 及其上游别名保持现有域命令路径；本批没有给原 UI dispatcher 新增这些别名处理器，也不把 setCells 的提交前拦截登记为新的可执行 UI 功能。
+
+本批五文件为上述两份生产文件、[原 Ribbon 合同草稿](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)、[原数字格式浏览器草稿](../../packages/office-studio/tests/sheet-number-format.browser.test.mjs) 和本页。生产增量 Excel `+3/-0`、Ribbon `+2/-1`，合计 `+5/-1`。合同新增 1 个声明，检查五根禁用、可选/省略状态、缺表/字体权限、原顺序/位置、预设与更多格式/四快捷命令 invocation，并确认普通字体能力保持原状态。浏览器新增 1 个声明及 fixture 的版本观察，含 cell/formula × classic/grid 四个真实 Studio 循环样本，覆盖原生 disabled 点击、8 个定义 ID/operation 的迟到真实 Vue execute emitter、普通输入、合成 composition 和明转暗的草稿/模型/版本/历史/命令记录不变；composition 结束仍输入时保持禁用，Esc 后真实菜单应用、一次历史、undo/redo/内部 JSON 重开以及 Canvas 宿主保持。没有新增产品测试接口，合成事件不等于系统 IME 验收。
+
+当前静态声明为 Ribbon 合同 27（计划 27）、数字格式浏览器 31（5 个 test.each 数组与 1 个外层 for 各注册两个变体，按源码数组预计 37）；本批循环样本不另计声明，全部运行 0。本批仅做源码/diff 阅读和 rg 计数，主线统一静态语法/引用收尾；未运行测试、类型、构建、dev、浏览器、Rust/WASM、Office 或基准。可替换控件仍为原 `antdv-next` Button/Menu/Popover/Input/TextArea 和 Form 面板，沿统一 ConfigProvider/主题；实际明暗主题、焦点、真实 IME、standalone 浏览器、WebGPU/Canvas2D、Office 独立重开和大范围性能/内存保持 **未验收**，SHEET-06 整体状态不变。

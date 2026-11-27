@@ -31,6 +31,29 @@
 - `excelViewAdapter.ts`、`workbookNormalizer.ts` 和 workbook 输入归一化保留规则字段。Rust `office-writer/src/xlsx_validation.rs` 写出 SpreadsheetML `dataValidations`、多范围、比较类型、列表、复选框、公式、下拉和提示/错误设置。AutoFilter 仍由原 `xlsx_filter.rs` 路径写出。
 - `office-parser` 将 `rxls::Sheet::data_validations()` 映射为稳定的 `dataValidations` DTO。XLSX sidecar 按 workbook relationship 定位 worksheet，补回 `showDropDown`（包含 OOXML 反向语义）和 `errorStyle`，按 range 与 rxls 读回规则配对；不支持、坏范围和未能配对的规则进入 parser warnings。
 
+<a id="list-color-preservation-review"></a>
+
+## 2026-11-27 管理入口保留列表颜色
+
+状态：已写入修复及浏览器草稿，运行验证后置，SHEET-13 保持未验收。
+
+固定 v1.6.0 来源：
+
+- [DataValidationDetail.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-data-validation-ui/src/views/components/DataValidationDetail.tsx) 的 `baseRule` 保留 `formula1/formula2`；`handleChangeType` 在 LIST 与 LIST_MULTIPLE 之间保留规则设置，切到其它类型时重置条件公式。
+- [ListFormulaInput.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-data-validation-ui/src/views/components/formula-input/ListFormulaInput.tsx) 用 `formula2.split(',')` 读取内联与引用列表的颜色，引用选项颜色更新写回 `newColors.join(',')`，修改引用公式时同样携带 `formula2`。颜色按选项索引对应，空颜色位置属于原数据。
+- Data/RULES 根入口仍为 `sheet.menu.data-validation`，grid r1c1，两个子项依次是管理验证规则、添加规则；根、子项和 classic 顺序增量均为 0。固定 schema 及默认添加链沿用上文依据。
+
+本地 [SheetDataValidationPanel.vue](../../packages/office-studio/src/components/spreadsheet/SheetDataValidationPanel.vue) 已读取既有 `formula2`，但保存草稿只为比较规则和自定义复选框写出第二个操作数，导致编辑列表范围后删除原颜色。现有对象构造补一项：当前与原规则都属于 list/listMultiple 时保留原 `formula2`，包括单选与多选互换；原本没有颜色时保持缺省，整数的 `10` 和复选框的 FALSE 不成为颜色。生产增量 +1 行，无新增 helper、模型、命令、Facade、Worker 或 WASM 协议。
+
+接线保持 `apply → createSheetDataValidationRule → sheet.command.replace-data-validation → commitWorkbook/replaceSheetDataValidationRule`。命令同时校验原范围与目标范围的编辑权限，并使用工作簿隔离的内容历史；原规则 ID、metadata 及列表源沿原路径保留。本地仍采用显式应用，上游按回调提交。面板已有 Ant Form/FormItem、Input、Select、Checkbox、Collapse 与 Button，主题来自统一 ConfigProvider/token；现有消息段落的 Ant 反馈迁移尚未完成。
+
+原 [sheet-format-painter.browser.test.mjs](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) 追加 2 个 `test.each` 声明、16 个计划场景，复用真实 ExcelWorkbench/Studio、命令和原 `painterFixture`，未新增 fixture 或生产测试入口：
+
+- classic/grid × list/listMultiple × 内联/引用，共 8 例：范围编辑、主题切换保留 Ant 输入焦点与草稿、列表类型互换、颜色字符串/空位置/ID/metadata、两次独立编辑历史、撤销重做与内部快照重开。
+- classic/grid × 整数/自定义复选框/无色单选/无色多选，共 8 例：转换为列表后不写入数字、布尔第二操作数或默认 `10` 颜色，并记录一次转换历史。
+
+本轮仅读取固定源码、本地实现和 diff，未执行草稿、类型、构建、浏览器、Rust/WASM、Office 或基准。逐项颜色编辑、选项重排时的颜色映射、Canvas 彩色标签、多选控件及真实 Office 颜色往返仍待实现或验收；当前 CSV 文本框沿用颜色数组顺序与原字符串。原生 IME、面板关闭回焦、真实明暗主题和两种渲染后端均未验收，内部快照重开草稿不构成 XLSX 导出重开证据。
+
 ## 验证
 
 以下为历史执行记录；2026-11-27 新增命令及浏览器草稿均未运行。

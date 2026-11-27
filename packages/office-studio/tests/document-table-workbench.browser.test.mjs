@@ -8,7 +8,7 @@ import { createServer } from 'vite'
 // cover event wiring only; system clipboard permissions and real Windows IME need separate acceptance.
 const fixturePath = '/__document-table-workbench-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Docs table contracts</title><style>body{margin:0}#app{height:100vh}</style></head><body><div id="app"></div><script type="module">
-import { createApp, h, ref, shallowRef } from 'vue'
+import { createApp, h, KeepAlive, ref, shallowRef } from 'vue'
 import { ConfigProvider, theme } from 'antdv-next'
 import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
 import { FDocument } from '/packages/office-studio/src/api/facade'
@@ -35,7 +35,7 @@ table.columnTypes = { 2: { type: 'dropdown', dropdownOptions: [{ id: 'first', la
 table.rows[0].cells[2].blocks[0].runs = [createRun('同名')]; table.rows[0].cells[2].style.selectedDropdownOptionId = 'first'
 block.metadata = { table }; initial.blocks = [createParagraph('Before'), block, createParagraph('After')]; initial.blocks[0].id = 'before'; initial.blocks[2].id = 'after'
 let studio = new OfficeStudio({ document: normalizeDocument(initial), currentUserId: 'editor' }); studio.activateDocument(initial.id)
-const api = shallowRef(new FDocument(studio, initial.id)), model = shallowRef(api.value.getModel()), dark = ref(false), variant = ref('classic'), notices = [], commands = []
+const api = shallowRef(new FDocument(studio, initial.id)), model = shallowRef(api.value.getModel()), visible = ref(true), dark = ref(false), variant = ref('classic'), notices = [], commands = []
 let unsubscribe
 function observe() { unsubscribe?.(); unsubscribe = api.value.onModelChanged(event => { model.value = api.value.getModel(); commands.push(event.commandId) }) }
 observe()
@@ -56,13 +56,14 @@ window.documentTableFixture = {
   permission: rules => { api.value.setPermissionRules(rules) },
   selectText: (row, column, offset = 0) => { const source = tableForBlock(model.value.blocks.find(block => block.id === 'table')), owner = documentTableGrid(source).cellAt(row, column), paragraph = owner.cell.blocks[0]; api.value.setInputSelection({ anchor: { blockId: 'table', row: owner.row, col: owner.cellIndex, cellBlockId: paragraph.id, offset }, focus: { blockId: 'table', row: owner.row, col: owner.cellIndex, cellBlockId: paragraph.id, offset } }) },
   appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
+  show: value => { visible.value = value },
   scrollTo: (row, column) => { const layout = layoutDocument(model.value, createTextMeasurer()), source = tableForBlock(model.value.blocks.find(block => block.id === 'table')), owner = documentTableGrid(source).cellAt(row, column), cell = layout.cells.find(cell => cell.cellId === owner.cell.id && !cell.repeatedHeader), scroll = document.querySelector('.document-scroll'); scroll.scrollTop = Math.max(0, cell.y - 100); scroll.dispatchEvent(new Event('scroll')) },
   clipboard: (type, text = '', html = '') => { const input = document.querySelector('.document-input-bridge textarea') ?? document.querySelector('textarea.document-input-bridge'), data = new DataTransfer(); if (text) data.setData('text/plain', text); if (html) data.setData('text/html', html); const event = new ClipboardEvent(type, { clipboardData: data, bubbles: true, cancelable: true }); input.dispatchEvent(event); return { prevented: event.defaultPrevented, text: data.getData('text/plain'), html: data.getData('text/html') } },
   htmlRoundtrip: html => { const blocks = blocksFromHtml(html), first = tableForBlock(blocks[0]); const serialized = documentHtml({ ...model.value, blocks }); const reopened = blocksFromHtml(serialized); return { source: copy(first), html: serialized, reopened: copy(tableForBlock(reopened[0])) } },
   saveReopen: () => { const saved = copy(api.value.save()); unsubscribe?.(); studio.dispose(); studio = new OfficeStudio({ document: saved, currentUserId: 'editor' }); studio.activateDocument(saved.id); api.value = new FDocument(studio, saved.id); model.value = api.value.getModel(); observe(); return saved },
 }
-const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' } } }, { default: () => h(DocumentWorkbench, { modelValue: model.value, documentApi: api.value, canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo, ribbonVariant: variant.value,
-  'onUpdate:modelValue': value => { model.value = value }, onUndo: () => api.value.undo(), onRedo: () => api.value.redo(), onNotify: message => notices.push(message) }) }) })
+const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm, token: { colorPrimary: '#3064c7' } } }, { default: () => h(KeepAlive, { max: 2 }, { default: () => visible.value ? h(DocumentWorkbench, { key: 'workbench', modelValue: model.value, documentApi: api.value, canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo, ribbonVariant: variant.value,
+  'onUpdate:modelValue': value => { model.value = value }, onUndo: () => api.value.undo(), onRedo: () => api.value.redo(), onNotify: message => notices.push(message) }) : h('div', { key: 'away', class: 'fixture-away' }, '工作台暂时隐藏') }) }) })
 app.mount('#app')
 window.addEventListener('pagehide', () => { unsubscribe?.(); app.unmount(); studio.dispose() }, { once: true })
 </script></body></html>`
@@ -95,7 +96,7 @@ test.each([[false, 'classic', 'permission'], [true, 'grid', 'permission'], [fals
   await page.evaluate(({ dark, variant }) => window.documentTableFixture.appearance(dark, variant), { dark, variant })
   await page.evaluate(() => window.documentTableFixture.selectText(0, 0, 2))
   await page.getByRole('tab', { name: '插入', exact: true }).click()
-  await page.locator('.ribbon-visible-groups [data-ribbon-item="doc-table"] button').click()
+  await page.locator('.ribbon-visible-groups [data-ribbon-item="doc-table"] button, .ribbon-grid-group:not(.is-hidden) [data-ribbon-item="doc-table"] button').click()
   await page.getByRole('menuitem', { name: '插入表格', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入表格', exact: true })
   await dialog.getByRole('switch', { name: '指定表格宽度', exact: true }).click()
@@ -125,6 +126,178 @@ test.each([[false, 'classic', 'permission'], [true, 'grid', 'permission'], [fals
   await expect(dialog).toBeHidden()
   assert.deepEqual(await snapshot(), recovered)
   assert.deepEqual(await history(), recoveredHistory)
+})
+
+test.each([[false, 'classic', 'composition'], [true, 'grid', 'composition'], [false, 'classic', 'deactivation'], [true, 'grid', 'deactivation']])('table context and delayed content callbacks follow the workbench input session in dark %s, %s, %s', async (dark, variant, trigger) => {
+  await page.evaluate(({ dark, variant }) => window.documentTableFixture.appearance(dark, variant), { dark, variant })
+  await page.evaluate(() => window.documentTableFixture.selectText(0, 0, 2))
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await input.focus()
+  await page.getByRole('tab', { name: '表格', exact: true }).click()
+  const ribbon = await page.locator('[data-testid="workbench-ribbon"]').elementHandle()
+  const point = await hoverCell()
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  const insertRow = page.getByRole('menuitem', { name: '在上方插入行', exact: true })
+  await expect(insertRow).toBeEnabled()
+  const before = await snapshot(), beforeHistory = await history(), beforeCommands = await page.evaluate(() => window.documentTableFixture.commands())
+  if (trigger === 'composition') await input.dispatchEvent('compositionstart', { data: '' })
+  if (trigger === 'deactivation') {
+    await page.evaluate(() => window.documentTableFixture.show(false))
+    await expect(page.locator('.fixture-away')).toBeVisible()
+  }
+  await expect.poll(() => ribbon.evaluate(element => element.__vueParentComponent.props.tabs
+    .flatMap(tab => tab.groups).flatMap(group => group.items)
+    .filter(item => ['doc-table-background', 'doc-table-border-color', 'doc-table-border-width', 'doc-table-border-style', 'doc-table-insert', 'doc-table-delete'].includes(item.id))
+    .map(item => item.disabled))).toEqual([true, true, true, true, true, true])
+  if (trigger === 'composition') {
+    for (const name of ['在上方插入行', '在下方插入行', '在左侧插入列', '在右侧插入列', '删除所选行', '删除所选列', '删除表格', '行高与跨页', '单元格边距']) {
+      await expect(page.getByRole('menuitem', { name, exact: true })).toBeDisabled()
+    }
+  }
+  await ribbon.evaluate(element => {
+    const range = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
+    element.__vueParentComponent.emit('execute', 'doc.command.create-table', { rowCount: 2, colCount: 2 })
+    element.__vueParentComponent.emit('execute', 'doc.command.insert-table', { rows: 2, cols: 2 })
+    element.__vueParentComponent.emit('execute', 'doc.command.table-insert-row', { tableId: 'table', range, row: 0, position: 'before', count: 1 })
+    element.__vueParentComponent.emit('execute', 'doc.command.table-set-background', { tableId: 'table', range, color: '#123456' })
+  })
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), beforeHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), beforeCommands)
+  if (trigger === 'composition') await input.dispatchEvent('compositionend', { data: '' })
+  if (trigger === 'deactivation') {
+    await page.evaluate(() => window.documentTableFixture.show(true))
+    await expect(page.locator('.fixture-away')).toBeHidden()
+  }
+  await expect.poll(() => ribbon.evaluate(element => element.__vueParentComponent.props.tabs
+    .flatMap(tab => tab.groups).flatMap(group => group.items)
+    .filter(item => ['doc-table-background', 'doc-table-border-color', 'doc-table-border-width', 'doc-table-border-style', 'doc-table-insert', 'doc-table-delete'].includes(item.id))
+    .map(item => item.disabled))).toEqual([false, false, false, false, false, false])
+  await input.focus()
+  await hoverCell()
+  await page.mouse.click(point.x, point.y, { button: 'right' })
+  await expect(insertRow).toBeEnabled()
+  await insertRow.click()
+  await expect.poll(async () => rowSource(await snapshot()).rows.length).toBe(11)
+  assert.equal(rowSource(await snapshot()).rows[1].cells[0].id, rowSource(before).rows[0].cells[0].id)
+  assert.deepEqual(await history(), { undo: beforeHistory.undo + 1, redo: 0 })
+  await expect(input).toBeFocused()
+  await input.press('Control+z')
+  await expect.poll(async () => (await snapshot()).blocks).toEqual(before.blocks)
+  await input.press('Control+y')
+  await expect.poll(async () => rowSource(await snapshot()).rows.length).toBe(11)
+  const edited = await snapshot()
+  await page.evaluate(() => window.documentTableFixture.saveReopen())
+  await expect.poll(async () => (await snapshot()).blocks).toEqual(edited.blocks)
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+})
+
+test.each([
+  [false, 'classic', 'table', '表格属性', '表格宽度（px）', '500'],
+  [true, 'grid', 'table', '表格属性', '表格宽度（px）', '500'],
+  [false, 'classic', 'row', '行高与跨页', '行高（px）', '90'],
+  [true, 'grid', 'row', '行高与跨页', '行高（px）', '90'],
+  [false, 'classic', 'cell', '单元格边距', '左内边距（px）', '12'],
+  [true, 'grid', 'cell', '单元格边距', '左内边距（px）', '12'],
+  [false, 'classic', 'background', '单元格背景', '', ''],
+  [true, 'grid', 'background', '单元格背景', '', ''],
+])('table property drafts disable explicit controls and resume in dark %s, %s, %s', async (dark, variant, kind, title, field, value) => {
+  for (const trigger of ['composition', 'deactivation']) {
+    await page.goto(baseURL)
+    await page.evaluate(({ dark, variant }) => { window.documentTableFixture.appearance(dark, variant); window.documentTableFixture.selectText(0, 0, 2) }, { dark, variant })
+    const dialog = await contextProperty(title)
+    if (kind === 'table') await dialog.getByRole('switch', { name: '更改表格背景', exact: true }).click()
+    if (kind === 'table' || kind === 'background') {
+      await dialog.locator('.ant-color-picker-trigger').click()
+      await page.locator('.ant-color-picker-hex-input input, input.ant-color-picker-hex-input').fill('123456')
+      await dialog.locator('.ant-modal-header').click()
+    }
+    if (field) await dialog.getByLabel(field, { exact: true }).fill(value)
+    const controls = await dialog.locator(kind === 'table' || kind === 'background' ? '.ant-color-picker-trigger' : '.ant-input-number-input').elementHandles()
+    assert.equal(controls.length, kind === 'cell' ? 4 : 1)
+    const input = await page.getByRole('textbox', { name: '文档文字输入', exact: true, includeHidden: true }).elementHandle()
+    const form = await dialog.locator('form').elementHandle()
+    const apply = await dialog.getByRole('button', { name: '应用', exact: true }).elementHandle()
+    const cancel = await dialog.getByRole('button', { name: '取消', exact: true }).elementHandle()
+    await expect(dialog.getByRole('button', { name: '应用', exact: true })).toBeEnabled()
+    const before = await snapshot(), beforeHistory = await history(), beforeCommands = await page.evaluate(() => window.documentTableFixture.commands())
+    if (trigger === 'composition') await input.dispatchEvent('compositionstart', { data: '' })
+    if (trigger === 'deactivation') {
+      await page.evaluate(() => window.documentTableFixture.show(false))
+      await expect(page.locator('.fixture-away')).toBeVisible()
+    }
+    for (const control of controls) await expect.poll(() => control.evaluate(element => element instanceof HTMLInputElement ? element.disabled : element.classList.contains('ant-color-picker-trigger-disabled'))).toBe(true)
+    await expect.poll(() => apply.evaluate(element => element.disabled)).toBe(true)
+    await expect.poll(() => cancel.evaluate(element => element.disabled)).toBe(false)
+    await form.dispatchEvent('submit', { bubbles: true, cancelable: true })
+    assert.deepEqual(await snapshot(), before)
+    assert.deepEqual(await history(), beforeHistory)
+    assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), beforeCommands)
+    if (trigger === 'composition') await input.dispatchEvent('compositionend', { data: '' })
+    if (trigger === 'deactivation') {
+      await page.evaluate(() => window.documentTableFixture.show(true))
+      await expect(page.locator('.fixture-away')).toBeHidden()
+    }
+    for (const control of controls) await expect.poll(() => control.evaluate(element => element instanceof HTMLInputElement ? element.disabled : element.classList.contains('ant-color-picker-trigger-disabled'))).toBe(false)
+    await expect(dialog.getByRole('button', { name: '应用', exact: true })).toBeEnabled()
+    await dialog.getByRole('button', { name: '应用', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    const edited = await snapshot()
+    assert.notDeepEqual(edited.blocks, before.blocks)
+    assert.deepEqual(await history(), { undo: beforeHistory.undo + 1, redo: 0 })
+    await expect(page.getByRole('textbox', { name: '文档文字输入', exact: true })).toBeFocused()
+    await page.getByRole('textbox', { name: '文档文字输入', exact: true }).press('Control+z')
+    await expect.poll(async () => (await snapshot()).blocks).toEqual(before.blocks)
+    await page.getByRole('textbox', { name: '文档文字输入', exact: true }).press('Control+y')
+    await expect.poll(async () => (await snapshot()).blocks).toEqual(edited.blocks)
+    await page.evaluate(() => window.documentTableFixture.saveReopen())
+    await expect.poll(async () => (await snapshot()).blocks).toEqual(edited.blocks)
+  }
+})
+
+test.each([[false, 'classic', 'composition'], [true, 'grid', 'composition'], [false, 'classic', 'deactivation'], [true, 'grid', 'deactivation']])('delayed table UI operations guard sessions and keep the readonly floating preference in dark %s, %s, %s', async (dark, variant, trigger) => {
+  await page.evaluate(({ dark, variant }) => { window.documentTableFixture.appearance(dark, variant); window.documentTableFixture.selectText(0, 0, 2) }, { dark, variant })
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await input.focus()
+  const ribbon = await page.locator('[data-testid="workbench-ribbon"]').elementHandle()
+  const before = await snapshot(), beforeHistory = await history(), beforeCommands = await page.evaluate(() => window.documentTableFixture.commands())
+  if (trigger === 'composition') await input.dispatchEvent('compositionstart', { data: '' })
+  if (trigger === 'deactivation') {
+    await page.evaluate(() => window.documentTableFixture.show(false))
+    await expect(page.locator('.fixture-away')).toBeVisible()
+  }
+  await ribbon.evaluate(element => {
+    element.__vueParentComponent.emit('execute', 'doc.operation.open-table-properties', { tableId: 'table', range: { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, kind: 'row' })
+    element.__vueParentComponent.emit('execute', 'doc.operation.create-table')
+    element.__vueParentComponent.emit('execute', 'doc.operation.open-table')
+    element.__vueParentComponent.emit('execute', 'doc.operation.toggle-table-floating-toolbar')
+  })
+  await expect.poll(() => ribbon.evaluate(element => element.__vueParentComponent.props.tabs.flatMap(tab => tab.groups).flatMap(group => group.items).find(item => item.id === 'doc-table-floating-toolbar').activated)).toBe(trigger === 'composition')
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), beforeHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), beforeCommands)
+  if (trigger === 'composition') await input.dispatchEvent('compositionend', { data: '' })
+  if (trigger === 'deactivation') {
+    await page.evaluate(() => window.documentTableFixture.show(true))
+    await expect(page.locator('.fixture-away')).toBeHidden()
+  }
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await ribbon.evaluate(element => element.__vueParentComponent.emit('execute', 'doc.operation.create-table'))
+  const dialog = page.getByRole('dialog', { name: '插入表格', exact: true })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await page.evaluate(() => window.documentTableFixture.permission([{ id: 'readonly-floating', scope: 'document', action: 'edit', effect: 'deny', userIds: [] }]))
+  const readonly = await snapshot(), readonlyHistory = await history(), readonlyCommands = await page.evaluate(() => window.documentTableFixture.commands())
+  await ribbon.evaluate(element => {
+    element.__vueParentComponent.emit('execute', 'doc.operation.create-table')
+    element.__vueParentComponent.emit('execute', 'doc.operation.open-table')
+    element.__vueParentComponent.emit('execute', 'doc.operation.toggle-table-floating-toolbar')
+  })
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect.poll(() => ribbon.evaluate(element => element.__vueParentComponent.props.tabs.flatMap(tab => tab.groups).flatMap(group => group.items).find(item => item.id === 'doc-table-floating-toolbar').activated)).toBe(trigger !== 'composition')
+  assert.deepEqual(await snapshot(), readonly)
+  assert.deepEqual(await history(), readonlyHistory)
+  assert.deepEqual(await page.evaluate(() => window.documentTableFixture.commands()), readonlyCommands)
 })
 
 test('row and column handles select real structural ranges and insert dots create one history item', async () => {

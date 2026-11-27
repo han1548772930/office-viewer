@@ -17,13 +17,13 @@
 | `packages/sheets/src/facade/f-workbook.ts`、`f-range.ts` | 目录、builder、注册、`useThemeStyle`、`removeThemeStyle` 与 `getUsedThemeStyle`；null/undefined 走移除。 |
 | `packages/sheets/src/models/__tests__/range-theme-util.spec.ts`、`range-theme-model.spec.ts`、`services/__tests__/range-theme.service.spec.ts` | 区段组合、目录、范围和可见行契约参考；本批没有运行上游测试。 |
 
-固定版该能力以 API 为主要入口。本批新增本地常规 Ribbon 扩展 **1**，固定新增常规根 **0**、专用上下文根 **0**；主题 Select 的 32 个内置项及自定义项、弹窗三个操作按钮均不计作常规根。More 复用同一根，不另增加计数。
+固定版该能力以 API 为主要入口。以下入口位置与本地数量保留 2026-11-26 基础批历史；当前位置见[输入会话与关闭回调续修](#range-theme-input-session-review)。基础批新增本地常规 Ribbon 扩展 **1**，固定新增常规根 **0**、专用上下文根 **0**；主题 Select 的 32 个内置项及自定义项、弹窗三个操作按钮均不计作常规根。More 复用同一根，不另增加计数。
 
 | 本地入口 | 标签/组与顺序 | classic/grid 位置 | 状态及命令 |
 | --- | --- | --- | --- |
 | `sheet.operation.open-range-theme` | 开始 → 工具，group order 40，第 3 项 | classic 在范围保护、清除内容之后；grid row 1、column 3、rowSpan 2，显示标签 | 无工作表、选区不可编辑、输入法组合中或已有范围主题弹窗时禁用；打开真实 Ant Modal，应用/移除共用下列固定命令。 |
 
-当前本地 Sheets 常规根从历史 **68（29/6/11/17/5）** 增至 **69（30/6/11/17/5）**；Home 分组为 clipboard 5、font 11、layout 6、number 5、tools 3。固定 OSS 仍为 63（30/9/12/6/6）。新增范围主题入口不替代 SHEET-18 的结构化表格，也不能用总数相同证明分组或功能完整。
+基础批时本地 Sheets 常规根从历史 **68（29/6/11/17/5）** 增至 **69（30/6/11/17/5）**；当时 Home 分组为 clipboard 5、font 11、layout 6、number 5、tools 3。固定 OSS 仍为 63（30/9/12/6/6）。新增范围主题入口不替代 SHEET-18 的结构化表格，也不能用总数相同证明分组或功能完整。
 
 ## 模型、来源与真实行为
 
@@ -64,10 +64,39 @@
 
 ## 草稿与验收状态
 
+下表保留基础批草稿数量；本次追加的范围主题输入与取消回焦场景见下一节。
+
 | 文件 | 静态场景数 | 计划覆盖 |
 | --- | ---: | --- |
 | [sheet-range-theme.contract.test.mjs](../../packages/office-studio/tests/sheet-range-theme.contract.test.mjs) | 33（25 纯契约 + 8 Facade） | 目录/九区段/空 mask、稀疏继承、隐藏条纹/footer、重叠、blocker、原子导入、轴/工作表复制、权限、重入、历史和内部重开。 |
 | [sheet-range-theme-host.contract.test.mjs](../../packages/office-studio/tests/sheet-range-theme-host.contract.test.mjs) | 7 | 独立工作台一次发布、陈旧内容、切宿主/迟到关闭、不完整规则权限、dangling 移除与准备/发布重入。 |
 | [sheet-range-theme.browser.test.mjs](../../packages/office-studio/tests/sheet-range-theme.browser.test.mjs) + [fixture](../../packages/office-studio/tests/fixtures/sheet-range-theme.html) | 6 | 真实 Ribbon/Ant Modal/Canvas、内置/自定义、历史和内部重开、子范围移除、保护/陈旧目标、grid/暗色/Input 与 Escape。 |
 
-合计 **46 个未运行草稿**。静态阅读和链接/计数核对不提供测试通过结论；浏览器/真实中文 IME、两渲染后端、Office 样本、权限组合、完整保存及性能均保持未验收。全部 Sheets / Docs / Pro 范围保留，服务与文件协议增量见[后端需求](../BACKEND_REQUIREMENTS.md)。
+基础批合计 **46 个未运行草稿**。静态阅读和链接/计数核对不提供测试通过结论；浏览器/真实中文 IME、两渲染后端、Office 样本、权限组合、完整保存及性能均保持未验收。全部 Sheets / Docs / Pro 范围保留，服务与文件协议增量见[后端需求](../BACKEND_REQUIREMENTS.md)。
+
+<a id="range-theme-input-session-review"></a>
+
+## 2026-11-27 输入会话与 Ant 关闭回调续修
+
+固定 `add-worksheet-range-theme.command.ts`、`delete-worksheet-range-theme.command.ts`、`range-theme.service.ts` 与 Facade 的目录、应用/移除、内容历史和资源契约沿用基础批依据。没有证据支持同名固定 Ribbon factory；本地范围主题仍为扩展根，不能将本批 UI 禁用条件冒称上游菜单契约。
+
+当前开始 / 工具的五根依次为保护范围、快捷键面板、搜索功能、清除内容、范围主题。本地 `sheet.operation.open-range-theme` 为第 **5** 项，order 4；classic 在清除内容后，grid r1c4 跨两行并显示标签。基础批第 3 项、r1c3 和 69 根属于历史记录。本次既有扩展根 1、新增常驻/扩展/上下文根及子项均 0；More 继续共用该根，主题目录和弹窗控件不算根入口。
+
+[ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 复用 `canQuickFormatSelection`，组合范围主题 pending 和 cell-shift pending 得到 `canStartRangeTheme`，同时供 Ribbon 状态及执行入口使用。缺活动宿主、选区不可编辑、单元格/公式编辑、composition、绘图选区或上述弹窗等待期间，根禁用；迟到的 open、set、remove 三个既有 UI 请求在 `finishEdit` 前拒绝，保留输入草稿和内容历史。弹窗确认仍走原 hook 的确认路径，不受等待状态阻断。
+
+`use-sheet-range-theme.ts` 的模型身份、revision、history generation、独立宿主及关闭归焦协议保持。取消原先等待 Dialog 的 closed 事件，但 Modal 使用了 `@after-close` 事件写法；本地安装的真实 API 为函数 prop：
+
+| 本地来源 | 核实结果 |
+| --- | --- |
+| `node_modules/antdv-next/package.json:4` | 安装版本 1.8.2。 |
+| `node_modules/antdv-next/dist/modal/interface.d.ts:68`、`Modal.js:286/525` | `afterClose?: () => void`，运行时声明为函数 prop；emits 仅 ok、cancel、update:open。 |
+| `node_modules/.pnpm/@v-c+dialog@1.2.3_vue@3.5.45_typescript@6.0.3_/node_modules/@v-c/dialog/dist/DialogWrap.js:31`、`Dialog/index.js:43` | 关闭完成调用传入的 afterClose 函数，未发送同名事件。 |
+| [docs/llm.md](../llm.md) 第 34405/34441 行 | Modal 属性表列 afterClose 函数，事件表仅列 ok/cancel。Context7 没有 1.8.2 索引，其当前文档只作补充，结论以已安装源码为准。 |
+
+[SheetRangeThemeDialog.vue](../../packages/office-studio/src/components/spreadsheet/SheetRangeThemeDialog.vue) 改为 `:after-close="() => emit('closed')"`。关闭链为 Modal 真实回调 → Dialog closed → ExcelWorkbench afterRangeThemeClose → 原 hook 当前宿主检查 → Canvas focus；本批没有重写焦点或生命周期实现。
+
+本次五文件为 ExcelWorkbench.vue、SheetRangeThemeDialog.vue、[原 Ribbon 合同草稿](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs)、[原范围主题浏览器草稿](../../packages/office-studio/tests/sheet-range-theme.browser.test.mjs)和本页。生产增量 +6/-2，未新增模型、公共 API、命令 ID、内容历史源或 Worker/WASM 协议。该变更属于 Vue 主线程 UI 能力与回调适配；领域计算及原同步事务沿用原实现。
+
+合同新增 1 声明，检查可选范围主题能力、禁用 invocation、原位置与保护根状态独立。浏览器新增 1 声明，在原 fixture 内覆盖 cell/formula × classic/grid 四个输入样本：普通输入和合成组字、明转暗时禁用真实控件并拒绝三个迟到 execute；Esc 后可正常打开，等待期间拒绝 set 重入，取消后检查 Canvas focus、A1 选区、模型与历史不变。循环样本不另计声明。当前 Ribbon **32 声明/32 计划**；范围主题浏览器 **7/7**，加基础纯契约/Facade 33 和宿主 7，本页范围主题草稿合计 **47**；全部运行 0。
+
+Modal、Form/FormItem、Select、Button 与 Canvas/公式 Input/TextArea 继续使用 antdv-next 和现有 ConfigProvider/token，没有新增原生输入桥。只完成源码回读与声明/计划计数；统一语法/引用收尾由主线执行。测试、类型、构建、dev、浏览器、Rust/WASM、Office 文件与基准均后置。Windows 原生 IME、真实关闭动画归焦、完整主题状态、两渲染后端、独立宿主浏览器链、Office/服务保真及大样本仍 **未验收**；合成 composition 与内部 JSON 不替代这些证据。

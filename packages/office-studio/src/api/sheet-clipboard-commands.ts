@@ -11,7 +11,7 @@ import { SHEET_IMAGE_OBJECT_COMMANDS, sheetImageObjectClipboardFromHtml, sheetIm
 import { applySheetClipboardPastePlan, assertSheetClipboardWorkbookChangesEditable, captureSheetClipboard, createSheetClipboardPastePlan,
   cloneSheetClipboardWorkbookResources, parseSheetClipboardHtml, parseSheetClipboardText,
   resolveSheetClipboardCommand, SHEET_CLIPBOARD_COMMAND_IDS, sheetClipboardContent, sheetClipboardIdFromHtml, sheetClipboardPasteMode,
-  sheetClipboardChangedColumnWidthRanges, normalizeSheetClipboardContentAliases,
+  sheetClipboardChangedColumnWidthRanges, sheetClipboardChangedValueRanges, normalizeSheetClipboardContentAliases,
   type SheetClipboardCommandInput, type SheetClipboardCopyResult, type SheetClipboardLocation, type SheetClipboardPasteResult,
   type SheetClipboardRecentPaste, type SheetClipboardSnapshot, type SheetClipboardWorkbookResources } from '../features/sheet-workbench/sheet-clipboard.ts'
 
@@ -180,7 +180,7 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
     if (!plan.result.accepted) return cloneModel(plan.result)
     const candidate = cloneModel(original)
     applySheetClipboardPastePlan(candidate, plan)
-    const changedRanges = assertSheetClipboardWorkbookChangesEditable(current, candidate, api.currentUserId)
+    assertSheetClipboardWorkbookChangesEditable(current, candidate, api.currentUserId)
     const differs = !equivalentModelData(current, candidate, ['modified', 'activeSheetId'])
     if (!differs) {
       if (recent) api.sheetClipboard.setRecentPaste({ ...recent, mode, ranges: cloneModel(plan.result.ranges) })
@@ -208,9 +208,13 @@ export function registerSheetClipboardCommands(api: OfficeStudio): Disposable {
     }
     if (changed && clipboard.copyType === 'cut') api.sheetClipboard.consumeCut(clipboard.id)
     if (changed) {
-      for (const [sheetId, ranges] of Object.entries(changedRanges)) api.publishObserverEvent('SheetValueChanged', () => ({ workbookId: target.unitId, sheetId,
-        ranges: ranges.map(range => ({
-          unitId: target.unitId, sheetId, startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol })) }))
+      for (const sheet of candidate.sheets) {
+        const before = current.sheets.find(item => item.id === sheet.id)!
+        const valueRanges = sheetClipboardChangedValueRanges(before, sheet)
+        if (valueRanges.length) api.publishObserverEvent('SheetValueChanged', () => ({ workbookId: target.unitId, sheetId: sheet.id,
+          ranges: valueRanges.map(range => ({ unitId: target.unitId, sheetId: sheet.id,
+            startRow: range.startRow, endRow: range.endRow, startColumn: range.startCol, endColumn: range.endCol })) }))
+      }
       for (const sheet of candidate.sheets) {
         const before = current.sheets.find(item => item.id === sheet.id)!
         const ranges = sheetClipboardChangedColumnWidthRanges(before, sheet)

@@ -100,6 +100,8 @@ window.documentStructuredFixture = {
   history: () => studio ? { undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 } : undefined,
   select, dark: value => dark.value = value, variant: value => variant.value = value,
   selection: () => copy(api.value.getInputState().location),
+  inputState: () => copy(api.value.getInputState()),
+  operation: (id, params) => document.querySelector('[data-testid="workbench-ribbon"]').__vueParentComponent.emit('execute', id, params),
   publicSnapshot: () => copy(api.value.getSnapshot()),
   unwrapQuote: id => { const result = api.value.getQuote(id).unwrap(); sync(); return result },
   paginationLayout: () => {
@@ -249,6 +251,133 @@ test('standalone code settings accept a missing ID and reject replacement by an 
   await page.evaluate(() => window.documentStructuredFixture.replaceSameSnapshot())
   await dialog.getByRole('button', { name: '应用', exact: true }).click()
   assert.equal(await source(), 'accepted draft'); await expect(dialog).toBeVisible()
+})
+
+for (const variant of [{ layout: 'classic', dark: false }, { layout: 'grid', dark: true }]) test(`${variant.layout} Code property composition rejects delayed opens and callbacks before one real commit`, async () => {
+  await page.evaluate(value => { window.documentStructuredFixture.variant(value.layout); window.documentStructuredFixture.dark(value.dark) }, variant)
+  const dialog = await contextProperty('code-p', '代码块属性')
+  await page.evaluate(() => window.documentStructuredFixture.operation('doc.operation.edit-code-font', { blockId: 'code' }))
+  const input = dialog.locator('textarea')
+  await input.fill('中文草稿😀\n  done')
+  const callbacks = await input.evaluateHandle(element => {
+    for (let owner = element.__vueParentComponent; owner; owner = owner.parent) {
+      if (owner.type.__name === 'DocumentCodeBlockPanel') return {
+        apply: owner.subTree.props.onOk, cancel: owner.subTree.props.onCancel,
+        afterOpen: owner.subTree.component.props.afterOpenChange, command: owner.vnode.props.onApply,
+      }
+    }
+    throw new Error('The actual Code property component must be mounted')
+  })
+  await input.dispatchEvent('keydown', { key: 'Escape', isComposing: true, keyCode: 229 })
+  await expect(dialog).toBeVisible()
+  await input.dispatchEvent('compositionstart', { data: '中' })
+  await expect(dialog.getByRole('button', { name: '应用', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeDisabled()
+  const before = await page.evaluate(() => window.documentStructuredFixture.snapshot()), previous = await history()
+  const inputState = await page.evaluate(() => window.documentStructuredFixture.inputState())
+  const commands = await page.evaluate(() => window.documentStructuredFixture.commandEvents())
+  await callbacks.evaluate(value => {
+    value.apply(); value.cancel(); value.afterOpen(true)
+    value.command({ source: 'late callback', language: 'typescript', lineNumbers: true, tabSize: 4, wrap: true })
+  })
+  for (const operation of [
+    { id: 'doc.operation.insert-code-block' },
+    { id: 'doc.operation.edit-code-font', params: { blockId: 'code' } },
+    { id: 'doc.operation.edit-code-settings', params: { blockId: 'code' } },
+    { id: 'doc.operation.edit-structured-block', params: { blockId: 'code' } },
+  ]) {
+    await page.evaluate(value => window.documentStructuredFixture.operation(value.id, value.params), operation)
+    await expect(dialog).toBeVisible(); await expect(input).toHaveValue('中文草稿😀\n  done')
+    await expect(input).toBeFocused(); await expect(input).toBeEnabled()
+    assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+    assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.inputState()), inputState)
+    assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.commandEvents()), commands)
+    assert.deepEqual(await history(), previous)
+  }
+  await input.press('Escape'); await expect(dialog).toBeVisible()
+  await page.locator('.ant-modal-wrap').click({ position: { x: 4, y: 4 } }); await expect(dialog).toBeVisible()
+  await input.focus(); await input.dispatchEvent('compositionend', { data: '' })
+  await expect(dialog.getByRole('button', { name: '应用', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: '应用', exact: true }).click(); await expect(dialog).toBeHidden()
+  await expect(page.getByRole('textbox', { name: '文档文字输入', exact: true })).toBeFocused()
+  assert.equal(await source(), '中文草稿😀\n  done'); assert.equal((await history()).undo, previous.undo + 1)
+  const after = await page.evaluate(() => window.documentStructuredFixture.snapshot())
+  await page.evaluate(() => window.documentStructuredFixture.undo())
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+  await contextProperty('code-p', '代码块属性'); await input.fill('cancelled source')
+  await dialog.getByRole('button', { name: '取消', exact: true }).click(); await expect(dialog).toBeHidden()
+  const cancelledHistory = await history()
+  await callbacks.evaluate(value => {
+    value.apply()
+    value.command({ source: 'closed callback', language: 'typescript', lineNumbers: true, tabSize: 4, wrap: true })
+  })
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+  assert.deepEqual(await history(), cancelledHistory)
+  await page.evaluate(() => window.documentStructuredFixture.redo())
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), after)
+  await page.evaluate(() => window.documentStructuredFixture.saveAndReopen())
+  assert.equal(await source(), '中文草稿😀\n  done')
+  await callbacks.dispose()
+})
+
+for (const variant of [{ layout: 'classic', dark: false }, { layout: 'grid', dark: true }]) test(`${variant.layout} inserted column count follows Form readOnly and retains the draft for a real commit`, async () => {
+  await page.goto(baseURL + '?blank'); await page.waitForFunction(() => !!window.documentStructuredFixture)
+  await page.evaluate(value => {
+    window.documentStructuredFixture.variant(value.layout); window.documentStructuredFixture.dark(value.dark)
+    window.documentStructuredFixture.select('empty')
+    window.documentStructuredFixture.operation('doc.operation.insert-column-group')
+  }, variant)
+  const dialog = page.getByRole('dialog', { name: '插入多栏组', exact: true }), count = dialog.getByRole('spinbutton', { name: '栏数', exact: true })
+  await expect(dialog).toBeVisible(); await count.fill('4')
+  const before = await page.evaluate(() => window.documentStructuredFixture.snapshot()), previous = await history()
+  const input = page.getByRole('textbox', { name: '文档文字输入', exact: true })
+  await input.dispatchEvent('compositionstart', { data: '中' })
+  await expect(count).toBeDisabled(); await expect(count).toHaveValue('4')
+  await expect(dialog.getByRole('button', { name: '应用', exact: true })).toBeDisabled()
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+  assert.deepEqual(await history(), previous)
+  await input.dispatchEvent('compositionend', { data: '' })
+  await expect(count).toBeEnabled(); await expect(count).toHaveValue('4')
+  await dialog.getByRole('button', { name: '应用', exact: true }).click(); await expect(dialog).toBeHidden()
+  await expect(input).toBeFocused()
+  const after = await page.evaluate(() => window.documentStructuredFixture.snapshot())
+  assert.equal(after.blocks[0].type, 'columns'); assert.equal(after.blocks[0].columns.columns.length, 4)
+  assert.equal(after.blocks[0].columns.columns[0].blocks[0].id, 'empty')
+  assert.equal((await history()).undo, previous.undo + 1)
+  await page.evaluate(() => window.documentStructuredFixture.undo())
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+  await page.evaluate(() => window.documentStructuredFixture.redo())
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), after)
+  await page.evaluate(() => window.documentStructuredFixture.saveAndReopen('empty'))
+  const reopened = await page.evaluate(() => window.documentStructuredFixture.snapshot())
+  assert.equal(reopened.blocks[0].columns.columns.length, 4)
+  assert.equal(reopened.blocks[0].columns.columns[0].blocks[0].id, 'empty')
+})
+
+for (const variant of [{ layout: 'classic', dark: false }, { layout: 'grid', dark: true }]) test(`${variant.layout} actual Code and Column Modal lifecycles focus their fields and restore Canvas after cancellation`, async () => {
+  await page.evaluate(value => { window.documentStructuredFixture.variant(value.layout); window.documentStructuredFixture.dark(value.dark) }, variant)
+  for (const request of [
+    { id: 'doc.operation.edit-code-font', blockId: 'code', paragraphId: 'code-p', role: 'combobox', name: '代码块等宽字体' },
+    { id: 'doc.operation.edit-code-settings', blockId: 'code', paragraphId: 'code-p', role: 'spinbutton', name: '代码块缩进空格数' },
+    { id: 'doc.operation.edit-structured-block', blockId: 'columns-three', paragraphId: 'columns-three-p-0' },
+  ]) {
+    await page.evaluate(value => window.documentStructuredFixture.select(value.paragraphId), request)
+    const before = await page.evaluate(() => window.documentStructuredFixture.snapshot()), previous = await history()
+    const location = await page.evaluate(() => window.documentStructuredFixture.selection())
+    await page.getByRole('textbox', { name: '文档名称', exact: true }).focus()
+    await page.evaluate(value => window.documentStructuredFixture.operation(value.id, { blockId: value.blockId }), request)
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    if (request.role) await expect(dialog.getByRole(request.role, { name: request.name, exact: true })).toBeFocused()
+    if (request.blockId === 'code') await dialog.locator('textarea').fill('cancelled Code draft')
+    if (request.blockId === 'columns-three') await dialog.getByRole('spinbutton', { name: '栏间距', exact: true }).fill('32')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('textbox', { name: '文档文字输入', exact: true })).toBeFocused()
+    assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.snapshot()), before)
+    assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.selection()), location)
+    assert.deepEqual(await history(), previous)
+  }
 })
 
 test('structured properties keep ant controls in both themes and return focus after applying a current edit', async () => {

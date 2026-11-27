@@ -6,12 +6,64 @@ import type {
   FormulaEvaluationOptions, FormulaRangeReference, FormulaRecalculationResult, FormulaReference, FormulaValue,
 } from './formula-types.ts'
 import { FormulaSyntaxError, parseFormula } from './formula-parser.ts'
-import { formatSheetValue } from '../sheet-workbench/sheet-number-format.ts'
+import { formatSheetValue, isSheetTextNumberFormat } from '../sheet-workbench/sheet-number-format.ts'
+import { parseDate, parseNumber, parseTime } from '../sheet-workbench/number-format-engine/parse-value.ts'
+import { DateSystem } from '../sheet-workbench/number-format-engine/date-system.ts'
+import { getDateSystemMaxSerial } from '../sheet-workbench/number-format-engine/serial-date.ts'
 
 interface RangeValue { kind: 'rangeValue'; sheet: SpreadsheetSheet; reference: FormulaRangeReference }
 type RuntimeValue = FormulaValue | RangeValue
 
 const ERROR_CODES = new Set(['#DIV/0!', '#N/A', '#NAME?', '#NULL!', '#NUM!', '#REF!', '#VALUE!', '#CIRCULAR!'])
+
+const ERROR_TYPE_NUMBERS = new Map([
+  ['#NULL!', 1], ['#DIV/0!', 2], ['#VALUE!', 3], ['#REF!', 4], ['#NAME?', 5],
+  ['#NUM!', 6], ['#N/A', 7], ['#GETTING_DATA', 8], ['#CALC!', 14],
+])
+
+const FORMULA_TOP_LEVEL_DOMAINS = [
+  'ac', 'ad', 'ae', 'aero', 'af', 'ag', 'ai', 'al', 'am', 'ao', 'aq', 'ar', 'arpa', 'as', 'asia', 'at', 'au', 'aw', 'ax', 'az', 'ba', 'bb',
+  'bd', 'be', 'bf', 'bg', 'bh', 'bi', 'biz', 'bj', 'bm', 'bn', 'bo', 'br', 'bs', 'bt', 'bv', 'bw', 'by', 'bz', 'ca', 'cat', 'cc', 'cd',
+  'cf', 'cg', 'ch', 'ci', 'ck', 'cl', 'cm', 'cn', 'co', 'com', 'coop', 'cr', 'cu', 'cv', 'cw', 'cx', 'cy', 'cz', 'de', 'dj', 'dk', 'dm',
+  'do', 'dz', 'ec', 'edu', 'ee', 'eg', 'er', 'es', 'et', 'eu', 'fi', 'fj', 'fk', 'fm', 'fo', 'fr', 'ga', 'gb', 'gd', 'ge', 'gf', 'gg',
+  'gh', 'gi', 'gl', 'gm', 'gn', 'gov', 'gp', 'gq', 'gr', 'gs', 'gt', 'gu', 'gw', 'gy', 'hk', 'hm', 'hn', 'hr', 'ht', 'hu', 'id', 'ie',
+  'il', 'im', 'in', 'info', 'int', 'io', 'iq', 'ir', 'is', 'it', 'je', 'jm', 'jo', 'jobs', 'jp', 'ke', 'kg', 'kh', 'ki', 'km', 'kn', 'kp',
+  'kr', 'kw', 'ky', 'kz', 'la', 'lb', 'lc', 'li', 'lk', 'lr', 'ls', 'lt', 'lu', 'lv', 'ly', 'ma', 'mc', 'md', 'me', 'mg', 'mh', 'mil',
+  'mk', 'ml', 'mm', 'mn', 'mo', 'mobi', 'mp', 'mq', 'mr', 'ms', 'mt', 'mu', 'museum', 'mv', 'mw', 'mx', 'my', 'mz', 'na', 'name', 'nc', 'ne',
+  'net', 'nf', 'ng', 'ni', 'nl', 'no', 'np', 'nr', 'nu', 'nz', 'om', 'onion', 'org', 'pa', 'pe', 'pf', 'pg', 'ph', 'pk', 'pl', 'pm', 'pn',
+  'post', 'pr', 'pro', 'ps', 'pt', 'pw', 'py', 'qa', 're', 'ro', 'rs', 'ru', 'rw', 'sa', 'sb', 'sc', 'sd', 'se', 'sg', 'sh', 'si', 'sj',
+  'sk', 'sl', 'sm', 'sn', 'so', 'sr', 'ss', 'st', 'su', 'sv', 'sx', 'sy', 'sz', 'tc', 'td', 'tel', 'tf', 'tg', 'th', 'tj', 'tk', 'tl',
+  'tm', 'tn', 'to', 'tr', 'tt', 'tv', 'tw', 'tz', 'ua', 'ug', 'uk', 'us', 'uy', 'uz', 'va', 'vc', 've', 'vg', 'vi', 'vn', 'vu', 'wf',
+  'ws', 'yt', 'za', 'zm', 'zw',
+].join('|')
+const FORMULA_EMAIL_PATTERN = new RegExp(String.raw`^(?:[\w+-]+\.)*[\w+-]+@[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.(?:${FORMULA_TOP_LEVEL_DOMAINS})$`, 'i')
+const FORMULA_WEB_URL_PATH = String.raw`(?::[0-9]+)?(?:/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[A-Fa-f0-9]{2})*)*/?(?:[?#]\S*)?`
+const FORMULA_URL_PATTERN = new RegExp(`^(?:${[
+  String.raw`(?:https?|s?ftp|ftps|nfs|ssh)://+[a-z0-9_-]+(?:\.[a-z0-9_-]+)*${FORMULA_WEB_URL_PATH}`,
+  String.raw`[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.(?:${FORMULA_TOP_LEVEL_DOMAINS})${FORMULA_WEB_URL_PATH}`,
+  String.raw`mailto:(?:[\w+-]+\.)*[\w+-]+@[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.(?:${FORMULA_TOP_LEVEL_DOMAINS})`,
+  String.raw`(?:news|aim):[%a-z0-9$_\.+!*(),;/?#:@&~=-]+`,
+].join('|')})$`, 'i')
+const FORMULA_TEXT_LIGATURES = new Map([
+  ['ß', 'ss'], ['æ', 'ae'], ['œ', 'oe'], ['ﬀ', 'ff'], ['ﬁ', 'fi'], ['ﬂ', 'fl'],
+  ['ﬃ', 'ffi'], ['ﬄ', 'ffl'], ['ﬅ', 'st'], ['ﬆ', 'st'],
+])
+
+const ROMAN_DIGIT_VALUES = new Map<string, number>([
+  ['I', 1], ['V', 5], ['X', 10], ['L', 50], ['C', 100], ['D', 500], ['M', 1000],
+])
+const ROMAN_NUMERAL_TEXT = new Map<number, string>([
+  [1, 'I'], [4, 'IV'], [5, 'V'], [9, 'IX'], [10, 'X'], [40, 'XL'], [45, 'VL'], [49, 'IL'], [50, 'L'],
+  [90, 'XC'], [95, 'VC'], [99, 'IC'], [100, 'C'], [400, 'CD'], [450, 'LD'], [490, 'XD'], [495, 'VD'],
+  [499, 'ID'], [500, 'D'], [900, 'CM'], [950, 'LM'], [990, 'XM'], [995, 'VM'], [999, 'IM'], [1000, 'M'],
+])
+const ROMAN_FORM_VALUES = [
+  [1, 4, 5, 9, 10, 40, 50, 90, 100, 400, 500, 900, 1000],
+  [1, 4, 5, 9, 10, 40, 45, 50, 90, 95, 100, 400, 450, 500, 900, 950, 1000],
+  [1, 4, 5, 9, 10, 40, 45, 49, 50, 90, 95, 99, 100, 400, 450, 490, 500, 900, 950, 990, 1000],
+  [1, 4, 5, 9, 10, 40, 45, 49, 50, 90, 95, 99, 100, 400, 450, 490, 495, 500, 900, 950, 990, 995, 1000],
+  [1, 4, 5, 9, 10, 40, 45, 49, 50, 90, 95, 99, 100, 400, 450, 490, 495, 499, 500, 900, 950, 990, 995, 999, 1000],
+] as const
 
 /** Parses references once and builds a sparse range-aware dependency index. */
 export function createFormulaDependencyGraph(workbook: WorkbookModel): FormulaDependencyGraph {
@@ -246,12 +298,623 @@ function evaluateFunction(
   evaluationTime: Date = new Date(),
 ): RuntimeValue {
   const evaluateArgument = (argument: FormulaNode): RuntimeValue => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+  const evaluateArrayArgument = (argument: FormulaNode): RuntimeValue => argument.kind === 'reference' || argument.kind === 'range'
+    || argument.kind === 'binary' && argument.operator === ':' || argument.kind === 'function' && argument.name === 'INDEX'
+    ? evaluateReferenceOperand(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+    : evaluateArgument(argument)
+  if ((name === 'AND' || name === 'OR' || name === 'XOR') && (args.length < 1 || args.length > 255)) return formulaError('#N/A')
+  if (name === 'NOT' && args.length !== 1) return formulaError('#N/A')
   if (name === 'ADDRESS') return evaluateAddress(args, evaluateArgument)
   if (name === 'ROW' || name === 'COLUMN') return evaluateReferenceIndex(name, args, evaluateArgument, formulaCell, workbook, sheet, byName)
   if (name === 'AREAS') return evaluateReferenceAreas(args, evaluateArgument)
-  if (name === 'TRUE' || name === 'FALSE') return args.length === 0 ? name === 'TRUE' : formulaError('#VALUE!')
+  if (name === 'TRUE' || name === 'FALSE') return args.length === 0 ? name === 'TRUE' : formulaError('#N/A')
+  if ((name === 'NOW' || name === 'TODAY') && args.length !== 0) return formulaError('#N/A')
+  if (name === 'PERCENTOF') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const subsetTotal = evaluateFunction('SUM', [args[0]!], sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+    if (isFormulaError(subsetTotal)) return subsetTotal
+    const allTotal = evaluateFunction('SUM', [args[1]!], sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+    if (isFormulaError(allTotal)) return allTotal
+    return evaluateBinary('/', scalarValue(subsetTotal), scalarValue(allTotal))
+  }
+  if (name === 'NA') return formulaError('#N/A')
+  if (name === 'PI') return args.length === 0 ? Math.PI : formulaError('#N/A')
+  if (name === 'RAND') return args.length === 0 ? Math.random() : formulaError('#N/A')
+  if (name === 'RANDBETWEEN') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const bottomValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(bottomValue)) return bottomValue
+    const topValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    if (isFormulaError(topValue)) return topValue
+    if (typeof bottomValue === 'boolean' || typeof topValue === 'boolean') return formulaError('#VALUE!')
+    const bottom = Number(bottomValue), top = Number(topValue)
+    if (Number.isNaN(bottom) || Number.isNaN(top)) return formulaError('#VALUE!')
+    if (bottom > top) return formulaError('#NUM!')
+    const lower = Math.ceil(bottom), upper = Math.floor(top)
+    return Math.floor(Math.random() * (upper - lower + 1)) + lower
+  }
+  if (name === 'ARABIC') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(value)) return value
+    if (value === null) return 0
+    if (typeof value !== 'string' || value.length > 255) return formulaError('#VALUE!')
+    const upperText = value.toLocaleUpperCase()
+    const negative = upperText.startsWith('-')
+    const text = negative ? upperText.slice(1) : upperText
+    let result = 0
+    for (let index = 0; index < text.length; index++) {
+      const current = ROMAN_DIGIT_VALUES.get(text.charAt(index)) ?? 0
+      const next = ROMAN_DIGIT_VALUES.get(text.charAt(index + 1)) ?? 0
+      const nextAfter = ROMAN_DIGIT_VALUES.get(text.charAt(index + 2)) ?? 0
+      const fourth = ROMAN_DIGIT_VALUES.get(text.charAt(index + 3)) ?? 0
+      if (!current || nextAfter >= next && nextAfter > current
+        || current === next && current === nextAfter && current === fourth || current === next / 2) return formulaError('#VALUE!')
+      result += current < next ? -current : current
+    }
+    return negative ? -result : result
+  }
+  if (name === 'ROMAN') {
+    if (args.length < 1 || args.length > 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const formValue = args.length === 2 ? singleRangeValue(evaluateArgument(args[1]!), resolve) : 0
+    if (isFormulaError(numberValue)) return numberValue
+    if (isFormulaError(formValue)) return formValue
+    const number = typeof numberValue === 'string' ? numericTextCoercion(numberValue, workbook, evaluationTime) : Number(numberValue)
+    if (isFormulaError(number)) return number
+    const form = typeof formValue === 'string' ? numericTextCoercion(formValue, workbook, evaluationTime) : Number(formValue)
+    if (isFormulaError(form)) return form
+    const integer = Math.floor(number)
+    const formIndex = typeof formValue === 'boolean' ? formValue ? 0 : 4 : Math.floor(form)
+    if (integer < 0 || integer > 3999 || formIndex < 0 || formIndex > 4) return formulaError('#VALUE!')
+    const formValues = ROMAN_FORM_VALUES[formIndex]!
+    let remaining = integer
+    let result = ''
+    for (let index = formValues.length - 1; index >= 0 && remaining > 0; index--) {
+      const value = formValues[index]!
+      const count = Math.floor(remaining / value)
+      result += ROMAN_NUMERAL_TEXT.get(value)!.repeat(count)
+      remaining -= count * value
+    }
+    return result
+  }
+  if (name === 'BASE') {
+    if (args.length < 2 || args.length > 3) return formulaError('#N/A')
+    const values = args.map(argument => singleRangeValue(evaluateArgument(argument), resolve))
+    const error = values.find(isFormulaError)
+    if (error) return error
+    const number = typeof values[0] === 'string' ? numericTextCoercion(values[0], workbook, evaluationTime) : Number(values[0])
+    if (isFormulaError(number)) return number
+    const radix = typeof values[1] === 'string' ? numericTextCoercion(values[1], workbook, evaluationTime) : Number(values[1])
+    if (isFormulaError(radix)) return radix
+    const minLengthValue = args.length === 3 ? values[2]! : 0
+    const minLength = typeof minLengthValue === 'string' ? numericTextCoercion(minLengthValue, workbook, evaluationTime) : Number(minLengthValue)
+    if (isFormulaError(minLength)) return minLength
+    const integer = Math.floor(number), base = Math.floor(radix), length = Math.floor(minLength)
+    if (integer < 0 || integer >= 2 ** 53 || base < 2 || base > 36 || length < 0) return formulaError('#NUM!')
+    return integer.toString(base).padStart(length, '0').toLocaleUpperCase()
+  }
+  if (name === 'DECIMAL') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const values = args.map(argument => singleRangeValue(evaluateArgument(argument), resolve))
+    const error = values.find(isFormulaError)
+    if (error) return error
+    const radix = typeof values[1] === 'string' ? numericTextCoercion(values[1], workbook, evaluationTime) : Number(values[1])
+    if (isFormulaError(radix)) return radix
+    const text = values[0] === null ? '0' : String(values[0])
+    const number = Number(text)
+    if (text.trim() && !Number.isNaN(number) && (number < 0 || number >= 2 ** 53 || !Number.isInteger(number))) return formulaError('#NUM!')
+    const lowerText = text.toLocaleLowerCase()
+    if (lowerText === 'true' || lowerText === 'false') return formulaError('#NUM!')
+    const base = Math.floor(radix)
+    if (base < 2 || base > 36) return formulaError('#NUM!')
+    if (text.replace(/\s/g, '') === '') return 0
+    for (const character of text) {
+      const code = character.toUpperCase().charCodeAt(0)
+      if (base <= 10 && !(code >= 48 && code < 48 + base)) return formulaError('#NUM!')
+      if (base > 10 && !(code >= 48 && code < 58 || code >= 65 && code < 65 + base - 10)) return formulaError('#NUM!')
+    }
+    const result = Number.parseInt(text, base)
+    return Number.isNaN(result) ? formulaError('#NUM!') : result
+  }
+  if (name === 'ABS' || name === 'SQRT' || name === 'INT') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (name === 'INT') {
+      const integerDigits = Math.floor(Math.abs(number)).toString().length
+      const rounded = integerDigits >= 12 ? number : Number.parseFloat(number.toPrecision(12))
+      if (Math.abs(number - rounded) < 1e-10) return Math.floor(rounded)
+      return Math.floor(integerDigits >= 15 ? number : Number.parseFloat(number.toPrecision(15)))
+    }
+    if (!Number.isFinite(number)) return formulaError('#NUM!')
+    return name === 'ABS' ? Math.abs(number) : finiteResult(Math.sqrt(number))
+  }
+  if (name === 'MOD' || name === 'POWER') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const operandValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    const operand = typeof operandValue === 'number' ? operandValue : numericTextCoercion(operandValue, workbook, evaluationTime)
+    if (isFormulaError(operand)) return operand
+    if (name === 'MOD') {
+      if (operand === 0) return formulaError('#DIV/0!')
+      if (typeof operandValue === 'boolean') return number - Math.floor(number)
+      if (!Number.isFinite(number) || !Number.isFinite(operand)
+        || Math.abs(operand) * 1125900000000 <= Math.abs(number)) return formulaError('#NUM!')
+      return finiteResult(number - operand * Math.floor(number / operand))
+    }
+    if (Number.isNaN(operand)) return formulaError('#VALUE!')
+    if (!Number.isFinite(number) || !Number.isFinite(operand)) return formulaError('#NUM!')
+    if (number === 0) {
+      if (operand < 0) return formulaError('#DIV/0!')
+      return operand === 0 ? formulaError('#NUM!') : 0
+    }
+    return finiteResult(number ** operand)
+  }
+  if (name === 'DEGREES' || name === 'RADIANS') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const angle = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(angle)) return angle
+    if (!Number.isFinite(angle)) return formulaError('#VALUE!')
+    return angle * (name === 'DEGREES' ? 180 / Math.PI : Math.PI / 180)
+  }
+  if (['ACOS', 'ACOSH', 'ACOT', 'ACOTH', 'ASIN', 'ASINH', 'ATAN', 'ATANH'].includes(name)) {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const angle = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(angle)) return angle
+    if (!Number.isFinite(angle)) return formulaError(name === 'ACOT' || name === 'ACOTH' ? '#VALUE!' : '#NUM!')
+    if (name === 'ACOT') return Math.atan(1 / angle) + (angle < 0 ? Math.PI : 0)
+    if (name === 'ACOTH') return Math.abs(angle) <= 1 ? formulaError('#NUM!') : 0.5 * Math.log((angle + 1) / (angle - 1))
+    if (name === 'ACOS') return finiteResult(Math.acos(angle))
+    if (name === 'ACOSH') return finiteResult(Math.acosh(angle))
+    if (name === 'ASIN') return finiteResult(Math.asin(angle))
+    if (name === 'ASINH') return finiteResult(Math.asinh(angle))
+    if (name === 'ATAN') return finiteResult(Math.atan(angle))
+    return finiteResult(Math.atanh(angle))
+  }
+  if (['SINH', 'COSH', 'TANH', 'COTH', 'SECH', 'CSCH'].includes(name)) {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (name === 'SECH') {
+      const denominator = Math.cosh(number)
+      return Number.isFinite(denominator) ? finiteResult(1 / denominator) : 0
+    }
+    if (name === 'CSCH') {
+      if (number === 0) return formulaError('#DIV/0!')
+      const denominator = Math.sinh(number)
+      if (!Number.isNaN(number) && !Number.isFinite(denominator)) return 0
+      return Number.isFinite(number) ? finiteResult(1 / denominator) : formulaError('#VALUE!')
+    }
+    if (!Number.isFinite(number)) return formulaError(name === 'COTH' ? '#VALUE!' : '#NUM!')
+    if (name === 'SINH') return finiteResult(Math.sinh(number))
+    if (name === 'COSH') return finiteResult(Math.cosh(number))
+    if (name === 'TANH') return finiteResult(Math.tanh(number))
+    return number === 0 ? formulaError('#DIV/0!') : finiteResult(1 / Math.tanh(number))
+  }
+  if (['EXP', 'LN', 'LOG10', 'SIGN'].includes(name)) {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (name === 'SIGN') return number > 0 ? 1 : number < 0 ? -1 : 0
+    if (!Number.isFinite(number)) return formulaError('#NUM!')
+    if (name === 'EXP') return finiteResult(Math.exp(number))
+    if (name === 'LN') return finiteResult(Math.log(number))
+    return finiteResult(Math.log10(number))
+  }
+  if (name === 'LOG') {
+    if (args.length < 1 || args.length > 2) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(value)) return value
+    const baseValue = args.length === 2 ? singleRangeValue(evaluateArgument(args[1]!), resolve) : 10
+    if (isFormulaError(baseValue)) return baseValue
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const base = typeof baseValue === 'number' ? baseValue : numericTextCoercion(baseValue, workbook, evaluationTime)
+    if (isFormulaError(base)) return base
+    if (number <= 0 || base <= 0) return formulaError('#NUM!')
+    const baseLog = Math.log(base)
+    return baseLog === 0 ? formulaError('#DIV/0!') : Math.log(number) / baseLog
+  }
+  if (name === 'ATAN2') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const xValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const x = typeof xValue === 'number' ? xValue : numericTextCoercion(xValue, workbook, evaluationTime)
+    if (isFormulaError(x)) return x
+    const yValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    const y = typeof yValue === 'number' ? yValue : numericTextCoercion(yValue, workbook, evaluationTime)
+    if (isFormulaError(y)) return y
+    if (typeof xValue === 'boolean') return Math.atan2(y, x)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return formulaError('#NUM!')
+    return x === 0 && y === 0 ? formulaError('#DIV/0!') : finiteResult(Math.atan2(y, x))
+  }
+  if (['EVEN', 'ODD', 'SQRTPI'].includes(name)) {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (name === 'SQRTPI') return number < 0 ? formulaError('#NUM!') : Math.sqrt(number * Math.PI)
+    if (!Number.isFinite(number)) return formulaError('#VALUE!')
+    const base = Math.abs(number) / (name === 'EVEN' ? 2 : 1)
+    const rounded = Math.ceil(base - Number.EPSILON * Math.max(1, base))
+    const magnitude = name === 'EVEN' ? rounded * 2 : rounded + (rounded % 2 === 0 ? 1 : 0)
+    const result = number < 0 ? -magnitude : magnitude
+    return result === 0 ? 0 : result
+  }
+  if (name === 'QUOTIENT') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numeratorValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(numeratorValue)) return numeratorValue
+    if (typeof numeratorValue === 'boolean') return formulaError('#VALUE!')
+    const denominatorValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    if (isFormulaError(denominatorValue)) return denominatorValue
+    if (typeof denominatorValue === 'boolean') return formulaError('#VALUE!')
+    const numerator = Number(numeratorValue)
+    const denominator = Number(denominatorValue)
+    if (Number.isNaN(numerator) || Number.isNaN(denominator)) return formulaError('#VALUE!')
+    return denominator === 0 ? formulaError('#DIV/0!') : Math.trunc(numerator / denominator)
+  }
+  if (name === 'FACT' || name === 'FACTDOUBLE') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const value = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof value === 'number' ? value : numericTextCoercion(value, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const integer = Math.floor(number)
+    if (integer < 0) return formulaError('#NUM!')
+    return finiteResult(factorial(integer, name === 'FACTDOUBLE' ? 2 : 1))
+  }
+  if (name === 'COMBIN' || name === 'COMBINA') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const chosenValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    const chosen = typeof chosenValue === 'number' ? chosenValue : numericTextCoercion(chosenValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (isFormulaError(chosen)) return chosen
+    const integer = Math.floor(number), chosenInteger = Math.floor(chosen)
+    if (integer < 0 || chosenInteger < 0 || (name === 'COMBIN' || integer === 0) && integer < chosenInteger) return formulaError('#NUM!')
+    const total = name === 'COMBINA' ? integer + chosenInteger - 1 : integer
+    const selected = name === 'COMBINA' ? integer - 1 : chosenInteger
+    const count = Math.min(total - selected, selected)
+    let result = 1
+    for (let index = 1; index <= count && Number.isFinite(result); index++) {
+      result *= total - index + 1
+      result /= index
+    }
+    return finiteResult(result)
+  }
+  if (name === 'GCD' || name === 'LCM' || name === 'MULTINOMIAL') {
+    if (args.length < 1 || args.length > 255) return formulaError('#N/A')
+    let result = name === 'GCD' ? 0 : 1
+    let total = 0
+    let hasNumber = false
+    for (const argument of args) {
+      const value = evaluateArgument(argument)
+      const values = isRangeValue(value)
+        ? cellsInRange(value).sort((left, right) => left.row - right.row || left.col - right.col)
+          .map(cell => cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell))
+        : [value]
+      for (const item of values) {
+        if (item === null) continue
+        if (typeof item === 'boolean') return formulaError('#VALUE!')
+        const number = typeof item === 'number' ? item : numericTextCoercion(item, workbook, evaluationTime)
+        if (isFormulaError(number)) return number
+        const integer = Math.floor(number)
+        if (integer < 0 || name === 'GCD' && integer >= 2 ** 53) return formulaError('#NUM!')
+        hasNumber = true
+        if (name === 'MULTINOMIAL') {
+          total += integer
+          if (total > 170) return formulaError('#NUM!')
+          result *= factorial(integer)
+          continue
+        }
+        let dividend = Math.floor(result)
+        let divisor = integer
+        while (divisor > 0) {
+          const remainder = dividend % divisor
+          dividend = divisor
+          divisor = remainder
+        }
+        const gcd = divisor === 0 ? dividend : divisor
+        if (name === 'GCD') {
+          result = gcd
+          continue
+        }
+        result = gcd === 0 ? 0 : Math.abs(result * integer) / gcd
+      }
+    }
+    if (name === 'MULTINOMIAL') return factorial(total) / result
+    if (name === 'GCD') return result
+    if (!hasNumber) return 0
+    return !Number.isFinite(result) || result >= 2 ** 53 ? formulaError('#VALUE!') : result
+  }
+  if (name === 'MROUND') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(numberValue)) return numberValue
+    const multipleValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    if (isFormulaError(multipleValue)) return multipleValue
+    if (typeof numberValue === 'boolean' || typeof multipleValue === 'boolean') return formulaError('#VALUE!')
+    const number = Number(numberValue)
+    const multiple = Number(multipleValue)
+    if (Number.isNaN(number) || Number.isNaN(multiple)) return formulaError('#VALUE!')
+    if (multiple === 0) return 0
+    if (number > 0 && multiple < 0 || number < 0 && multiple > 0) return formulaError('#NUM!')
+    const base = number / multiple
+    return Math.round(base + Number.EPSILON * Math.max(1, Math.abs(base))) * multiple
+  }
+  if (name === 'MDETERM') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = formulaArgumentMatrix(evaluateArrayArgument(args[0]!), resolve)
+    const matrix = Array.from({ length: input.columnCount }, () => new Array<number>(input.rowCount))
+    for (let row = 0; row < input.rowCount; row++) {
+      for (let column = 0; column < input.columnCount; column++) {
+        const value = input.valueAt(row * input.columnCount + column)
+        if (isFormulaError(value)) return value
+        if (value === null || typeof value === 'boolean') return formulaError('#VALUE!')
+        const number = typeof value === 'string' ? numericTextCoercion(value, workbook, evaluationTime) : value
+        if (isFormulaError(number)) return number
+        matrix[column]![row] = number
+      }
+    }
+    if (input.rowCount !== input.columnCount) return formulaError('#VALUE!')
+    if (matrix.length === 1) return matrix[0]![0]!
+    if (matrix.length === 2) return matrix[0]![0]! * matrix[1]![1]! - matrix[0]![1]! * matrix[1]![0]!
+    const luMatrix = Array.from({ length: matrix.length }, () => new Array<number>(matrix.length).fill(0))
+    let determinant = 1
+    for (let column = 0; column < matrix.length; column++) {
+      for (let row = 0; row < column; row++) {
+        let value = matrix[row]![column]!
+        for (let index = 0; index < row; index++) value -= luMatrix[row]![index]! * luMatrix[index]![column]!
+        luMatrix[row]![column] = value
+      }
+      let maxPivot = -Infinity
+      let pivotRow = column
+      for (let row = column; row < matrix.length; row++) {
+        let value = matrix[row]![column]!
+        for (let index = 0; index < column; index++) value -= luMatrix[row]![index]! * luMatrix[index]![column]!
+        luMatrix[row]![column] = value
+        if (Math.abs(value) > maxPivot) {
+          maxPivot = Math.abs(value)
+          pivotRow = row
+        }
+      }
+      const pivot = Math.abs(luMatrix[pivotRow]![column]!)
+      if (!Number.isFinite(pivot) || pivot <= 1e-11) return 0
+      if (pivotRow !== column) {
+        [luMatrix[column], luMatrix[pivotRow]] = [luMatrix[pivotRow]!, luMatrix[column]!]
+        [matrix[column], matrix[pivotRow]] = [matrix[pivotRow]!, matrix[column]!]
+        determinant = -determinant
+      }
+      for (let row = column + 1; row < matrix.length; row++) luMatrix[row]![column]! /= luMatrix[column]![column]!
+    }
+    for (let index = 0; index < matrix.length; index++) determinant *= luMatrix[index]![index]!
+    return determinant === 0 ? 0 : determinant
+  }
+  if (name === 'SUMSQ') {
+    if (args.length < 1 || args.length > 255) return formulaError('#N/A')
+    let result: number | FormulaErrorValue = 0
+    for (const argument of args) {
+      const value = evaluateArrayArgument(argument)
+      if (isFormulaError(value)) return value
+      const values = isRangeValue(value)
+        ? cellsInRange(value).sort((left, right) => left.row - right.row || left.col - right.col)
+          .map(cell => formulaReferenceCellValue(value.sheet, cell.row, cell.col, resolve))
+        : [value]
+      for (const item of values) {
+        if (isFormulaError(item)) return item
+        if (isRangeValue(value) && (item === null || typeof item === 'string' || typeof item === 'boolean')) continue
+        const number = typeof item === 'number' ? item : numericTextCoercion(item, workbook, evaluationTime)
+        if (isFormulaError(number)) return number
+        const squared = number ** 2
+        if (isFormulaError(result) || !Number.isFinite(squared)) {
+          result = formulaError('#VALUE!')
+          continue
+        }
+        const total = result + squared
+        result = Number.isFinite(total) ? total : formulaError('#NUM!')
+      }
+      if (isFormulaError(result)) return result
+    }
+    return result
+  }
+  if (name === 'SUMX2MY2' || name === 'SUMX2PY2' || name === 'SUMXMY2') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const inputs = args.map(evaluateArrayArgument)
+    for (const input of inputs) if (isFormulaError(input)) return input
+    const matrices = inputs.map(input => formulaArgumentMatrix(input, resolve))
+    const count = matrices[0]!.rowCount * matrices[0]!.columnCount
+    if (count !== matrices[1]!.rowCount * matrices[1]!.columnCount) return formulaError('#N/A')
+    const pairResult = (x: number, y: number) => {
+      if (name === 'SUMX2MY2') return x ** 2 - y ** 2
+      if (name === 'SUMX2PY2') return x ** 2 + y ** 2
+      return (x - y) ** 2
+    }
+    if (count === 1) {
+      const x = matrices[0]!.valueAt(0)
+      if (isFormulaError(x)) return x
+      const y = matrices[1]!.valueAt(0)
+      if (isFormulaError(y)) return y
+      if (x === null || y === null) return formulaError('#VALUE!')
+      if (typeof x === 'boolean' || typeof y === 'boolean'
+        || typeof x === 'string' && Number.isNaN(Number(x)) || typeof y === 'string' && Number.isNaN(Number(y))) return formulaError('#DIV/0!')
+      return pairResult(Number(x), Number(y))
+    }
+    let result = 0
+    let validPairs = 0
+    for (let index = 0; index < count; index += 1) {
+      const x = matrices[0]!.valueAt(index)
+      if (x === null || typeof x === 'string' || typeof x === 'boolean') continue
+      if (isFormulaError(x)) return x
+      const y = matrices[1]!.valueAt(index)
+      if (y === null || typeof y === 'string' || typeof y === 'boolean') continue
+      if (isFormulaError(y)) return y
+      result += pairResult(x, y)
+      validPairs += 1
+    }
+    return validPairs ? result : formulaError('#DIV/0!')
+  }
+  if (name === 'SUMPRODUCT') {
+    if (args.length < 1 || args.length > 255) return formulaError('#N/A')
+    const inputs = args.map(evaluateArrayArgument)
+    if (isFormulaError(inputs[0])) return inputs[0]
+    const matrices = inputs.map(input => formulaArgumentMatrix(input, resolve))
+    const count = matrices[0]!.rowCount * matrices[0]!.columnCount
+    if (inputs.length === 1) {
+      let result: number | FormulaErrorValue = 0
+      for (let index = 0; index < count; index += 1) {
+        const value = matrices[0]!.valueAt(index)
+        if (value === null || typeof value === 'string' || typeof value === 'boolean') continue
+        if (isFormulaError(value)) return value
+        if (isFormulaError(result) || Number.isNaN(value)) {
+          result = formulaError('#VALUE!')
+          continue
+        }
+        const total = result + value
+        result = Number.isFinite(total) ? total : formulaError('#NUM!')
+      }
+      return result
+    }
+    for (let index = 0; index < count; index += 1) {
+      const value = matrices[0]!.valueAt(index)
+      if (isFormulaError(value)) return value
+    }
+    for (let index = 1; index < inputs.length; index += 1) {
+      if (isFormulaError(inputs[index])) return inputs[index]!
+      if (isRangeValue(inputs[index]!) && (matrices[index]!.rowCount !== matrices[0]!.rowCount
+        || matrices[index]!.columnCount !== matrices[0]!.columnCount)) return formulaError('#VALUE!')
+    }
+    let result = 0
+    for (let index = 0; index < count; index += 1) {
+      const value = matrices[0]!.valueAt(index)
+      let product = typeof value === 'number' ? value : 0
+      for (let variantIndex = 1; variantIndex < matrices.length; variantIndex += 1) {
+        const item = matrices[variantIndex]!.valueAt(index)
+        if (isFormulaError(item)) return item
+        product = typeof item === 'number' ? product * item : 0
+      }
+      result += product
+    }
+    return result
+  }
+  if (name === 'SERIESSUM') {
+    if (args.length !== 4) return formulaError('#N/A')
+    const inputs = args.map(evaluateArrayArgument)
+    if (inputs.some(input => input === null)) return formulaError('#N/A')
+    const scalarValues: FormulaValue[] = []
+    for (const input of inputs.slice(0, 3)) {
+      const matrix = formulaArgumentMatrix(input, resolve)
+      if (matrix.rowCount !== 1 || matrix.columnCount !== 1) return formulaError('#VALUE!')
+      const value = matrix.valueAt(0)
+      if (isFormulaError(value)) return value
+      if (typeof value === 'boolean') return formulaError('#VALUE!')
+      scalarValues.push(value)
+    }
+    const parameters: number[] = []
+    for (const value of scalarValues) {
+      const number = typeof value === 'string' ? numericTextCoercion(value, workbook, evaluationTime) : Number(value)
+      if (isFormulaError(number)) return number
+      parameters.push(number)
+    }
+    const coefficients = formulaArgumentMatrix(inputs[3]!, resolve)
+    let result = 0
+    for (let index = 0; index < coefficients.rowCount * coefficients.columnCount; index += 1) {
+      const value = coefficients.valueAt(index)
+      if (isFormulaError(value)) return value
+      if (typeof value === 'boolean') return formulaError('#VALUE!')
+      const number = typeof value === 'string' ? numericTextCoercion(value, workbook, evaluationTime) : Number(value)
+      if (isFormulaError(number)) return number
+      result += number * parameters[0]! ** (parameters[1]! + index * parameters[2]!)
+    }
+    return finiteResult(result)
+  }
+  if (['CEILING', 'CEILING.MATH', 'CEILING.PRECISE', 'ISO.CEILING', 'FLOOR', 'FLOOR.MATH', 'FLOOR.PRECISE'].includes(name)) {
+    const legacy = name === 'CEILING' || name === 'FLOOR'
+    const hasMode = name.endsWith('.MATH')
+    if (args.length < (legacy ? 2 : 1) || args.length > (hasMode ? 3 : 2)) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(numberValue)) return numberValue
+    const significanceValue = args.length > 1 ? singleRangeValue(evaluateArgument(args[1]!), resolve) : 1
+    const modeValue = hasMode && args.length === 3 ? singleRangeValue(evaluateArgument(args[2]!), resolve) : 0
+    if (name !== 'FLOOR.MATH') {
+      if (isFormulaError(significanceValue)) return significanceValue
+      if (isFormulaError(modeValue)) return modeValue
+    }
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const significance = typeof significanceValue === 'number' ? significanceValue : numericTextCoercion(significanceValue, workbook, evaluationTime)
+    if (isFormulaError(significance)) return significance
+    const mode = typeof modeValue === 'number' ? modeValue : numericTextCoercion(modeValue, workbook, evaluationTime)
+    if (isFormulaError(mode)) return mode
+    if (legacy && number > 0 && significance < 0) return formulaError('#NUM!')
+    if (number === 0) return 0
+    if (significance === 0) return name === 'FLOOR' ? formulaError('#DIV/0!') : 0
+    const reverseDirection = hasMode && number < 0 && mode !== 0
+    const step = legacy ? significance : Math.abs(significance)
+    const base = (reverseDirection ? -number : number) / step
+    const epsilon = Number.EPSILON * Math.max(1, Math.abs(base))
+    const rounded = name.startsWith('FLOOR') ? Math.floor(base + epsilon) : Math.ceil(base - epsilon)
+    return (reverseDirection ? -rounded : rounded) * step
+  }
+  if (['ROUND', 'ROUNDDOWN', 'ROUNDUP'].includes(name)) {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const digitsValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    const digits = typeof digitsValue === 'number' ? digitsValue : numericTextCoercion(digitsValue, workbook, evaluationTime)
+    if (isFormulaError(digits)) return digits
+    const booleanDigits = typeof digitsValue === 'boolean'
+    if (!booleanDigits && (!Number.isFinite(number) || !Number.isFinite(digits))) return formulaError('#NUM!')
+    const base = number < 0 && !booleanDigits ? -number : number
+    const factor = 10 ** Math.trunc(digits)
+    const epsilon = Number.EPSILON * Math.max(1, Math.abs(base * factor))
+    const scaled = base * factor + (name === 'ROUNDUP' ? -epsilon : epsilon)
+    const rounded = name === 'ROUND' ? Math.round(scaled) : name === 'ROUNDUP' ? Math.ceil(scaled) : Math.floor(scaled)
+    const result = (number < 0 && !booleanDigits ? -rounded : rounded) / factor
+    return booleanDigits ? result : finiteResult(result)
+  }
+  if (name === 'TRUNC') {
+    if (args.length < 1 || args.length > 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const digitsValue = args.length === 2 ? singleRangeValue(evaluateArgument(args[1]!), resolve) : 0
+    const digits = typeof digitsValue === 'number' ? digitsValue : numericTextCoercion(digitsValue, workbook, evaluationTime)
+    if (isFormulaError(digits)) return digits
+    const factor = 10 ** Math.trunc(digits)
+    const epsilon = Number.EPSILON * Math.max(1, Math.abs(number * factor))
+    return Math.trunc(number * factor + epsilon) / factor
+  }
+  if (name === 'ROUNDBANK') {
+    if (args.length !== 2) return formulaError('#N/A')
+    const numberValue = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(numberValue)) return numberValue
+    const digitsValue = singleRangeValue(evaluateArgument(args[1]!), resolve)
+    if (isFormulaError(digitsValue)) return digitsValue
+    const number = typeof numberValue === 'number' ? numberValue : numericTextCoercion(numberValue, workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    const digits = typeof digitsValue === 'number' ? digitsValue : numericTextCoercion(digitsValue, workbook, evaluationTime)
+    if (isFormulaError(digits)) return digits
+    const precision = Math.trunc(digits)
+    if (precision > 16) return number
+    if (precision < -16) return 0
+    const factor = 10 ** precision
+    const scaled = Number((number * factor).toFixed(8))
+    const lower = Math.floor(scaled)
+    if (Math.abs(scaled - lower - 0.5) > 1e-8) return Math.round(scaled) / factor
+    return (lower % 2 === 0 ? lower : lower + 1) / factor
+  }
+  if (['SIN', 'COS', 'TAN', 'COT', 'SEC', 'CSC'].includes(name) && args.length !== 1) return formulaError('#N/A')
   if (name === 'SWITCH') {
-    if (args.length < 3 || args.length > 255) return formulaError('#VALUE!')
+    if (args.length === 0) return formulaError('#N/A')
     const expression = evaluateArgument(args[0]!)
     if (isFormulaError(expression)) return expression
     const hasDefault = args.length % 2 === 0
@@ -272,7 +935,7 @@ function evaluateFunction(
     return fallback === null ? formulaError('#N/A') : fallback
   }
   if (name === 'IF') {
-    if (args.length < 2 || args.length > 3) return formulaError('#VALUE!')
+    if (args.length < 2 || args.length > 3) return formulaError('#N/A')
     const condition = evaluateArgument(args[0]!)
     if (isFormulaError(condition)) return condition
     const truth = booleanCoercion(condition)
@@ -281,17 +944,17 @@ function evaluateFunction(
     return selected ? evaluateArgument(selected) : false
   }
   if (name === 'IFERROR') {
-    if (args.length !== 2) return formulaError('#VALUE!')
+    if (args.length !== 2) return formulaError('#N/A')
     const value = evaluateArgument(args[0]!)
     return isFormulaError(value) ? evaluateArgument(args[1]!) : value
   }
   if (name === 'IFNA') {
-    if (args.length !== 2) return formulaError('#VALUE!')
+    if (args.length !== 2) return formulaError('#N/A')
     const value = evaluateArgument(args[0]!)
     return isFormulaError(value) && value.code === '#N/A' ? evaluateArgument(args[1]!) : value
   }
   if (name === 'IFS') {
-    if (args.length < 2 || args.length % 2 !== 0) return formulaError('#VALUE!')
+    if (args.length < 2 || args.length > 255 || args.length % 2 !== 0) return formulaError('#N/A')
     for (let index = 0; index < args.length; index += 2) {
       const condition = evaluateArgument(args[index]!)
       if (isFormulaError(condition)) return condition
@@ -302,16 +965,134 @@ function evaluateFunction(
     return formulaError('#N/A')
   }
 
+  if (name === 'SHEETS') return args.length === 0 ? workbook.sheets.length : formulaError('#N/A')
+  if (name === 'SHEET') {
+    if (args.length > 1) return formulaError('#N/A')
+    if (args.length === 0) return workbook.sheets.findIndex(candidate => candidate.id === sheet.id) + 1
+    const value = evaluateArrayArgument(args[0]!)
+    if (isFormulaError(value)) return value
+    if (isRangeValue(value)) return workbook.sheets.findIndex(candidate => candidate.id === value.sheet.id) + 1
+    const index = workbook.sheets.findIndex(candidate => candidate.name.toLocaleLowerCase() === String(value).toLocaleLowerCase())
+    return index < 0 ? formulaError('#N/A') : index + 1
+  }
+
+  if (name === 'ISBETWEEN') {
+    if (args.length < 3 || args.length > 5) return formulaError('#N/A')
+    const values: CellScalar[] = []
+    for (const argument of args) {
+      const input = formulaArgumentMatrix(evaluateArrayArgument(argument), resolve)
+      if (input.rowCount > 1 || input.columnCount > 1) return formulaError('#VALUE!')
+      const value = input.valueAt(0)
+      if (isFormulaError(value)) return value
+      values.push(value)
+    }
+    const lowerInclusive = args.length > 3 ? values[3]! : true
+    const upperInclusive = args.length > 4 ? values[4]! : true
+    if (typeof lowerInclusive === 'string' || typeof upperInclusive === 'string') return formulaError('#VALUE!')
+
+    const compareIntervalValue = (left: CellScalar, right: CellScalar, operator: '>' | '>=' | '<' | '<=') => {
+      const leftValue = left === null ? typeof right === 'string' ? '' : typeof right === 'boolean' ? false : 0
+        : typeof left === 'boolean' && right === null ? Number(left) : left
+      const rightValue = right === null ? 0 : right
+      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+        const numbers = [leftValue, rightValue].map(value => {
+          if (!Number.isFinite(value)) return value
+          const integerDigits = Math.floor(Math.abs(value)).toString().length
+          const rounded = integerDigits >= 12 ? value : Number(value.toPrecision(12))
+          if (Math.abs(value - rounded) < 1e-10) return rounded
+          return integerDigits >= 15 ? value : Number(value.toPrecision(15))
+        })
+        if (operator === '>') return numbers[0]! > numbers[1]!
+        if (operator === '>=') return numbers[0]! >= numbers[1]!
+        if (operator === '<') return numbers[0]! < numbers[1]!
+        return numbers[0]! <= numbers[1]!
+      }
+      if (typeof leftValue === 'string' && typeof rightValue === 'string') {
+        if (/[*?]/.test(rightValue)) {
+          const fold = (text: string) => text.replace(/[\s\S]/g, character => {
+            const lower = character.toLowerCase()
+            return lower.length === 1 ? lower : character
+          })
+          const current = fold(leftValue)
+          const target = fold(rightValue)
+          const pattern = target.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/~?[*?]/g, match => {
+            if (match.startsWith('~')) return `\\${match.slice(1)}`
+            return match === '*' ? '.*' : '.'
+          })
+          const threshold = target.replace(/~?[*?]/g, match => match.startsWith('~') ? match.slice(1) : ' ')
+          if (operator === '>' || operator === '>=') return new RegExp(`^${pattern}$`, 's').test(current) || current > threshold
+          return current < threshold
+        }
+        const texts = [leftValue, rightValue].map(value => value.toLowerCase().normalize('NFC')
+          .replace(/[ßæœﬀ-ﬆ]/g, character => FORMULA_TEXT_LIGATURES.get(character)!))
+        const ordering = texts[0]!.localeCompare(texts[1]!)
+        if (operator === '>') return ordering > 0
+        if (operator === '>=') return texts[0] === texts[1] || ordering > 0
+        if (operator === '<') return ordering < 0
+        return texts[0] === texts[1] || ordering < 0
+      }
+      if (typeof leftValue === 'boolean' && typeof rightValue === 'boolean') return compareOrdering(Number(leftValue) - Number(rightValue), operator)
+      const leftRank = typeof leftValue === 'boolean' ? 2 : typeof leftValue === 'string' ? 1 : 0
+      const rightRank = typeof rightValue === 'boolean' ? 2 : typeof rightValue === 'string' ? 1 : 0
+      return compareOrdering(leftRank - rightRank, operator)
+    }
+
+    if (compareIntervalValue(values[1]!, values[2]!, '>')) return formulaError('#NUM!')
+    if (!compareIntervalValue(values[0]!, values[1]!, Number(lowerInclusive) ? '>=' : '>')) return false
+    return compareIntervalValue(values[0]!, values[2]!, Number(upperInclusive) ? '<=' : '<')
+  }
+
+  if (name === 'ISEMAIL' || name === 'ISURL') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = formulaArgumentMatrix(evaluateArrayArgument(args[0]!), resolve)
+    if (input.rowCount > 1 || input.columnCount > 1) return formulaError('#VALUE!')
+    const value = input.valueAt(0)
+    if (isFormulaError(value)) return value
+    if (typeof value !== 'string') return false
+    const text = name === 'ISURL' ? value.trim() : value
+    if (text.length > (name === 'ISURL' ? 1000 : 254)) return false
+    return (name === 'ISURL' ? FORMULA_URL_PATTERN : FORMULA_EMAIL_PATTERN).test(text)
+  }
+
+  if (name === 'ISEVEN' || name === 'ISODD') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = formulaArgumentMatrix(evaluateArrayArgument(args[0]!), resolve)
+    if (input.rowCount > 1 || input.columnCount > 1) return formulaError('#VALUE!')
+    const value = input.valueAt(0)
+    if (isFormulaError(value)) return value
+    if (typeof value === 'boolean') return formulaError('#VALUE!')
+    const integer = Math.trunc(Number(value))
+    if (Number.isNaN(integer)) return formulaError('#VALUE!')
+    return name === 'ISEVEN' ? integer % 2 === 0 : integer % 2 !== 0
+  }
+  if (name === 'ISFORMULA') {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = evaluateArrayArgument(args[0]!)
+    if (isFormulaError(input)) return input
+    if (!isRangeValue(input)) return formulaError('#N/A')
+    if (input.reference.start.row !== input.reference.end.row || input.reference.start.column !== input.reference.end.column) return formulaError('#VALUE!')
+    return Boolean(input.sheet.cells[cellKey(input.reference.start.row, input.reference.start.column)]?.formula)
+  }
+
+  if (['ERROR.TYPE', 'N', 'TYPE', 'ISREF'].includes(name)) {
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = evaluateArrayArgument(args[0]!)
+    if (name === 'ISREF') return isRangeValue(input)
+    const matrix = formulaArgumentMatrix(input, resolve)
+    if (name !== 'N' && (matrix.rowCount > 1 || matrix.columnCount > 1)) return name === 'TYPE' ? 64 : formulaError('#VALUE!')
+    const value = matrix.valueAt(0)
+    if (name === 'TYPE') return isFormulaError(value) ? 16 : typeof value === 'boolean' ? 4 : typeof value === 'string' ? 2 : 1
+    if (name === 'N') return isFormulaError(value) ? value : typeof value === 'string' ? 0 : Number(value)
+    if (!isFormulaError(value) && typeof value !== 'string') return formulaError('#N/A')
+    return ERROR_TYPE_NUMBERS.get(isFormulaError(value) ? value.code : value) ?? formulaError('#N/A')
+  }
+
   if (['ISBLANK', 'ISERR', 'ISERROR', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISTEXT'].includes(name)) {
-    if (args.length !== 1) return formulaError('#VALUE!')
-    const argument = args[0]!
-    const input = argument.kind === 'reference' || argument.kind === 'range'
-      || argument.kind === 'binary' && argument.operator === ':' || argument.kind === 'function' && argument.name === 'INDEX'
-      ? evaluateReferenceOperand(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
-      : evaluateArgument(argument)
+    if (args.length !== 1) return formulaError('#N/A')
+    const input = evaluateArrayArgument(args[0]!)
     if (isRangeValue(input) && (input.reference.start.row !== input.reference.end.row
       || input.reference.start.column !== input.reference.end.column)) return formulaError('#VALUE!')
-    const value = isRangeValue(input) ? resolve(input.sheet, input.reference.start.row, input.reference.start.column) : input
+    const value = isRangeValue(input) ? formulaReferenceCellValue(input.sheet, input.reference.start.row, input.reference.start.column, resolve) : input
     if (name === 'ISBLANK' && isRangeValue(input)) {
       const cell = input.sheet.cells[cellKey(input.reference.start.row, input.reference.start.column)]
       return !isFormulaError(value) && (!cell || (cell.value === null || cell.value === '')
@@ -320,14 +1101,17 @@ function evaluateFunction(
     if (name === 'ISBLANK') return value === null
     if (name === 'ISERROR') return isFormulaError(value)
     if (name === 'ISERR') return isFormulaError(value) && value.code !== '#N/A'
-    if (name === 'ISNA') return isFormulaError(value) && value.code === '#N/A'
+    if (name === 'ISNA') return (isFormulaError(value) ? value.code : value) === '#N/A'
     if (name === 'ISLOGICAL') return typeof value === 'boolean'
     if (name === 'ISNONTEXT') return typeof value !== 'string'
     if (name === 'ISNUMBER') return typeof value === 'number'
     return typeof value === 'string'
   }
 
-  const evaluated = args.map(evaluateArgument)
+  const evaluated = args.map(argument => {
+    const value = evaluateArgument(argument)
+    return ['LEFT', 'RIGHT', 'MID', 'WEEKDAY', 'VALUE', 'LEN', 'UPPER', 'LOWER', 'TRIM'].includes(name) ? singleRangeValue(value, resolve) : value
+  })
   if (name === 'COUNTBLANK' || name === 'COUNTA') return evaluateCountValue(name, evaluated, args, sheet, resolve)
   if (['COUNTIF', 'COUNTIFS', 'SUMIF', 'SUMIFS', 'AVERAGEIF', 'AVERAGEIFS'].includes(name)) {
     return evaluateConditionalAggregate(name, evaluated, args, sheet, resolve, workbook)
@@ -392,7 +1176,6 @@ function evaluateFunction(
   }
   for (const value of evaluated) if (isFormulaError(value)) return value
   if (name === 'AND' || name === 'OR' || name === 'XOR') {
-    if (evaluated.length === 0) return formulaError('#VALUE!')
     const booleans: boolean[] = []
     for (const value of evaluated) {
       for (const item of flattenScalar(value, sheet, resolve)) {
@@ -403,7 +1186,7 @@ function evaluateFunction(
     }
     return name === 'AND' ? booleans.every(Boolean) : name === 'OR' ? booleans.some(Boolean) : booleans.filter(Boolean).length % 2 === 1
   }
-  if (name === 'NOT') return args.length === 1 ? invertBoolean(evaluated[0]!) : formulaError('#VALUE!')
+  if (name === 'NOT') return invertBoolean(evaluated[0]!)
   if (name === 'DATE') {
     if (evaluated.length !== 3) return formulaError('#VALUE!')
     const parts = evaluated.map(numericCoercion)
@@ -433,7 +1216,6 @@ function evaluateFunction(
     return singleRangeValue(evaluated[0]!, resolve)
   }
   if (name === 'NOW' || name === 'TODAY') {
-    if (evaluated.length !== 0) return formulaError('#VALUE!')
     const year = evaluationTime.getFullYear()
     const month = evaluationTime.getMonth() + 1
     const day = evaluationTime.getDate()
@@ -458,17 +1240,23 @@ function evaluateFunction(
   }
   if (name === 'YEAR' || name === 'MONTH' || name === 'DAY' || name === 'WEEKDAY') {
     if ((name !== 'WEEKDAY' && evaluated.length !== 1) || (name === 'WEEKDAY' && (evaluated.length < 1 || evaluated.length > 2))) return formulaError('#VALUE!')
-    const serial = numericCoercion(evaluated[0]!)
+    const serial = name === 'WEEKDAY' ? numericTextCoercion(evaluated[0]!, workbook, evaluationTime, false) : numericCoercion(evaluated[0]!)
     if (isFormulaError(serial)) return serial
+    if (name === 'WEEKDAY' && serial > getDateSystemMaxSerial(workbook.date1904 ? DateSystem.Date1904 : DateSystem.Date1900)) return formulaError('#NUM!')
     const parts = serialToDateParts(serial, workbook.date1904)
     if (!parts) return formulaError('#NUM!')
     if (name === 'YEAR') return parts.year
     if (name === 'MONTH') return parts.month
     if (name === 'DAY') return parts.day
-    const returnTypeValue = evaluated.length > 1 ? numericCoercion(evaluated[1]!) : 1
-    if (isFormulaError(returnTypeValue) || ![1, 2, 3].includes(returnTypeValue)) return formulaError('#NUM!')
-    const weekday = excelWeekday(parts, serial, workbook.date1904)
-    return returnTypeValue === 1 ? weekday : returnTypeValue === 2 ? (weekday + 5) % 7 + 1 : (weekday + 5) % 7
+    const returnTypeValue = evaluated.length > 1 ? numericTextCoercion(evaluated[1]!, workbook, evaluationTime) : 1
+    if (isFormulaError(returnTypeValue)) return returnTypeValue
+    const returnType = Math.floor(returnTypeValue)
+    if (![1, 2, 3, 11, 12, 13, 14, 15, 16, 17].includes(returnType)) return formulaError('#NUM!')
+    const weekday = serialWeekday(serial, workbook.date1904)
+    if (returnType === 1 || returnType === 17) return weekday + 1
+    if (returnType === 3) return (weekday + 6) % 7
+    const firstWeekday = returnType === 2 ? 1 : returnType - 10
+    return (weekday - firstWeekday + 7) % 7 + 1
   }
   if (name === 'ISOWEEKNUM') {
     if (evaluated.length !== 1) return formulaError('#VALUE!')
@@ -630,22 +1418,15 @@ function evaluateFunction(
     const totalSeconds = Math.floor(fraction * 86_400 + 1e-8)
     return name === 'HOUR' ? Math.floor(totalSeconds / 3600) : name === 'MINUTE' ? Math.floor(totalSeconds % 3600 / 60) : totalSeconds % 60
   }
-  if (name === 'ABS' || name === 'SQRT' || name === 'INT' || name === 'ROUND' || name === 'MOD' || name === 'POWER') {
-    const numbers = evaluated.map(numericCoercion)
-    const error = numbers.find(isFormulaError)
-    if (error) return error
-    const values = numbers as number[]
-    if ((name === 'ABS' || name === 'SQRT' || name === 'INT') && values.length !== 1) return formulaError('#VALUE!')
-    if (name === 'ABS') return Math.abs(values[0]!)
-    if (name === 'SQRT') return values[0]! < 0 ? formulaError('#NUM!') : Math.sqrt(values[0]!)
-    if (name === 'INT') return Math.floor(values[0]!)
-    if (name === 'ROUND') {
-      if (values.length !== 2 || Math.abs(values[1]!) > 308) return formulaError('#NUM!')
-      const scale = 10 ** values[1]!
-      return finiteResult(Math.sign(values[0]!) * Math.round(Math.abs(values[0]!) * scale) / scale)
-    }
-    if (name === 'MOD') return values.length === 2 ? values[1] === 0 ? formulaError('#DIV/0!') : values[0]! - values[1]! * Math.floor(values[0]! / values[1]!) : formulaError('#VALUE!')
-    if (name === 'POWER') return values.length === 2 ? finiteResult(values[0]! ** values[1]!) : formulaError('#VALUE!')
+  if (['SIN', 'COS', 'TAN', 'COT', 'SEC', 'CSC'].includes(name)) {
+    const number = numericTextCoercion(singleRangeValue(evaluated[0]!, resolve), workbook, evaluationTime)
+    if (isFormulaError(number)) return number
+    if (name === 'SIN') return finiteResult(Math.sin(number))
+    if (name === 'COS') return finiteResult(Math.cos(number))
+    if (name === 'TAN') return finiteResult(Math.tan(number))
+    if (Math.abs(number) >= 2 ** 27) return formulaError('#NUM!')
+    const denominator = name === 'COT' ? Math.tan(number) : name === 'SEC' ? Math.cos(number) : Math.sin(number)
+    return denominator === 0 ? formulaError('#DIV/0!') : finiteResult(1 / denominator)
   }
   if (name === 'CHAR' || name === 'UNICHAR' || name === 'CODE' || name === 'UNICODE' || name === 'EXACT' || name === 'CLEAN' || name === 'PROPER' || name === 'NUMBERVALUE' || name === 'TEXTAFTER' || name === 'TEXTBEFORE') {
     if (args.length < 1 || args.length > (name === 'NUMBERVALUE' ? 3 : name === 'TEXTAFTER' || name === 'TEXTBEFORE' ? 6 : name === 'EXACT' ? 2 : 1)) return formulaError('#VALUE!')
@@ -779,22 +1560,24 @@ function evaluateFunction(
     if ((name === 'LEFT' || name === 'RIGHT') && (args.length < 1 || args.length > 2)) return formulaError('#VALUE!')
     if (name === 'MID' && args.length !== 3) return formulaError('#VALUE!')
     if (['LEN', 'UPPER', 'LOWER', 'TRIM', 'VALUE'].includes(name) && args.length !== 1) return formulaError('#VALUE!')
+    if (name === 'VALUE') return typeof evaluated[0] === 'boolean' ? formulaError('#VALUE!') : numericTextCoercion(evaluated[0]!, workbook, evaluationTime)
     const text = scalarToText(scalarValue(evaluated[0]!))
     if (name === 'LEN') return text.length
     if (name === 'UPPER') return text.toLocaleUpperCase()
     if (name === 'LOWER') return text.toLocaleLowerCase()
-    if (name === 'TRIM') return text.trim().replace(/\s+/g, ' ')
-    if (name === 'VALUE') { const number = Number(text); return Number.isFinite(number) ? number : formulaError('#VALUE!') }
-    const lengthArg = args.length > 1 ? numericCoercion(evaluated[1]!) : 1
-    if (isFormulaError(lengthArg) || !Number.isInteger(lengthArg) || lengthArg < 0) return formulaError('#VALUE!')
-    if (name === 'LEFT') return Array.from(text).slice(0, lengthArg).join('')
-    if (name === 'RIGHT') return lengthArg === 0 ? '' : Array.from(text).slice(-lengthArg).join('')
-    const start = numericCoercion(evaluated[1]!)
-    const count = numericCoercion(evaluated[2]!)
-    if (isFormulaError(start) || isFormulaError(count) || start < 1 || !Number.isInteger(start) || count < 0 || !Number.isInteger(count)) return formulaError('#VALUE!')
-    return Array.from(text).slice(start - 1, start - 1 + count).join('')
+    if (name === 'TRIM') return text.replace(/^[ \u3000]+|[ \u3000]+$/g, '').replace(/[ \u3000]{2,}/g, run => run.charAt(0))
+    const lengthValue = args.length > 1 ? numericTextCoercion(evaluated[1]!, workbook, evaluationTime) : 1
+    if (isFormulaError(lengthValue)) return lengthValue
+    const lengthArg = Math.floor(lengthValue)
+    if (lengthArg < 0) return formulaError('#VALUE!')
+    if (name === 'LEFT') return text.slice(0, lengthArg)
+    if (name === 'RIGHT') return lengthArg === 0 ? '' : text.slice(-lengthArg)
+    const countValue = numericTextCoercion(evaluated[2]!, workbook, evaluationTime)
+    if (isFormulaError(countValue)) return countValue
+    const count = Math.floor(countValue)
+    if (lengthArg < 1 || count < 0) return formulaError('#VALUE!')
+    return text.slice(lengthArg - 1, lengthArg - 1 + count)
   }
-  if (name === 'NA' && args.length === 0) return formulaError('#N/A')
   return formulaError('#NAME?')
 }
 
@@ -1750,6 +2533,15 @@ function flattenText(values: RuntimeValue[], sheet: SpreadsheetSheet, resolve: (
   return parts.join('')
 }
 
+function numericTextCoercion(value: RuntimeValue, workbook: WorkbookModel, evaluationTime: Date, formatted = true): number | FormulaErrorValue {
+  if (typeof value !== 'string') return numericCoercion(value)
+  const options = { dateSystem: workbook.date1904 ? DateSystem.Date1904 : DateSystem.Date1900, locale: 'en', currentYear: evaluationTime.getFullYear() }
+  const parsed = parseDate(value, options) ?? parseTime(value, options) ?? (formatted ? parseNumber(value, options) : null)
+  const number = parsed?.v ?? Number(value)
+  if (!value.trim() || Number.isNaN(number)) return formulaError('#VALUE!')
+  return number
+}
+
 function numericCoercion(value: RuntimeValue): number | FormulaErrorValue {
   if (isFormulaError(value)) return value
   if (isRangeValue(value)) return formulaError('#VALUE!')
@@ -1789,8 +2581,35 @@ function singleRangeValue(value: RuntimeValue, resolve: (sheet: SpreadsheetSheet
   const cell = value.sheet.cells[cellKey(start.row, start.column)]
   return cell ? cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell) : null
 }
+function formulaReferenceCellValue(sheet: SpreadsheetSheet, row: number, column: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
+  const cell = sheet.cells[cellKey(row, column)]
+  if (!cell) return null
+  const value = cell.formula ? resolve(sheet, row, column) : rawCellValue(cell)
+  if (typeof value !== 'number') return value
+  if (normalizeSheetCellValueType(cell.formula ? cell.cachedDataType : cell.dataType) === 'number'
+    && isSheetTextNumberFormat(cell.style.numberFormat)) return String(value)
+  return Number.isFinite(value) ? value : formulaError('#NUM!')
+}
+function formulaArgumentMatrix(value: RuntimeValue, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue) {
+  if (!isRangeValue(value)) return { rowCount: 1, columnCount: 1, valueAt: (_index: number) => value }
+  const columnCount = Math.abs(value.reference.end.column - value.reference.start.column) + 1
+  const startRow = Math.min(value.reference.start.row, value.reference.end.row)
+  const startColumn = Math.min(value.reference.start.column, value.reference.end.column)
+  return {
+    rowCount: Math.abs(value.reference.end.row - value.reference.start.row) + 1,
+    columnCount,
+    valueAt: (index: number) => formulaReferenceCellValue(value.sheet, startRow + Math.floor(index / columnCount), startColumn + index % columnCount, resolve),
+  }
+}
 function normalizeResult(value: RuntimeValue): FormulaValue { return isRangeValue(value) ? formulaError('#VALUE!') : value }
 function isRangeValue(value: RuntimeValue): value is RangeValue { return Boolean(value && typeof value === 'object' && 'kind' in value && value.kind === 'rangeValue') }
+function factorial(integer: number, step = 1) {
+  let result = 1
+  for (let factor = integer; factor > 1 && Number.isFinite(result); factor -= step) {
+    result *= factor
+  }
+  return result
+}
 function finiteResult(value: number): FormulaValue { return Number.isFinite(value) ? value : formulaError('#NUM!') }
 function displayFormulaValue(value: FormulaValue): string { return isFormulaError(value) ? value.code : typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : value === null ? '' : String(value) }
 function valueType(value: FormulaValue): string { return isFormulaError(value) ? 'error' : value === null ? 'empty' : typeof value }
@@ -1885,11 +2704,6 @@ function parseTimeValue(value: string): number | undefined {
   } else if (hours > 23) return undefined
   const fractionalSecond = match[4] ? Number(`0.${match[4]}`) : 0
   return (hours * 3600 + minutes * 60 + seconds + fractionalSecond) / 86_400
-}
-
-function excelWeekday(parts: DateParts, serial: number, date1904: boolean): number {
-  if (!date1904) return ((Math.floor(serial) % 7) + 7) % 7 + 1
-  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay() + 1
 }
 
 function isoWeekNumber(parts: DateParts): number {

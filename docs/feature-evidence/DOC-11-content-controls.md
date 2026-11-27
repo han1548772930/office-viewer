@@ -2,7 +2,7 @@
 
 状态：**未验收**。本记录覆盖内容控件 Pro 插件的公开入口和本批实现；不表示 DOC-11、Docs 工作台或 Pro 功能整体完成。本轮按用户要求先实现、后统一测试，未执行测试、类型检查、构建、Cargo/WASM 检查、dev、浏览器或基准。
 
-第四批更新日期：2026-11-25。共享普通文本提交、内部边界 affinity、连续输入、temporary 卸壳后的光标恢复及 custom XML 标量同步已接线。完整 block range 与连续 table row range 的插入、重复项复制/删除、group 结构锁和结果选区已落盘；复制同时重映射表格/续格、字段、图片锚点、内容控件、注释内容与批注身份，删除同事务清理被移除资源。inline 注释编号长度变化使用真实 note/run trace，不以单纯文本差异猜新选区。图片空输入锚点标记、派生 line 和短图 caret 裁剪已接入。父级导航、图片上传、重复项结果均保留 host/revision/generation 守卫；同范围无显式 parentId 的上游父级顺序仍有缺口。代码与测试草稿均未运行，不能据此标记结构、引用、焦点、绑定、图片或 DOC-11 闭环已验收。
+第四批更新日期：2026-11-25。共享普通文本提交、内部边界 affinity、连续输入、temporary 卸壳后的光标恢复及 custom XML 标量同步已接线。完整 block range 与连续 table row range 的插入、重复项复制/删除、group 结构锁和结果选区已落盘；复制同时重映射表格/续格、字段、图片锚点、内容控件、注释内容与批注身份，删除同事务清理被移除资源。inline 注释编号长度变化使用真实 note/run trace，不以单纯文本差异猜新选区。图片空输入锚点标记、派生 line 和短图 caret 裁剪已接入。父级导航、图片上传、重复项结果均保留 host/revision/generation 守卫；导入的同范围控件已保留来源顺序并用于无显式 parentId 的父级导航，父区 properties 浮层仍有缺口。代码与测试草稿均未运行，不能据此标记结构、引用、焦点、绑定、图片或 DOC-11 闭环已验收。
 
 关联：[功能对齐清单](../UNIVER_FEATURE_PARITY.md)、[引用规则](../UNIVER_REFERENCE_RULES.md)、[执行标准](../../PROJECT_EXECUTION_STANDARD.md)、[渲染与计算标准](../RENDERING_AND_COMPUTE_STANDARD.md)。
 
@@ -36,7 +36,7 @@
 | S16 | Context7 `/vuejs/core` 的 scheduler / apiWatch、Vitest hooks 文档，2026-11-24 已读取 | Vue `nextTick` 在当前 DOM/job flush 后运行，`flush: 'sync'` 监听立即执行；这些只支撑草稿的模型同步与结果焦点守卫，不是已运行的交互证据。文档返回 main 来源，本地版本以 pnpm 锁与源码为准。 |
 | S17 | 本地 `node_modules/typescript/lib/lib.dom.d.ts`，TypeScript `6.0.3`，2026-11-25 静态读取 | `DOMParser.parseFromString`、`XMLSerializer.serializeToString`、`XPathEvaluatorBase.evaluate`、`XPathResult` 的实际声明。用于核对平台适配的 XML/XPath 接口；类型存在不证明浏览器行为通过。XML 节点身份与 scalar alias 规则是本项目实现选择，未冒称上游内部算法。 |
 | S18 | Context7 `/websites/vuejs_guide` 返回的 [Vue 模板引用](https://vuejs.org/guide/essentials/template-refs)与 [DOM 更新时序](https://vuejs.org/guide/essentials/reactivity-fundamentals#dom-update-timing)，2026-11-25 已读取 | `script setup` 默认私有，父组件使用的公开方法须由 `defineExpose` 暴露；`nextTick` 等待 DOM 更新。用于核对 Ribbon → Canvas 公开方法及延迟 focus 的接线，版本以项目 pnpm 锁为准，文档查阅不构成浏览器验证。 |
-| S19 | S3 的 `lib/es/index.js` 中 `function Wt(e)` / 公开导出 `selectedParentRange`、`doc.operation.select-parent-sdt`，以及 S4 的 `sdt-ribbon.command.d.ts`，2026-11-25 有界读取 | 上游按最小包含范围选择父区；严格包含或同范围且 customRanges 数组索引更后才算父区。操作保留 `segmentId` / `segmentPage`，替换选区、关闭原浮层并选择父区的 `properties` 模式。本项目显式 parentId 权威，保留 host 与真实 table 坐标；local create 的 block/start/id 排序不保留上游 customRanges 的同范围顺序，不能以本地 ID 顺序伪造父关系。上游 properties 浮层模式尚未复现。 |
+| S19 | S3 的 `lib/es/index.js` 中 `function Wt(e)` / 公开导出 `selectedParentRange`、`doc.operation.select-parent-sdt`，以及 S4 的 `sdt-ribbon.command.d.ts`，2026-11-25 有界读取；2026-11-27 回读本地 `src/api/document-body-ranges.ts`、`src/features/document/model/content-control-source-order.ts` 与 `src/features/document/controllers/content-control-interaction.ts`（均位于 `packages/office-studio/`） | 上游按最小包含范围选择父区；严格包含或同范围且 customRanges 数组索引更后才算父区。操作保留 `segmentId` / `segmentPage`，替换选区、关闭原浮层并选择父区的 `properties` 模式。本项目显式 parentId 权威，保留 host、真实 table 坐标和 pageAffinity。导入以 `metadata.univerBodySdtOrder: { version: 1, order }` 保留原 customRanges 索引，公开重开优先保留既有合法来源；无显式父时，同范围只采用合法、唯一且比子控件更后的来源顺序。缺失或重复来源不以本地 ID/数组排序猜父关系，严格包含仍可选父。本地已传递 properties 模式并取消值浮层，完整父区属性浮层仍未实现，运行验收未完成。 |
 | S20 | S1 固定仓库 `packages/docs-drawing-ui/src/commands/commands/insert-image.command.ts:27`、`src/controllers/render-controllers/doc-drawing-update.render-controller.ts:160` 与 S3 的 `doc.command.change-selected-sdt-picture`，2026-11-25 有界读取 | 选中图片 SDT 的 UI 命令保留 segmentId，将范围交给 insert-float-image；公开 insertDocImage 捕获原始范围，在 file picker、ImageIo 和解码之后重复合法性/disposed 检查。本项目使用本地单图上传和持久 image block + paragraph anchor，逐阶段检查请求/API/模型/host/选区/会话；multiple、完整 floating/drawing/Office 环绕仍未验收。 |
 | S21 | 本地 `antdv-next@1.8.2` 的 `dist/modal/interface.d.ts`、`Modal.js`；Context7 `/antdv-next/antdv-next` 返回的 [Modal API](https://github.com/antdv-next/antdv-next/blob/main/docs/src/pages/components/modal/index.en-US.md)，2026-11-25 已读取 | `afterClose` 是完全关闭后调用的 callback prop，Modal emit 不包含 afterClose；`focusTriggerAfterClose` 可关闭默认 trigger 归还。本项目使用 `:after-close` 和已有结果 focus token。请求传入版本 1.8.2，文档索引显示 1.8.0、返回 main，实际接口以本地 1.8.2 类型与实现为准；未做真实焦点/动画验证。 |
 | S22 | S5 的 `lib/types/commands/repeating-sdt.command.d.ts`、`lib/es/index.js` 中 `buildDuplicateRepeatingItemUpdate` / `buildDeleteRepeatingItemUpdate` / `buildDeleteRepeatingRowsUpdate` 对应有界片段；S3 selected repeating 命令和菜单工厂，2026-11-25 已读取 | 普通项目复制生成新的 customRange/ooxml/paragraph ID，更新包含范围和 caret；删除 row 路径用真实 table rows JSONX mutation、保留 segmentId，并在删整表时按剩余长度限制 caret。上游普通复制排除 row/cell/table，row 仅走结构删除。本项目在同一注册命令内独立实现完整块与连续行结构复制/删除，row 复制入口是明确实现差异；结果使用提交后的实际块/行/字符身份。上游分支和本地草稿均未执行。 |
@@ -93,7 +93,7 @@ tab `docs-sdt-ui.ribbon.contentControl`，order `110`，仅选中内容控件时
 | behavior（1） | 1；r2c1 | 锁定 / `lock-control` | `doc.command.set-selected-sdt-lock` | 选中控件；value 跟随 lock | `doc.command.update-content-control`；内容锁/控件锁独立，所有实际修改再次检查。 |
 | behavior（1） | 2；r1c2 | 属性 / `properties` | `doc.command.open-selected-sdt-properties` | 选中控件 | antd Modal / Form；差异 patch 最终执行 `doc.command.update-content-control`。 |
 | behavior（1） | 3；r2c2 | 删除内容控件 / `remove` | `doc.command.remove-selected-sdt` | wrapper lock 时禁用 | `doc.command.remove-content-control`；保留正文并删除壳，锁/后代检查由服务执行。 |
-| actions（2） | -1；r1c2 | 选择上层控件 / `select-parent` | `doc.operation.select-parent-sdt` | 无父控件禁用 | 显式 parentId 或 legacy 严格包含范围经 helper 解析完整表格位置；Workbench 核对 host/revision/generation 并复用输入焦点恢复，不进入内容历史。无效目标、输入失活或 IME 禁用；同范围隐式顺序与上游 properties 浮层仍未对齐。未验收。 |
+| actions（2） | -1；r1c2 | 选择上层控件 / `select-parent` | `doc.operation.select-parent-sdt` | 无父控件禁用 | 显式 parentId、最小严格包含或有效来源顺序的同范围父区经 helper 解析完整表格位置；Workbench 核对 host/revision/generation 并复用输入焦点恢复，不进入内容历史。无效目标、输入失活或 IME 禁用；缺失/歧义来源不猜父关系，完整父区属性浮层仍未复现。未验收。 |
 | actions（2） | 0；r1c1 | 复制 / `duplicate-item` | `doc.command.duplicate-selected-repeating-sdt-item` | 上游仅 repeatingSectionItem；row/cell/table 不显示 | `doc.command.duplicate-repeating-section-item`；本项目 inline/完整块/连续行共用候选与注册命令，row 显示是独立增强；cell/table 尚未实现。未验收。 |
 | actions（2） | 1；r2c1 | 删除项目 / `delete-item` | `doc.command.delete-selected-repeating-sdt-item` | 上游仅 repeatingSectionItem；cell/table 不显示 | `doc.command.delete-repeating-section-item`；inline/完整块/连续行删除真实结构和资源，保留合法 caret。未验收。 |
 
@@ -156,11 +156,11 @@ declare function documentContentControlSelectionForId(
   model: DocumentModel, controlId: string, host?: DocumentAuxiliaryBlockHost,
 ): DocumentSelection | undefined
 declare function documentContentControlParentSelection(
-  model: DocumentModel, controlId: string, host?: DocumentAuxiliaryBlockHost,
+  model: DocumentModel, controlId: string, host?: DocumentAuxiliaryBlockHost, pageAffinity?: number,
 ): { controlId: string; selection: DocumentSelection } | undefined
 ```
 
-helper 只返回逻辑点，不把 host 写进 DocumentSelection；调用端在输入会话中保留 host。显式父必须位于同一段落并包含子范围，失效 ID、跨内容区、字符中间或越界范围返回 undefined，不向其他候选偷偷回退。选择无内容提交，复用 `onSelection` 与 `applyInputState`；提交后被动读取会话，不为观察者的陈旧/失效状态重新续期。本项目保持 Canvas 输入焦点，属性由 Ribbon“属性”入口打开；S19 的 properties 浮层模式和同范围隐式顺序仍为必须继续对齐的缺口。
+helper 只返回逻辑点，不把 host 写进 DocumentSelection；调用端在输入会话中保留 host。显式父必须位于同一内容区并真实包含子范围，inline 范围还须位于同一段落；失效 ID、跨内容区、字符中间或越界范围返回 undefined，不向其他候选偷偷回退。无显式父时，同范围导入控件使用保留的 `univerBodySdtOrder`，合法且唯一的来源顺序决定最近父区；缺失或歧义来源只允许严格包含，不猜同范围父关系。选择无内容提交，复用 `onSelection` 与 `applyInputState`；提交后被动读取会话，不为观察者的陈旧/失效状态重新续期。Workbench 已透传 properties 模式，Overlay 据此取消值草稿；本项目保持 Canvas 输入焦点，属性仍由 Ribbon“属性”入口打开。S19 的完整父区属性浮层仍待实现，来源顺序、公开保存重开和浏览器导航仍未运行验收。
 
 普通输入候选接口：
 
@@ -241,7 +241,7 @@ setter 默认捕获当前 revision/history generation；getter 先检查查看�
 
 最终业务命令通过 `OfficeStudio` 的文档提交和按文档隔离的内容历史执行，支持 BeforeCommandExecute 取消。普通选区、展开浮层与取消草稿不写内容历史。服务的正文/属性/相邻范围在同一个候选内提交；表格内控件从权威 model 重读 paragraph，不继续使用发布前的旧 table/block 引用。
 
-`FDocument.getSnapshot()` / `save()` 已由主任务改为公开 `UniverDocumentData` 返回值；本记录的内容控件/custom XML 契约与浏览器草稿使用 `saveModel()` / 重新构造 `OfficeStudio` 验证本地 `DocumentModel` 保存入口。内部快照重开**不是 DOCX 文件往返验证**，也不能代替公开 Body/snapshot 验证。本次主任务另行扩展项目 Rust parser/writer 的 SDT、story 和 note 数据链；本记录不能把这些尚未运行检查和文件样本的在途改动标为已经保真。`rawSdtPr` / `rawSdtEndPr`、未知 metadata、dataBinding 和内容控件范围保留于项目模型，XML 未知语义和跨结构写出仍须用 Office 样本验收。
+`FDocument.getSnapshot()` / `save()` 已由主任务改为公开 `UniverDocumentData` 返回值；普通内容控件/custom XML 契约与浏览器草稿使用 `saveModel()` / 重新构造 `OfficeStudio` 验证本地 `DocumentModel` 保存入口。既有 `content-control-parent.contract.test.mjs` 另有公开 `save()` 后重排 customRanges 再重开的来源顺序草稿，尚未运行。内部快照重开**不是 DOCX 文件往返验证**，也不能代替公开 Body/snapshot 验证。本次主任务另行扩展项目 Rust parser/writer 的 SDT、story 和 note 数据链；本记录不能把这些尚未运行检查和文件样本的在途改动标为已经保真。`rawSdtPr` / `rawSdtEndPr`、未知 metadata、dataBinding 和内容控件范围保留于项目模型，XML 未知语义和跨结构写出仍须用 Office 样本验收。
 
 ## 未运行的测试草稿
 
@@ -251,6 +251,7 @@ setter 默认捕获当前 revision/history generation；getter 先检查查看�
 | `packages/office-studio/tests/content-control-geometry.contract.test.mjs` | 换行/空范围/end caret、emoji、同范围嵌套、cell 目标、空/部分裁剪、重复页 affinity、image 几何、hidden/tags 和 Canvas 缩放/滚动 | 草稿；未运行。 |
 | `packages/office-studio/tests/content-control-editing.contract.test.mjs` | temporary/no-op/纯格式、祖先/内容/wrapper 锁和重接、预先删壳不能绕内容锁、完整 placeholder 首输、empty/首尾 inside affinity、两个 planner 的非空边界内部/外部换行与完整删除空壳语义、UTF-16、checkbox glyph/font 及后续非法控件的原子拒绝、Gregorian 反解析/Last Known Date、combo 自由值/下拉拒绝、table cell/range/matrix、body/header/footer/note 隔离和兼容字体投影、跨 host/重复 ID、边界零长实体 | 草稿；未运行。 |
 | `packages/office-studio/tests/content-control-interaction.contract.test.mjs` | table 的 child/parent 完整坐标与 detached 结果、显式父优先/失效不回退、legacy 最小严格包含、同范围显式关系边界、跨段落/host/越界/UTF-16/synthetic story lock 拒绝和 header/note 内 table；reset 支持类型/非空 prompt/已显示占位、内容/祖先/wrapper 锁/权限/宿主；temporary prompt caret 与存续 wrapper-locked 范围；卸壳后带前后正文的 emoji end caret、存续/no-op 范围、周围文字改变拒绝、结果会话复制隔离、no-op/cancel、观察者选择当前光标、陈旧 revision/generation、输入无效、文档/host/disabled/辅助块删除拒绝 | 草稿；未运行。 |
+| 既有 `packages/office-studio/tests/content-control-parent.contract.test.mjs` | 三个同范围导入控件按原始来源顺序导航、显式父权威/失效不回退、缺失/非法/重复来源不猜父、native note 边界严格包含、body/header 来源隔离、header/note table 与 row 选区 pageAffinity、value/properties 焦点 token 区分、公开导入来源校验、公开 `save()` 重排 customRanges 后重开保留父级关系且内容历史不变 | 草稿；本轮仅回读，未运行。 |
 | `packages/office-studio/tests/content-control-history.contract.test.mjs` | 真实 Facade 注册命令与 OfficeStudio CommandExecuted 事件、单事务、撤销重做/内部保存重开、普通 temporary/placeholder/date/combo、same-value revision/savepoint/redo、不合法下拉/取消/段落与 note entity 权限、历史隔离、header/footnote 普通输入及字体兼容投影 | 草稿；未运行，不能用静态接线推断通过。 |
 | `packages/office-studio/tests/content-control-command-integration.contract.test.mjs` | 普通 command prepare/finalize、真实段落/cell 与辅助 host、active ID/边界、temporary 与 placeholder、下拉/锁拒绝、取消和单候选历史 | 草稿；未运行。 |
 | `packages/office-studio/tests/content-control-bindings.contract.test.mjs` | raw key/语义 scalar、六类 host、单历史/内部保存重开、same-value redo、冲突/后续权限回滚、替换与代码源编辑、temporary source、nullish 空 prompt、date/list reset 和最后有效 ISO、图片 reset 后续失败不泄漏恢复；cell/range/matrix 的真实来源、空/对象格/相同 offset 的 DFS 顺序/分隔符/负面 DTO、materialize cell 的字段缓存与 locked 回滚；显式 caret 校验实际存续 peer 显示/坐标 | 草稿；未运行。 |
@@ -265,9 +266,65 @@ setter 默认捕获当前 revision/history generation；getter 先检查查看�
 - temporary 实际内容编辑、reset、共享普通文本提交、显式卸壳后的可核对 collapsed caret 已接线；复杂多 key/nested、异 key alias peer 同时卸壳及精确 edit trace 仍需实现，完整浏览器/历史闭环未验收。
 - 日期、复选、组合和下拉的共享普通输入、value / checked / dateValue / showingPlaceholder / dirty、边界 inside affinity 和合法 active ID 连续输入已有接线；取消/观察者重入、真实 IME 和全部输入路径仍未验证。
 - 范围模型已有单段落 UTF-16、完整 block range 和连续 table row range。块/行 richText、repeatingSection/item、group 的结构插入、复制/删除和普通输入约束已落盘；部分跨段选择、跨 cell 控件、独立 whole-cell/whole-table 重复容器、全部结构组合与 Office 样本仍有必须继续处理的边界。新增草稿不表示结构功能已验收。
-- “选择上层控件”已接完整 table 点、辅助 host 和输入版本守卫；本地控件排序不保留 S19 同范围 customRanges 原顺序，无 parentId 的同范围导航和父区 properties 浮层模式仍未实现。table/header/观察者改写草稿未运行，滚动定位、焦点与真实浏览器交互未验收。
+- “选择上层控件”已接完整 table 点、辅助 host、pageAffinity 和输入版本守卫；导入及公开重开保留 S19 的 customRanges 来源顺序，无 parentId 的同范围导航已按合法且唯一的来源接线。无来源或来源歧义时不猜父关系。properties 模式状态及取消值浮层已有接线，完整父区属性浮层仍未实现；来源契约和 table/header/观察者改写草稿未运行，公开保存重开、滚动定位、焦点与真实浏览器交互未验收。
 - docPartObj 的真实部件库/部件复用/唯一行为尚未实现。基础 scalar custom XML 读写、XPath 1.0 aliases、缓存/权限/整批候选同步及独立数据源 getter / fluent setter / 命令已落盘；完整 Office 关系/来源保真、多节点重复绑定、跨结构控件和所有闭环仍未验收，不能将属性保存或本轮基础实现当作全部能力完成。
 - 内容控件与 native fields、嵌套图片、linked story、权限变更/历史跳转、取消后的焦点等需要真实集成场景；本批草稿的覆盖不代表这些场景已通过。
 - 非 Gregorian 日历、地区历法/时代格式、全部 Office 日期格式与真实 Windows 字体/IME 未验收。
 - 大量控件的几何扫描、候选复制、header 重复页、图片内存和 XML 主线程任务未测量。XML baseline 是有界主线程平台适配，尚未实现或基准验证 Worker/Rust/WASM 路径；额外遍历、clone、序列化和整段文字重建都不能称为优化。未记录首屏、滚动、编辑、缩放、长任务、Worker/WASM 复制字节/次数、峰值内存等指标，性能状态保持未验收。
 - DOCX 读写、Word 文件重开、未知 SDT XML 保真和 Pro 对照演示均未执行。本记录不缩减完整功能范围，不把缺口改成永久禁用、提示消息或展示入口。
+
+<a id="sdt-custom-checkbox-ribbon"></a>
+
+## 2026-11-27 自定义复选符号的 Ribbon 状态
+
+状态：**未验收**。固定 v1.6.0 的 S3 `docs-sdt-ui/lib/es/index.js` 中 `dn` / `SdtCheckboxStyleMenuFactory` 按 checkedState.value 的大写十六进制匹配四个预设，未匹配时显示 Cross；`En` 将其挂到内容控件 value 组 order 0 / grid r1c1。上游该工厂不比较未选中字符或字体，这仍是明确的实现差异。
+
+本地已有 [contentControlCheckboxStyle](../../packages/office-studio/src/features/document/services/content-control-presentation.ts) 同时识别真实选中/未选中符号与字体，并忽略失配的旧 metadata；自定义字符或字体返回 undefined，属性面板据此显示 Custom。此前 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 再回退 Cross，会把本地真实自定义样式显示成“叉号”；本次仅改这一行，使用 null 值和“自定义”占位，复用 [RibbonItem.vue](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue) 的既有 Ant Select 值/占位协议。四个可执行预设、原属性按钮、显隐/锁条件和所有入口计数不变，没有添加不可执行的 Custom 菜单项。
+
+属性修改、复选切换、一次候选发布、按文档隔离历史及 saveModel 重开继续使用已有命令/模型链路；服务、公开 API、DTO、存储和 Worker/WASM 协议没有增量。[content-control-presentation.contract.test.mjs](../../packages/office-studio/tests/content-control-presentation.contract.test.mjs) 已有四种精确字符对与陈旧 preset metadata / 作者字体的真实实现草稿，本次没有新增服务或测试文件。
+
+[document-content-control-workbench.browser.test.mjs](../../packages/office-studio/tests/document-content-control-workbench.browser.test.mjs) 的原自定义复选声明改为 classic/light 与 grid/dark 两个计划案例，新增断言复用真实属性表单、Canvas 复选和 Ribbon：保存 `1F7E2` / Segoe UI Emoji 后绘制 🟢，显示“自定义”，Cross 选项未被选中；Escape 取消菜单保留完整模型和内容历史；原撤销/重做及 saveModel / OfficeStudio 重开保留符号、字体和该展示状态。生产改动为 +1/-1 行，原浏览器草稿 +21/-1 行。
+
+仅用 Babel AST 解析计数：HEAD 为 **49 个 test 声明 / 53 个计划案例**，当前为 **49 个声明 / 54 个计划案例 / 0 个运行结果**。新增的是原声明外层展开后的 1 个计划案例，内部场景循环不另计。已回读源码与 diff；统一静态检查由主任务收尾，测试、类型、构建、dev/服务、浏览器、Rust/WASM、Office 文件和基准均后置。真实主题、菜单/焦点/IME 与文件保真仍未验收；本次状态修正不代表 DOC-11 或全部 Pro 功能完成。
+
+<a id="sdt-date-format-lock-state"></a>
+
+## 2026-11-27 日期格式的编辑与锁状态
+
+状态：**未验收**。按 S3 `En` 的值组顺序核对更换图片 `bn` / `on`（order 1）、日期格式 `mn` / `Zt`（order 2）和恢复占位符 `_n` / `en`（order 3）。图片与占位恢复的现有菜单继续调用本地能力判断、注册命令、候选发布及历史链路，本次没有改变这些入口。`mn` 只对日期控件显示五种格式，没有日期格式禁用判断；`Zt` 有 fullDate 时调用 UpdateSdtValueCommand，无 fullDate 时更新属性。本地菜单的禁用条件是与既有锁契约一致的明确差异，不声称上游菜单已有相同判断。
+
+本次生产增量仅三行：[document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的选中控件上下文增加可选 `dateValue`，日期 Select 接入已有 `editingDisabled`，并复用 [DocumentContentControlPanel.vue](../../packages/office-studio/src/components/document/DocumentContentControlPanel.vue) 的“内容锁、非占位、非空日期值”判断；[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 透传真实日期值。菜单在无编辑权限、输入会话停用或组合输入期间禁用；`contentLocked` / `sdtContentLocked` 下的有效日期也禁用。`sdtLocked` / `controlLocked` 仍只保护外壳删除，保留格式属性修改。五个选项、命令 ID、顺序及 grid r1c1 不变，入口计数不变。
+
+占位日期即使保留旧 ISO 值也只改格式属性，不重写占位文字；空值或缺失 `dateValue` 同样保留格式编辑。[content-controls.ts](../../packages/office-studio/src/features/document/services/content-controls.ts) 已在模型入口拒绝非法 ISO 日期值，内部不增加重复校验；[content-control-editing.ts](../../packages/office-studio/src/features/document/services/content-control-editing.ts) 的普通输入遇到未解析文字会保留正文与 value、清除 dateValue。此时菜单允许更新格式属性，不把原文字伪装成有效日期。属性候选、内容锁/祖先锁拒绝、权限、单次历史及 saveModel 重开继续使用原命令与服务；公开 API、领域模型、存储和 Worker/WASM 协议没有改动，仅内部 Ribbon 上下文增加一个字段。
+
+[document-content-control-workbench.browser.test.mjs](../../packages/office-studio/tests/document-content-control-workbench.browser.test.mjs) 新增两个声明，分别展开 classic/light 与 grid/dark，共四个计划案例。草稿覆盖 wrapper lock 下真实格式化、Escape 取消、一次历史、撤销/重做、saveModel 重开、两种内容锁与权限禁用、组合输入开始时的禁用和模型历史不变；另一声明覆盖占位符、DatePicker 清空及普通输入未解析文字在内容锁下只改格式属性。这里使用真实 OfficeStudio、Workbench、Ant Select / DatePicker 与 Canvas 输入桥，没有新增 fixture 服务或 Mock 引擎。
+
+仅执行源码与 diff 回读及 Babel AST 计数：本次前为 **49 个声明 / 54 个计划案例**，当前为 **51 个声明 / 58 个计划案例 / 0 个运行结果**；HEAD 为 49 / 53。内部锁场景循环不另计注册案例。统一静态检查仍由主任务收尾；测试、类型、构建、dev/服务、浏览器、Rust/WASM、Office 文件和基准均后置。日期菜单在祖先锁、字段权限及辅助区重入下的全部状态、真实主题/焦点/Windows IME 和 Office 文件保真仍未验收，不能据此标为 DOC-11 完成。
+
+<a id="sdt-multiline-temporary-edit-state"></a>
+
+## 2026-11-27 多行与临时属性的编辑状态
+
+状态：**未验收**。按 S3 `En` 值组继续核对多行 `hn`（order 4 / grid r1c1）与临时属性 `gn`（order 5 / grid r2c1）。上游前者仅 text 显示，后者仅 text / richText 显示，激活值缺失时均为 false；`Qt` / `$t` 分别切换 text.multiLine / temporary，并经 `qt` 调用 UpdateSdtPropertiesCommand。两工厂没有编辑禁用判断。本地保留类型、激活状态、命令 ID 和布局顺序，增加菜单与既有编辑状态一致的禁用行为，作为明确实现差异记录。
+
+生产只修改 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 的两行，在“允许换行”“编辑后移除”中接入 `disabled: context.editingDisabled`。Workbench 已提供编辑权限、输入会话及组合输入状态，[RibbonItem.vue](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue) 的既有 forward 会拒绝禁用入口。内容锁、外壳锁和属性修改分别沿用原语义：锁定内容不禁止这两个属性更新，禁止删除控件不禁止属性更新，temporary 的属性切换不会立即卸壳。没有新增命令、服务、接口或协议。
+
+两个属性继续通过 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue)、Facade update 和 [document-content-control-commands.ts](../../packages/office-studio/src/api/document-content-control-commands.ts) 的单次候选/权限/内容历史事务保存。[content-control-editing.ts](../../packages/office-studio/src/features/document/services/content-control-editing.ts) 的普通输入仍要求 text 的 multiLine=true 才接受换行，temporary 在真实内容变化后卸壳；属性或同值更新保留控件，有外壳锁时实际内容编辑保留 temporary 外壳。本次未修改这些服务行为。
+
+[document-content-control-workbench.browser.test.mjs](../../packages/office-studio/tests/document-content-control-workbench.browser.test.mjs) 增加两个声明，分别展开 classic/light 与 grid/dark，共四个计划案例。草稿从真实 Ribbon 按钮切换属性，检查锁定正文不变、激活状态、每次修改单独历史、撤销/重做、saveModel 重开、wrapper lock 下仍可操作及转为 richText 后仅保留 temporary 入口；另一个声明通过真实 BeforeCommandExecute 取消两个切换，检查模型、历史、CommandExecuted 与激活状态不变，并核对权限拒绝和 compositionstart 后两个按钮禁用。此前普通输入卸壳草稿继续保留，未用这次按钮检查代替内容编辑闭环。
+
+本次只执行源码/diff 回读和 Babel AST 计数：前为 **51 个声明 / 58 个计划案例**，当前为 **53 个声明 / 62 个计划案例 / 0 个运行结果**；HEAD 为 49 / 53。生产增量 +2/-2 行，入口计数不变。统一静态检查由主任务在最终冻结状态执行，运行验证继续后置；真实主题/焦点/Windows IME、换行输入、临时控件复杂嵌套及 Office 文件行为仍未验收。
+
+<a id="sdt-behavior-edit-state-and-lock-alias"></a>
+
+## 2026-11-27 行为组的编辑状态与外壳锁显示
+
+状态：**未验收**。继续按 S3 `En` 行为组核对外观 `fn`（order 0 / grid r1c1）、锁定 `pn`（1 / r2c1）、属性 `vn`（2 / r1c2）和删除内容控件 `Cn`（3 / r2c2）。`fn` / `pn` 使用三种外观与四种锁状态，并经 `Yt` / `Xt` 调用属性命令；`vn` 打开真实属性对话框；`Cn` 按外壳锁禁用，`nn` 调用 RemoveSdtCommand 后清除选中控件。S4 的公开 SetSelectedSdtAppearanceCommand / SetSelectedSdtLockCommand 类型与此一致，S1 的 SdtLock 只有四种标准值。本地 `controlLocked` 是原有外壳锁别名，不是新增上游选项。
+
+本次仅修改 [document-ribbon.ts](../../packages/office-studio/src/components/document/document-ribbon.ts) 四行：外观和锁定 Select 接入既有 `editingDisabled`，删除按钮在原外壳锁条件上合入该状态；锁定 Select 沿用 [DocumentContentControlPanel.vue](../../packages/office-studio/src/components/document/DocumentContentControlPanel.vue) 的既有显示映射，把 controlLocked 显示为 sdtLocked 对应的“禁止删除控件”。[domain/model.ts](../../packages/office-studio/src/domain/model.ts)、属性校验及外壳锁集合原本均接受该别名；此次不改存储值，不新增第五个菜单选项或兼容服务。属性按钮保留查看能力；编辑权限被拒绝时，原 Form 的 readOnly 继续禁用字段与保存，同时允许取消。
+
+现有 Workbench / Facade 继续使用注册的 update-content-control / remove-content-control 和单次候选、权限及文档历史事务。[content-controls.ts](../../packages/office-studio/src/features/document/services/content-controls.ts) 的 removeDocumentContentControl 只移除控件外壳和允许移除的后代外壳，保留正文；contentLocked 不禁止这种卸壳，sdtLocked / sdtContentLocked / controlLocked 继续拒绝删除。属性锁、内容锁与删除锁没有被合并，也没有新增 API、服务或协议。深层后代外壳锁及全部宿主的删除菜单能力仍需单独核对，不能只凭本轮顶层条件认定完成。
+
+[document-content-control-workbench.browser.test.mjs](../../packages/office-studio/tests/document-content-control-workbench.browser.test.mjs) 新增三个声明，各展开 classic/light 与 grid/dark，共六个计划案例。草稿检查别名的真实 Ant Select 选项状态、Escape 不修改模型、属性表单无变更保存和 saveModel 重开保留 controlLocked；权限拒绝时三个修改入口禁用而属性可查看、只读字段/保存及取消，以及 compositionstart 时三个入口禁用且模型历史不变；删除场景检查三种外壳锁下按钮与正文不变、contentLocked 下真实卸壳、一次历史、撤销/重做及内部保存重开。使用原 OfficeStudio/Workbench/Ant 控件和 Canvas 输入桥，没有新增测试 fixture 服务。
+
+本次只执行源码与 diff 回读及 Babel AST 计数：前为 **53 个声明 / 62 个计划案例**，当前为 **56 个声明 / 68 个计划案例 / 0 个运行结果**；HEAD 为 49 / 53。生产增量 +4/-4 行，入口数量、顺序及公开命令不变。最终冻结后由主任务统一静态检查，全部运行验证继续后置。真实主题/弹层/焦点/Windows IME、复杂嵌套/辅助宿主的删除与属性行为，以及 DOCX/Word 保存重开仍未验收。

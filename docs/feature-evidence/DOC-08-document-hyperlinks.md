@@ -92,3 +92,19 @@ segmentId 复用现有公开 header/footer ID、story alias 和 note 宿主映�
 - 实际 DOCX 解析、写出和独立重开；链接、书签、标题、嵌套字段和零宽实体的来源保真。
 - 删除/移动书签和标题后的引用变换，以及独立书签 CRUD 的剩余入口。
 - 浏览器邮件客户端行为、外部地址边界及真实大文档性能。
+
+<a id="hyperlink-popup-composition"></a>
+
+## 2026-11-27 链接弹窗组合输入与迟到打开操作
+
+本批继续核对 Insert 的表格、图片与链接根，沿用固定 v1.6.0 的入口分类和既有证据；本节只修复链接弹窗重新打开行为，新增入口为 0。链接仍对应 `docs-hyper-link-ui/src/menu/schema.ts` 的 INSERT → MEDIA、order 1、grid r1c5，以及 `menu/menu.ts` 的同一 operation 和 Ctrl/Cmd+K。常驻根挂载 1、浮动挂载 1、右键上下文挂载 3、信息弹层动作 4 的来源计数保持前节定义。
+
+固定 `commands/operations/popup.operation.ts:55` 的 `ShowDocHyperLinkEditPopupOperation` 支持当前选区及显式 linkInfo；`services/hyper-link-popup.service.ts:142` 的 `showEditPopup` 会处置已有编辑弹层、更新 editingLink，并在显式链接请求下替换完整文字范围。该代码没有提供 Vue Form 的组合输入生命周期依据。本地仍使用现有公开 operation resolver、完整 linkId 和宿主映射，并按 `antdv-next` Form/Input 的实际 composition 事件维护草稿。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 `insertLink` 在既有失活和工作台 composition 守卫中加入 `insertModalComposing`。普通打开、旧 `doc.operation.open-link`、显式当前链接及显式其他 story 链接在弹窗组合输入期间都提前返回，地址和显示文字继续保留，当前宿主、文字选区及输入 generation 保持原值。Form/Input 继续接收组合输入；完成输入后的重复打开、真实提交、关闭及焦点恢复沿用原有流程。
+
+本批没有新增领域规则或跨边界 DTO。链接内容仍由 [document-hyperlinks.ts](../../packages/office-studio/src/features/document/services/document-hyperlinks.ts) 的真实 Add/Update/Delete 命令处理，内容历史按文档隔离；保存和公开 body 写出仍沿用 [document-output.ts](../../packages/office-studio/src/api/document-output.ts) 与既有链接范围编码。表格和图片的本地嵌套/表格内插图能力保持原实现，来源限制及未验收范围继续见 [DOC-06](DOC-06-enhanced-tables.md)、[DOC-07](DOC-07-image-editing.md) 和 [DOC-22](DOC-22-native-tables.md)。
+
+[document-hyperlinks.browser.test.mjs](../../packages/office-studio/tests/document-hyperlinks.browser.test.mjs) 新增 1 个 test 声明、2 个计划案例，分别在 light/classic 的地址输入及 dark/grid 的显示文字输入中，使用真实正文和页眉链接逐一发送四类迟到 operation。草稿断言两个输入值、焦点、可输入状态、确认/取消禁用、完整模型、输入会话、命令事件及历史；组合输入结束后真实更新正文链接，检查页眉实体保持、一次内容历史、撤销/重做、公开保存后的内部重开与链接 ID。四类 operation 的循环属于各自案例内的检查，不另计为运行案例。
+
+仅读取并解析 AST 计数后，该浏览器文件共 16 个 test 声明、24 个计划案例；运行结果为 0。测试、类型检查、构建、dev/服务、浏览器、Rust/WASM、Office 文件样本和基准均留待统一验证。真实 Windows IME、主题弹层及焦点恢复仍未验收；合成 composition 与内部快照重开不代表原生 IME 或 DOCX 验收。DOC-08 整组状态保持未验收，前节未实现的入口和书签闭环继续保留。

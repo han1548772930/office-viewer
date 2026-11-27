@@ -12,6 +12,7 @@ import { assertConditionalFormatPainterSource, captureConditionalFormatPainterSo
 import { resolveSheetCellStyle, type SheetStyleContext } from './sheet-style-inheritance.ts'
 import { assertSheetStyleRegion, captureSheetStyleRegion, explicitSheetCellStyle, sheetStyleRegionCellStyle,
   type SheetStyleRegionSnapshot } from './sheet-style-region.ts'
+import { clearSheetCellRichTextFonts } from './sheet-cell-rich-text-style.ts'
 
 /** The existing synchronous editor budget includes expanded brush and merge targets. */
 export const MAXIMUM_FORMAT_PAINTER_CELLS = 100_000
@@ -262,9 +263,11 @@ export function applySheetFormatPainterCommand(sheet: SpreadsheetSheet, source: 
   let changed = merge.changed || conditional.changed
   for (const { row, col, style } of assignments.values()) {
     const key = `${row}:${col}`, current = sheet.cells[key]
-    if (stableStyle(resolveSheetCellStyle(sheet, row, col, current, options.styleContext)) === stableStyle(style)) continue
+    const rich = clearSheetCellRichTextFonts(current?.richText)
+    if (stableStyle(resolveSheetCellStyle(sheet, row, col, current, options.styleContext)) === stableStyle(style) && !rich.changed) continue
     const cell = current ?? createCell(row, col)
     cell.style = explicitSheetCellStyle(style)
+    cell.richText = rich.runs ?? undefined
     cell.authoredStyle = cloneModel(cell.style)
     delete cell.themeStyle
     delete cell.authoredStyleReference; delete cell.clearedStyleProperties
@@ -312,8 +315,10 @@ export function applySheetViewFormatPainterCommand(sheet: ExcelSheetView, source
   let changed = merge.changed || conditional.changed
   for (const { row, col, style } of styleAssignments(source, plan.ranges).values()) {
     const key = cellKey(row, col), current = sheetViewCellAt(candidate, row, col)
-    if (stableStyle(viewStyle(current)) === stableStyle(style)) continue
-    candidate.cells[key] = withViewStyle(current, style, { ...options, date1904: options.date1904 ?? sheet.date1904 })
+    const rich = clearSheetCellRichTextFonts(current?.richText)
+    if (stableStyle(viewStyle(current)) === stableStyle(style) && !rich.changed) continue
+    candidate.cells[key] = { ...withViewStyle(current, style, { ...options, date1904: options.date1904 ?? sheet.date1904 }),
+      richText: rich.runs }
     candidate.rowCount = Math.max(candidate.rowCount, row + 1)
     candidate.columnCount = Math.max(candidate.columnCount, col + 1)
     changed = true

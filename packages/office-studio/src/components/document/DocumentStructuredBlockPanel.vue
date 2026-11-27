@@ -78,7 +78,8 @@ function command(value: DocumentStructureCommand) { if (!props.readOnly) emit('c
 
 <template>
   <Modal :open="open" :title="title" :width="600" ok-text="应用" cancel-text="取消" :ok-button-props="{ disabled: readOnly }"
-    destroy-on-hidden @ok="submit" @cancel="emit('update:open', false)" @after-close="emit('closed')">
+    :focus-trigger-after-close="false" :after-close="() => emit('closed')"
+    destroy-on-hidden @ok="submit" @cancel="emit('update:open', false)">
     <div class="structured-panel" :style="{ '--structure-border': token.colorBorderSecondary, '--structure-text': token.colorTextSecondary }">
       <Alert v-if="error" :title="error" type="error" show-icon />
       <Form v-if="kind === 'quote'" :model="quote" :disabled="readOnly" layout="vertical">
@@ -101,7 +102,7 @@ function command(value: DocumentStructureCommand) { if (!props.readOnly) emit('c
       </Form>
       <Form v-else :model="columns" :disabled="readOnly" layout="vertical">
         <div class="structured-panel__fields">
-          <FormItem name="count" label="栏数"><InputNumber v-model:value="columns.count" :min="DOCUMENT_COLUMN_GROUP_MIN_COLUMNS" :max="DOCUMENT_COLUMN_GROUP_MAX_COLUMNS" :precision="0" :disabled="!!block" /></FormItem>
+          <FormItem name="count" label="栏数"><InputNumber v-model:value="columns.count" :min="DOCUMENT_COLUMN_GROUP_MIN_COLUMNS" :max="DOCUMENT_COLUMN_GROUP_MAX_COLUMNS" :precision="0" :disabled="readOnly || !!block" /></FormItem>
           <FormItem name="gap" label="栏间距"><InputNumber v-model:value="columns.gap" :min="0" :max="4096" /></FormItem>
           <FormItem name="horizontalPadding" label="栏水平内边距（px）"><InputNumber v-model:value="columns.horizontalPadding" :min="0" :max="4096" aria-label="栏水平内边距" /></FormItem>
           <FormItem name="minHeight" label="栏最小高度（px）"><InputNumber v-model:value="columns.minHeight" :min="0" :max="1000000" aria-label="栏最小高度" /></FormItem>

@@ -35,7 +35,7 @@ function onKey(event: KeyboardEvent) {
       :value="displayValue" :open="open" :options="options" :default-active-first-option="false" :show-search="{ filterOption: false }"
       :popup-match-select-width="item.edit?.kind === 'font' ? 190 : 84" :list-height="288" size="small" variant="borderless"
       :style="{ fontFamily: item.edit?.kind === 'font' && typeof item.value === 'string' ? item.value : undefined }"
-      @search="value => { draft = value; navigating = false }" @blur="reset" @open-change="value => emit('update:open', value)"
+      @change="value => { draft = String(value); navigating = false }" @blur="reset" @open-change="value => emit('update:open', value)"
       @select="value => finish(options.find(option => option.value === value)?.source)">
       <template #optionRender="{ option }"><span :data-ribbon-editor-owner="editorFocusScope?.ownerId" :style="option.data.preview">{{ option.data.label }}</span></template>
       <template #suffix><ChevronDown :size="12" aria-hidden="true" /></template>

@@ -293,6 +293,73 @@ test('link forms follow the theme and synthetic composition blocks confirmation 
   await expect(dialog()).toBeHidden(); await expect(bridge()).toBeFocused()
 })
 
+for (const variant of [
+  { layout: 'classic', dark: false, field: '链接地址' },
+  { layout: 'grid', dark: true, field: '显示文字' },
+]) test(`${variant.layout} delayed link opens preserve a composing ${variant.field} and its body target`, async () => {
+  await page.evaluate(value => {
+    window.documentHyperlinkFixture.appearance(value.dark, value.layout)
+    window.documentHyperlinkFixture.add('example.org')
+    window.documentHyperlinkFixture.selectStory(0, 11)
+  }, variant)
+  await page.getByLabel('编辑页眉', { exact: true }).focus()
+  await page.getByLabel('编辑页眉', { exact: true }).press('Control+k')
+  await expect(dialog()).toBeVisible(); await submit('header.example.org')
+  await expect(dialog()).toBeHidden()
+  const host = { kind: 'story', sectionId: 'first', story: 'header' }
+  const requests = await page.evaluate(host => {
+    const header = window.documentHyperlinkFixture.publicLink(host)
+    window.documentHyperlinkFixture.select(3)
+    return { body: window.documentHyperlinkFixture.publicLink(), header }
+  }, host)
+  await openByShortcut()
+  const address = dialog().getByRole('textbox', { name: '链接地址', exact: true })
+  const label = dialog().getByRole('textbox', { name: '显示文字', exact: true })
+  await address.fill('draft.example.org'); await label.fill('Draft label 😀')
+  const input = dialog().getByRole('textbox', { name: variant.field, exact: true })
+  await input.focus(); await input.dispatchEvent('compositionstart')
+  await expect(dialog().getByRole('button', { name: '应用', exact: true })).toBeDisabled()
+  const before = await snapshot(), inputState = await page.evaluate(() => window.documentHyperlinkFixture.input())
+  const headerLink = (await page.evaluate(host => window.documentHyperlinkFixture.links(host), host))[0]
+  const count = await history(), commands = await page.evaluate(() => window.documentHyperlinkFixture.commands())
+  assert.deepEqual(count, { undo: 2, redo: 0 })
+  for (const operation of [
+    { id: 'doc.operation.show-hyper-link-edit-popup' },
+    { id: 'doc.operation.open-link' },
+    { id: 'doc.operation.show-hyper-link-edit-popup', params: { link: requests.body } },
+    { id: 'doc.operation.show-hyper-link-edit-popup', params: { link: requests.header } },
+  ]) {
+    await page.evaluate(request => window.documentHyperlinkFixture.operation(request.id, request.params), operation)
+    await expect(dialog()).toBeVisible(); await expect(address).toHaveValue('draft.example.org')
+    await expect(label).toHaveValue('Draft label 😀'); await expect(input).toBeFocused(); await expect(input).toBeEnabled()
+    await expect(dialog().getByRole('button', { name: '应用', exact: true })).toBeDisabled()
+    await expect(dialog().getByRole('button', { name: '取消', exact: true })).toBeDisabled()
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), count)
+    assert.deepEqual(await page.evaluate(() => window.documentHyperlinkFixture.input()), inputState)
+    assert.deepEqual(await page.evaluate(() => window.documentHyperlinkFixture.commands()), commands)
+  }
+  await input.dispatchEvent('compositionend')
+  await expect(dialog().getByRole('button', { name: '应用', exact: true })).toBeEnabled()
+  await dialog().getByRole('button', { name: '应用', exact: true }).click()
+  await expect(dialog()).toBeHidden(); await expect(bridge()).toBeFocused()
+  assert.equal((await links())[0].id, requests.body.linkId)
+  assert.equal((await links())[0].target, 'https://draft.example.org')
+  assert.equal((await links())[0].label, 'Draft label 😀')
+  assert.deepEqual((await page.evaluate(host => window.documentHyperlinkFixture.links(host), host))[0], headerLink)
+  assert.deepEqual(await history(), { undo: 3, redo: 0 })
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(snapshot).toEqual(before)
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect.poll(async () => (await links())[0].label).toBe('Draft label 😀')
+  assert.deepEqual(await history(), { undo: 3, redo: 0 })
+  await page.evaluate(() => window.documentHyperlinkFixture.saveReopen())
+  assert.equal((await links())[0].id, requests.body.linkId)
+  assert.equal((await links())[0].target, 'https://draft.example.org')
+  assert.equal((await links())[0].label, 'Draft label 😀')
+  assert.deepEqual((await page.evaluate(host => window.documentHyperlinkFixture.links(host), host))[0], headerLink)
+})
+
 test('explicit public edit opens the complete link from an unrelated caret and commits one transaction', async () => {
   const request = await page.evaluate(() => {
     window.documentHyperlinkFixture.add('example.org')

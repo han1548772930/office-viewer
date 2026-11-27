@@ -68,8 +68,28 @@ Facade 新增 `FOffice.Enum.BorderType`、`FOffice.Enum.BorderStyleTypes` 和 `F
 
 新增 [sheet-border-format.contract.test.mjs](../../packages/office-studio/tests/sheet-border-format.contract.test.mjs) 38 组：固定枚举/预设/线型、非法参数、staging 和 inactive/UI activation、cardinal/diagonal golden mask、并集与重叠、不可变 plan、实际邻格及合并物化权限、局部合并边段/null、NONE 笔、Office 边界、筛除/隐藏行、model/view/legacy 保真、no-op、百万行合并的可见读取计数、19 语言、Ribbon/右键/Facade、历史、隔离和快照重开。
 
-新增 [sheet-border-format.browser.test.mjs](../../packages/office-studio/tests/sheet-border-format.browser.test.mjs) 14 组：真实 Canvas 保留、15 预设/12 线型、完整颜色草稿、主区复用、右键范围、合并段的撤销重做/快照、Facade 同步、inactive API-only 笔标签、取消、邻格保护、入口禁用、隐藏行、活动输入草稿、工作簿笔隔离和主题/RTL/grid overflow。全部仅已编写，未执行；浏览器用例尚不能作为渲染或功能通过证据。
+原 [sheet-border-format.browser.test.mjs](../../packages/office-studio/tests/sheet-border-format.browser.test.mjs) 有 14 个声明、15 个计划用例：真实 Canvas 保留、15 预设/12 线型、完整颜色草稿、主区复用、右键范围、合并段的撤销重做/快照、Facade 同步、inactive API-only 笔标签、取消、邻格保护、入口禁用、隐藏行、活动输入草稿、工作簿笔隔离和主题/RTL/grid overflow。2026-11-27 续核后为 15 个声明、19 个计划用例，见下节。全部仅已编写，未执行；浏览器用例尚不能作为渲染或功能通过证据。
 
 集中验证仍需执行新旧相关契约、浏览器、类型、前端及 Rust/WASM 检查；确认真实 Canvas 的合并分段、背景覆盖顺序及各种线型可见结果。Office 文件仍走本项目解析与写出，SLANT_DASH_DOT 的 XLSX 线型映射由主任务补齐；XLSX 导出/重导入、独立 Excel 重开、主题色/tint、原始扩展边数据保真、局部富文本/绘图格式均未验收。
 
 非清除大范围设置当前仍需 Worker/批量模型路径和取消契约；主格回退局部清除可能物化整侧继承段。继承空白边框清除新增临时同步投影预算 100,000 个位置，超预算的分块 Worker 路径尚未实现；该预算不是性能测量或大范围能力证明。没有首屏、滚动、编辑、缩放、Worker/WASM 传输、内存及同数据集前后基准，不声明大样本性能达标。匿名 standalone 仍沿用现有按名称标识会话的边界，重名匿名工作簿隔离尚未核实。
+
+<a id="border-input-session-review"></a>
+
+## 2026-11-27 边框输入会话与绘图显隐续核
+
+本批属于 SHEET-04 的 Ribbon 状态与 Sheets 输入控制器；只传递现有会话能力并拒绝不适用的 UI 命令。边框 plan、领域/API、权限、内容历史、模型/保存和 Worker/WASM 协议没有新增实现；生产两文件增加 8 行、替换前删除 4 行，不增加 Ribbon 根、菜单子项或 UI handler。
+
+| 固定版来源 | 核实结果与本地差异 |
+| --- | --- |
+| `packages/sheets-ui/src/menu/border.menu.ts:36` 的 `CellBorderSelectorMenuItemFactory` | `getCurrentRangeDisable$` 未传 `supportCellEdit=true`；根保留 `SetBorderBasicCommand`、笔订阅及 BUTTON_SELECTOR。原本地根仅用 `fontDisabled`，普通单元格或公式栏编辑尚能执行边框。 |
+| `packages/sheets-ui/src/menu/menu-util.ts:163`、`:191`、`:192`、`:225` | 默认 `supportCellEdit=false`，当前单元格编辑器可见或公式栏焦点时禁用；普通绘图焦点时也禁用。本地复用既有 `canQuickFormatSelection`，包含工作台活动、选区权限、输入、组字及绘图选区；字体的局部输入格式能力保持独立。 |
+| `packages/sheets-ui/src/menu/border.menu.ts:84` 的 `hidden$` | Sheets 外或 `FOCUSING_COMMON_DRAWINGS` 时隐藏。本地原边框根没有绘图 `hidden`，本批补 `hidden: state.drawingFocused`；已有字体、布局和合并显隐不重复修改。 |
+
+`ExcelWorkbench.vue` 将现有能力传为可选 `SheetRibbonState.borderEditable`；`sheet-ribbon.ts` 用 `fontDisabled || state.borderEditable === false` 同步分体主按钮、下拉触发、15 位置、线型/颜色父菜单及其 12/45 子项。未传字段保持原调用方行为，classic 第 11 项、grid 第 2 行第 5 列、接受后的 preset/笔参数及面板/回退菜单计数不变。原 `RibbonItem.vue` 向 `SheetBorderSelector` 传递 disabled 并在禁用或隐藏时关闭面板；位置 Button、Form/Select 与颜色控件已承载该状态，无新原生控件或第二套颜色输入。
+
+原 `executeRibbon` 会先 `finishEdit`，导致迟到的边框 UI 回调提交输入草稿。现在在该步骤前检查既有 `SHEET_BORDER_FORMAT_COMMAND_IDS`：`sheet.command.set-border`、`set-border-basic`、`set-border-position`、`set-border-color`、`set-border-style` 与 `set-borders` 共六个已定义 ID。此为既有分发的会话守卫，API 注册 ID 不计作新增 UI handler；没有新增别名。原面板 `changeBorderOptions` 继续经 basic 命令进入同一守卫。外部 API 在输入期间修改边框后继续编辑的现有行为与草稿保留，右键和独立 view 适配不改动。
+
+[原 Ribbon 合同草稿](../../packages/office-studio/tests/sheet-ui-ribbon.contract.test.mjs) 新增 1 个声明/1 个计划用例，核对未传/可用/不可用输入能力、字体权限、无工作表、完整回退树、真实 invocation、位置参数和绘图显隐；当前 28 个声明/28 个计划用例。[原边框浏览器草稿](../../packages/office-studio/tests/sheet-border-format.browser.test.mjs) 新增 1 个声明，按 cell/formula × classic/grid 展开 4 个计划用例；夹具只新增真实 revision 观察，沿原 Studio、Canvas 和 ConfigProvider。普通输入、合成 composition 与明转暗期间验证两按钮禁用、六个合法参数的迟到 execute 不提交草稿，不改模型/revision/历史/笔/成功命令或笔事件；结束组字后仍编辑则继续禁用，Escape 后实际右框线、邻格反向边、原值/公式、一次历史、撤销/重做及内部 JSON 重开形成同一草稿闭环。
+
+本批只读取源码和 diff、编写草稿及核对声明数量；运行测试、类型、构建、浏览器、Rust/WASM、Office 样本和基准均为 0，统一验证仍后置。全部能力保持未验收。绘图显隐只有 schema 合同草稿，尚未用真实绘图焦点浏览器验证；合成 composition 不替代 Windows 原生 IME，主题/焦点、独立 view 跨模块输入与重开、Office 边数据往返和真实性能缺口继续保留。

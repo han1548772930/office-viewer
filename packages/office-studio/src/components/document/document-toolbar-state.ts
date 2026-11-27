@@ -23,6 +23,7 @@ export interface DocumentToolbarState {
   blockStyle?: string
   namedStyle?: DocumentNamedParagraphStyle
   listPreset?: ListPreset
+  listPresetMixed?: boolean
   hasSelection: boolean
   table?: DocumentTableSelection
 }
@@ -93,7 +94,9 @@ export function documentToolbarState(model: DocumentModel, selection: DocumentSe
     mixedParagraph.push('lineHeight')
     delete paragraph.lineHeight
   }
-  return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined, namedStyle: namedStyles[0], listPreset: presets.every(p => p === presets[0]) ? presets[0] : undefined, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
+  const listPresetMixed = presets.some(preset => preset !== presets[0])
+  return { marks: uniform, mixedMarks, paragraph, mixedParagraph, blockStyle: styles.every((style) => style === styles[0]) ? styles[0] : undefined,
+    namedStyle: namedStyles[0], listPreset: listPresetMixed ? undefined : presets[0], listPresetMixed, hasSelection: !collapsed, table: documentTableSelection(model, selection) }
 }
 
 function documentToolbarMarks(styles: readonly RunPatch[]): Pick<DocumentToolbarState, 'marks' | 'mixedMarks'> {

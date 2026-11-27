@@ -158,6 +158,22 @@
 
 插表依据为固定版 [TableCreate.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/table/create/TableCreate.tsx)：默认 3×5、行列数字输入最小 1、精度整数，上游最大 20。本地对话框按已有模型允许更多行列，并提供宽度、行高、表头、标题及 TSV 初值。本轮确认 Form 的 disabled、确定按钮和 insert 边界守卫均使用现有状态，未修改其尺寸或业务逻辑。[document-toolbar.browser.test.mjs](../../packages/office-studio/tests/document-toolbar.browser.test.mjs) 的既有 `the table Ribbon operation opens the size dialog and retains an undoable table after snapshot reopening` 仍用于该闭环；本轮未追加插表用例，全部运行验证后置。
 
+<a id="rich-story-navigation"></a>
+
+## 富内容页眉页脚的导航续核
+
+2026-11-27 补充 DOC-03 / COMMON-03 静态小修。固定版 [DocHeaderFooterRibbonControl.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/header-footer/panel/DocHeaderFooterRibbonControl.tsx) 的 navigation 组分别以 HEADER / FOOTER 参数执行 [OpenHeaderFooterPanelCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/doc-header-footer.command.ts)，后者使用当前页、目标区域及节引用恢复实际编辑 segment。上下文导航仍是既有两个按钮，常规、插件扩展、上下文及溢出根增量均为 0。
+
+[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 `handleStoryAction` 已校验活动 story 与 requestScope；当 `editingHost.kind === 'story'` 时转交 `handleBlockStoryAction`。旧 block 处理器只覆盖字段、选项和位置，没有处理 `navigate`，因此富内容页眉的“转到页脚”以及富内容页脚的“转到页眉”会落入无操作分支。旧 flat story 处理器已有 `openStory` 调用，不能把该分支正常行为当作富内容导航完成。
+
+本批仅在 block 处理器增加 `navigate` 早返回，复用同一个 `openStory({ page, area })`。模式、补页、正文选区保存、目标 story block 宿主、输入会话及 Canvas reveal/focus 继续由该入口处理；内容编辑仍沿用既有 story/section 能力判断，导航按现有本地读取操作语义执行。该读取选择与上游按 Edit 禁用导航的差异继续保留，不因本修正消除。没有新增菜单、持久字段、内容 mutation、历史来源或 Worker/WASM 协议。
+
+[document-story-input.browser.test.mjs](../../packages/office-studio/tests/document-story-input.browser.test.mjs) 复用真实 Studio / FDocument / Workbench / ConfigProvider 夹具，通过既有 `projectDocumentStoryBlocks` 构造两个富内容 story。新增 classic 明色与 grid 暗色两个计划用例，检查页眉→页脚→页眉实际 input host、当前区域按钮禁用、输入焦点、模型与内容历史不变、关闭后恢复正文 2–6 范围，以及内部保存重开后继续导航。新增草稿未运行；这些断言不是已通过证据。
+
+所有可替换控件继续使用既有 `antdv-next Button`，主题使用既有 ConfigProvider/token；未改样式或输入桥。真实导航、焦点、主题、Windows IME、文件互操作及性能仍未验收。页眉页脚 Modal 的生产打开路径和表格分页符较大方案继续保留缺口。
+
+本批静态检查通过：3 段 TS/JS（含夹具脚本）的语法、1 个 Vue SFC 解析、125 处本地引用、本文 42 条本地文件链接，以及 3 个修改文件的尾空白/冲突标记与限定 diff 检查。仅加载解析工具，没有执行产品模块或上述浏览器草稿；测试、类型、构建、Rust/WASM、dev、浏览器和基准继续后置。
+
 字符选择器继续使用库中 Select/Form/Input/Button 和 42px 字符格，按钮的禁用由实际 Button props、表单输入的禁用由 Form 上下文传递；未确认新的箭头/hover/尺寸冲突。本轮不实施完整目录、搜索、family/肤色、持久最近项或 keepOpen 方案。全部新增/涉及控件仍使用 `antdv-next`，没有输入桥、接口、Worker/WASM 或性能改动；真实尺寸、主题、焦点、IME、打开/禁用交互与编辑重开均未验收。
 
 <a id="doc-character-picker-plan"></a>

@@ -177,9 +177,12 @@ test('function menu opens its parameter form and saves the confirmed formula thr
   await address(page, 'C1')
   await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
   await click(page, '常用与统计')
-  await page.getByRole('menu', { name: '常用与统计', exact: true }).getByRole('menuitem', { name: 'SUM', exact: true }).click()
+  const commonMenu = page.getByRole('menu', { name: '常用与统计', exact: true })
+  await expect(commonMenu.getByRole('menuitem')).toHaveText(['SUMIF', 'SUM', 'AVERAGE', 'IF', 'COUNT', 'SIN', 'MAX', '插入函数'])
+  await commonMenu.getByRole('menuitem', { name: 'SUM', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
   await expect(dialog.getByText('SUM · 求和', { exact: true })).toBeVisible()
+  await expect(dialog.locator('p').first()).toContainText('数学')
   await dialog.getByRole('button', { name: '插入到公式栏', exact: true }).click()
   await expect(dialog.getByRole('alert')).toContainText('请输入函数参数')
   await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill('A1:A2')
@@ -235,12 +238,135 @@ test('function categories retain the selected name and zero-argument functions e
   await expect.poll(async () => (await cell(page, '0:2'))?.formula).toBeUndefined()
   await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
 
-  for (const name of ['TRUE', 'FALSE', 'NOW', 'TODAY', 'NA']) {
-    const category = name === 'NA' ? '信息' : name === 'TRUE' || name === 'FALSE' ? '逻辑' : '日期与时间'
+  for (const [category, name, label, argumentsText, expected] of [
+    ['文本', 'LEFT', '截取左侧文本', '"Univer",3', 'Uni'],
+    ['文本', 'MID', '按位置截取文本', '"Univer",2,3', 'niv'],
+    ['文本', 'RIGHT', '截取右侧文本', '"Univer",3', 'ver'],
+    ['文本', 'VALUE', '文本转数值', '"25%"', 0.25],
+    ['逻辑', 'PERCENTOF', '子集占比', '2,5', 0.4],
+    ['日期与时间', 'WEEKDAY', '星期序号', '"2008-2-14",2', 4],
+    ['数学', 'DEGREES', '弧度转角度', 'PI()', 180],
+    ['数学', 'RADIANS', '角度转弧度', '270', 4.71238898038469],
+    ['数学', 'ACOS', '反余弦', '0.5', 1.0471975511965979],
+    ['数学', 'ACOSH', '反双曲余弦', '2', 1.3169578969248166],
+    ['数学', 'ACOT', '反余切', '-2', 2.677945044588987],
+    ['数学', 'ACOTH', '反双曲余切', '2', 0.5493061443340549],
+    ['数学', 'ASIN', '反正弦', '0.5', 0.5235987755982989],
+    ['数学', 'ASINH', '反双曲正弦', '10', 2.99822295029797],
+    ['数学', 'ATAN', '反正切', '1', 0.7853981633974483],
+    ['数学', 'ATANH', '反双曲正切', '0.5', 0.5493061443340548],
+    ['数学', 'SIN', '正弦', '1', 0.8414709848078965],
+    ['数学', 'COS', '余弦', '1', 0.5403023058681398],
+    ['数学', 'TAN', '正切', '1', 1.5574077246549023],
+    ['数学', 'COT', '余切', '1', 0.642092615934331],
+    ['数学', 'SEC', '正割', '1', 1.8508157176809255],
+    ['数学', 'CSC', '余割', '1', 1.188395105778121],
+    ['数学', 'SINH', '双曲正弦', '1', 1.1752011936438014],
+    ['数学', 'COSH', '双曲余弦', '1', 1.5430806348152437],
+    ['数学', 'TANH', '双曲正切', '1', 0.7615941559557649],
+    ['数学', 'COTH', '双曲余切', '1', 1.3130352854993315],
+    ['数学', 'SECH', '双曲正割', '1', 0.6480542736638855],
+    ['数学', 'CSCH', '双曲余割', '1', 0.8509181282393216],
+    ['数学', 'EXP', '自然指数', '1', 2.718281828459045],
+    ['数学', 'LN', '自然对数', 'EXP(3)', 3],
+    ['数学', 'LOG', '指定底数对数', '8,2', 3],
+    ['数学', 'LOG10', '常用对数', '100000', 5],
+    ['数学', 'SIGN', '数值符号', '-10', -1],
+    ['数学', 'ATAN2', '坐标反正切', '4,3', 0.6435011087932844],
+    ['数学', 'EVEN', '向外取偶数', '1.5', 2],
+    ['数学', 'ODD', '向外取奇数', '1.5', 3],
+    ['数学', 'QUOTIENT', '整数商', '5,2', 2],
+    ['数学', 'SQRTPI', 'π 倍数的平方根', '1', 1.7724538509055159],
+    ['数学', 'FACT', '阶乘', '5', 120],
+    ['数学', 'FACTDOUBLE', '双阶乘', '6', 48],
+    ['数学', 'COMBIN', '组合数', '8,2', 28],
+    ['数学', 'COMBINA', '可重复组合数', '8,2', 36],
+    ['数学', 'ROUND', '四舍五入', '2.15,1.9', 2.2],
+    ['数学', 'ROUNDBANK', '舍入到最近偶数', '2.345,2', 2.34],
+    ['数学', 'ROUNDDOWN', '向零舍入', '3.2,0', 3],
+    ['数学', 'ROUNDUP', '向外舍入', '3.2,0', 4],
+    ['数学', 'TRUNC', '截去小数', '0.45,1', 0.4],
+    ['数学', 'CEILING', '向上舍入到倍数', '2.5,1', 3],
+    ['数学', 'CEILING.MATH', '按方向向上舍入', '-5.5,2,-1', -6],
+    ['数学', 'CEILING.PRECISE', '向上舍入到绝对倍数', '4.3,2', 6],
+    ['数学', 'FLOOR', '向下舍入到倍数', '3.7,2', 2],
+    ['数学', 'FLOOR.MATH', '按方向向下舍入', '-5.5,2,-1', -4],
+    ['数学', 'FLOOR.PRECISE', '向下舍入到绝对倍数', '-3.2,-1', -4],
+    ['数学', 'ISO.CEILING', 'ISO 向上舍入', '-4.3,2', -4],
+    ['数学', 'GCD', '最大公约数', '5,2', 1],
+    ['数学', 'LCM', '最小公倍数', '5,2', 10],
+    ['数学', 'MULTINOMIAL', '多项式系数', '5,2', 21],
+    ['数学', 'MROUND', '舍入到最近倍数', '10,3', 9],
+    ['数学', 'ABS', '绝对值', '"-5"', 5],
+    ['数学', 'SQRT', '平方根', '"16"', 4],
+    ['数学', 'INT', '向下取整', '5.999999999999999', 6],
+    ['数学', 'MOD', '余数', '"5","2"', 1],
+    ['数学', 'POWER', '乘方', '"5","2"', 25],
+    ['数学', 'SUMSQ', '平方和', '3,4', 25],
+    ['数学', 'SUMX2MY2', '平方差之和', '3,4', -7],
+    ['数学', 'SUMX2PY2', '平方和之和', '3,4', 25],
+    ['数学', 'SUMXMY2', '差平方之和', '3,4', 1],
+    ['数学', 'SUMPRODUCT', '乘积求和', '3,4', 12],
+    ['数学', 'SERIESSUM', '幂级数求和', '2,1,1,3', 6],
+    ['数学', 'ARABIC', '罗马数字转数值', '"MCMXII"', 1912],
+    ['数学', 'ROMAN', '数值转罗马数字', '499,0', 'CDXCIX'],
+    ['数学', 'BASE', '数值转进制文本', '15,2,10', '0000001111'],
+    ['数学', 'DECIMAL', '进制文本转数值', '"FF",16', 255],
+    ['数学', 'RANDBETWEEN', '区间随机整数', '7,7', 7],
+    ['数学', 'MDETERM', '矩阵行列式', '5', 5],
+    ['信息', 'ERROR.TYPE', '错误类型编号', '"#NULL!"', 1],
+    ['信息', 'ISBETWEEN', '检查区间', '7.9,1.2,12.45', true],
+    ['信息', 'N', '值转数值', '7', 7],
+    ['信息', 'TYPE', '值类型编号', 'A1', 1],
+    ['信息', 'ISREF', '检查引用', 'A1', true],
+    ['信息', 'ISEVEN', '检查偶数', '2.5', true],
+    ['信息', 'ISODD', '检查奇数', '-3.9', true],
+    ['信息', 'ISFORMULA', '检查公式', 'A1', false],
+    ['信息', 'SHEET', '工作表序号', 'A1', 1],
+    ['信息', 'ISEMAIL', '检查邮件地址', '"developer@univer.ai"', true],
+    ['信息', 'ISURL', '检查网址', '"univer.ai"', true],
+  ] as const) {
+    await click(page, category)
+    await page.getByRole('menu', { name: category, exact: true }).getByRole('menuitem', { name, exact: true }).click()
+    await expect(dialog.getByText(`${name} · ${label}`, { exact: true })).toBeVisible()
+    await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill(argumentsText)
+    await dialog.getByRole('button', { name: '插入到公式栏', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue(`=${name}(${argumentsText})`)
+    expect((await cell(page, '0:2'))?.formula).toBeUndefined()
+    await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+    if (typeof expected === 'number') await expect.poll(async () => (await cell(page, '0:2'))?.value).toBeCloseTo(expected, 12)
+    if (typeof expected !== 'number') await expect.poll(async () => (await cell(page, '0:2'))?.value).toBe(expected)
+    await ribbon(page).getByRole('tab', { name: '开始', exact: true }).click()
+    await click(page, '撤销')
+    await expect.poll(async () => (await cell(page, '0:2'))?.formula).toBeUndefined()
+    await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
+  }
+
+  for (const name of ['TRUE', 'FALSE', 'NOW', 'TODAY', 'NA', 'PI', 'RAND', 'SHEETS']) {
+    const category = name === 'NA' || name === 'SHEETS' ? '信息' : name === 'PI' || name === 'RAND' ? '数学' : name === 'TRUE' || name === 'FALSE' ? '逻辑' : '日期与时间'
     await click(page, category)
     await page.getByRole('menu', { name: category, exact: true }).getByRole('menuitem', { name, exact: true }).click()
     await expect(dialog).toBeHidden()
     await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue(`=${name}()`)
+    if (name === 'PI' || name === 'SHEETS') {
+      await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+      await expect.poll(async () => (await cell(page, '0:2'))?.value).toBe(name === 'PI' ? Math.PI : 1)
+      await ribbon(page).getByRole('tab', { name: '开始', exact: true }).click()
+      await click(page, '撤销')
+      await expect.poll(async () => (await cell(page, '0:2'))?.formula).toBeUndefined()
+      await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
+      continue
+    }
+    if (name === 'RAND') {
+      await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+      await expect.poll(async () => (await cell(page, '0:2'))?.value).toBeGreaterThanOrEqual(0)
+      await expect.poll(async () => (await cell(page, '0:2'))?.value).toBeLessThan(1)
+      await ribbon(page).getByRole('tab', { name: '开始', exact: true }).click()
+      await click(page, '撤销')
+      await expect.poll(async () => (await cell(page, '0:2'))?.formula).toBeUndefined()
+      await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
+      continue
+    }
     await page.getByRole('button', { name: '取消编辑', exact: true }).click()
     expect((await cell(page, '0:2'))?.formula).toBeUndefined()
   }
@@ -252,7 +378,7 @@ test('information menu evaluates its selected predicate through editing, history
   await click(page, '信息')
   const functions = page.getByRole('menu', { name: '信息', exact: true })
   await expect(functions.getByRole('menuitem')).toHaveText([
-    'ISBLANK', 'ISERR', 'ISERROR', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISTEXT', 'NA',
+    'ERROR.TYPE', 'ISBETWEEN', 'ISBLANK', 'ISEMAIL', 'ISERR', 'ISERROR', 'ISEVEN', 'ISFORMULA', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISODD', 'ISREF', 'ISTEXT', 'ISURL', 'N', 'NA', 'SHEET', 'SHEETS', 'TYPE',
   ])
   await functions.getByRole('menuitem', { name: 'ISERROR', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })

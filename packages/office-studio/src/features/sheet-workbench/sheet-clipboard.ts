@@ -17,6 +17,7 @@ import { hasInheritedSheetStyle, resolveSheetCellStyle } from './sheet-style-inh
 import { planSheetRangeThemeCut } from './sheet-range-theme-structure.ts'
 import { sheetUsedRangeThemeRule } from './sheet-range-theme-resolver.ts'
 import { pasteSheetClipboardImages } from '../sheet-images/sheet-image-clipboard.ts'
+import { hiddenSheetColumns, isSheetColumnVisible } from './sheet-row-visibility.ts'
 
 export * from './sheet-clipboard-types.ts'
 export * from './sheet-clipboard-data.ts'
@@ -125,8 +126,11 @@ export function createSheetClipboardPastePlan(
     }
   }
   if (actualMode === 'columnWidths') {
+    const columnVisibility = { ...targetDraft, columnCount: Math.max(targetDraft.columnCount ?? 16_384, geometry.columns.at(-1)! + 1) }
+    const hiddenColumns = hiddenSheetColumns(columnVisibility)
     for (let column = 0; column < geometry.columns.length; column++) {
       const destination = geometry.columns[column]!, width = snapshot.columnWidths[column % snapshot.columns.length]!
+      if (width === 0 || !isSheetColumnVisible(columnVisibility, destination, hiddenColumns)) continue
       if (sheetColumnWidth(targetDraft, destination) !== width) {
         targetDraft.columnWidthSpans = assignSheetAxisSpan(targetDraft.columnWidthSpans, destination, destination, width)
         delete targetDraft.columnWidths[destination]

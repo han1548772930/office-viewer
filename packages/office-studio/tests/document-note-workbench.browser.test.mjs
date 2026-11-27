@@ -83,7 +83,7 @@ window.noteWorkbenchFixture = {
   snapshot: () => copy(model.value), input: () => { const value = api.value.getInputState(); return value ? copy(value) : null },
   history: () => ({ undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 }),
   commands: () => [...commands], notices: () => [...notices], observed: () => copy(observed), listenerErrors: () => studio.getEventListenerErrors().map(value => String(value.error)),
-  selectBody, outside, armCommitObserver, armReturnObserver, setRules: rules => api.value.setPermissionRules(rules),
+  selectBody, selectRange: selection => api.value.setInputSelection(selection), outside, armCommitObserver, armReturnObserver, setRules: rules => api.value.setPermissionRules(rules),
   undo: () => api.value.undo(), redo: () => api.value.redo(), appearance: (isDark, layout) => { dark.value = isDark; variant.value = layout },
   cancel: id => { cancellation?.dispose(); cancellation = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === id) event.cancel = true }) },
   clearCancellation: () => { cancellation?.dispose(); cancellation = undefined },
@@ -162,6 +162,52 @@ async function picturePixels() {
     for (let index = 0; index < data.length; index += 4) if (data[index] > 230 && data[index + 1] < 30 && data[index + 2] > 230 && data[index + 3] > 230) count++
     return count
   }, 'data:image/png;base64,' + raster.toString('base64'))
+}
+
+for (const [kind, label, reverse, dark, variant] of [
+  ['footnote', '脚注', false, false, 'classic'], ['footnote', '脚注', true, true, 'grid'],
+  ['endnote', '尾注', false, false, 'classic'], ['endnote', '尾注', true, true, 'grid'],
+]) {
+  test(kind + ' Ribbon insertion uses the editable logical end of a ' + (reverse ? 'reversed' : 'forward') + ' nonempty selection', async () => {
+    const property = kind === 'footnote' ? 'footnotes' : 'endnotes', command = 'doc.command.insert-' + kind
+    await page.evaluate(([dark, variant]) => window.noteWorkbenchFixture.appearance(dark, variant), [dark, variant])
+    await page.evaluate(() => window.noteWorkbenchFixture.setRules([
+      { id: 'deny-start', scope: 'paragraph', targetId: 'body-24', action: 'edit', effect: 'deny', userIds: ['editor'] },
+    ]))
+    await page.evaluate(reverse => {
+      const start = { blockId: 'body-24', offset: 2 }, end = { blockId: 'body-25', offset: 2 }
+      window.noteWorkbenchFixture.selectRange(reverse ? { anchor: end, focus: start } : { anchor: start, focus: end })
+    }, reverse)
+    await references()
+    const button = page.getByRole('button', { name: '插入' + label, exact: true }), before = await snapshot(), stack = await history()
+    await expect(button).toBeEnabled()
+    await page.evaluate(command => window.noteWorkbenchFixture.cancel(command), command); await button.click()
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), stack)
+    await page.evaluate(() => window.noteWorkbenchFixture.clearCancellation()); await button.click()
+    await expect.poll(async () => Object.keys((await snapshot())[property] ?? {}).length).toBe(Object.keys(before[property] ?? {}).length + 1)
+    const after = await snapshot(), note = Object.entries(after[property]).find(([id]) => !Object.hasOwn(before[property] ?? {}, id))[1]
+    const first = after.blocks.find(block => block.id === 'body-24'), last = after.blocks.find(block => block.id === 'body-25')
+    assert.deepEqual(first, before.blocks.find(block => block.id === first.id))
+    assert.equal(last.runs.filter(run => !run.metadata?.note).map(run => run.text).join(''), before.blocks.find(block => block.id === last.id).runs.map(run => run.text).join(''))
+    assert.equal(note.referenceBlockId, last.id)
+    assert.equal(last.runs.slice(0, last.runs.findIndex(run => run.id === note.referenceRunId)).reduce((offset, run) => offset + run.text.length, 0), 2)
+    assert.deepEqual((await input()).location.host, { kind: 'note', noteKind: kind, noteId: note.id }); await expect(inputBridge()).toBeFocused()
+    assert.equal((await history()).undo, stack.undo + 1)
+    assert.deepEqual((await page.evaluate(() => window.noteWorkbenchFixture.commands())).filter(id => id === command), [command])
+    await page.evaluate(() => window.noteWorkbenchFixture.undo()); await expect.poll(snapshot).toEqual(before)
+    await page.evaluate(() => window.noteWorkbenchFixture.redo()); await expect.poll(snapshot).toEqual(after)
+    const saved = await page.evaluate(() => window.noteWorkbenchFixture.saveReopen()); await expect.poll(snapshot).toEqual(saved)
+    assert.deepEqual(saved[property][note.id], after[property][note.id]); assert.deepEqual(saved.blocks.find(block => block.id === first.id), first)
+
+    await page.evaluate(() => window.noteWorkbenchFixture.setRules([
+      { id: 'deny-end', scope: 'paragraph', targetId: 'body-25', action: 'edit', effect: 'deny', userIds: ['editor'] },
+    ]))
+    await page.evaluate(reverse => {
+      const start = { blockId: 'body-24', offset: 2 }, end = { blockId: 'body-25', offset: 2 }
+      window.noteWorkbenchFixture.selectRange(reverse ? { anchor: end, focus: start } : { anchor: start, focus: end })
+    }, reverse)
+    await references(); await expect(button).toBeDisabled()
+  })
 }
 
 test('opening an orphan picture story paints its real image without model/history writes and restores body selection, scroll and zoom', async () => {

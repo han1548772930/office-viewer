@@ -38,6 +38,7 @@ studio.events.addEvent('SheetBorderFormatStateChanged', event => states.push(cop
 studio.events.addEvent('BeforeCommandExecute', event => { if (canceled.value && event.id.startsWith('sheet.command.set-border')) event.cancel = true })
 window.sheetBorderFixture = {
   snapshot: () => copy(studio.editor.workbook.model),
+  revision: () => studio.getWorkbookRevision(studio.activeWorkbookId),
   history: (id = studio.activeWorkbookId) => { const unit = studio.editor.history.units[id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
   state: () => copy(studio.getSheetBorderFormatState(studio.activeWorkbookId, studio.editor.workbook.model.activeSheetId)),
   commands: () => copy(commands), states: () => copy(states), notifications: () => copy(notifications),
@@ -295,6 +296,73 @@ test('external API border updates preserve an active input draft and its later c
   await expect.poll(async () => (await snapshot()).sheets[0].cells['0:0'].value).toBe(42)
   assert.deepEqual((await border()).left, { style: 'thick', color: '#ff0000' }); assert.deepEqual(await history(), { undo: 2, redo: 0 })
   await expect(grid()).toBeFocused()
+})
+
+for (const host of ['cell', 'formula']) for (const variant of ['classic', 'grid']) test('border entries preserve the ' + host + ' input in ' + variant + ' until cancel, then use the existing history and internal reopen', async () => {
+  await page.setViewportSize({ width: 1800, height: 900 })
+  await page.evaluate(value => window.sheetBorderFixture.variant(value), variant)
+  await selectRange(host === 'formula' ? 'A2' : 'A1')
+  const before = await snapshot(), depth = await history(), pen = await state()
+  const revision = await page.evaluate(() => window.sheetBorderFixture.revision())
+  const events = await page.evaluate(() => ({ commands: window.sheetBorderFixture.commands(), states: window.sheetBorderFixture.states() }))
+  const input = host === 'cell' ? editor() : page.getByRole('textbox', { name: '公式编辑', exact: true })
+  if (host === 'cell') await grid().press('F2')
+  if (host === 'formula') await input.focus()
+  const draft = host === 'cell' ? '未提交内容' : '=9+1'
+  await input.fill(draft)
+  for (const composing of [false, true]) {
+    if (composing) {
+      await input.dispatchEvent('compositionstart')
+      await page.evaluate(() => window.sheetBorderFixture.appearance(true))
+    }
+    const buttons = (await homeItem('sheet.menu.borders')).getByRole('button')
+    await expect(buttons).toHaveCount(2)
+    for (const button of await buttons.all()) {
+      await expect(button).toBeDisabled(); await button.evaluate(element => element.click())
+    }
+    for (const request of [
+      { id: 'sheet.command.set-border' },
+      { id: 'sheet.command.set-border-basic', params: { value: { type: 'outside', style: 'double', color: '#ff0000' } } },
+      { id: 'sheet.command.set-border-position', params: 'right' },
+      { id: 'sheet.command.set-border-color', params: '#ff0000' },
+      { id: 'sheet.command.set-border-style', params: 'double' },
+      { id: 'sheet.command.set-borders', params: 'outside' },
+    ]) {
+      await page.getByTestId('workbench-ribbon').evaluate((element, value) => element.__vueParentComponent.emit('execute', value.id, value.params), request)
+    }
+    await expect(input).toHaveValue(draft); await expect(grid()).not.toBeFocused()
+    await expect(page.locator('.border-selector:visible')).toHaveCount(0)
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth); assert.deepEqual(await state(), pen)
+    assert.equal(await page.evaluate(() => window.sheetBorderFixture.revision()), revision)
+    assert.deepEqual(await executed(), events.commands)
+    assert.deepEqual(await page.evaluate(() => window.sheetBorderFixture.states()), events.states)
+  }
+  await input.dispatchEvent('compositionend')
+  for (const button of await (await homeItem('sheet.menu.borders')).getByRole('button').all()) await expect(button).toBeDisabled()
+  await input.press('Escape'); await expect(grid()).toBeFocused()
+  assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), depth); assert.deepEqual(await state(), pen)
+  await selectRange('A1')
+  const panel = await openBorder()
+  await panel.getByRole('button', { name: '右框线', exact: true }).click()
+  await expect.poll(async () => (await border()).right).toEqual({ style: 'thin', color: '#000000' })
+  const formatted = await snapshot()
+  assert.deepEqual(modelContent(formatted), modelContent(before))
+  assert.equal((await border(0, 1)).left, undefined)
+  assert.deepEqual((await border(0, 1)).top, { style: 'double', color: '#123456' })
+  assert.equal((await executed()).at(-1).id, 'sheet.command.set-borders')
+  assert.deepEqual(await history(), { undo: depth.undo + 1, redo: 0 })
+  await (await homeItem('sheet.command.undo')).getByRole('button').click()
+  await expect.poll(snapshot).toEqual(before)
+  await (await homeItem('sheet.command.redo')).getByRole('button').click()
+  await expect.poll(snapshot).toEqual(formatted)
+  await page.evaluate(value => { window.sheetBorderFixture.reopen(value) }, JSON.stringify(formatted))
+  await expect.poll(async () => (await border()).right).toEqual({ style: 'thin', color: '#000000' })
+  assert.deepEqual(modelContent(await snapshot()), modelContent(before))
+  assert.equal((await border(0, 1)).left, undefined)
+  assert.deepEqual((await border(0, 1)).top, { style: 'double', color: '#123456' })
+  assert.deepEqual(await history(), { undo: 0, redo: 0 })
+  assert.deepEqual(await state(), { type: 'all', style: 'thin', color: '#000000', active: false })
+  await expect(canvas()).toHaveAttribute('data-border-test-mount', 'original')
 })
 
 test('recent border pens and content histories remain isolated across workbooks', async () => {

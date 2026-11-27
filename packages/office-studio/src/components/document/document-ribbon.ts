@@ -1,4 +1,5 @@
 import type { Component } from 'vue'
+import type { DocumentBlock, DocumentModel } from '../../domain/model'
 import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUp, Bold, Brush, CalendarDays, ChevronDown,
   ClipboardPaste, CodeXml, Columns3, Copy, Expand, FileCog, Grid2X2, ImagePlus,
@@ -11,7 +12,9 @@ import type { DocumentCommand } from '../../features/document/commands/document-
 import { documentStructureCommandFromMenu } from './document-structure-ribbon'
 import { DOCUMENT_PASTE_OPTIONS } from '../../features/document/services/document-clipboard'
 import { validateDocumentParagraphStylePatch } from '../../features/document/services/document-settings'
-import { DOCUMENT_NAMED_PARAGRAPH_STYLES, type DocumentNamedParagraphStyle } from '../../features/document/model/document-model.ts'
+import { DOCUMENT_NAMED_PARAGRAPH_STYLES, orderedSelection, sameTarget, textTargets, type DocumentNamedParagraphStyle, type DocumentSelection } from '../../features/document/model/document-model.ts'
+import { documentBlockChildContainers } from '../../features/document/model/document-structural-blocks'
+import { documentTableSelectedTextTargets } from '../../features/document/model/document-table-selection'
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema'
 import { featureSearchRibbonItem, shortcutPanelRibbonItem } from '../../platform/ribbon/feature-search'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts'
@@ -69,6 +72,8 @@ export interface DocumentRibbonContext {
   editingHeaderFooter?: boolean
   editingAuxiliaryContent?: boolean
   editingDisabled?: boolean
+  selectionHasCode?: boolean
+  pageSettingsDisabled?: boolean
   namedStyleDisabled?: boolean
   namedStyleDisabledReason?: string
   /** Character formatting can target an active story independently of body-only tools. */
@@ -85,6 +90,7 @@ export interface DocumentRibbonContext {
     temporary?: boolean
     checkboxStyle?: string
     dateFormat?: string
+    dateValue?: string
     parentId?: string
     canSelectParent?: boolean
     placement?: string
@@ -113,13 +119,28 @@ export interface DocumentRibbonContext {
 
 const action = (id: string, title: string, icon: Component | undefined, commandId = id, params?: unknown, more: Partial<RibbonItem> = {}): RibbonItem => ({ id, type: 'button', title, icon, commandId, params, ...more })
 
+export function documentRibbonSelectionHasCode(model: DocumentModel, selection: DocumentSelection): boolean {
+  const targets = textTargets(model)
+  const { start, end } = orderedSelection(model, selection)
+  const selected = selection.tableSelection ? documentTableSelectedTextTargets(model, selection.tableSelection)
+    : targets.slice(targets.findIndex(target => sameTarget(target, start)), targets.findIndex(target => sameTarget(target, end)) + 1)
+  const selectedIds = new Set(selected.map(target => target.cellBlockId ?? target.blockId))
+  const intersects = (blocks: readonly DocumentBlock[], inCode: boolean): boolean => blocks.some(block => {
+    const code = inCode || block.type === 'code'
+    if (code && selectedIds.has(block.id)) return true
+    return documentBlockChildContainers(block).some(children => intersects(children, code))
+  })
+  return intersects(model.blocks, false)
+}
+
 export function createDocumentRibbon(context: DocumentRibbonContext, translate?: OfficeTranslator): RibbonTab[] {
   const { state } = context
   const textFormattingDisabled = context.textFormattingDisabled ?? context.editingDisabled
   const tocLabel = (key: string, fallback: string) => translate?.(key, fallback) ?? fallback
   const listControl = (kind: ListKind, icon: Component, title: string, row: number, column: number): RibbonItem => ({
     ...action(`doc-${kind}`, title, icon, 'doc.command.set-block-type', { type: kind }), type: 'split',
-    disabled: context.editingDisabled, activated: state.listPreset ? listKind(state.listPreset) === kind : state.blockStyle === kind, gridLayout: { row, column },
+    disabled: context.editingDisabled, activated: !state.listPresetMixed && (state.listPreset ? listKind(state.listPreset) === kind : state.blockStyle === kind),
+    shortcut: kind === 'numbered' ? 'Ctrl+Shift+7' : 'Ctrl+Shift+8', gridLayout: { row, column },
     popupComponent: DocumentListPicker, popupCommandId: 'doc.command.change-list-type',
     popupProps: { kind, title: tocLabel(`items.doc-${kind}`, title), active: state.listPreset,
       canRestart: kind === 'numbered' && Boolean(context.numbering?.canRestart), canContinue: kind === 'numbered' && Boolean(context.numbering?.canContinue) },
@@ -127,11 +148,12 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
   const format = (id: string, title: string, icon: Component, key: 'bold' | 'italic' | 'underline' | 'strike'): RibbonItem => {
     const column = ['bold', 'italic', 'underline', 'strike'].indexOf(key) + 1
     return action(id, title, icon, 'doc.command.format-text', { patch: { [key]: state.marks[key] !== true } }, { order: column - 1, disabled: textFormattingDisabled, activated: state.marks[key] === true,
-      shortcut: ({ bold: 'Ctrl+B', italic: 'Ctrl+I', underline: 'Ctrl+U', strike: undefined })[key],
+      shortcut: ({ bold: 'Ctrl+B', italic: 'Ctrl+I', underline: 'Ctrl+U', strike: 'Ctrl+Shift+X' })[key],
       tooltip: state.mixedMarks.includes(key) ? `${title}（混合格式）` : title, gridLayout: { row: 2, column, width: 32, minWidth: 28 } })
   }
-  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: textFormattingDisabled, activated: state.marks.verticalAlign === value, tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
-  const alignments = [{ value: 'left', title: '左对齐', icon: AlignLeft }, { value: 'center', title: '居中', icon: AlignCenter }, { value: 'right', title: '右对齐', icon: AlignRight }, { value: 'justify', title: '两端对齐', icon: AlignJustify }]
+  const verticalFormat = (id: string, title: string, icon: Component, value: 'subscript' | 'superscript'): RibbonItem => action(id, title, icon, 'doc.command.format-text', { patch: { verticalAlign: state.marks.verticalAlign === value ? 'baseline' : value } }, { order: value === 'subscript' ? 4 : 5, disabled: textFormattingDisabled, activated: state.marks.verticalAlign === value,
+    shortcut: value === 'subscript' ? 'Ctrl+,' : 'Ctrl+.', tooltip: state.mixedMarks.includes('verticalAlign') ? `${title}（混合格式）` : title, gridLayout: { row: 2, column: value === 'subscript' ? 6 : 5, width: 32, minWidth: 28 } })
+  const alignments = [{ value: 'left', title: '左对齐', icon: AlignLeft, shortcut: 'Ctrl+Shift+L' }, { value: 'center', title: '居中', icon: AlignCenter, shortcut: 'Ctrl+Shift+E' }, { value: 'right', title: '右对齐', icon: AlignRight, shortcut: 'Ctrl+Shift+R' }, { value: 'justify', title: '两端对齐', icon: AlignJustify, shortcut: 'Ctrl+Shift+J' }]
   const palette = (id: string, title: string, key: 'color' | 'highlight', icon: Component): RibbonItem => {
     const defaultColor = key === 'color' ? context.defaultTextColor ?? DOCUMENT_DEFAULT_TEXT_COLOR : context.defaultHighlightColor ?? '#315bc2'
     const lastColor = (key === 'color' ? context.lastTextColor : context.lastHighlightColor) ?? defaultColor
@@ -178,7 +200,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         palette('doc-highlight', '文本高亮', 'highlight', PaintBucket), palette('doc-text-color', '字体颜色', 'color', Palette),
       ] },
       { id: 'doc-layout', title: '段落与列表', order: 2, items: [
-        { id: 'doc-align', type: 'menu', title: '段落对齐', disabled: context.editingDisabled, icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value })) },
+        { id: 'doc-align', type: 'menu', title: '段落对齐', disabled: context.editingDisabled, icon: alignments.find((item) => item.value === state.paragraph.align)?.icon ?? AlignLeft, gridLayout: { row: 1, column: 1 }, children: alignments.map((item) => action(`doc-align-${item.value}`, item.title, item.icon, 'doc.command.format-paragraph', { patch: { align: item.value } }, { activated: state.paragraph.align === item.value, shortcut: item.shortcut })) },
         listControl('numbered', ListOrdered, '有序列表', 2, 1),
         listControl('bullet', List, '无序列表', 1, 2),
         action('doc-checklist', '清单', ListTodo, 'doc.command.set-block-type', { type: 'checklist' }, { disabled: context.editingDisabled, activated: state.blockStyle === 'checklist', gridLayout: { row: 2, column: 2 } }),
@@ -238,7 +260,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       action('doc-link', '链接', Link, 'doc.operation.show-hyper-link-edit-popup', undefined, { order: 1,
         disabled: context.hyperlink ? !context.hyperlink.available : context.editingDisabled || !state.hasSelection,
         disabledReason: context.hyperlink?.reason, shortcut: 'Ctrl+K', gridLayout: { row: 1, column: 5 } }),
-      action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.horizontal-line', undefined, { order: 4, disabled: context.editingDisabled, gridLayout: { row: 2, column: 5 } }),
+      action('doc-divider', '分隔线', SeparatorHorizontal, 'doc.command.horizontal-line', undefined, { order: 4, disabled: context.editingDisabled || context.selectionHasCode || context.structuredBlock?.type === 'code', gridLayout: { row: 2, column: 5 } }),
       action('doc-code-block', '代码块', CodeXml, 'doc.operation.insert-code-block', undefined, { order: 7, disabled: context.editingDisabled, gridLayout: { row: 1, column: 7 } }),
       action('doc-latex', 'LaTeX 公式', Sigma, 'doc.operation.open-latex', undefined, { order: 8, disabled: context.editingDisabled, gridLayout: { row: 2, column: 7 } }),
       ] },
@@ -288,7 +310,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     ] },
     { id: 'view', title: '视图', order: 2, groups: [
       { id: 'doc-display', title: '显示', order: 0, items: [
-      action('doc-page-settings', '页面设置', FileCog, 'doc.operation.open-page-settings', undefined, { showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
+      action('doc-page-settings', '页面设置', FileCog, 'doc.operation.open-page-settings', undefined, { disabled: context.pageSettingsDisabled, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
       { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, commandId: 'doc.operation.set-zoom', gridLayout: { row: 1, column: 2 }, options: [50, 80, 100, 130, 150, 170, 200, 400].map((value) => ({ label: `${value}%`, value })) },
       action('doc-fullscreen', context.fullscreen ? '退出全屏' : '全屏', context.fullscreen ? Minimize : Expand, 'doc.operation.toggle-fullscreen', undefined, { activated: context.fullscreen, gridLayout: { row: 2, column: 2 } }),
       ] },
@@ -364,7 +386,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     if (control.type === 'checkbox') {
       values.push({
         ...action('doc-controls-checkbox-style', '复选框样式', SquareCheckBig, 'doc.command.set-selected-sdt-checkbox-style'),
-        type: 'select', value: control.checkboxStyle ?? 'Cross',
+        type: 'select', value: control.checkboxStyle ?? null, placeholder: '自定义',
         hidden: ['contentLocked', 'sdtContentLocked'].includes(control.lock ?? ''), gridLayout: { row: 1, column: 1, showLabel: true },
         options: [
           { value: 'Cross', label: '叉号' }, { value: 'Check', label: '勾选' },
@@ -379,6 +401,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     if (control.type === 'date') values.push({
       ...action('doc-controls-date-format', '日期格式', CalendarDays, 'doc.command.set-selected-sdt-date-format'),
       type: 'select', value: control.dateFormat ?? 'yyyy-MM-dd', gridLayout: { row: 1, column: 1, showLabel: true },
+      disabled: context.editingDisabled || (['contentLocked', 'sdtContentLocked'].includes(control.lock ?? '') && !control.showingPlaceholder && !!control.dateValue),
       options: ['yyyy-MM-dd', 'yyyy/MM/dd', 'M/d/yyyy', 'dd MMM yyyy', 'MMMM d, yyyy'].map(value => ({ value, label: value })),
       valueParams: value => ({ value }),
     })
@@ -386,26 +409,26 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       disabled: !control.canResetPlaceholder, disabledReason: control.resetPlaceholderDisabledReason, gridLayout: { row: 1, column: 2, showLabel: true },
     }))
     if (control.type === 'text') values.push(action('doc-controls-multiline', '允许换行', TextCursorInput, 'doc.command.toggle-selected-sdt-multiline', undefined, {
-      activated: control.multiLine, gridLayout: { row: 1, column: 1, showLabel: true },
+      activated: control.multiLine, disabled: context.editingDisabled, gridLayout: { row: 1, column: 1, showLabel: true },
     }))
     if (control.type === 'text' || control.type === 'richText') values.push(action('doc-controls-temporary', '编辑后移除', RemoveFormatting, 'doc.command.toggle-selected-sdt-temporary', undefined, {
-      activated: control.temporary, gridLayout: { row: 2, column: 1, showLabel: true },
+      activated: control.temporary, disabled: context.editingDisabled, gridLayout: { row: 2, column: 1, showLabel: true },
     }))
     const behavior: RibbonItem[] = [
       { id: 'doc-controls-appearance', type: 'select', title: '外观', icon: Layers2,
-        value: control.appearance ?? 'boundingBox', commandId: 'doc.command.set-selected-sdt-appearance',
+        value: control.appearance ?? 'boundingBox', commandId: 'doc.command.set-selected-sdt-appearance', disabled: context.editingDisabled,
         gridLayout: { row: 1, column: 1, showLabel: true }, options: [
           { label: '边界框', value: 'boundingBox' }, { label: '开始/结束标记', value: 'tags' }, { label: '不显示标记', value: 'hidden' },
         ].map(option => ({ ...option, commandId: 'doc.command.set-selected-sdt-appearance', params: { value: option.value } })), valueParams: value => ({ value }) },
       { id: 'doc-controls-lock', type: 'select', title: '锁定', icon: LockKeyhole,
-        value: control.lock ?? 'unlocked', commandId: 'doc.command.set-selected-sdt-lock',
-        gridLayout: { row: 2, column: 1, showLabel: true }, options: [
+        value: control.lock === 'controlLocked' ? 'sdtLocked' : control.lock ?? 'unlocked', commandId: 'doc.command.set-selected-sdt-lock',
+        disabled: context.editingDisabled, gridLayout: { row: 2, column: 1, showLabel: true }, options: [
           { label: '不锁定', value: 'unlocked' }, { label: '禁止删除控件', value: 'sdtLocked' },
           { label: '禁止编辑内容', value: 'contentLocked' }, { label: '内容和控件均锁定', value: 'sdtContentLocked' },
         ].map(option => ({ ...option, commandId: 'doc.command.set-selected-sdt-lock', params: { value: option.value } })), valueParams: value => ({ value }) },
       action('doc-controls-properties', '属性', FileCog, 'doc.command.open-selected-sdt-properties', undefined, { gridLayout: { row: 1, column: 2, showLabel: true } }),
       action('doc-controls-remove', '删除内容控件', Trash2, 'doc.command.remove-selected-sdt', undefined, {
-        disabled: ['sdtLocked', 'sdtContentLocked', 'controlLocked'].includes(control.lock ?? ''),
+        disabled: context.editingDisabled || ['sdtLocked', 'sdtContentLocked', 'controlLocked'].includes(control.lock ?? ''),
         gridLayout: { row: 2, column: 2, showLabel: true },
       }),
     ]

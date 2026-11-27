@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { afterAll, beforeAll, test } from 'vitest'
 import { createServer } from 'vite'
 import { createPinia } from 'pinia'
-import { reactive } from 'vue'
+import { effectScope, reactive, shallowRef } from 'vue'
 import { createBlankWorkbook, createCell, defaultCellStyle } from '../src/domain/model.ts'
 import { cloneModel } from '../src/domain/serialization.ts'
-import { applyExcelWorkbookView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
+import { applyExcelWorkbookView, toExcelCellView, toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import {
   applySheetFormatPainterCommand, applySheetViewFormatPainterCommand, captureSheetFormatPainterSource,
   captureSheetViewFormatPainterSource, cloneSheetFormatPainterSource, createSheetFormatPainterPlan,
@@ -17,6 +17,8 @@ import {
 } from '../src/features/sheet-workbench/sheet-format-painter-session.ts'
 import { useSheetFormatPainterStore } from '../src/features/sheet-workbench/sheet-format-painter-store.ts'
 import { conditionalFormatFormulaAt } from '../src/features/conditional-formatting/conditional-format-formulas.ts'
+import { sheetCellFontValues } from '../src/features/sheet-workbench/sheet-cell-rich-text-style.ts'
+import { useSheetFormatPainter } from '../src/components/spreadsheet/use-sheet-format-painter.ts'
 
 const range = (startRow, startCol, endRow = startRow, endCol = startCol) => ({ startRow, startCol, endRow, endCol })
 const coordinateRange = value => ({ startRow: value.startRow, endRow: value.endRow, startColumn: value.startCol, endColumn: value.endCol })
@@ -131,6 +133,34 @@ test('style-only application retains rich text, hyperlinks and unrelated cells',
   const target = sheet.cells['3:4']
   assert.equal(target.value, '00123'); assert.deepEqual(target.richText, original.richText); assert.deepEqual(target.metadata, original.metadata)
   assert.notDeepEqual(target.style, original.style); assert.deepEqual(sheet.cells['10:13'], outside)
+})
+
+test('model and view painting clear target run font overrides even when cell styles already match', () => {
+  const workbook = sample(), sheet = workbook.sheets[0], target = sheet.cells['3:4']
+  target.style = cloneModel(sheet.cells['0:0'].style)
+  target.richText = [
+    { text: '00', id: 'first-run', font: { family: 'Arial', size: 48, bold: false, italic: false, underline: false, strike: false, color: '#ff0000', language: 'ja-JP' }, fontSize: 40, hyperlink: 'https://target.test' },
+    { text: '123', id: 'second-run', fontFamily: 'Arial', fontSize: 36, bold: false, italic: false, underline: false, strike: false, color: '#ff0000', vendor: { keep: true } },
+  ]
+  const original = cloneModel(workbook), source = sourceFor(sheet, range(0, 0)), view = toExcelWorkbookView(original)
+  const result = applySheetFormatPainterCommand(sheet, source, [range(3, 4)])
+  const viewResult = applySheetViewFormatPainterCommand(view.sheets[0], source, [range(3, 4)])
+  assert.equal(result.changed, true); assert.equal(viewResult.changed, true)
+  assert.equal(result.contentChanged, false); assert.equal(viewResult.contentChanged, false)
+  const adapted = applyExcelWorkbookView(original, view).sheets[0].cells['3:4']
+  for (const painted of [target, adapted]) {
+    assert.deepEqual(painted.richText, [
+      { text: '00', id: 'first-run', font: { language: 'ja-JP' }, hyperlink: 'https://target.test' },
+      { text: '123', id: 'second-run', vendor: { keep: true } },
+    ])
+    assert.equal(painted.value, '00123'); assert.equal(painted.formula, null)
+    assert.deepEqual(painted.metadata, original.sheets[0].cells['3:4'].metadata)
+    for (const field of ['family', 'size', 'bold', 'italic', 'underline', 'strike', 'color']) {
+      assert.deepEqual(sheetCellFontValues(toExcelCellView(painted), field), [source.styles['0:0'].font[field], source.styles['0:0'].font[field]])
+    }
+  }
+  assert.equal(applySheetFormatPainterCommand(sheet, source, [range(3, 4)]).changed, false)
+  assert.equal(applySheetViewFormatPainterCommand(view.sheets[0], source, [range(3, 4)]).changed, false)
 })
 
 test('view formatting retains raw formula cache, rich text and style metadata through model adaptation', () => {
@@ -383,8 +413,86 @@ const undoCount = studio => studio.editor.history.units[studio.activeWorkbookId]
 const paintInput = (studio, ranges, extra = {}) => ({ unitId: studio.activeWorkbookId, sheetId: studio.editor.workbook.model.sheets[0].id, ranges, ...extra })
 const activate = (studio, ranges = [range(0, 0, 1, 1)], id = commands.activate) => studio.executeCommandSync(id, paintInput(studio, ranges))
 
+test('UI input sessions block new sampling, pointer apply and confirmation while retaining cancellation, the source and content history', () => {
+  for (const standalone of [false, true]) withStudio((studio, api) => {
+    const scope = effectScope(), view = shallowRef(toExcelWorkbookView(studio.editor.workbook.model))
+    const selected = shallowRef([range(0, 0)]), input = reactive({ editing: false, composing: false })
+    const updates = [], focused = [], notices = [], values = []
+    studio.events.addEvent('SheetValueChanged', event => values.push(cloneModel(event)))
+    const ui = scope.run(() => useSheetFormatPainter({
+      studio: () => standalone ? undefined : studio, workbook: () => view.value, sheetId: () => 'painter-main',
+      ranges: () => selected.value, userId: () => 'local-user', region: () => 'en-US', active: () => true,
+      editing: () => input.editing || input.composing, canStart: () => true, hasObjectSelection: () => false,
+      applyView: value => { view.value = value }, selection: ranges => { selected.value = ranges },
+      changed: recalculate => updates.push(recalculate), focus: () => focused.push(true), notify: message => notices.push(message),
+    }))
+    try {
+      const before = cloneModel(studio.editor.workbook.model), beforeView = cloneModel(view.value)
+      const revision = studio.getWorkbookRevision(before.id)
+      for (const field of ['editing', 'composing']) {
+        input[field] = true
+        assert.equal(ui.painterUnavailable.value, true)
+        for (const [id, params] of [[commands.activate], [commands.once], [SHEET_FORMAT_PAINTER_ALIASES.activate],
+          [commands.continuous], [commands.infinite], [SHEET_FORMAT_PAINTER_ALIASES.continuous],
+          [commands.setStatus, { status: 1 }], [commands.setStatus, { status: 2 }]]) {
+          assert.equal(ui.runFormatPainterCommand(id, params), false)
+        }
+        assert.equal(ui.painterActive.value, false); assert.deepEqual(view.value, beforeView)
+        input[field] = false
+      }
+      assert.equal(ui.runFormatPainterCommand(commands.activate), true)
+      selected.value = [range(3, 3)]
+      for (const field of ['editing', 'composing']) {
+        input[field] = true
+        assert.equal(ui.runFormatPainterCommand(commands.apply), false)
+        ui.finishFormatPainterSelection({ canceled: false, ranges: [coordinateRange(range(3, 3))], key: 'D4' })
+        assert.equal(ui.painterRequest.value, null); assert.equal(ui.formatPainterCanvas.value.mode, 'once')
+        assert.deepEqual(view.value, beforeView); assert.deepEqual(studio.editor.workbook.model, before)
+        input[field] = false
+      }
+      assert.equal(ui.runFormatPainterCommand(commands.apply), false)
+      const request = cloneModel(ui.painterRequest.value)
+      assert.equal(request.discardedContentCount, 1)
+      for (const field of ['editing', 'composing']) {
+        input[field] = true
+        assert.equal(ui.runFormatPainterCommand(commands.confirm, { requestId: request.requestId, expectedRevision: request.baseRevision }), false)
+        assert.equal(ui.runFormatPainterCommand(commands.cancelConfirmation, { unitId: 'other', requestId: request.requestId }), false)
+        assert.deepEqual(ui.painterRequest.value, request); assert.deepEqual(view.value, beforeView)
+        assert.deepEqual(studio.editor.workbook.model, before); assert.equal(undoCount(studio), 0)
+        assert.equal(studio.getWorkbookRevision(before.id), revision); assert.deepEqual(updates, []); assert.deepEqual(values, [])
+        input[field] = false
+      }
+      input.editing = true
+      assert.equal(ui.runFormatPainterCommand(commands.continuous), true)
+      assert.equal(ui.formatPainterCanvas.value.mode, 'continuous'); assert.deepEqual(ui.painterRequest.value, request)
+      assert.equal(ui.runFormatPainterCommand(commands.cancelConfirmation, { requestId: request.requestId }), true)
+      assert.equal(ui.painterRequest.value, null); assert.equal(ui.formatPainterCanvas.value.mode, 'continuous')
+      assert.deepEqual(view.value, beforeView); assert.equal(undoCount(studio), 0)
+      input.editing = false
+      assert.equal(ui.runFormatPainterCommand(commands.apply), false)
+      const next = ui.painterRequest.value
+      assert.equal(ui.runFormatPainterCommand(commands.confirm, { requestId: next.requestId, expectedRevision: next.baseRevision }), true)
+      const painted = standalone ? applyExcelWorkbookView(cloneModel(before), view.value) : studio.editor.workbook.model
+      assert.equal(painted.sheets[0].cells['3:3'].style.font.size, 18); assert.equal(painted.sheets[0].cells['3:4'].value, null)
+      assert.equal(updates.length, 1); assert.equal(undoCount(studio), standalone ? 0 : 1)
+      assert.equal(ui.formatPainterCanvas.value.mode, 'continuous'); assert.deepEqual(notices, []); assert.deepEqual(focused, [])
+      const cells = cloneModel(painted.sheets[0].cells)
+      if (standalone) {
+        assert.deepEqual(applyExcelWorkbookView(cloneModel(before), JSON.parse(JSON.stringify(view.value))).sheets[0].cells, cells)
+        return
+      }
+      const book = api.getActiveWorkbook()
+      book.undo(); assert.deepEqual(studio.editor.workbook.model.sheets[0].cells, before.sheets[0].cells)
+      book.redo(); assert.deepEqual(studio.editor.workbook.model.sheets[0].cells, cells)
+      const reopened = api.createWorkbook({ ...book.save(), id: 'painter-input-session-reopened' })
+      assert.deepEqual(studio.getWorkbookModel(reopened.getId()).sheets[0].cells, cells)
+    } finally { ui.clearPainterSession(); scope.stop() }
+  }, mergedSample())
+})
+
 test('registered activation samples the last selection and explicit apply creates a single history entry', () => withStudio((studio, api) => {
   const executed = [], before = contents(studio.editor.workbook.model.sheets[0])
+  const beforeSelection = studio.getSelectionState()
   studio.events.addEvent('CommandExecuted', event => executed.push(event.id))
   assert.equal(activate(studio, [range(1, 1), range(0, 0)]), true)
   assert.deepEqual(studio.sheetFormatPainter.state.sourceRange, range(0, 0))
@@ -392,6 +500,7 @@ test('registered activation samples the last selection and explicit apply create
   assert.equal(studio.editor.workbook.model.sheets[0].cells['3:3'].style.font.size, 18)
   assert.deepEqual(contents(studio.editor.workbook.model.sheets[0]), before); assert.equal(undoCount(studio), 1)
   assert.deepEqual(executed, [commands.activate, commands.apply]); assert.equal(studio.sheetFormatPainter.state.mode, 'off')
+  assert.deepEqual(studio.getSelectionState(), beforeSelection)
   api.getActiveWorkbook().undo(); assert.equal(studio.editor.workbook.model.sheets[0].cells['3:3'].style.font.size, 11)
   api.getActiveWorkbook().redo(); assert.equal(studio.editor.workbook.model.sheets[0].cells['3:3'].style.font.size, 18)
   const saved = api.getActiveWorkbook().save(), reopened = api.createWorkbook({ ...saved, id: 'painter-reopened' })
@@ -399,14 +508,62 @@ test('registered activation samples the last selection and explicit apply create
   assert.deepEqual(contents(studio.getWorkbookModel(reopened.getId()).sheets[0]), before)
 }))
 
-test('single-cell expansion updates a matching API selection without resampling the source', () => withStudio((studio, api) => {
+test('single-cell expansion restores the original and expanded API selections through undo and redo', () => withStudio((studio, api) => {
   const sheet = api.getActiveWorkbook().getActiveSheet()
   assert.equal(activate(studio), true); sheet.getRange('D4').activate()
+  const before = studio.getSelectionState()
   assert.equal(studio.executeCommandSync(commands.apply), true)
   const selection = studio.getSelection()
   assert.deepEqual({ startRow: selection.startRow, endRow: selection.endRow, startCol: selection.startColumn, endCol: selection.endColumn }, range(3, 3, 4, 4))
   assert.equal(undoCount(studio), 1)
+  const painted = studio.getSelectionState()
+  api.getActiveWorkbook().undo(); assert.deepEqual(studio.getSelectionState(), before)
+  api.getActiveWorkbook().redo(); assert.deepEqual(studio.getSelectionState(), painted)
 }))
+
+test('expanded painting retains the complete previous multi-selection in its undo transaction', () => withStudio((studio, api) => {
+  assert.equal(activate(studio), true)
+  studio.setSelections(studio.activeWorkbookId, 'painter-main', [coordinateRange(range(10, 13)), coordinateRange(range(3, 3))],
+    { activeRangeIndex: 1, primary: { row: 3, column: 3 } })
+  const before = studio.getSelectionState()
+  assert.equal(studio.executeCommandSync(commands.apply, paintInput(studio, [range(3, 3)])), true)
+  const painted = studio.getSelectionState()
+  assert.deepEqual(painted.ranges, [{ unitId: studio.activeWorkbookId, sheetId: 'painter-main', ...coordinateRange(range(3, 3, 4, 4)) }])
+  assert.equal(painted.activeRangeIndex, 0); assert.deepEqual(painted.primary, { row: 3, column: 3 }); assert.equal(undoCount(studio), 1)
+  api.getActiveWorkbook().undo(); assert.deepEqual(studio.getSelectionState(), before)
+  api.getActiveWorkbook().redo(); assert.deepEqual(studio.getSelectionState(), painted)
+}))
+
+test('redundant block painting expands the selection and consumes ONCE without content history', () => withStudio((studio, api) => {
+  assert.equal(activate(studio, [range(1, 1, 2, 2)]), true)
+  api.getActiveWorkbook().getActiveSheet().getRange('H8').activate()
+  const before = cloneModel(studio.editor.workbook.model)
+  assert.equal(studio.executeCommandSync(commands.apply), true)
+  assert.deepEqual(studio.getSelectionState().ranges, [{ unitId: studio.activeWorkbookId, sheetId: 'painter-main', ...coordinateRange(range(7, 7, 8, 8)) }])
+  assert.deepEqual(studio.editor.workbook.model, before); assert.equal(undoCount(studio), 0)
+  assert.equal(studio.sheetFormatPainter.state.mode, 'off')
+}))
+
+test('run-only API painting creates one history edit and preserves target text through undo, redo and reopen', () => {
+  const workbook = sample(), sheet = workbook.sheets[0]
+  sheet.cells['3:4'].style = cloneModel(sheet.cells['0:0'].style)
+  sheet.cells['3:4'].richText = [{ text: '00123', fontSize: 48, color: '#ff0000', vendor: { keep: true } }]
+  sheet.dataValidations = [{ id: 'reject-values', type: 'custom', ranges: [range(3, 4)], formula1: '=FALSE()', allowBlank: false, showErrorMessage: true, errorStyle: 'stop', error: 'Value edits are blocked' }]
+  withStudio((studio, api) => {
+    const before = cloneModel(studio.editor.workbook.model.sheets[0].cells['3:4']), values = []
+    studio.events.addEvent('SheetValueChanged', event => values.push(event))
+    activate(studio, [range(0, 0)], commands.continuous)
+    assert.equal(studio.executeCommandSync(commands.apply, paintInput(studio, [range(3, 4)])), true)
+    const painted = cloneModel(studio.editor.workbook.model.sheets[0].cells['3:4'])
+    assert.deepEqual(painted.richText, [{ text: '00123', vendor: { keep: true } }])
+    assert.equal(painted.value, before.value); assert.equal(undoCount(studio), 1); assert.deepEqual(values, [])
+    api.getActiveWorkbook().undo(); assert.deepEqual(studio.editor.workbook.model.sheets[0].cells['3:4'].richText, before.richText)
+    api.getActiveWorkbook().redo(); assert.deepEqual(studio.editor.workbook.model.sheets[0].cells['3:4'].richText, painted.richText)
+    assert.equal(studio.executeCommandSync(commands.apply, paintInput(studio, [range(3, 4)])), true); assert.equal(undoCount(studio), 1)
+    const saved = api.getActiveWorkbook().save(), reopened = api.createWorkbook({ ...saved, id: 'painter-runs-reopened' })
+    assert.deepEqual(studio.getWorkbookModel(reopened.getId()).sheets[0].cells['3:4'].richText, painted.richText)
+  }, workbook)
+})
 
 test('API continuous mode paints another sheet in the same workbook using the original source', () => {
   const workbook = sample(), second = cloneModel(createBlankWorkbook().sheets[0]); second.id = 'painter-second'; second.cells['3:3'] = createCell(3, 3, 'other target'); workbook.sheets.push(second)
@@ -475,6 +632,13 @@ test('canceling confirmation preserves ONCE and a new target produces an indepen
   activate(studio, [range(0, 0)])
   assert.equal(studio.executeCommandSync(commands.apply, paintInput(studio, [range(3, 3)])), false)
   const first = studio.sheetFormatPainter.getConfirmation()
+  const before = cloneModel(studio.editor.workbook.model), state = cloneModel(studio.sheetFormatPainter.state)
+  const revision = studio.getWorkbookRevision(before.id)
+  assert.equal(studio.executeCommandSync(commands.cancelConfirmation, { unitId: 'other', requestId: first.requestId }), false)
+  assert.equal(studio.executeCommandSync(commands.cancelConfirmation, { unitId: before.id, requestId: 'wrong-request' }), false)
+  assert.deepEqual(studio.sheetFormatPainter.state, state); assert.deepEqual(studio.sheetFormatPainter.getConfirmation(), first)
+  assert.deepEqual(studio.editor.workbook.model, before); assert.equal(studio.getWorkbookRevision(before.id), revision)
+  assert.equal(undoCount(studio), 0)
   assert.equal(studio.executeCommandSync(commands.cancelConfirmation, { requestId: first.requestId }), true)
   assert.equal(studio.sheetFormatPainter.state.mode, 'once'); assert.equal(studio.sheetFormatPainter.getConfirmation(), null)
   assert.equal(studio.executeCommandSync(commands.apply, paintInput(studio, [range(3, 3)])), false)

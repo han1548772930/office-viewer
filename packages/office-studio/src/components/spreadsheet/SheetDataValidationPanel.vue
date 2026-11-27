@@ -174,6 +174,7 @@ function apply(): void {
       ...(rule.value ? { id: rule.value.id, metadata: rule.value.metadata ? structuredClone(rule.value.metadata) : undefined } : {}), type: type.value,
       ...(type.value === 'checkbox' ? checkboxCustomValues.value ? { formula1: formula1.value.trim(), formula2: formula2.value.trim() } : {} : needsFormula.value ? { formula1: nextFormula1 } : {}),
       ...(needsSecondFormula.value ? { formula2: formula2.value.trim() } : {}),
+      ...(isList.value && (rule.value?.type === 'list' || rule.value?.type === 'listMultiple') ? { formula2: rule.value.formula2 } : {}),
       ...(validationUsesOperator(type.value) && operator.value ? { operator: operator.value } : {}),
       ...(rule.value?.formulaAnchor && rule.value.type === type.value && nextFormula1 === rule.value.formula1
         && (!needsSecondFormula.value || formula2.value.trim() === rule.value.formula2) ? { formulaAnchor: { ...rule.value.formulaAnchor } } : {}),

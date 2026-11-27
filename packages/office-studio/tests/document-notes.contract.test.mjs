@@ -7,7 +7,9 @@ import { createParagraph, createRun, createTable, runsForTarget, tableForBlock }
 // Updated contract drafts. This batch has not run tests, a browser or Office file acceptance.
 
 const vite = await createServer({ configFile: './vite.config.ts', server: { middlewareMode: true, hmr: false }, appType: 'custom' })
-const { deleteDocumentNote, insertDocumentNote, normalizeDocumentNotes, noteReferencePoint, updateDocumentNote } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/notes/document-notes.ts')
+const { deleteDocumentNote, insertDocumentNote, normalizeDocumentNotes, noteReferencePoint, prepareDocumentNoteMutation, updateDocumentNote } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/notes/document-notes.ts')
+const { documentNoteInsertState } = await vite.ssrLoadModule('/packages/office-studio/src/features/document/commands/document-note-command-state.ts')
+const { OfficeStudio, FDocument } = await vite.ssrLoadModule('/packages/office-studio/src/index.ts')
 afterAll(() => vite.close())
 
 test('footnote and endnote references, definitions, navigation, and deletion share document state', () => {
@@ -47,6 +49,56 @@ test('cross-paragraph insertion preserves selected text and uses the logical end
   assert.equal(model.blocks[0].runs.map(run => run.text).join(''), 'First paragraph')
   assert.equal(model.blocks[1].runs.filter(run => !run.metadata?.note).map(run => run.text).join(''), 'Second paragraph')
   assert.equal(inserted.host.noteId, inserted.note.id)
+  }
+})
+
+test('nonempty note insertion shares the logical end permission with Ribbon, history and save while preserving a locked starting paragraph', () => {
+  for (const kind of ['footnote', 'endnote']) {
+    for (const reverse of [false, true]) {
+      const source = createBlankDocument(); source.id = 'note-insert-permission-' + kind + '-' + reverse
+      const first = source.blocks[0]; first.runs[0].text = 'First paragraph 😀'
+      const second = createParagraph('Second paragraph 😀'); source.blocks.push(second)
+      source.contentControls = [{ id: 'locked-start', type: 'richText', blockId: first.id, startOffset: 0,
+        endOffset: first.runs[0].text.length, lock: 'contentLocked' }]
+      source.permissionRules = [{ id: 'deny-start', scope: 'paragraph', targetId: first.id, action: 'edit', effect: 'deny', userIds: ['editor'] }]
+      const start = { blockId: first.id, offset: 2 }, end = { blockId: second.id, offset: 6 }
+      const selection = reverse ? { anchor: end, focus: start } : { anchor: start, focus: end }
+      const permission = { documentId: source.id, userId: 'editor' }, before = structuredClone(source)
+      assert.equal(documentNoteInsertState(source, selection, { permission }).available, true)
+      const plan = prepareDocumentNoteMutation(source, { type: 'insert', kind, selection }, permission)
+      const property = kind === 'footnote' ? 'footnotes' : 'endnotes'
+      assert.equal(plan.changed, true); assert.deepEqual(source, before)
+      assert.deepEqual(plan.model.blocks[0], before.blocks[0]); assert.deepEqual(plan.model.contentControls, before.contentControls)
+      assert.deepEqual(noteReferencePoint(plan.model, plan.model[property][plan.noteId]), end)
+      assert.equal(plan.model.blocks[1].runs.filter(run => !run.metadata?.note).map(run => run.text).join(''), 'Second paragraph 😀')
+
+      const studio = new OfficeStudio({ document: source, currentUserId: 'editor' }); studio.activateDocument(source.id)
+      const document = new FDocument(studio, source.id)
+      try {
+        document.setInputSelection(selection)
+        const original = structuredClone(document.getModel())
+        const result = document.executeNoteCommand({ type: 'insert', kind, selection }), after = structuredClone(document.getModel())
+        assert.equal(result.changed, true); assert.equal(result.selectionCurrent, true)
+        assert.deepEqual(after.blocks[0], original.blocks[0]); assert.deepEqual(after.contentControls, original.contentControls)
+        assert.deepEqual(noteReferencePoint(after, after[property][result.noteId]), end)
+        assert.deepEqual(document.getInputState().location.host, { kind: 'note', noteKind: kind, noteId: result.noteId })
+        assert.equal(studio.editor.history.units[source.id].undo.length, 1)
+        assert.equal(document.undo(), true); assert.deepEqual(document.getModel(), original)
+        assert.equal(document.redo(), true); assert.deepEqual(document.getModel(), after)
+        const saved = structuredClone(document.saveModel()), reopened = new OfficeStudio({ document: saved, currentUserId: 'editor' })
+        try { assert.deepEqual(new FDocument(reopened, saved.id).getModel(), saved) } finally { reopened.dispose() }
+
+        document.setPermissionRules([{ id: 'deny-end', scope: 'paragraph', targetId: second.id, action: 'edit', effect: 'deny', userIds: ['editor'] }])
+        document.setInputSelection(selection)
+        const denied = structuredClone(document.getModel()), revision = document.getModelRevision(), history = studio.editor.history.units[source.id]
+        const undo = history.undo.length, redo = history.redo.length, input = structuredClone(document.getInputState())
+        assert.equal(documentNoteInsertState(denied, selection, { permission }).available, false)
+        assert.throws(() => document.executeNoteCommand({ type: 'insert', kind, selection }), /permission denied/i)
+        assert.deepEqual(document.getModel(), denied); assert.equal(document.getModelRevision(), revision)
+        assert.equal(studio.editor.history.units[source.id].undo.length, undo)
+        assert.equal(studio.editor.history.units[source.id].redo.length, redo); assert.deepEqual(document.getInputState(), input)
+      } finally { studio.dispose() }
+    }
   }
 })
 
