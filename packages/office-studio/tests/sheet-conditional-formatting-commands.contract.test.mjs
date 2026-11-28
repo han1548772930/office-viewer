@@ -161,8 +161,13 @@ test('unedited imported formula grammar is retained while changed malformed form
 
 test('command input validates explicit ownership, aliases and optimistic revision without mutating parameters', () => {
   for (const input of [undefined, null, [], {}, { rules: null }, { rules: [], unitId: '' }, { rules: [], sheetId: 'a', subUnitId: 'b' },
-    { rules: [], expectedRevision: -1 }, { rules: [], expectedRevision: 1.5 }]) assert.throws(() => sheetConditionalFormatsCommandInput(input))
-  const input = { unitId: 'workbook', subUnitId: 'sheet', rules: [rule()], expectedRevision: 0 }
+    { rules: [], expectedRevision: -1 }, { rules: [], expectedRevision: 1.5 }, { rules: [], expectedHistoryGeneration: 0 },
+    { rules: [], expectedHistoryGeneration: -1 }, { rules: [], expectedHistoryGeneration: 1.5 }, { rules: [], expectedHistoryGeneration: null },
+    { rules: [], expectedUserId: '' }, { rules: [], expectedUserId: '   ' }, { rules: [], expectedUserId: 12 }, { rules: [], host: 'unknown' }]) {
+    assert.throws(() => sheetConditionalFormatsCommandInput(input))
+  }
+  const input = { unitId: 'workbook', subUnitId: 'sheet', rules: [rule()], expectedRevision: 0,
+    expectedHistoryGeneration: 1, expectedUserId: 'local-user', host: 'workbench' }
   assert.equal(sheetConditionalFormatsCommandInput(input), input)
 })
 
@@ -542,4 +547,127 @@ test('standalone views and registered edits use the same rule planning and scope
   assert.deepEqual(view.sheets[0].conditionalFormats, expected)
   const reopened = applyExcelWorkbookView(sample(), view)
   assert.deepEqual(reopened.sheets[0].conditionalFormats, expected)
+}))
+
+test('registered full-list and quick commands validate history, user and host guards before no-op or change', () => {
+  const source = sample(); source.sheets[0].conditionalFormats = [rule()]
+  for (const id of [command, quick.dataBar, quick.clearWorksheet]) withStudio((studio, api) => {
+    const unitId = source.id, sheetId = source.sheets[0].id, before = cloneModel(studio.getWorkbookModel(unitId))
+    const context = { unitId, sheetId, host: 'workbench', expectedRevision: studio.getWorkbookRevision(unitId),
+      expectedHistoryGeneration: studio.editor.history.captureSavepoint(unitId).generation, expectedUserId: studio.currentUserId }
+    const params = { ...context, rules: [rule()], ranges: [range(0, 0)] }
+    for (const invalid of [{ expectedHistoryGeneration: 0 }, { expectedUserId: '' }, { host: 'unknown' }]) {
+      assert.throws(() => api.executeCommandSync(id, { ...params, ...invalid }), TypeError)
+    }
+    for (const stale of [{ expectedHistoryGeneration: context.expectedHistoryGeneration + 1 }, { expectedUserId: 'other-user' }]) {
+      assert.throws(() => api.executeCommandSync(id, { ...params, ...stale }), /已更改/)
+    }
+    assert.deepEqual(studio.getWorkbookModel(unitId), before); assert.equal(undoCount(studio), 0)
+    studio.editor.history.clear(unitId)
+    assert.throws(() => api.executeCommandSync(id, params), /已更改/)
+    const current = { ...params, expectedHistoryGeneration: studio.editor.history.captureSavepoint(unitId).generation }
+    assert.equal(api.executeCommandSync(id, current), id !== command)
+    assert.equal(undoCount(studio), id === command ? 0 : 1)
+  }, cloneModel(source))
+})
+
+test('standalone rule replacement requires viewing every old and new range before touching the full list', () => {
+  const original = rule('multiple', [range(0, 0, 3, 0), range(14, 9)], 4)
+  const moved = { ...original, ranges: [range(6, 2), range(18, 4)] }
+  for (const denied of [...original.ranges, ...moved.ranges]) {
+    const sheet = sample().sheets[0]; sheet.conditionalFormats = [cloneModel(original)]
+    sheet.rangeProtectionRules = protection([denied]).map(rule => ({ ...rule, viewState: 'noOneElseCanView' }))
+    const before = cloneModel(sheet)
+    assert.throws(() => applySheetConditionalFormatsCommand(sheet, [moved], 'local-user'), /查看/)
+    assert.deepEqual(sheet, before)
+  }
+})
+
+test('registered rule replacement views and edits all old and new scopes and excludes an untouched private rule', () => {
+  const source = sample(), original = rule('multiple', [range(0, 0, 3, 0), range(14, 9)], 4)
+  const hidden = rule('private', [range(10, 13)], 9), moved = { ...original, ranges: [range(6, 2), range(18, 4)] }
+  source.sheets[0].conditionalFormats = [original, hidden]
+  source.sheets[0].rangeProtectionRules = protection(hidden.ranges).map(rule => ({ ...rule, viewState: 'noOneElseCanView' }))
+  withStudio((studio, api) => {
+    const viewed = [], edited = [], view = studio.assertCanViewRange.bind(studio), edit = studio.assertCanEditRange.bind(studio)
+    studio.assertCanViewRange = (id, sheetId, scope) => { viewed.push(cloneModel(scope)); view(id, sheetId, scope) }
+    studio.assertCanEditRange = (id, sheetId, scope) => { edited.push(cloneModel(scope)); edit(id, sheetId, scope) }
+    const beforeCells = cloneModel(studio.getWorkbookModel(source.id).sheets[0].cells)
+    assert.equal(api.executeCommandSync(command, input(studio, [moved, hidden])), true)
+    const expected = [...original.ranges, ...moved.ranges].map(scope => JSON.stringify(scope)).sort()
+    for (const scopes of [viewed, edited]) {
+      assert.deepEqual([...new Set(scopes.map(scope => JSON.stringify(scope)))].sort(), expected)
+      for (const scope of expected) assert.ok(scopes.filter(value => JSON.stringify(value) === scope).length >= 3)
+    }
+    assert.deepEqual(studio.getWorkbookModel(source.id).sheets[0].conditionalFormats, [moved, hidden])
+    assert.deepEqual(studio.getWorkbookModel(source.id).sheets[0].cells, beforeCells); assert.equal(undoCount(studio), 1)
+  }, source)
+})
+
+test('revoking view or edit after planning, in the mutator or before view preparation rejects the whole transaction', () => {
+  for (const pass of [1, 2, 3]) for (const viewState of ['othersCanView', 'noOneElseCanView']) {
+    const source = sample(), original = rule('multiple', [range(0, 0, 3, 0), range(14, 9)], 4)
+    source.sheets[0].conditionalFormats = [original]
+    withStudio((studio, api) => {
+      let calls = 0, revoked
+      const check = studio.assertCanViewRange.bind(studio), revision = studio.getWorkbookRevision(source.id), executed = []
+      studio.events.addEvent('CommandExecuted', event => executed.push(event.id))
+      studio.assertCanViewRange = (id, sheetId, scope) => {
+        if (scope.startRow === 14 && ++calls === pass) {
+          studio.getWorkbookModel(id).sheets[0].rangeProtectionRules = protection([scope]).map(rule => ({ ...rule, viewState }))
+          revoked = cloneModel(studio.getWorkbookModel(id))
+        }
+        check(id, sheetId, scope)
+      }
+      assert.throws(() => api.executeCommandSync(command, input(studio, [{ ...original, formula1: '8' }])), /保护/)
+      assert.equal(calls, pass); assert.deepEqual(studio.getWorkbookModel(source.id), revoked)
+      assert.equal(studio.getWorkbookRevision(source.id), revision); assert.equal(undoCount(studio), 0); assert.deepEqual(executed, [])
+    }, source)
+  }
+})
+
+test('candidate, mutator and prepared view recheck model identity, sheet identity, raw rules, user and history', () => {
+  const changes = [
+    studio => { studio.editor.workbook.replace(cloneModel(studio.getWorkbookModel(studio.activeWorkbookId))) },
+    studio => { const model = studio.getWorkbookModel(studio.activeWorkbookId); model.sheets[0] = cloneModel(model.sheets[0]) },
+    studio => { studio.getWorkbookModel(studio.activeWorkbookId).sheets[0].conditionalFormats[0].formula1 = '6' },
+    studio => { Object.defineProperty(studio, 'currentUserId', { configurable: true, value: 'other-user' }) },
+    studio => { studio.editor.history.clear(studio.activeWorkbookId) },
+  ]
+  for (const stage of ['candidate', 'mutator', 'prepareView']) for (const change of changes) {
+    const source = sample(); source.sheets[0].conditionalFormats = [rule()]
+    withStudio((studio, api) => {
+      let changed = false, external, externalHistory, externalRevision
+      const injectChange = () => {
+        if (changed) return
+        changed = true; change(studio); external = cloneModel(studio.getWorkbookModel(source.id))
+        externalHistory = undoCount(studio); externalRevision = studio.getWorkbookRevision(source.id)
+      }
+      if (stage === 'candidate') {
+        const check = studio.assertCanEditWorksheet.bind(studio)
+        studio.assertCanEditWorksheet = (id, sheetId) => { injectChange(); check(id, sheetId) }
+      } else {
+        const commit = studio.commitWorkbook.bind(studio)
+        studio.commitWorkbook = (id, label, mutate, options) => commit(id, label,
+          draft => { if (stage === 'mutator') injectChange(); mutate(draft) },
+          { ...options, prepareView: candidate => { if (stage === 'prepareView') injectChange(); options.prepareView(candidate) } })
+      }
+      const executed = []; studio.events.addEvent('CommandExecuted', event => executed.push(event.id))
+      assert.throws(() => api.executeCommandSync(command, input(studio, [{ ...rule(), formula1: '8' }])), /已更改/)
+      assert.equal(changed, true); assert.deepEqual(studio.getWorkbookModel(source.id), external)
+      assert.equal(undoCount(studio), externalHistory); assert.equal(studio.getWorkbookRevision(source.id), externalRevision)
+      assert.deepEqual(executed, [])
+    }, source)
+  }
+})
+
+test('workbench host guards reject inactive targets while explicit API targets retain their independent histories', () => withStudio((studio, api) => {
+  const source = sample(); source.id = 'cf-inactive-host'; source.activeSheetId = source.sheets[0].id = 'inactive-sheet'
+  studio.createWorkbook(source, false)
+  const before = cloneModel(studio.getWorkbookModel(source.id)), params = { unitId: source.id, sheetId: source.sheets[0].id, rules: [rule()], host: 'workbench' }
+  assert.throws(() => api.executeCommandSync(command, params), /切换/)
+  assert.throws(() => api.executeCommandSync(quick.dataBar, { ...params, ranges: [range(0, 0)] }), /切换/)
+  assert.deepEqual(studio.getWorkbookModel(source.id), before); assert.equal(undoCount(studio, source.id), 0)
+  assert.equal(api.executeCommandSync(command, { ...params, host: undefined }), true)
+  assert.equal(undoCount(studio), 0); assert.equal(undoCount(studio, source.id), 1)
 }))

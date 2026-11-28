@@ -1,9 +1,14 @@
 import { randomId } from '../../api/model-utils'
 import type { ChartImageResource, ChartModel, WorkbookModel } from '../../domain/model'
 import { cloneModel } from '../../domain/serialization'
+import { normalizeDrawingAffineGeometry } from '../../domain/drawing-affine'
 import { createChartDefinition } from './chart-engine'
-import { readChartImageResources, resolveChartImageResource } from './chart-image-resources'
+import { resolveChartImageResource } from './chart-image-resources'
 import type { ChartObjectPasteInput, ChartObjectTarget } from './chart-object-commands'
+import { applyChartSourceImport, assertChartSourceImportSource, planChartSourceImport, type ChartSourceImportPlan } from './chart-source-import'
+import { copyPivotReportCache } from '../slicer/slicer-connections-lifecycle'
+import { prepareCopiedPivotSourceReport } from '../pivot/services/pivot-source-lifecycle'
+import { assertChartReadPermission } from './services/chart-statistics-service'
 
 export const CHART_OBJECT_CLIPBOARD_MAX_BYTES = 32 * 1024 * 1024
 export interface ChartObjectClipboard {
@@ -48,24 +53,66 @@ export function chartObjectClipboardIdFromContent(content: { text?: string; html
   return html && plain && html !== plain ? undefined : html ?? plain
 }
 
-/** Copy preserves live source bindings in one workbook. The clipboard never
- * stores a second author model, derived arrays, hover state or image bitmap. */
+export function assertChartObjectClipboardSource(workbook: WorkbookModel, clipboard: ChartObjectClipboard): void {
+  if (!clipboard || clipboard.version !== 1 || !clipboard.id || workbook.id !== clipboard.source.unitId
+    || JSON.stringify(clipboard.chart) !== clipboard.source.snapshot) throw new TypeError('图表剪贴板数据或来源工作簿无效。')
+  const original = workbook.charts?.find(chart => chart.id === clipboard.source.chartId && chart.sheetId === clipboard.source.sheetId)
+  if (!original || JSON.stringify(original) !== clipboard.source.snapshot) throw new Error('复制源图表已更改或删除，请重新复制。')
+  for (const [id, image] of Object.entries(clipboard.images)) {
+    const current = resolveChartImageResource(workbook, original, id)
+    if (!current || JSON.stringify(current) !== JSON.stringify(image)) throw new Error('复制源图片资源已更改，请重新复制图表。')
+  }
+}
+export interface ChartObjectPasteContext {
+  sourceWorkbook?: WorkbookModel
+  /** UI prepares the same dependency closure asynchronously before committing. */
+  sourceImport?: ChartSourceImportPlan
+  userId?: string
+}
+
+/** Same-unit copies keep live bindings. Cross-unit copies import a detached
+ * sparse dependency closure. Failed author/geometry validation never changes
+ * the caller's workbook; the returned author is inserted by its transaction. */
 export function chartObjectPasteDefinition(workbook: WorkbookModel, clipboard: ChartObjectClipboard,
-  input: ChartObjectPasteInput & { unitId: string; sheetId: string; newChartId: string }): ChartModel {
+  input: ChartObjectPasteInput & { unitId: string; sheetId: string; newChartId: string }, context: ChartObjectPasteContext = {}): ChartModel {
   if (!clipboard || clipboard.version !== 1 || !clipboard.id || JSON.stringify(clipboard.chart) !== clipboard.source.snapshot) throw new TypeError('图表剪贴板数据无效。')
-  if (workbook.id !== input.unitId || clipboard.source.unitId !== input.unitId) throw new Error('跨工作簿图表粘贴还需导入源工作表与资源依赖；当前剪贴板内容已保留。')
+  if (workbook.id !== input.unitId) throw new Error('粘贴参数不属于目标工作簿。')
   if (input.clipboardId !== undefined && input.clipboardId !== clipboard.id) throw new Error('图表剪贴板已更新，请重新粘贴。')
   if (typeof input.newChartId !== 'string' || !input.newChartId.trim() || input.newChartId.length > 512) throw new TypeError('粘贴后的图表标识无效。')
   if (workbook.charts?.some(chart => chart.id === input.newChartId)) throw new Error('粘贴后的图表标识已经存在。')
-  const original = workbook.charts?.find(chart => chart.id === clipboard.source.chartId && chart.sheetId === clipboard.source.sheetId)
-  if (!original || JSON.stringify(original) !== clipboard.source.snapshot) throw new Error('复制源图表已更改或删除，请重新复制。')
-  const resources = readChartImageResources(workbook)
-  for (const [id, image] of Object.entries(clipboard.images)) if (!resources[id] || JSON.stringify(resources[id]) !== JSON.stringify(image)) throw new Error('复制源图片资源已更改，请重新复制图表。')
+  const crossWorkbook = clipboard.source.unitId !== input.unitId, sourceWorkbook = crossWorkbook ? context.sourceWorkbook : workbook
+  if (!sourceWorkbook) throw new Error('跨工作簿粘贴需要可读取的来源工作簿。')
+  assertChartObjectClipboardSource(sourceWorkbook, clipboard)
+  if (context.userId !== undefined) assertChartReadPermission(sourceWorkbook, clipboard.chart, context.userId)
+  if (crossWorkbook && (typeof context.userId !== 'string' || !context.userId.trim())) throw new TypeError('跨工作簿图表粘贴需要明确的用户权限上下文。')
+  const candidate: WorkbookModel = { ...workbook, sheets: [...workbook.sheets],
+    ...(workbook.pivotCaches ? { pivotCaches: [...workbook.pivotCaches] } : {}) }
+  let author = cloneModel(clipboard.chart)
+  if (crossWorkbook) {
+    const plan = context.sourceImport ?? planChartSourceImport(sourceWorkbook, workbook, clipboard, { userId: context.userId!, targetSheetId: input.sheetId })
+    if (plan.sourceUnitId !== sourceWorkbook.id || plan.sourceChartId !== clipboard.source.chartId || plan.sourceSnapshot !== clipboard.source.snapshot
+      || plan.targetSheetId !== input.sheetId) throw new TypeError('图表依赖计划与剪贴板来源不匹配。')
+    assertChartSourceImportSource(sourceWorkbook, plan, context.userId!)
+    applyChartSourceImport(candidate, plan)
+    author = cloneModel(plan.chart)
+  } else if (author.ownedPivot) {
+    const original = clipboard.chart.ownedPivot!
+    author.ownedPivot.id = randomId('owned-pivot'); author.ownedPivot.revision = 0
+    author.ownedPivot.anchor = { ...author.ownedPivot.anchor, unitId: input.unitId, subUnitId: input.sheetId }
+    copyPivotReportCache(workbook, candidate, original, author.ownedPivot, new Map())
+    prepareCopiedPivotSourceReport(author.ownedPivot, true)
+  }
   const position = input.position ?? { x: clipboard.chart.position.x + 24, y: clipboard.chart.position.y + 24 }
-  const source = { ...clipboard.chart.source, range: { ...clipboard.chart.source.range },
-    sheetId: clipboard.chart.source.sheetId ?? clipboard.chart.sheetId }
-  const created = createChartDefinition(workbook, input.sheetId, { ...cloneModel(clipboard.chart), source, position: { ...position } }, input.newChartId)
-  // Chart image resources use immutable IDs in this workbook. The new author
-  // reference participates in the existing pruning and snapshot/history path.
+  const source = { ...author.source, range: { ...author.source.range }, sheetId: author.source.sheetId ?? clipboard.chart.sheetId }
+  const drawingGeometry = author.drawingGeometry ? normalizeDrawingAffineGeometry({ ...author.drawingGeometry,
+    matrix: { ...author.drawingGeometry.matrix, e: author.drawingGeometry.matrix.e + position.x - clipboard.chart.position.x,
+      f: author.drawingGeometry.matrix.f + position.y - clipboard.chart.position.y } }) : undefined
+  const created = createChartDefinition(candidate, input.sheetId, { ...author, source, position: { ...position }, drawingGeometry }, input.newChartId)
+  if (context.userId !== undefined) assertChartReadPermission(candidate, created, context.userId)
+  if (crossWorkbook) {
+    workbook.sheets = candidate.sheets; workbook.tables = candidate.tables; workbook.pivotTables = candidate.pivotTables
+    workbook.styles = candidate.styles; workbook.rangeThemes = candidate.rangeThemes; workbook.metadata = candidate.metadata
+  }
+  if (crossWorkbook || author.ownedPivot) workbook.pivotCaches = candidate.pivotCaches
   return created
 }

@@ -41,7 +41,7 @@ pub struct WorksheetFilterProjection {
 
 fn namespace_value(namespace: ResolveResult<'_>) -> Result<String, String> {
     match namespace {
-        ResolveResult::Bound(value) => std::str::from_utf8(value.as_ref()).map(str::to_owned).map_err(|error| error.to_string()),
+        ResolveResult::Bound(value) => Ok(value.as_ref().to_owned()),
         ResolveResult::Unbound => Ok(String::new()),
         ResolveResult::Unknown(_) => Err("unbound namespace prefix in AutoFilter XML".into()),
     }
@@ -56,18 +56,18 @@ impl WorksheetFilterProjection {
         if self.stack.len() >= 64 { return Err("AutoFilter nesting exceeds the parser budget".into()); }
         self.node_count += 1;
         if self.node_count > MAX_FILTER_NODES { return Err("AutoFilter node count exceeds the parser budget".into()); }
-        let name = std::str::from_utf8(element.local_name().as_ref()).map_err(|error| error.to_string())?.to_owned();
+        let name = std::str::from_utf8(element.local_name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
         let namespace = namespace_value(reader.resolver().resolve_element(element.name()).0)?;
         let mut attributes = BTreeMap::new();
         self.reserve(name.len().saturating_add(namespace.len()))?;
         for attribute in element.attributes() {
             let attribute = attribute.map_err(|error| error.to_string())?;
-            if attribute.key.as_ref() == b"xmlns" || attribute.key.as_ref().starts_with(b"xmlns:") { continue; }
+            if attribute.key.as_ref().as_bytes() == b"xmlns" || attribute.key.as_ref().as_bytes().starts_with(b"xmlns:") { continue; }
             let (namespace, local) = reader.resolver().resolve_attribute(attribute.key);
             let namespace = namespace_value(namespace)?;
-            let local = std::str::from_utf8(local.as_ref()).map_err(|error| error.to_string())?;
+            let local = local.as_ref();
             let key = if namespace.is_empty() { local.to_owned() } else { format!("{{{namespace}}}{local}") };
-            let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
+            let value = attribute.normalized_value(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
             self.reserve(key.len().saturating_add(value.len()))?;
             if attributes.insert(key, value).is_some() { return Err("duplicate resolved AutoFilter attribute".into()); }
         }
@@ -141,17 +141,17 @@ pub fn worksheet_filter_fingerprint(xml: &str) -> Result<String, String> {
                 if path.len() >= 256 { return Err("worksheet nesting exceeds the parser budget".into()); }
                 let name = element.local_name();
                 let namespace = namespace_value(reader.resolver().resolve_element(element.name()).0)?;
-                let root = path.len() == 1 && path[0] == b"worksheet" && name.as_ref() == b"autoFilter" && matches!(namespace.as_str(), MAIN_NS | STRICT_NS);
+                let root = path.len() == 1 && path[0] == b"worksheet" && name.as_ref().as_bytes() == b"autoFilter" && matches!(namespace.as_str(), MAIN_NS | STRICT_NS);
                 projection.start(&reader, element, root, matches!(&event, Event::Empty(_)))?;
-                if matches!(&event, Event::Start(_)) { path.push(name.as_ref().to_vec()); }
+                if matches!(&event, Event::Start(_)) { path.push(name.as_ref().as_bytes().to_vec()); }
             }
             Event::End(_) => { projection.end(); path.pop().ok_or_else(|| "unmatched worksheet closing tag".to_owned())?; }
-            Event::Text(value) => projection.text(&value.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?)?,
-            Event::CData(value) => projection.text(&value.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?)?,
+            Event::Text(value) => projection.text(&value.xml_content(XmlVersion::Implicit1_0))?,
+            Event::CData(value) => projection.text(&value.xml_content(XmlVersion::Implicit1_0))?,
             Event::GeneralRef(value) => {
                 if let Some(character) = value.resolve_char_ref().map_err(|error| error.to_string())? { projection.text(&character.to_string())?; }
                 else {
-                    let name = value.decode().map_err(|error| error.to_string())?;
+                    let name = value.as_ref();
                     projection.text(quick_xml::escape::resolve_xml_entity(&name).ok_or_else(|| "unknown AutoFilter XML entity".to_owned())?)?;
                 }
             }

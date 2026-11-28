@@ -35,7 +35,7 @@ fn rewrite(bytes: &[u8], edit: impl Fn(&str, Vec<u8>) -> (String, Vec<u8>)) -> V
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().to_owned();
+        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().unwrap().into_owned();
         let mut content = Vec::new(); entry.read_to_end(&mut content).unwrap();
         let (name, content) = edit(&name, content); writer.start_file(name, options).unwrap(); writer.write_all(&content).unwrap();
     }

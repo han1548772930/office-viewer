@@ -2,6 +2,7 @@ import type { PivotTableModel, SheetSlicerConnections, SlicerModel, WorkbookMode
 import { cloneModel } from '../../domain/serialization.ts'
 import { ensureSlicerCache, normalizeSlicerCaches, resolvePivotCacheId, sameConnections, samePivotSource, sourceFieldId } from './slicer-connections.ts'
 import { reconcilePivotSourceCaches, type PivotSourceCacheTransform } from '../pivot/services/pivot-source-lifecycle.ts'
+import { pivotSourceFieldIdentity } from '../pivot/services/pivot-source-field.ts'
 
 const newId = (kind: string): string => `copy-${kind}-${crypto.randomUUID()}`
 const sourceKey = (pivot: PivotTableModel): string => JSON.stringify([pivot.source.unitId, pivot.source.subUnitId,
@@ -28,8 +29,12 @@ export interface SlicerCopyConnectionsMapping {
 export function copyPivotReportCache(before: WorkbookModel, candidate: WorkbookModel, original: PivotTableModel,
   copied: PivotTableModel, ids: Map<string, string>): void {
   const originalCacheId = original.pivotCacheId ?? original.source.pivotCacheId ?? `pivot-cache:${sourceKey(original)}`
+  const originalCache = before.pivotCaches?.find(cache => cache.id === originalCacheId)
+    ?? candidate.pivotCaches?.find(cache => cache.id === originalCacheId && samePivotSource(cache.source, original.source))
+  if (originalCache && !samePivotSource(originalCache.source, original.source)) throw new TypeError('复制的透视缓存来源与报告不一致。')
   copied.fields = copied.fields.map((field, index) => ({ ...field,
-    sourceFieldId: original.fields[index] ? fieldKey(original, original.fields[index]!) : field.sourceFieldId ?? String(field.sourceColumn - copied.source.range.startCol) }))
+    sourceFieldId: original.fields[index] ? pivotSourceFieldIdentity(original, original.fields[index]!, originalCache)
+      : field.sourceFieldId ?? String(field.sourceColumn - copied.source.range.startCol) }))
   const unchanged = before.id === candidate.id && sourceKey(original) === sourceKey(copied)
   const key = JSON.stringify([originalCacheId, sourceKey(copied)])
   let id = unchanged ? originalCacheId : ids.get(key)
@@ -42,8 +47,6 @@ export function copyPivotReportCache(before: WorkbookModel, candidate: WorkbookM
     throw new TypeError('复制的透视缓存身份与其数据源不一致。')
   }
   if (!existing) {
-    const originalCache = before.pivotCaches?.find(cache => cache.id === originalCacheId)
-      ?? candidate.pivotCaches.find(cache => cache.id === originalCacheId && samePivotSource(cache.source, original.source))
     const delta = copied.source.range.startCol - original.source.range.startCol
     candidate.pivotCaches.push({ ...(originalCache ? cloneModel(originalCache) : {}), id, source: cloneModel(copied.source), revision: 0,
       ...(originalCache?.fields ? { fields: originalCache.fields.map(field => ({ ...cloneModel(field), sourceColumn: field.sourceColumn + delta })) } : {}) })

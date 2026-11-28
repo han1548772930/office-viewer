@@ -58,7 +58,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 | VIEW 来源与实际接线 | 当前结论 |
 | --- | --- |
-| [display.menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/display.menu.ts)、[doc-zoom.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-zoom.ts) | 本地三根 grid 位置一致；缩放沿现有 `doc.operation.set-zoom`、`clampDocumentZoom` 和 Canvas zoom，八个预设为 50/80/100/130/150/170/200/400，状态栏和 Ribbon 同值。全屏沿 `doc.operation.toggle-fullscreen` 与真实 `fullscreenchange` 更新活动态。两项不修改内容历史；本地缩放尚未成为文档级持久设置，不能据此验收上游每文档 zoomRatio 保存行为 |
+| [display.menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/display.menu.ts)、[doc-zoom.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-zoom.ts) | 本地三根 grid 位置一致；八个缩放预设为 50/80/100/130/150/170/200/400，状态栏和 Ribbon 同值。全屏沿 `doc.operation.toggle-fullscreen` 与真实 `fullscreenchange` 更新活动态。2026-11-28 已接每文档 `zoomRatio`、公开命令/事件与快照读写，详见[当前持久化记录](#doc-view-zoom-persistence)；工作台 ref 是该设置的显示投影，实际保存、切换与焦点仍未验收 |
 | [PageSettingMenuItemFactory][section-menu]、[open-page-setting.operation.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/open-page-setting.operation.ts) | 上游页面设置按文档 Edit 权限禁用，确认进入 DocPageSetupCommand 并仅在成功时关闭。此处保留 VIEW 续核时的阶段结论：本地 `doc.operation.open-page-settings` 打开现有 Ant 对话框，`applyPageSetup` 校验后写 page/documentFlavor 并调用 publish，缺少文档级 disabled，父层拒绝后子组件仍关闭。后续[页面设置 UI 续修](#doc-page-settings-ui-transaction)补权限禁用、父层成功关闭和文档切换清理；公共命令/历史、完整节尺寸覆盖及实际保存重开仍未完成或未验收 |
 
 分隔符根原先只取 `editingDisabled`。Workbench 已传入活动页眉页脚/辅助宿主标志，而 [documentCommandSupportsBlockHost](../../packages/office-studio/src/features/document/commands/document-commands.ts) 明确排除三个 break 命令；Workbench 只给支持辅助宿主的命令补 host，旧菜单因而可能把辅助选区继续提交到根正文模型。此次在根菜单合并辅助/页眉页脚及活动结构 Code 的能力条件；Code 依据为固定 `menu.ts:331–369` 的 `disableMenuWhenNoDocRange`，明确排除与 CODE blockRange 相交的范围。主线已在 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 execute 开头合入三个 break 的辅助/legacy story 守卫，本批已静态重读；正文仍沿既有命令、权限与历史链路执行，modern 继续隐藏。
@@ -73,9 +73,11 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 ## 页面设置权限、草稿与提交续核（2026-11-27）
 
+本节前半保留弹窗与权限小修的阶段记录。2026-11-28 已实施下面的[统一页面设置事务](#doc-page-settings-command-transaction)；早期“没有新增命令”和待实现描述不表示当前仍直接发布页面模型。
+
 状态：**未验收**。本批核对 VIEW 的一个既有页面设置根；常驻根增量零，扩展、溢出专用、上下文根及可执行叶项增量均为零。根保留 `doc.operation.open-page-settings`、528px Modal 和 grid `row:1 / column:1 / rowSpan:2 / showLabel:true`；没有新增页面设置命令或模型字段。
 
-固定参考仍为 Univer v1.6.0 / `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。已读 [PageSettingMenuItemFactory][section-menu] 的文档 Edit 禁用、[打开 operation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/open-page-setting.operation.ts) 的 applied 成功关闭，以及 [DocPageSetupCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/doc-page-setup.command.ts#L136) 的 `RichTextEditingMutation / UpdatePageLayout`。该上游命令还在传统模式更新全部顶层节的显式尺寸与边距，并对原本填满页面的表格按新内容宽度等比调整列宽（同文件 88、114、170、181 行）。这些计算行为继续作为完整事务的差异保留。
+固定参考仍为 Univer v1.6.0 / `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。已读 [PageSettingMenuItemFactory][section-menu] 的文档 Edit 禁用、[打开 operation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/open-page-setting.operation.ts) 的 applied 成功关闭，以及 [DocPageSetupCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/doc-page-setup.command.ts#L136) 的 `RichTextEditingMutation / UpdatePageLayout`。该上游命令还在传统模式更新全部顶层节的显式尺寸与边距，并对原本填满页面的表格按新内容宽度等比调整列宽（同文件 88、114、170、181 行）。这些行为在该阶段尚未接入，2026-11-28 的领域与事务实现见下节。
 
 | 本批生产文件 | 实际接线与边界 |
 | --- | --- |
@@ -87,29 +89,30 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 本批给既有 [document-toolbar-state 契约草稿](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs)增加五个计划案例，直接使用真实权限服务与 Ribbon：文档拒绝、显式允许覆盖默认拒绝、默认拒绝、默认允许、段落单独锁定；同时检查旧调用方、根命令/位置和缩放/全屏保持。该文件当前 **20 处 test 声明 / 26 个计划案例**。[document-toolbar 浏览器草稿](../../packages/office-studio/tests/document-toolbar.browser.test.mjs)增加四个计划案例：两种初始主题下的权限撤销/恢复、失败保留、主题切换、成功一次历史、undo/redo、内部 JSON 重开和允许取消；无内容区的左右边距校验；切换模型 ID 后的草稿关闭、重开新尺寸及新文档历史。统一 AST 按全部声明及显式外层 for 展开后，该文件当前为 **20 处 test 声明 / 24 个计划案例**：17普通、2处 each 展开5例、1处外层 for 展开2例；先前19/22的文本计数漏了外层 for。夹具使用真实 Workbench 和 ConfigProvider，历史由外部 snapshot 适配提供；一次直接调用真实父层提交函数核对权限拒绝。它没有覆盖 FDocument 命令事务或 Office 文件往返，声明和计划案例数不代表执行结果。
 
-### 完整页面设置事务的具体缺口与待确认方案
+<a id="doc-page-settings-command-transaction"></a>
 
-当前 `applyPageSetup` 仍直接 clone 并发布模型，未进入 `FDocument.executeCommand → DocumentEditorCommand 注册 → OfficeStudio.commitDocument`。公共 API、BeforeCommandExecute 后的版本/权限拒绝、文档内容历史和输入会话没有统一。`model.page` 改动也没有覆盖既有 `sectionSetup / sectionBreak.setup` 的显式几何，没有按上游行为调整填满页面的表格。以上不能以本批弹窗小修认定完成。
+### 统一页面设置事务与输入宿主（2026-11-28，已实施 / 未验收）
 
-完整方案沿现有领域、命令和内容历史边界实现，不引入第二套事务引擎。下列生产路径相对于 `packages/office-studio/src`，预计合计 **160–240 行**，本批没有实施：
+原七文件预估方案已被实际实现取代。[DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 Modal、纸张和方向操作现在共用 `docs.command.page-setup`；有 Facade 时进入 `FDocument.executeCommand → applyDocumentEditorCommand → OfficeStudio` 原子内容事务，独立 Workbench 也调用同一领域实现后交给宿主历史发布。命令改变整份文档的页面设置；输入坐标及 typing marks 仍属于原正文、表格或辅助宿主。页面候选通过校验后一次发布，命令拒绝保持弹窗草稿，成功后才关闭。没有执行运行验收。
 
-| 文件 | 预计改动 | 具体内容 |
-| --- | --- | --- |
-| `features/document/services/document-settings.ts` | 80–110 行 | 页设置的类型化领域输入和入口几何校验；传统模式覆盖顶层节显式尺寸/方向/边距；复用表格宽度与列宽模型调整页面填满表格，保留其余节、表格与来源数据 |
-| `features/document/commands/document-commands.ts` | 15–25 行 | 页设置 DocumentCommand、文档级命令权限和 mutation；排除辅助宿主投影，保持正文/story 独立选区 |
-| `api/document-editor-commands.ts` | 5–10 行 | 为既有注册标签表和外部请求入口补页设置 DTO，共用实际实现 |
-| `api/office-studio.ts` | 5–10 行 | 纳入已有 globalCommand 路径和 commitDocument；保留 host、story、revision、history generation 与 input generation 协议 |
-| `components/DocumentWorkbench.vue` | 30–40 行 | 替换直接 publish，菜单/纸张/方向/Modal 共用真实命令；成功结果、观察者重入及焦点使用已有会话机制 |
-| `components/document/DocumentPageSettings.vue` | 20–30 行 | 绑定文档和历史代数，处理同 ID 重开及旧草稿；显示真实命令错误并保留草稿，继续使用 Ant 表单和主题 |
-| `components/document/document-ribbon.ts` | 5–15 行 | 共用命令上下文能力，核对根状态与公开命令参数，保持入口数量与布局 |
+| 实际模块 | 当前行为与边界 |
+| --- | --- |
+| [document-settings.ts](../../packages/office-studio/src/features/document/services/document-settings.ts) | `DocumentPageSetupRequest / assertDocumentPageSetupRequest / prepareDocumentPageSetup` 分离 DTO、校验与候选。正数尺寸、非负边距、模式/方向及所有节的有效内容宽度必须成立；传统模式覆盖第一节及全部顶层 `sectionBreak.setup` 的显式页几何，现代模式保留节来源几何并使用现代默认边距。原栏配置、页眉页脚、资源与未知来源随候选保留 |
+| 同领域服务的表格调整 | 旧页面正文宽与新宽差超过 2px 时，识别有显式列宽或表宽、列宽总和在旧正文宽 2px 容差内的表格，按原比例写新列宽和表宽；普通固定宽表格保持。递归处理正文、嵌套块、单元格/续格及已存辅助宿主。它是对固定 `resizePageFillTables` 的本地模型适配；不同节/嵌套宽度、不可拆行和真实 Office 行为仍需样本验收 |
+| [document-editor-commands.ts](../../packages/office-studio/src/api/document-editor-commands.ts) / [document-page-setup-commands.ts](../../packages/office-studio/src/api/document-page-setup-commands.ts) | 编辑命令 DTO 与固定公开 `docs.command.page-setup` 共用类型化页设置和实际事务。公开入口支持平铺参数及显式编辑请求；文档 ID、选区、revision、history generation、input generation 都经原入口检查。注册函数注入现有提交函数，保留事务的私有边界 |
+| [OfficeStudio](../../packages/office-studio/src/api/office-studio.ts) / [document-input-store.ts](../../packages/office-studio/src/features/document/stores/document-input-store.ts) | 页面设置走全局命令，不将辅助文档投影替换成正文。共享请求可选 `selectionHost`：省略时沿命令/有效会话，`null` 显式正文，对象显式辅助宿主；优先级高于自动宿主和 legacy story 继承。输入宿主已空时保留原非空坐标并失效输入、返回 `selectionCurrent:false`，不得把 `blockId:''` 发布为有效光标；整篇页设置仍可完成 |
+| 平铺 API 的坐标契约 | `host?: DocumentAuxiliaryBlockHost` 指定选区所属空间。显式 selection 未带 host 时生成 `selectionHost:null`，不会继承当前脚注/页眉；省略 selection 可复用有效 body-kind 会话及其辅助 host，显式 host 可在该空间寻找首个合法目标。有效 legacy story 的默认调用省略 selectionHost 以保持原 story 输入；显式正文或 host 会覆盖它。所有传入选区与 host 都先分离复制 |
+| Workbench / [DocumentPageSettings.vue](../../packages/office-studio/src/components/document/DocumentPageSettings.vue) | 页面提交保留模型、会话及历史代数 guards；观察者重入后的旧选区/焦点结果不再归还。Ant Modal/Form/InputNumber/Select/Button/Alert 沿统一主题，弹窗绑定文档 ID 与历史 generation，包含同 ID 重开失效检查，取消仍可用；失活、权限撤销及组字期间拒绝作者提交 |
 
-验收需在已有设置/编辑命令/节布局 API 契约和 Workbench 浏览器草稿中覆盖显式多节、现代模式、页面填满与固定宽度表格、锁定/只读、同 ID 重开、BeforeCommandExecute 重入、独立输入宿主、单次历史和保存重开；Office 样本还需核对节几何、表格列宽及未知数据保留。完整命令参数和模式/权限语义尚待该方案实施时确定，不能把预估作为已存在的接口。
+[document-section-layout-api.contract.test.mjs](../../packages/office-studio/tests/document-section-layout-api.contract.test.mjs) 已补真实页设置候选、显式多节、现代模式、页面填满/固定宽表格、只读、字段和资源保留、历史/内部快照、BeforeCommandExecute 重入，以及平铺参数的正文/脚注/显式 host/legacy story/空辅助块合同草稿。前述外部 snapshot Workbench 草稿继续保留；它与 Facade 合同以及新增字符选择器浏览器草稿的覆盖空间分开，均未运行。
 
-本批运行结果 **0**。没有执行测试、类型检查、构建、dev、浏览器、Rust/WASM、服务或基准；统一静态语法、引用、链接和限定 diff 收尾交由主线。本批模型 ID 与 facade 引用切换已有接线；同 ID、同 facade 的历史重置或重开、布局和表格闭环、Office 文件、真实 IME/焦点及大样本性能继续 **未验收**。
+本批未新增常驻、扩展、上下文或溢出根；页设置 DTO、公开注册及共享 selectionHost 属实际接口变化。计算位于主线程可测试的领域服务，未新建 Worker/WASM 或第二套内容历史，不宣称性能已优化。静态检查结果在本批收尾单独登记；测试、类型、构建、dev、浏览器、Rust/WASM、Office 重开和基准仍后置。多节/辅助布局、空宿主的真实焦点、同 ID 重开、命令观察者重入、原生 IME、独立 Office 表格/节几何与大样本性能继续 **未验收**。
 
 <a id="doc-view-fullscreen-focus"></a>
 
 ## VIEW 全屏切换与缩放焦点续核（2026-11-27）
+
+本节为原全屏/焦点批的历史记录；文档级缩放与公开命令随后已接入，当前结论见[2026-11-28 持久化记录](#doc-view-zoom-persistence)。
 
 状态：**未验收**。本批继续向右核对 VIEW 既有缩放与全屏两个常驻根；常驻、扩展、溢出专用、上下文根及叶项增量均为零。缩放仍为八个 50/80/100/130/150/170/200/400 预设、grid `r1c2`；全屏仍为 `r2c2`，沿原 `doc.operation.toggle-fullscreen`，命令、模型字段及公共 API 均无增量。
 
@@ -117,7 +120,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 | --- | --- |
 | [display.menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/display.menu.ts) | 全屏状态先读取当前值，再订阅 `root.ownerDocument` 的 fullscreenchange；只有当前全屏元素等于该根时显示 Shrink/activated。本地增加挂载时的 `syncFullscreen`，状态取工作台 ownerDocument 并继续由真实事件更新 |
 | [ToggleFullscreenOperation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/commands/operations/toggle-fullscreen.operation.ts) | 宿主 document 已有任意全屏元素时先退出；没有全屏才请求根进入。本地原先只在工作台自身全屏时退出，其他根全屏则再次请求工作台。本批改为同一退出/进入顺序，使用工作台 ownerDocument，保留现有 Promise 失败反馈 |
-| [getDocEffectiveZoomRatio / getDocZoomRatio$](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-zoom.ts)、[SetDocZoomRatioOperation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/set-doc-zoom-ratio.operation.ts) | 缩放由 `getSettings().zoomRatio` 取值，operation 按 unitId 更新。已读 [DocumentDataModel](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/docs/data-model/document-data-model.ts) 的 setZoomRatio / getSettings，实际持久位置是 `snapshot.settings.zoomRatio`。本地仍使用工作台 ref 和宿主显示偏好；本批仅把缩放后的 nextTick 焦点请求改为现有 `scheduleInputFocus`，文档/epoch/API 已变时不把旧请求应用到新文档 |
+| [getDocEffectiveZoomRatio / getDocZoomRatio$](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/services/doc-zoom.ts)、[SetDocZoomRatioOperation](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/operations/set-doc-zoom-ratio.operation.ts) | 缩放由 `getSettings().zoomRatio` 取值，operation 按 unitId 更新。已读 [DocumentDataModel](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/core/src/docs/data-model/document-data-model.ts) 的 setZoomRatio / getSettings，实际持久位置是 `snapshot.settings.zoomRatio`。该阶段本地使用工作台 ref 和宿主显示偏好，仅把缩放后的 nextTick 焦点请求改为 `scheduleInputFocus`；2026-11-28 已改读写文档设置，当前路径见下节 |
 
 生产仅修改 [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue)，约 17 行 diff。原页面设置、纸张/方向、输入会话、Ant 主题、Ribbon 声明和 footer 行为保留。代码仍属于主线程工作台视图状态和浏览器全屏 API；没有引入新的计算内核、Worker/WASM 或跨边界协议。
 
@@ -125,9 +128,23 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 按 AST 读取所有声明并展开显式外层循环，该批结束时浏览器文件为 **22 处 test 声明 / 27 个计划案例**：18 个普通案例、三处 each 展开七例、一处外层 for 展开两例。本批新增的三例与此前页面设置批次 **20 声明 / 24 计划** 分开记录，不恢复旧漏计数。契约文件本批未改，继续为 20 声明 / 26 计划。此次 AST 只作计数；测试、类型检查、构建、dev、浏览器、Rust/WASM、服务和基准执行结果均为 **0**，统一生产语法、引用、链接和 diff 收尾仍由主线完成。
 
-文档级缩放状态、按 unitId 的公开 operation、[SetDocZoomRatioCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/set-doc-zoom-ratio.command.ts) 的公共命令/撤销注册、切换文档及保存重开仍有缺口。本地 [documentToPublicSnapshot](../../packages/office-studio/src/api/document-output.ts) 会展开保留的来源 snapshot，所以没有显式缩放 getter/setter不等于来源 settings 字段已被删除；当前缩放交互没有更新或读取该权威设置。本批不扩展完整持久化方案，继续保留完整目标。
+该阶段文档级缩放状态、按 unitId 的公开 operation、[SetDocZoomRatioCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/set-doc-zoom-ratio.command.ts) 的注册及保存重开尚未接入。2026-11-28 已实施文档设置与命令；内容历史/视图设置的本地选择、具体公开接口及仍未验收项见下节，不能继续用该历史缺口判断当前实现。
 
 挂载初始全屏、异常/取消、iframe 或多 ownerDocument 的事件订阅、真实主题/RTL、浏览器焦点与 Windows IME、Office 样本和大规模缩放性能继续 **未验收**。该批结束时 fullscreenchange 的监听生命周期仍使用全局 document，后续[宿主生命周期续修](#doc-fullscreen-owner-document)补齐接线并增加草稿，跨 document 浏览器验收仍未执行。
+
+<a id="doc-view-zoom-persistence"></a>
+
+## VIEW 文档缩放设置、公开 API 与保存（2026-11-28）
+
+状态：**已实施 / 未验收**。根任务已将每文档缩放接入当前模型、Facade、公开命令和保存链路，本节按实际源文件更新原“仅工作台 ref”的结论。固定来源为上述 `doc-zoom.ts`、`set-doc-zoom-ratio.operation.ts / command.ts`、`DocumentDataModel.getSettings / setZoomRatio`；本地沿用八个 Ribbon 预设及原 grid 位置，常驻、扩展、上下文、溢出根增量均为零。
+
+[document-zoom.ts](../../packages/office-studio/src/features/document/services/document-zoom.ts) 以 `metadata.documentZoomRatio` 保存比例，缺省 1，显式输入要求 0.1–4 的有限数字。公开快照的 `settings.zoomRatio` 由 [document-input.ts](../../packages/office-studio/src/api/document-input.ts) 读取、[document-output.ts](../../packages/office-studio/src/api/document-output.ts) 写出，其他来源 settings 继续保留；内部快照保留模型设置。[document-zoom-commands.ts](../../packages/office-studio/src/api/document-zoom-commands.ts) 注册 `doc.operation.set-zoom-ratio`（`unitId / zoomRatio`）和 `doc.command.set-zoom-ratio`（`documentId? / zoomRatio?`）；后者沿固定缺省比例语义，省略文档 ID 使用活动文档。它们复用同一视图发布函数，不建立第二份缩放状态。
+
+[FDocument](../../packages/office-studio/src/api/facade.ts) 暴露 `getZoomRatio / setZoomRatio / onZoomRatioChanged`；[DocumentZoomRatioChanged](../../packages/office-studio/src/api/events.ts) 带文档 ID、旧比例和新比例，订阅按文档过滤。Workbench 读取模型/事件后投影为百分比，Ribbon、Canvas、输入覆盖层和 Footer 使用同一值，文档切换重读该文档设置；Footer 真实缩放输入同步禁用态。焦点仍经过当前文档/会话守卫。来源快照和作者设置的实际重开行为已补草稿，未运行。
+
+本地将缩放作为可随文档保存的视图设置：不推进内容 revision、dirty 或 typing marks，不加入内容撤销；内容 undo/redo 保留用户当前缩放。固定上游另有公共 Command 与撤销注册，本地保留命令入口并选择视图语义，差异明确登记，不能据此宣称内部实现相同。权限、BeforeCommandExecute 重入及宿主生命周期继续走根任务共享入口。[document-zoom.contract.test.mjs](../../packages/office-studio/tests/document-zoom.contract.test.mjs) 和 [document-zoom.browser.test.mjs](../../packages/office-studio/tests/document-zoom.browser.test.mjs) 有公共/内部快照、文档隔离、命令/事件、取消重入、内容历史和实际 Canvas/输入缩放草稿；它们属于根任务验证范围，执行结果仍为零。
+
+这次只更新 Docs 证据，共享实现和根导出由根任务负责。实际跨 document/iframe、主题/RTL、放大后的坐标命中、全屏、原生 IME、保存重开及普通/大样本缩放性能均 **未验收**，未宣称 WASM 或端到端性能优化。完整 DOC-03 / DOC-23 与全部 Pro 目标不变。
 
 <a id="doc-fullscreen-owner-document"></a>
 
@@ -141,7 +158,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 夹具仅包装 addEventListener、removeEventListener 和 exitFullscreen 来记录宿主及监听集合，全部转发原生调用；没有伪造 fullscreenElement 或替换 Fullscreen API 的结果。两例继续核对文档快照和外部历史保持。已有及新增工作台和主题宿主使用真实 `antdv-next` / ConfigProvider；本批新增 iframe 和挂载容器为测试宿主，没有新增产品 UI 控件。
 
-按 AST 读取全部声明并展开显式外层循环，浏览器文件当前 **24 处 test 声明 / 29 个计划案例**：20 个普通案例、三处 each 展开七例、一处外层 for 展开两例；toolbar-state 契约保持 **20 声明 / 26 计划**。本批 AST 只作计数；测试、类型检查、构建、dev、浏览器、Rust/WASM、服务和基准执行结果均为 **0**，统一静态语法、引用、链接和 diff 收尾由主线完成。挂载初始全屏、拒绝/取消、跨宿主实际运行、主题/RTL、焦点恢复、Windows IME、Office 样本及性能继续 **未验收**；完整文档级缩放及页面设置事务仍保留原范围和差异。
+按 AST 读取全部声明并展开显式外层循环，该阶段浏览器文件为 **24 处 test 声明 / 29 个计划案例**：20 个普通案例、三处 each 展开七例、一处外层 for 展开两例；toolbar-state 契约当时为 **20 声明 / 26 计划**。本批 AST 只作计数；测试、类型检查、构建、dev、浏览器、Rust/WASM、服务和基准执行结果均为 **0**，统一静态语法、引用、链接和 diff 收尾由主线完成。挂载初始全屏、拒绝/取消、跨宿主实际运行、主题/RTL、焦点恢复、Windows IME、Office 样本及性能继续 **未验收**；页面设置和缩放的后续实现见上述 2026-11-28 记录，不改变完整范围和验收要求。
 
 <a id="doc-table-page-break-review"></a>
 
@@ -173,7 +190,7 @@ Status: **Not accepted**. This evidence covers editable page, column, and sectio
 
 本轮实际小修仅为 [DocumentHeaderFooterRibbonControl.vue](../../packages/office-studio/src/components/document/DocumentHeaderFooterRibbonControl.vue) 的两处既有模板行：页码按钮以真实 `pageOpen` 声明 `aria-expanded`；日期和时间 Modal 显式使用 360px 宽度，来源为固定 [DocHeaderFooterFields.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/views/header-footer/panel/DocHeaderFooterFields.tsx) 的 `Dialog width={360}`。页码与紧凑组仍共用 caption，SVG 不收缩；text 按钮保持零边框、实际 hover 边界和主题 token，按下仍保留输入焦点。没有新增 UI，既有 Modal/Form/Select/Checkbox/Button 继续使用 `antdv-next`。
 
-日期对话框的 locale 实际预览、命令拒绝后保留草稿与失败反馈，以及真正关闭弹层后的焦点恢复，仍与上游存在待核实/待实现差异。本轮没有更改这些事务。页眉页脚 Modal 的独立打开路径仍未接入，完整符号选择器和完整页面设置命令事务也未实施；后续页面设置 UI 修正见[权限、草稿与提交续核](#doc-page-settings-ui-transaction)。静态检查通过脚本、模板、样式各一份，三处本地导入与三处包引用，本文 39 条本地链接、一处链接锚点、13 条固定源码路径与 11 处引用式链接；限定 diff、尾部空白和冲突标记检查通过。测试、类型、构建、Rust/WASM、dev、浏览器、服务和基准均后置。实际尺寸、展开状态、主题/RTL、hover、焦点、IME、分页、历史与文件闭环继续未验收。
+日期对话框的 locale 实际预览、命令拒绝后保留草稿与失败反馈，以及真正关闭弹层后的焦点恢复，仍与上游存在待核实/待实现差异。该阶段没有更改这些事务；页眉页脚 Modal 的独立打开路径仍未接入。完整字符选择器与页面设置命令随后已实施，见[字符目录/交互记录](DOC-03-header-footer-ribbon-sizing.md#doc-character-picker-plan)及[页面设置事务](#doc-page-settings-command-transaction)。该阶段静态检查通过脚本、模板、样式各一份，三处本地导入与三处包引用，本文当时 39 条本地链接、一处链接锚点、13 条固定源码路径与 11 处引用式链接；限定 diff、尾部空白和冲突标记检查通过。这些历史结果不覆盖后续改动。测试、类型、构建、Rust/WASM、dev、浏览器、服务和基准均后置，实际尺寸、展开状态、主题/RTL、hover、焦点、IME、分页、历史与文件闭环继续未验收。
 
 ## Earlier reference and implementation records
 

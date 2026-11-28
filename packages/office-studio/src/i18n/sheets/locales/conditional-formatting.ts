@@ -74,10 +74,34 @@ const scopeValues: Record<string, readonly string[]> = {
   'zh-TW': ['工作表', '目前選取範圍', '顯示規則範圍', '清除清單規則', '目前選取範圍沒有條件格式規則。'],
 }
 
+const permissionKeys = ['drag', 'protected-rules', 'error.permission'] as const
+const permissionValues: Record<string, readonly string[]> = {
+  'ar-SA': ['اسحب لإعادة ترتيب القواعد', 'بعض القواعد محمية؛ تظهر القواعد القابلة للتحرير فقط.', 'لا يمكنك تحرير جميع نطاقات القاعدة أو تغيير الأولويات المتأثرة.'],
+  'ca-ES': ['Arrossega per reordenar les regles', 'Algunes regles estan protegides; només es mostren les regles editables.', 'No pots editar tots els intervals de la regla ni canviar les prioritats afectades.'],
+  'de-DE': ['Regeln durch Ziehen neu anordnen', 'Einige Regeln sind geschützt. Nur bearbeitbare Regeln werden angezeigt.', 'Sie können nicht alle Regelbereiche bearbeiten oder die betroffenen Prioritäten ändern.'],
+  'en-US': ['Drag to reorder rules', 'Some rules are protected. Only editable rules are shown.', 'You cannot edit every range of the rule or change the affected priorities.'],
+  'es-ES': ['Arrastrar para ordenar las reglas', 'Algunas reglas están protegidas. Solo se muestran las reglas editables.', 'No puedes editar todos los rangos de la regla ni cambiar las prioridades afectadas.'],
+  'fa-IR': ['برای مرتب‌سازی قواعد بکشید', 'برخی قواعد محافظت شده‌اند؛ فقط قواعد قابل ویرایش نمایش داده می‌شوند.', 'اجازه ویرایش همه محدوده‌های قاعده یا تغییر اولویت‌های مرتبط را ندارید.'],
+  'fr-FR': ['Faire glisser pour réordonner les règles', 'Certaines règles sont protégées. Seules les règles modifiables sont affichées.', 'Vous ne pouvez pas modifier toutes les plages de la règle ou les priorités concernées.'],
+  'id-ID': ['Seret untuk mengurutkan aturan', 'Sebagian aturan dilindungi. Hanya aturan yang dapat diedit yang ditampilkan.', 'Anda tidak dapat mengedit semua rentang aturan atau mengubah prioritas terkait.'],
+  'it-IT': ['Trascina per riordinare le regole', 'Alcune regole sono protette. Vengono mostrate solo quelle modificabili.', 'Non puoi modificare tutti gli intervalli della regola o le priorità interessate.'],
+  'ja-JP': ['ドラッグしてルールを並べ替え', '保護されたルールがあります。編集可能なルールのみ表示します。', 'ルールのすべての適用範囲または関連する優先順位を変更する権限がありません。'],
+  'ko-KR': ['드래그하여 규칙 순서 변경', '일부 규칙은 보호되어 있습니다. 편집 가능한 규칙만 표시됩니다.', '규칙의 모든 적용 범위 또는 관련 우선순위를 변경할 권한이 없습니다.'],
+  'pl-PL': ['Przeciągnij, aby zmienić kolejność reguł', 'Niektóre reguły są chronione. Wyświetlane są tylko reguły edytowalne.', 'Nie możesz edytować wszystkich zakresów reguły ani zmieniać powiązanych priorytetów.'],
+  'pt-BR': ['Arraste para reordenar as regras', 'Algumas regras estão protegidas. Apenas regras editáveis são mostradas.', 'Você não pode editar todos os intervalos da regra nem alterar as prioridades afetadas.'],
+  'ru-RU': ['Перетащите для изменения порядка правил', 'Некоторые правила защищены. Показаны только доступные для редактирования правила.', 'Нет прав на изменение всех диапазонов правила или затронутых приоритетов.'],
+  'sk-SK': ['Potiahnutím zmeniť poradie pravidiel', 'Niektoré pravidlá sú chránené. Zobrazujú sa iba upraviteľné pravidlá.', 'Nemôžete upraviť všetky rozsahy pravidla ani súvisiace priority.'],
+  'vi-VN': ['Kéo để sắp xếp lại quy tắc', 'Một số quy tắc được bảo vệ. Chỉ hiển thị các quy tắc có thể chỉnh sửa.', 'Bạn không có quyền chỉnh sửa tất cả phạm vi của quy tắc hoặc các mức ưu tiên liên quan.'],
+  'zh-CN': ['拖动调整规则顺序', '部分规则受保护，仅显示可编辑的规则。', '当前用户没有编辑规则全部应用范围或调整相关优先级的权限。'],
+  'zh-HK': ['拖動調整規則次序', '部分規則受保護，只顯示可編輯的規則。', '目前使用者沒有編輯規則全部套用範圍或調整相關優先次序的權限。'],
+  'zh-TW': ['拖曳調整規則順序', '部分規則受保護，只顯示可編輯的規則。', '目前使用者沒有編輯規則全部套用範圍或調整相關優先順序的權限。'],
+}
+
 export const conditionalFormattingLocaleMessages: Partial<Record<string, Record<string, string>>> = Object.fromEntries(
   Object.entries(quickValues).map(([locale, values]) => [locale, Object.fromEntries([
     ...(localeValues[locale] ?? []).map((value, index) => [keys[index]!, value]),
     ...values.map((value, index) => [`conditional.quick.${quickKeys[index]!}`, value]),
     ...scopeValues[locale]!.map((value, index) => [`conditional.${scopeKeys[index]!}`, value]),
+    ...permissionValues[locale]!.map((value, index) => [`conditional.${permissionKeys[index]!}`, value]),
   ])]),
 )

@@ -3,6 +3,18 @@ export { OfficeFontListKey, type OfficeFontList } from './platform/ribbon/ribbon
 export { WORKBENCH_CONTROL_THEME } from './platform/workbench-theme'
 
 export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type WorkbookCommitOptions } from './api/office-studio'
+export { DOCUMENT_ZOOM_COMMANDS, type DocumentZoomOperationParams, type DocumentZoomCommandParams } from './api/document-zoom-commands'
+export { DOCUMENT_ZOOM_SHORTCUTS, DOCUMENT_DEFAULT_ZOOM_RATIO } from './features/document/services/document-zoom'
+export { DOCUMENT_PAGE_SETUP_COMMAND, type DocumentPageSetupCommandParams } from './api/document-page-setup-commands'
+export { SHEET_TABLE_COMMANDS, type OpenSheetTableSelectorInput, type AddSheetTableCommandInput,
+  type SheetTableSelectorRequest } from './features/sheet-tables/sheet-table-create.ts'
+export { CHART_OBJECT_COMMANDS, CHART_OBJECT_MENU, PASTE_COPIED_CHART_COMMAND,
+  type ChartObjectTarget, type ChartObjectPasteInput } from './features/charts/chart-object-commands.ts'
+export { captureChartObjectClipboard, chartObjectPasteDefinition, assertChartObjectClipboardSource,
+  type ChartObjectClipboard, type ChartObjectPasteContext } from './features/charts/chart-object-clipboard.ts'
+export { planChartSourceImport, planChartSourceImportAsync, applyChartSourceImport, assertChartSourceImportSource,
+  CHART_SOURCE_IMPORT_MAX_BYTES, CHART_SOURCE_IMPORT_MAX_CELLS,
+  type ChartSourceImportPlan, type ChartSourceImportOptions } from './features/charts/chart-source-import.ts'
 export type { WorkbookInput } from './api/model-utils.ts'
 export { FOverGridImage, FOverGridImageBuilder, type PreparedSheetImage, type SheetImageAsyncOptions } from './api/sheet-images.ts'
 export { SHEET_IMAGE_COMMANDS, type SheetImageCommandInput, type SheetImageCommandId } from './features/sheet-images/sheet-image-commands.ts'
@@ -218,9 +230,34 @@ export { SHEET_AXIS_VISIBILITY_COMMANDS, SHEET_AXIS_VISIBILITY_COMMAND_IDS, Shee
 export { type SheetAxis, type SheetAxisEdit, type SheetAxisInterval, sheetAxisMaximum, mapSheetAxisIndex,
   transformSheetAxisInterval, transformSheetAxisRange, transformSheetAxisReferenceInterval } from './domain/sheet-axis-structure.ts'
 export { mapFormulaReferenceAreas, translateFormulaReferenceAreas, transformFormulaReferenceAreasForAxisEdit, transformFormulaReferenceAreasForCellShift,
-  type FormulaReferenceArea } from './features/formula/formula-reference-areas.ts'
+  readFormulaSheetQualifier, mapFormulaSheetQualifiers, type FormulaReferenceArea, type FormulaSheetQualifier } from './features/formula/formula-reference-areas.ts'
+export { mapFormulaIdentifiers, visitFormulaIdentifiers, type FormulaIdentifier, type FormulaIdentifierReplacement } from './features/formula/formula-identifiers.ts'
+export { readFormulaDefinedNames, indexFormulaDefinedNames, resolveFormulaDefinedName,
+  type FormulaDefinedName, type FormulaDefinedNameKey } from './features/formula/formula-defined-names.ts'
+export { evaluateFormula, evaluateFormulaReference, type FormulaEvaluationOptions, type FormulaResolvedReference,
+  type FormulaErrorValue, type FormulaValue } from './features/formula/index.ts'
 export { SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from './features/conditional-formatting/conditional-format-command.ts'
+export { registerSheetValidationInputCommands } from './api/sheet-validation-input-commands.ts'
+export { registerSheetDataValidationCommands } from './api/sheet-data-validation-commands.ts'
+export { registerSheetValidationDropdownOperations, attachSheetValidationDropdownController, activeSheetValidationDropdown,
+  type SheetValidationDropdownController } from './api/sheet-validation-dropdown-operations.ts'
+export { COMMIT_SHEET_DATE_INPUT_COMMAND, sheetDateInputState, sheetDateInputMode, sheetDateInputFormat,
+  resolveSheetDateInputChange, planSheetDateInput, sheetDateInputCommandInput,
+  type SheetDateInputCommandInput, type SheetDateInputChange, type SheetDateInputState, type SheetDateInputMode } from './features/sheet-validation/validation-date-input.ts'
+export { COMMIT_SHEET_VALIDATION_LIST_INPUT_COMMAND, planSheetValidationListInput, sheetValidationListInput,
+  type SheetValidationListInput } from './features/sheet-validation/validation-list-input.ts'
+export { COMMIT_SHEET_CHECKBOX_INPUT_COMMAND, planSheetCheckboxInput, sheetCheckboxInput,
+  type SheetCheckboxInput } from './features/sheet-validation/validation-checkbox-input.ts'
+export { resolveSheetValidationWidgetTarget, sheetValidationWidgetTargetInput,
+  type SheetValidationWidgetTargetInput, type SheetValidationWidgetTarget } from './features/sheet-validation/validation-widget-input.ts'
+export { SHEET_DATA_VALIDATION_COMMANDS, SHEET_DATA_VALIDATION_ASYNC_COMMANDS, planSheetDataValidationCommand, sheetDataValidationCommandInput,
+  type SheetDataValidationCommandTarget, type SheetDataValidationCommandInput, type SheetDataValidationRulesPlan,
+  type SheetSetDataValidationInput, type SheetRemoveDataValidationInput, type SheetClearDataValidationInput,
+  type SheetClearDataValidationTypesInput, type SheetDataValidationSubmitResult } from './features/sheet-validation/validation-rule-command.ts'
+export type { SheetDataValidationAsyncOptions, SheetCheckboxRuleCellProgress } from './features/sheet-validation/validation-checkbox-rule-cells-async.ts'
+export { SHEET_VALIDATION_DROPDOWN_OPERATIONS, type SheetValidationDropdownLocation, type SheetValidationDropdownRequest,
+  type SheetValidationDropdownShowInput, type SheetValidationDropdownHideInput } from './features/sheet-validation/validation-dropdown.ts'
 export type { SheetFontFormatAction, SheetFontFormatCommandInput, SheetFontFormatCommandParams,
   SheetFontPrimaryPosition, SheetFontRangeInput, SheetFontMark } from './features/sheet-workbench/sheet-font-format-command.ts'
 export { type ApiCellData, type ApiCellValue } from './api/model-utils'
@@ -256,6 +293,8 @@ export { SET_DOCUMENT_INPUT_SELECTION_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPER
   type DocumentInputLocation, type DocumentInputSession, type DocumentStoryInputCommit } from './features/document/model/document-input-session.ts'
 export type { DocumentInputSelectionRequest } from './api/document-input-commands.ts'
 export { useDocumentInputStore } from './features/document/stores/document-input-store.ts'
+export { useDocumentCharacterPreferencesStore, normalizeDocumentCharacterPreferences, DOCUMENT_CHARACTER_PREFERENCES_KEY,
+  type DocumentCharacterPreferencesStore, type DocumentCharacterPreferencesSnapshot, type DocumentCharacterPreferenceStorage } from './features/document/stores/document-character-preferences-store'
 export { prepareDocumentStoryClearFormatting, applyDocumentStoryClearFormatting,
   type DocumentStoryClearFormattingPlan } from './features/document/services/document-clear-formatting.ts'
 export { splitSheetA1Reference, parseSheetA1Range, type SheetA1Reference, type SheetA1Range } from './features/sheet-workbench/sheet-a1-reference.ts'

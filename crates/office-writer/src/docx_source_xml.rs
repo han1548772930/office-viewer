@@ -175,9 +175,9 @@ fn qualified_name(name: &str) -> bool {
 
 fn namespace(result: ResolveResult<'_>) -> Result<String, String> {
     match result {
-        ResolveResult::Bound(value) => String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string()),
+        ResolveResult::Bound(value) => Ok(value.as_ref().to_owned()),
         ResolveResult::Unbound => Ok(String::new()),
-        ResolveResult::Unknown(prefix) => Err(format!("Office XML contains undeclared namespace prefix {:?}.", String::from_utf8_lossy(&prefix))),
+        ResolveResult::Unknown(prefix) => Err(format!("Office XML contains undeclared namespace prefix {prefix:?}.")),
     }
 }
 
@@ -209,20 +209,20 @@ pub(super) fn parse_xml(source: &str, document_nodes: bool) -> Result<Element, S
             Event::Start(tag) | Event::Empty(tag) => {
                 elements += 1;
                 if elements > XML_ELEMENT_LIMIT || stack.len() >= XML_DEPTH_LIMIT { return Err("Office XML exceeds the element or nesting limit.".into()); }
-                let name = String::from_utf8(tag.name().as_ref().to_vec()).map_err(|error| error.to_string())?;
+                let name = tag.name().as_ref().to_owned();
                 if !qualified_name(&name) { return Err("Office XML contains an invalid element name.".into()); }
-                let mut node = Element { name, namespace: namespace(resolved)?, local: String::from_utf8(tag.local_name().as_ref().to_vec()).map_err(|error| error.to_string())?, attributes: Vec::new(), content: Vec::new(), empty };
+                let mut node = Element { name, namespace: namespace(resolved)?, local: tag.local_name().as_ref().to_owned(), attributes: Vec::new(), content: Vec::new(), empty };
                 let mut attributes = HashSet::new();
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
-                    let name = String::from_utf8(attribute.key.as_ref().to_vec()).map_err(|error| error.to_string())?;
+                    let name = attribute.key.as_ref().to_owned();
                     if !qualified_name(&name) { return Err("Office XML contains an invalid attribute name.".into()); }
                     let declaration = name == "xmlns" || name.starts_with("xmlns:");
                     let (resolved, local) = reader.resolver().resolve_attribute(attribute.key);
                     let attribute_namespace = if declaration { XMLNS_NAMESPACE.to_owned() } else { namespace(resolved)? };
-                    let local = String::from_utf8(local.as_ref().to_vec()).map_err(|error| error.to_string())?;
+                    let local = local.as_ref().to_owned();
                     if !attributes.insert((attribute_namespace.clone(), local.clone())) { return Err("Office XML contains duplicate attributes.".into()); }
-                    let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
+                    let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
                     if !valid_xml_characters(&value) { return Err("Office XML contains invalid XML characters.".into()); }
                     if declaration && (name == "xmlns:xmlns" || name == "xmlns:xml" && value != XML_NAMESPACE || value == XMLNS_NAMESPACE || value == XML_NAMESPACE && name != "xmlns:xml" || name != "xmlns" && value.is_empty()) { return Err("Office XML contains an invalid namespace declaration.".into()); }
                     node.attributes.push(Attribute { name, namespace: attribute_namespace, local, value });
@@ -237,18 +237,18 @@ pub(super) fn parse_xml(source: &str, document_nodes: bool) -> Result<Element, S
                 if let Some(parent) = stack.last_mut() { parent.content.push(Content::Element(node)); }
                 else if root.replace(node).is_some() { return Err("Office XML has multiple root elements.".into()); }
             }
-            Event::Text(text) => push_text(&mut stack, text.decode().map_err(|error| error.to_string())?.into_owned())?,
-            Event::CData(text) => push_text(&mut stack, text.decode().map_err(|error| error.to_string())?.into_owned())?,
+            Event::Text(text) => push_text(&mut stack, text.xml_content(XmlVersion::Implicit1_0).into_owned())?,
+            Event::CData(text) => push_text(&mut stack, text.xml_content(XmlVersion::Implicit1_0).into_owned())?,
             Event::GeneralRef(reference) => {
                 let text = if let Some(character) = reference.resolve_char_ref().map_err(|error| error.to_string())? { character.to_string() }
-                else { quick_xml::escape::resolve_xml_entity(&reference.decode().map_err(|error| error.to_string())?).ok_or("Office XML contains an unsupported entity.")?.to_owned() };
+                else { quick_xml::escape::resolve_xml_entity(&reference.as_ref()).ok_or("Office XML contains an unsupported entity.")?.to_owned() };
                 push_text(&mut stack, text)?;
             }
             Event::Decl(value) if document_nodes && !declaration && root.is_none() && stack.is_empty() => {
-                if value.version().map_err(|error| error.to_string())?.as_ref() != b"1.0" { return Err("Office XML must use XML 1.0.".into()); }
+                if value.version().map_err(|error| error.to_string())?.as_ref() != "1.0" { return Err("Office XML must use XML 1.0.".into()); }
                 if let Some(encoding) = value.encoding() {
                     let encoding = encoding.map_err(|error| error.to_string())?;
-                    if !encoding.eq_ignore_ascii_case(b"utf-8") && !encoding.eq_ignore_ascii_case(b"utf8") { return Err("Office XML source resources must be UTF-8.".into()); }
+                    if !encoding.eq_ignore_ascii_case("utf-8") && !encoding.eq_ignore_ascii_case("utf8") { return Err("Office XML source resources must be UTF-8.".into()); }
                 }
                 declaration = true;
             }

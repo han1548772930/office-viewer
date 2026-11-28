@@ -1,6 +1,8 @@
 import type { CellRange, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { mapFormulaReferenceAreas, type FormulaReferenceArea } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
+import { rewriteWorkbookFormulaDefinedNames } from '../formula/formula-defined-names.ts'
 import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { sheetRangeContainsCell } from './sheet-range-command.ts'
 
@@ -61,7 +63,7 @@ export function moveSheetClipboardHyperlink(value: string, original: WorkbookMod
 
 export function moveSheetClipboardCellReferences(cell: SpreadsheetCell, beforeOwner: string, afterOwner: string, original: WorkbookModel, move: SheetClipboardMove): SpreadsheetCell {
   const next = cloneModel(cell)
-  if (next.formula) next.formula = moveSheetClipboardFormulaReferences(next.formula, beforeOwner, afterOwner, move)
+  if (next.formula) rewriteFormulaImportCell(next, moveSheetClipboardFormulaReferences(next.formula, beforeOwner, afterOwner, move))
   if (next.sparkline) next.sparkline.sourceRange = moveSheetClipboardFormulaReferences(next.sparkline.sourceRange, beforeOwner, afterOwner, move)
   if (next.hyperlink) next.hyperlink = moveSheetClipboardHyperlink(next.hyperlink, original, move)
   if (next.richText) next.richText = next.richText.map(run => typeof run.hyperlink === 'string'
@@ -69,21 +71,13 @@ export function moveSheetClipboardCellReferences(cell: SpreadsheetCell, beforeOw
   return next
 }
 
-export function moveSheetClipboardDefinedNames(metadata: Record<string, unknown> | undefined, original: WorkbookModel, move: SheetClipboardMove): Record<string, unknown> | undefined {
+export function moveSheetClipboardDefinedNames(metadata: Record<string, unknown> | undefined, original: WorkbookModel, move: SheetClipboardMove,
+  ownerSheetId?: string): Record<string, unknown> | undefined {
   if (!metadata) return undefined
-  const next = cloneModel(metadata), active = original.sheets.find(sheet => sheet.id === original.activeSheetId)?.name
-  for (const key of ['definedNames', 'localDefinedNames']) {
-    const entries = next[key]
-    if (!Array.isArray(entries)) continue
-    next[key] = entries.map((entry: unknown) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
-      const record = entry as Record<string, unknown>
-      if (typeof record.refersTo !== 'string') return entry
-      const owner = typeof record.sheet === 'string' ? record.sheet : typeof record.sheetId === 'string'
-        ? original.sheets.find(sheet => sheet.id === record.sheetId)?.name : key === 'definedNames' ? active : undefined
-      return { ...record, refersTo: moveSheetClipboardFormulaReferences(record.refersTo, owner, owner, move) }
-    })
-  }
+  const next = cloneModel(metadata), scoped: WorkbookModel = { ...original,
+    metadata: ownerSheetId ? undefined : next,
+    sheets: original.sheets.map(sheet => ({ ...sheet, metadata: sheet.id === ownerSheetId ? next : undefined })) }
+  rewriteWorkbookFormulaDefinedNames(scoped, (formula, owner) => moveSheetClipboardFormulaReferences(formula, owner, owner, move))
   return next
 }
 

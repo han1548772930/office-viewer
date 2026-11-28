@@ -60,9 +60,9 @@ function execute(value?: unknown) {
   }
 }
 
-function forward(commandId: string, params?: unknown) {
+function forward(commandId: string, params?: unknown, options?: { keepOpen?: boolean }) {
   if (!commandId || props.item.disabled || props.item.hidden || props.measurement) return
-  open.value = false
+  if (!options?.keepOpen) open.value = false
   emit('execute', commandId, params)
 }
 
@@ -110,7 +110,7 @@ onBeforeUnmount(() => { open.value = false })
 
 <template>
   <span ref="root" class="workbench-ribbon-item" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :class="{ 'is-overflow': overflow, 'is-active': item.activated, 'is-disabled': item.disabled || measurement, 'has-label': showLabel, 'has-icon': Boolean(item.icon), 'is-selector': isDropdown || item.type === 'select', 'is-grid': grid, 'is-grid-large': grid && large, 'is-grid-full-width': grid && fullWidth, 'is-grid-align-start': grid && !large && alignStart && Boolean(item.icon) && !showLabel }" :style="itemStyle" :data-ribbon-item="item.id">
-    <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :measurement="measurement" :grid="grid" :overflow="overflow" :icon-size="iconSize" :open="open" @update:open="(value: boolean) => { open = value }" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
+    <component v-if="item.inlineComponent" :is="item.inlineComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :measurement="measurement" :grid="grid" :overflow="overflow" :icon-size="iconSize" :open="open" @update:open="(value: boolean) => { open = value }" @insert="(value: unknown, options?: { keepOpen?: boolean }) => forward(item.popupCommandId ?? item.commandId ?? '', value, options)" @execute="forward" />
     <Tooltip v-else :title="measurement ? undefined : description" :trigger="['hover', 'focus']" :open="!open && tooltipOpen" :mouse-enter-delay="0.6" @open-change="value => { tooltipOpen = !open && value }">
       <span v-if="item.type === 'select'" class="ribbon-select-wrap">
         <label :for="`${popupId}-select`" :class="overflow ? 'ribbon-select-label' : grid && (large || showLabel) ? 'ribbon-grid-select-title' : 'ribbon-sr-only'">{{ item.title }}</label>
@@ -137,7 +137,7 @@ onBeforeUnmount(() => { open.value = false })
           </Button>
           <template #content>
             <div v-if="item.popupComponent" :id="popupId" ref="panel" class="ribbon-component-popup" role="dialog" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" @keydown="onPanelKeydown">
-              <component :is="item.popupComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" @insert="(value: unknown) => forward(item.popupCommandId ?? item.commandId ?? '', value)" @execute="forward" />
+              <component :is="item.popupComponent" v-bind="item.popupProps" :disabled="item.disabled || measurement" :open="open" @insert="(value: unknown, options?: { keepOpen?: boolean }) => forward(item.popupCommandId ?? item.commandId ?? '', value, options)" @execute="forward" />
             </div>
             <Menu v-else :id="popupId" ref="menuRef" class="ribbon-command-menu" :data-ribbon-editor-owner="editorFocusScope?.ownerId" :dir="direction" :style="themeStyle" :aria-label="item.title" :items="menuModel.items" :selected-keys="menuModel.selectedKeys" :trigger-sub-menu-action="'click'" @click="executeMenuItem" @keydown.esc.capture.stop.prevent="closeMenu" />
           </template>

@@ -191,15 +191,15 @@ fn remap_relationships(owner: &str, source: &Owner, mapping: &BTreeMap<String, S
         let empty = matches!(&event, Event::Empty(_));
         match event {
             Event::Start(tag) | Event::Empty(tag) => {
-                let name = std::str::from_utf8(tag.name().as_ref()).map_err(|error| ExportError::invalid(error.to_string()))?.to_owned();
+                let name = std::str::from_utf8(tag.name().as_ref().as_bytes()).map_err(|error| ExportError::invalid(error.to_string()))?.to_owned();
                 if depth == 0 { root_name = name.clone(); }
                 let root_empty = depth == 0 && empty && !source.additional.is_empty();
                 if depth == 1 || root_empty {
                     let mut attributes = Vec::new();
                     for attribute in tag.attributes() {
                         let attribute = attribute.map_err(|error| ExportError::invalid(error.to_string()))?;
-                        let name = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| ExportError::invalid(error.to_string()))?.to_owned();
-                        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity)
+                        let name = std::str::from_utf8(attribute.key.as_ref().as_bytes()).map_err(|error| ExportError::invalid(error.to_string()))?.to_owned();
+                        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity)
                             .map_err(|error| ExportError::invalid(error.to_string()))?.into_owned();
                         attributes.push((name, value));
                     }

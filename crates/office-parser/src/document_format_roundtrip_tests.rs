@@ -55,7 +55,7 @@ fn rewrite_part(bytes: &[u8], part: &str, replacement: Option<&str>) -> Vec<u8> 
     let mut found = false;
     for index in 0..archive.len() {
         let mut source = archive.by_index(index).expect("DOCX part is readable");
-        let name = source.name().to_owned();
+        let name = source.name().unwrap().into_owned();
         if name == part { found = true; }
         if name == part && replacement.is_none() { continue; }
         let mut contents = Vec::new();

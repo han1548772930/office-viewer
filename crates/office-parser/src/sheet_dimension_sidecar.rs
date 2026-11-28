@@ -176,7 +176,7 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                 let namespace = reader.resolver().resolve_element(element.name()).0;
                 let is_sheet = spreadsheet_namespace(namespace.clone());
                 if fingerprint.depth() == 0 {
-                    if root_seen || name.as_ref() != b"worksheet" || !is_sheet { return Err("invalid worksheet root".into()); }
+                    if root_seen || name.as_ref() != "worksheet" || !is_sheet { return Err("invalid worksheet root".into()); }
                     root_seen = true;
                 }
                 if let Some(capture) = &mut capture {
@@ -184,9 +184,9 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                     capture.invalid = true;
                     capture.text.clear();
                 }
-                let filter_root = fingerprint.path_is(&[b"worksheet"]) && name.as_ref() == b"autoFilter" && is_sheet;
+                let filter_root = fingerprint.path_is(&[b"worksheet"]) && name.as_ref() == "autoFilter" && is_sheet;
                 filter_projection.start(&reader, element, filter_root, matches!(&event, Event::Empty(_)))?;
-                if fingerprint.path_is(&[b"worksheet", b"extLst"]) && name.as_ref() == b"ext" && is_sheet {
+                if fingerprint.path_is(&[b"worksheet", b"extLst"]) && name.as_ref() == "ext" && is_sheet {
                     match attributes(&reader, element) {
                         Ok(attributes) if attributes.get("uri").is_some_and(|uri| uri == SHEET_AXIS_EXTENSION_URI) && matches!(&event, Event::Start(_)) => {
                             extension_depth = Some(fingerprint.depth() + 1);
@@ -196,7 +196,7 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                     }
                 }
                 if extension_depth == Some(fingerprint.depth()) && fingerprint.path_is(&[b"worksheet", b"extLst", b"ext"])
-                    && name.as_ref() == b"axisDimensions" && matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == SHEET_AXIS_NAMESPACE.as_bytes()) {
+                    && name.as_ref() == "axisDimensions" && matches!(namespace, ResolveResult::Bound(value) if value.as_ref() == SHEET_AXIS_NAMESPACE) {
                     axis_extension_count += 1;
                     if axis_extension_count > 1 { warnings.push("duplicate pixel-dimension extensions; using standard worksheet data".into()); }
                     if matches!(&event, Event::Empty(_)) {
@@ -213,21 +213,21 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                         capture = Some(Capture { depth: fingerprint.depth() + 1, fingerprint: expected, text: String::new(), invalid });
                     }
                 }
-                fingerprint.start(element, reader.decoder(), matches!(&event, Event::Empty(_)))?;
+                fingerprint.start(element, matches!(&event, Event::Empty(_)))?;
             }
             Event::Text(text) => {
-                let text = text.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
+                let text = text.xml_content(XmlVersion::Implicit1_0);
                 if let Some(capture) = &mut capture { append_capture(capture, &text, &mut warnings); }
                 else { filter_projection.text(&text)?; }
             }
             Event::CData(text) => {
-                let text = text.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
+                let text = text.xml_content(XmlVersion::Implicit1_0);
                 if let Some(capture) = &mut capture { append_capture(capture, &text, &mut warnings); }
                 else { filter_projection.text(&text)?; }
             }
             Event::GeneralRef(reference) => {
                 let decoded = if let Some(character) = reference.resolve_char_ref().map_err(|error| error.to_string())? { character.to_string() }
-                    else { let name = reference.decode().map_err(|error| error.to_string())?; quick_xml::escape::resolve_xml_entity(&name).ok_or_else(|| "unknown worksheet XML entity".to_owned())?.to_owned() };
+                    else { let name = reference.as_ref(); quick_xml::escape::resolve_xml_entity(&name).ok_or_else(|| "unknown worksheet XML entity".to_owned())?.to_owned() };
                 if let Some(capture) = &mut capture { append_capture(capture, &decoded, &mut warnings); }
                 else { filter_projection.text(&decoded)?; }
             }
@@ -272,9 +272,9 @@ fn attributes<R: BufRead>(reader: &NsReader<R>, element: &BytesStart<'_>) -> Res
     let mut result = BTreeMap::new();
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;
-        if attribute.key.as_ref().contains(&b':') || attribute.key.as_ref() == b"xmlns" { continue; }
-        let name = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?.to_owned();
-        let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder()).map_err(|error| error.to_string())?.into_owned();
+        if attribute.key.as_ref().as_bytes().contains(&b':') || attribute.key.as_ref().as_bytes() == b"xmlns" { continue; }
+        let name = std::str::from_utf8(attribute.key.as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
+        let value = attribute.normalized_value(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned();
         result.insert(name, value);
     }
     Ok(result)

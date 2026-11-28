@@ -21,6 +21,12 @@ mod sparkline;
 mod pivot;
 #[path = "xlsx_table.rs"]
 mod table;
+#[path = "xlsx_defined_names.rs"]
+mod defined_names;
+#[path = "xlsx_sheet_names.rs"]
+mod sheet_names_projection;
+#[path = "xlsx_formula_calendar.rs"]
+mod formula_calendar;
 #[path = "xlsx_dimensions.rs"]
 mod dimensions;
 #[path = "xlsx_outline.rs"]
@@ -1656,7 +1662,7 @@ fn rich_runs(runs: &[Value]) -> Option<String> {
     Some(out)
 }
 
-fn workbook_xml(workbook: &WorkbookInput) -> String {
+fn workbook_xml(workbook: &WorkbookInput) -> Result<String, ExportError> {
     let sheet_names = safe_sheet_names(workbook.sheets.iter().map(|sheet| sheet.name.as_str()));
     let active_index = workbook
         .active_sheet_id
@@ -1670,7 +1676,9 @@ fn workbook_xml(workbook: &WorkbookInput) -> String {
     out.push_str(&format!("<fileVersion appName=\"xl\" lastEdited=\"7\" lowestEdited=\"7\" rupBuild=\"1\"/><workbookPr date1904=\"{}\"/>", if workbook.date1904 { 1 } else { 0 }));
     out.push_str(&format!("<bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"24000\" windowHeight=\"12000\" activeTab=\"{}\"/></bookViews><sheets>", active_index));
     for (index, (sheet, name)) in workbook.sheets.iter().zip(&sheet_names).enumerate() {
-        let visibility = if sheet.visible { "visible" } else { "hidden" };
+        let visibility = if sheet.metadata.as_ref().and_then(|metadata| metadata.get("hiddenState"))
+            .and_then(Value::as_str).is_some_and(|value| value.eq_ignore_ascii_case("veryHidden")) { "veryHidden" }
+            else if sheet.visible { "visible" } else { "hidden" };
         out.push_str(&format!(
             "<sheet name=\"{}\" sheetId=\"{}\" state=\"{}\" r:id=\"rIdSheet{}\"/>",
             esc(name),
@@ -1688,81 +1696,9 @@ fn workbook_xml(workbook: &WorkbookInput) -> String {
         }
         out.push_str("</pivotCaches>");
     }
-    if let Some(Value::Object(metadata)) = workbook.metadata.as_ref() {
-        let mut names = Vec::<(String, String, Option<String>)>::new();
-        if let Some(items) = metadata.get("definedNames").and_then(Value::as_array) {
-            for item in items {
-                if let Some(map) = item.as_object() {
-                    if let (Some(name), Some(reference)) = (
-                        map.get("name").and_then(Value::as_str),
-                        map.get("refersTo")
-                            .or_else(|| map.get("refers_to"))
-                            .and_then(Value::as_str),
-                    ) {
-                        names.push((name.to_owned(), reference.to_owned(), None));
-                    }
-                }
-            }
-        }
-        if let Some(items) = metadata.get("localDefinedNames").and_then(Value::as_array) {
-            for item in items {
-                if let Some(map) = item.as_object() {
-                    if let (Some(name), Some(reference), Some(sheet)) = (
-                        map.get("name").and_then(Value::as_str),
-                        map.get("refersTo")
-                            .or_else(|| map.get("refers_to"))
-                            .and_then(Value::as_str),
-                        map.get("sheet").and_then(Value::as_str),
-                    ) {
-                        names.push((
-                            name.to_owned(),
-                            reference.to_owned(),
-                            Some(sheet.to_owned()),
-                        ));
-                    }
-                }
-            }
-        }
-        if !names.is_empty() {
-            out.push_str("<definedNames>");
-            for (name, reference, sheet) in names {
-                if let Some(sheet) = sheet {
-                    let index = workbook
-                        .sheets
-                        .iter()
-                        .position(|item| item.name == sheet)
-                        .or_else(|| {
-                            sheet_names
-                                .iter()
-                                .position(|safe_name| safe_name.as_str() == sheet)
-                        });
-                    if let Some(index) = index {
-                        out.push_str(&format!(
-                            "<definedName name=\"{}\" localSheetId=\"{}\">{}</definedName>",
-                            esc(&name),
-                            index,
-                            esc(&reference)
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "<definedName name=\"{}\">{}</definedName>",
-                            esc(&name),
-                            esc(&reference)
-                        ));
-                    }
-                } else {
-                    out.push_str(&format!(
-                        "<definedName name=\"{}\">{}</definedName>",
-                        esc(&name),
-                        esc(&reference)
-                    ));
-                }
-            }
-            out.push_str("</definedNames>");
-        }
-    }
+    out.push_str(&defined_names::write(workbook, &sheet_names)?);
     out.push_str("<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\" forceFullCalc=\"1\"/></workbook>");
-    out
+    Ok(out)
 }
 
 fn safe_sheet_name(name: &str, index: usize) -> String {
@@ -1875,7 +1811,10 @@ fn add_unsupported_warnings(workbook: &WorkbookInput, warnings: &mut Vec<ExportW
 
 /// Serialize the canonical workbook JSON into XLSX parts.
 pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarning>, ExportError> {
-    let mut workbook: WorkbookInput = serde_json::from_str(data)
+    let mut snapshot: Value = serde_json::from_str(data)
+        .map_err(|error| ExportError::invalid(format!("workbook JSON is invalid: {error}")))?;
+    let renamed_sheets = sheet_names_projection::prepare(&mut snapshot)?;
+    let mut workbook: WorkbookInput = serde_json::from_value(snapshot)
         .map_err(|error| ExportError::invalid(format!("workbook JSON is invalid: {error}")))?;
     if workbook
         .kind
@@ -1954,7 +1893,9 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     }
     let conditional_theme = sparkline::merge_theme(&workbook, conditional_source::theme_for_workbook(&workbook)?)?;
     let mut warnings = Vec::new();
+    if renamed_sheets { warnings.push(ExportWarning::new("XLSX_SHEET_NAMES_NORMALIZED", "Worksheet names and their native references were normalized to valid unique XLSX names")); }
     chart::prepare_native_bindings(&mut workbook, &mut warnings)?;
+    let formula_calendar_source = formula_calendar::prepare(&mut workbook, &mut warnings)?;
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
     registry.register(None);
@@ -2131,7 +2072,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     package.add_xml(
         "xl/workbook.xml",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
-        workbook_xml(&workbook),
+        workbook_xml(&workbook)?,
     )?;
     package.add_xml(
         "docProps/core.xml",
@@ -2153,6 +2094,11 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         "styles.xml",
         false,
     )?;
+    if let Some(source) = formula_calendar_source {
+        use office_io_common::sheet_formula_calendar_source::{PART_NAME, RELATIONSHIP};
+        package.add_xml(PART_NAME, "application/xml", source.to_xml().map_err(ExportError::invalid)?)?;
+        package.add_relationship(Some("xl/workbook.xml"), "rIdFormulaCalendars", RELATIONSHIP, &format!("../{PART_NAME}"), false)?;
+    }
     if let Some(theme) = conditional_theme {
         package.add_xml("xl/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml", theme)?;
         package.add_relationship(Some("xl/workbook.xml"), "rIdTheme", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme", "theme/theme1.xml", false)?;
@@ -2325,7 +2271,7 @@ mod tests {
             r#"{"sheets":[{"id":"sheet-1","name":"Quarter/1"}],"metadata":{"localDefinedNames":[{"sheet":"Quarter/1","name":"LocalTotal","refersTo":"A1"}]}}"#,
         )
         .unwrap();
-        let xml = workbook_xml(&workbook);
+        let xml = workbook_xml(&workbook).unwrap();
 
         assert!(xml.contains("<sheet name=\"Quarter_1\""));
         assert!(

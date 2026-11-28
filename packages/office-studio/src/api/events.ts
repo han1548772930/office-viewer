@@ -9,6 +9,7 @@ import type { DocumentInputSession } from '../features/document/model/document-i
 import type { FWorkbook, FWorksheet } from './facade.ts'
 import type { ISparklineGroup } from '../features/sparkline/sparkline-api-types.ts'
 import type { SheetSelectionRange } from '../features/sheet-workbench/sheet-selection.ts'
+import type { SheetTableSelectorRequest } from '../features/sheet-tables/sheet-table-create.ts'
 
 export interface Disposable {
   dispose(): void
@@ -28,12 +29,14 @@ export interface ApiEventMap {
   DocCreated: { unitId: string; documentId: string }
   DocDisposed: { unitId: string; documentId: string }
   DocumentInputStateChanged: { unitId: string; state?: DocumentInputSession }
+  DocumentZoomRatioChanged: { documentId: string; previousZoomRatio: number; zoomRatio: number }
   BeforeSheetNameChange: { workbookId: string; sheetId: string; oldName: string; newName: string; cancel?: boolean }
   SheetNameChanged: { workbookId: string; sheetId: string; oldName: string; newName: string }
   SheetValueChanged: { workbookId: string; sheetId: string; ranges: ApiRange[] }
   SheetSparklineChanged: { workbook: FWorkbook; worksheet: FWorksheet; sparklines: ISparklineGroup[] }
   SheetOutlineActionDialogRequested: { unitId: string; sheetId: string; ranges: SheetSelectionRange[]; operation: 'group' | 'remove';
     expectedRevision: number; expectedHistoryGeneration: number; expectedUserId: string }
+  SheetTableSelectorRequested: SheetTableSelectorRequest
   SheetDimensionsChanged: { workbookId: string; sheetId: string; axis: 'row' | 'column'; automatic: boolean; ranges: ApiRange[] }
   SheetStructureChanged: { workbookId: string; sheetId: string; edits: Array<SheetAxisEdit | SheetCellShiftEdit> }
   SheetCellShiftConfirmationRequested: SheetCellShiftConfirmationRequest
@@ -71,11 +74,13 @@ export class FEventName {
   readonly DocCreated = 'DocCreated'
   readonly DocDisposed = 'DocDisposed'
   readonly DocumentInputStateChanged = 'DocumentInputStateChanged'
+  readonly DocumentZoomRatioChanged = 'DocumentZoomRatioChanged'
   readonly BeforeSheetNameChange = 'BeforeSheetNameChange'
   readonly SheetNameChanged = 'SheetNameChanged'
   readonly SheetValueChanged = 'SheetValueChanged'
   readonly SheetSparklineChanged = 'SheetSparklineChanged'
   readonly SheetOutlineActionDialogRequested = 'SheetOutlineActionDialogRequested'
+  readonly SheetTableSelectorRequested = 'SheetTableSelectorRequested'
   readonly SheetDimensionsChanged = 'SheetDimensionsChanged'
   readonly SheetStructureChanged = 'SheetStructureChanged'
   readonly SheetCellShiftConfirmationRequested = 'SheetCellShiftConfirmationRequested'

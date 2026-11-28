@@ -23,6 +23,8 @@ import { initializeDocumentQuotePagination } from '/packages/office-studio/src/f
 import { registerDocumentCodeFontFamilies } from '/packages/office-studio/src/features/document/code-blocks/document-code-fonts'
 import { EMPTY_SECTION_HEADER_FOOTER } from '/packages/office-studio/src/features/document/services/section-header-footer'
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
+import { documentEmojiFamilies, documentEmojiVariants, loadDocumentEmojiLocale } from '/packages/office-studio/src/features/document/services/document-special-characters'
+import { DOCUMENT_CHARACTER_PREFERENCES_KEY } from '/packages/office-studio/src/features/document/stores/document-character-preferences-store'
 import { createOfficeI18n, createOfficeTranslator, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
 import DocumentWorkbench from '/packages/office-studio/src/components/DocumentWorkbench.vue'
 const query = new URLSearchParams(location.search), copy = value => JSON.parse(JSON.stringify(value)), standalone = query.has('standalone')
@@ -74,9 +76,14 @@ if (standalone) delete initial.id
 let studio = standalone ? undefined : new OfficeStudio({ document: initial, currentUserId: 'editor' })
 studio?.activateDocument(initial.id)
 const api = shallowRef(studio ? new FDocument(studio, initial.id) : undefined), model = shallowRef(api.value?.getModel() ?? initial)
-const commandEvents = []
+const commandEvents = [], characterPayloads = []
+let characterCancellation
 for (const [eventName, phase] of [['BeforeCommandExecute', 'before'], ['CommandExecuted', 'after']]) {
-  studio?.events.addEvent(eventName, event => commandEvents.push({ phase, id: event.id, value: event.params?.value, unitId: event.unitId, kind: event.kind }))
+  studio?.events.addEvent(eventName, event => {
+    commandEvents.push({ phase, id: event.id, value: event.params?.value, unitId: event.unitId, kind: event.kind })
+    if (event.id === 'doc.command.insert-special-character') characterPayloads.push({ phase, value: event.params?.value,
+      keys: Object.keys(event.params ?? {}), commandKeys: Object.keys(event.params?.command ?? {}) })
+  })
 }
 if (query.has('long-controls')) {
   api.value.getCode('code').setFontFamily(codeControlValues.fontFamily)
@@ -96,6 +103,19 @@ window.documentStructuredFixture = {
   codeControlValues,
   snapshot: () => copy(api.value?.getModel() ?? model.value), notices,
   commandEvents: () => copy(commandEvents),
+  characterPayloads: () => copy(characterPayloads),
+  characterPreferences: () => copy(api.value.getCharacterPreferences().snapshot()),
+  storedCharacters: () => JSON.parse(localStorage.getItem(DOCUMENT_CHARACTER_PREFERENCES_KEY)),
+  emojiTail: () => documentEmojiFamilies().at(-1).emoji,
+  isCatalogEmoji: value => documentEmojiVariants().some(item => item.emoji === value),
+  emojiLocale: value => loadDocumentEmojiLocale(value),
+  setLocale: value => { locale.value = value; i18n.global.locale.value = value },
+  denyCharacters: () => { characterCancellation?.dispose(); characterCancellation = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === 'doc.command.insert-special-character') event.cancel = true }) },
+  permitCharacters: () => { characterCancellation?.dispose(); characterCancellation = undefined },
+  switchDocument: id => {
+    if (!studio.getDocumentModel(id)) studio.createDocument({ ...copy(initial), id })
+    studio.activateDocument(id); api.value = new FDocument(studio, id); sync(); select('code-p', 1)
+  },
   source: () => findDocumentBlock(api.value?.getModel() ?? model.value, 'code').children.map(block => block.runs.map(run => run.text).join('')).join('\\n'),
   history: () => studio ? { undo: studio.editor.history.units[api.value.id]?.undo.length ?? 0, redo: studio.editor.history.units[api.value.id]?.redo.length ?? 0 } : undefined,
   select, dark: value => dark.value = value, variant: value => variant.value = value,
@@ -134,7 +154,7 @@ const app = createApp({ render: () => h(ConfigProvider, { theme: { algorithm: da
 }) })
 const i18n = createOfficeI18n(); i18n.global.locale.value = locale.value
 app.use(i18n); app.provide(OfficeLocaleKey, locale); app.provide(OfficeTranslatorKey, (key, fallback) => translator.value(key, fallback)); app.mount('#app')
-window.addEventListener('beforeunload', () => { app.unmount(); studio?.dispose() }, { once: true })
+window.addEventListener('beforeunload', () => { characterCancellation?.dispose(); app.unmount(); studio?.dispose() }, { once: true })
 </script></body></html>`
 
 let server, browser, page, baseURL, errors
@@ -194,12 +214,12 @@ test('symbol and emoji popups execute the fixed value command in body and header
       assert.equal(geometry.height, variant === 'classic' ? 28 : 24); assert.equal(geometry.inside, true); assert.ok(geometry.center <= 0.05)
       await button.click()
       const popup = page.getByRole('dialog', { name: title, exact: true })
-      await expect(popup.locator('.ant-form')).toHaveCount(2)
-      const cell = popup.locator('.character-grid .ant-btn').first(), character = await cell.textContent()
-      assert.equal(await cell.evaluate(element => element.getBoundingClientRect().height), 42)
+      await expect(popup.locator('.ant-form')).toHaveCount(3)
+      const cell = popup.locator('button[data-character-key]').first(), character = await cell.textContent()
+      assert.equal(await cell.evaluate(element => element.getBoundingClientRect().height), 32)
       await cell.hover(); await expect(page.getByRole('tooltip')).toContainText(character)
       await popup.getByRole('textbox', { name: '自定义字符', exact: true }).fill(value)
-      await popup.getByRole('button', { name: '插入字符', exact: true }).click()
+      await popup.getByRole('button', { name: '插入', exact: true }).click()
       await expect(popup).toBeHidden(); await expect(input).toBeFocused()
       const originalText = before.runs.map(run => run.text).join(''), expected = originalText.slice(0, 1) + value + originalText.slice(3)
       await expect.poll(() => page.evaluate(({ paragraphId, host }) => window.documentStructuredFixture.block(paragraphId, host).runs.map(run => run.text).join(''), { paragraphId, host })).toBe(expected)
@@ -218,7 +238,217 @@ test('symbol and emoji popups execute the fixed value command in body and header
   }
 })
 
+async function openCharacterPicker(mode) {
+  const picker = page.locator('.document-character-picker:visible[data-character-mode="' + mode + '"]')
+  if (await picker.isVisible()) return picker
+  await page.locator('[data-testid="workbench-ribbon"] [data-tab-id="insert"]').click()
+  let trigger = page.locator('[data-ribbon-item="doc-' + mode + '"] .ribbon-button[aria-haspopup="dialog"]:visible')
+  if (!await trigger.count()) {
+    await page.locator('.ribbon-more-button:visible').click()
+    trigger = page.locator('.ribbon-overflow-panel:visible [data-ribbon-item="doc-' + mode + '"] .ribbon-button[aria-haspopup="dialog"]')
+  }
+  await trigger.first().click()
+  await expect(picker).toBeVisible()
+  return picker
+}
+const characterSearch = picker => picker.locator('.document-character-picker__search input.ant-input')
+const chosenCharacters = () => page.evaluate(() => window.documentStructuredFixture.characterPreferences())
+
+test('catalog and uniform/mixed-tone inserts keep the real popup open, advance one caret and promote only accepted preferences', async () => {
+  await page.evaluate(() => window.documentStructuredFixture.select('code-p', 1))
+  const before = await source(), previous = await history(), picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  const tone = picker.locator('button[data-tone-trigger]')
+  await tone.click()
+  const tones = page.locator('.document-character-picker__tone-menu:visible')
+  await tones.getByRole('radio').nth(3).check()
+  await expect(tones).toBeHidden(); await expect(tone).toBeFocused()
+  assert.equal((await chosenCharacters()).skinTone, '🏽')
+  await search.fill('👍')
+  const thumb = picker.locator('button[data-character-key][data-character-value="👍🏽"]')
+  await thumb.click(); await thumb.click()
+  await expect(picker).toBeVisible(); await expect(thumb).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(source).toBe(before.slice(0, 1) + '👍🏽👍🏽' + before.slice(1))
+  assert.equal((await history()).undo, previous.undo + 2)
+  assert.equal((await chosenCharacters()).recentEmojis.filter(value => value.startsWith('👍')).length, 1)
+  await expect(page.getByRole('textbox', { name: '文档文字输入', exact: true })).not.toBeFocused()
+  await search.fill('🤝')
+  const variantsTrigger = picker.locator('button[data-variants-trigger]').first()
+  await variantsTrigger.click()
+  const variants = page.locator('.document-character-picker__variants:visible')
+  const mixed = variants.locator('button[data-character-variant="🫱🏻‍🫲🏿"]')
+  await expect(mixed).toBeVisible(); await mixed.focus(); await page.keyboard.press('Escape')
+  await expect(variants).toBeHidden(); await expect(variantsTrigger).toBeFocused(); await expect(picker).toBeVisible()
+  await variantsTrigger.click(); await mixed.click()
+  await expect(picker).toBeVisible(); await expect(variantsTrigger).toBeFocused()
+  await expect.poll(source).toBe(before.slice(0, 1) + '👍🏽👍🏽🫱🏻‍🫲🏿' + before.slice(1))
+  const chosen = await chosenCharacters()
+  assert.equal(chosen.activeEmoji, '🫱🏻‍🫲🏿'); assert.equal(chosen.recentEmojis[0], '🫱🏻‍🫲🏿')
+  assert.equal((await history()).undo, previous.undo + 3)
+  const payloads = await page.evaluate(() => window.documentStructuredFixture.characterPayloads())
+  assert.deepEqual(payloads.map(item => [item.phase, item.value]), ['👍🏽', '👍🏽', '🫱🏻‍🫲🏿'].flatMap(value => [['before', value], ['after', value]]))
+  assert.ok(payloads.every(item => !item.keys.includes('keepOpen') && !item.keys.includes('onResult')
+    && !item.commandKeys.includes('keepOpen') && !item.commandKeys.includes('onResult')))
+})
+
+test('random catalog insertion and rejected commands preserve the popup and keep rejected values out of history and recents', async () => {
+  await page.evaluate(() => window.documentStructuredFixture.select('code-p', 1))
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  await search.fill('🦊')
+  const fox = picker.locator('button[data-character-key][data-character-value="🦊"]')
+  const before = await source(), state = await chosenCharacters(), previous = await history()
+  await page.evaluate(() => window.documentStructuredFixture.denyCharacters()); await fox.click()
+  await expect(picker).toBeVisible(); assert.equal(await source(), before); assert.deepEqual(await history(), previous)
+  assert.deepEqual(await chosenCharacters(), state)
+  await page.evaluate(() => window.documentStructuredFixture.permitCharacters())
+  await fox.click(); await expect(picker).toBeVisible(); assert.equal((await chosenCharacters()).recentEmojis[0], '🦊')
+  await picker.locator('button.document-character-picker__utility:not([data-tone-trigger])').click()
+  const chosen = await chosenCharacters(), random = chosen.activeEmoji
+  assert.equal(await page.evaluate(value => window.documentStructuredFixture.isCatalogEmoji(value), random), true)
+  await expect.poll(source).toBe(before.slice(0, 1) + '🦊' + random + before.slice(1))
+  assert.equal((await history()).undo, previous.undo + 2)
+})
+
+test('lazy localized search, RTL keyboard navigation and virtual-list tail retain full catalog access and react to theme changes', async () => {
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  for (const locale of ['en-US', 'ar-SA', 'ja-JP', 'zh-HK']) {
+    await page.evaluate(locale => window.documentStructuredFixture.setLocale(locale), locale)
+    const title = await page.evaluate(async locale => (await window.documentStructuredFixture.emojiLocale(locale)).emojiTitles['🦊'], locale)
+    await search.fill(title)
+    const fox = picker.locator('button[data-character-key][data-character-value="🦊"]')
+    await expect(fox).toHaveAttribute('aria-label', title)
+    await expect(picker).toHaveAttribute('dir', locale === 'ar-SA' ? 'rtl' : 'ltr')
+  }
+  await page.evaluate(() => window.documentStructuredFixture.setLocale('ar-SA')); await search.fill('')
+  let first = picker.locator('button[data-character-key]').first()
+  const firstKey = await first.getAttribute('data-character-key')
+  await first.focus(); await page.keyboard.press('ArrowLeft')
+  await expect(picker.locator('button[data-character-key]').nth(1)).toBeFocused()
+  await first.focus(); await page.keyboard.press('End')
+  const tail = await page.evaluate(() => window.documentStructuredFixture.emojiTail())
+  await expect(picker.locator('button[data-character-key][data-character-value="' + tail + '"]')).toBeFocused()
+  assert.ok(await picker.locator('button[data-character-key]').count() < 1644)
+  await page.keyboard.press('Home'); first = picker.locator('button[data-character-key="' + firstKey + '"]'); await expect(first).toBeFocused()
+  assert.equal(await first.evaluate(element => element.getBoundingClientRect().height), 32)
+  const light = await picker.evaluate(element => getComputedStyle(element).color)
+  await page.evaluate(() => window.documentStructuredFixture.dark(true))
+  await expect.poll(() => picker.evaluate(element => getComputedStyle(element).color)).not.toBe(light)
+  await expect(first).toBeFocused()
+}, 60_000)
+
+test('a failed lazy locale import keeps English search usable and exposes a retry without applying a stale language', async () => {
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  const localePath = '**/emoji-locales/fr-FR.generated.ts*'
+  await page.route(localePath, route => route.abort('failed'))
+  await page.evaluate(() => window.documentStructuredFixture.setLocale('fr-FR'))
+  await expect(picker.locator('.ant-alert')).toBeVisible()
+  await search.fill('fox'); await expect(picker.locator('button[data-character-key][data-character-value="🦊"]')).toBeVisible()
+  await page.unroute(localePath); await picker.locator('.ant-alert button').click()
+  const title = await page.evaluate(async () => (await window.documentStructuredFixture.emojiLocale('fr-FR')).emojiTitles['🦊'])
+  await expect(picker.locator('.ant-alert')).toHaveCount(0)
+  await expect(picker.locator('button[data-character-key][data-character-value="🦊"]')).toHaveAttribute('aria-label', title)
+  await page.evaluate(() => { window.documentStructuredFixture.setLocale('ar-SA'); window.documentStructuredFixture.setLocale('ja-JP') })
+  const currentTitle = await page.evaluate(async () => (await window.documentStructuredFixture.emojiLocale('ja-JP')).emojiTitles['🦊'])
+  await expect(picker.locator('button[data-character-key][data-character-value="🦊"]')).toHaveAttribute('aria-label', currentTitle)
+}, 60_000)
+
+test('character preferences survive document switching and application reopening while content undo remains independent', async () => {
+  await page.evaluate(() => window.documentStructuredFixture.select('code-p', 1))
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  await search.fill('🦊'); await picker.locator('button[data-character-key][data-character-value="🦊"]').click()
+  const chosen = await chosenCharacters(), after = await source()
+  await page.evaluate(() => window.documentStructuredFixture.undo())
+  assert.deepEqual(await chosenCharacters(), chosen)
+  await page.evaluate(() => window.documentStructuredFixture.redo()); assert.equal(await source(), after)
+  await page.evaluate(() => window.documentStructuredFixture.switchDocument('character-other'))
+  assert.deepEqual(await chosenCharacters(), chosen); assert.equal((await history()).undo, 0)
+  await page.evaluate(() => window.documentStructuredFixture.switchDocument('structured-browser'))
+  assert.deepEqual(await chosenCharacters(), chosen); assert.equal(await source(), after)
+  await page.evaluate(() => window.documentStructuredFixture.saveAndReopen())
+  await openCharacterPicker('emoji'); assert.deepEqual(await chosenCharacters(), chosen)
+  assert.deepEqual(await page.evaluate(() => window.documentStructuredFixture.storedCharacters()), chosen)
+  assert.equal(await page.evaluate(() => JSON.stringify(window.documentStructuredFixture.publicSnapshot()).includes('character-preferences')), false)
+})
+
+test('table-cell catalog and custom inserts preserve the complete cell coordinate through two history entries and public reopening', async () => {
+  await page.goto(baseURL + '?table'); await page.waitForFunction(() => !!window.documentStructuredFixture)
+  await page.evaluate(() => window.documentStructuredFixture.select('table-cell', 2))
+  const before = await page.evaluate(() => window.documentStructuredFixture.block('table-cell')), previous = await history()
+  const picker = await openCharacterPicker('symbol'), search = characterSearch(picker)
+  await search.fill('|a|')
+  await picker.locator('button[data-character-key][data-character-value="|a|"]').click(); await expect(picker).toBeVisible()
+  const custom = 'e\u0301👨‍👩‍👧‍👦'
+  await picker.getByRole('textbox', { name: '自定义字符', exact: true }).fill(custom)
+  await picker.getByRole('button', { name: '插入', exact: true }).click()
+  await expect(picker).toBeHidden(); await expect(page.getByRole('textbox', { name: '文档文字输入', exact: true })).toBeFocused()
+  const original = before.runs.map(run => run.text).join(''), expected = original.slice(0, 2) + '|a|' + custom + original.slice(2)
+  assert.equal(await page.evaluate(() => window.documentStructuredFixture.block('table-cell').runs.map(run => run.text).join('')), expected)
+  const location = await page.evaluate(() => window.documentStructuredFixture.selection())
+  assert.equal(location.selection.focus.blockId, 'table'); assert.equal(location.selection.focus.cellBlockId, 'table-cell')
+  assert.equal(location.selection.focus.row, 0); assert.equal(location.selection.focus.col, 0)
+  assert.equal(location.selection.focus.offset, 2 + '|a|'.length + custom.length); assert.equal((await history()).undo, previous.undo + 2)
+  await page.evaluate(() => window.documentStructuredFixture.undo())
+  await page.evaluate(() => window.documentStructuredFixture.redo())
+  await page.evaluate(() => window.documentStructuredFixture.saveAndReopen('table-cell'))
+  assert.equal(await page.evaluate(() => window.documentStructuredFixture.block('table-cell').runs.map(run => run.text).join('')), expected)
+})
+
+test('continuous catalog inserts in a header Code paragraph retain the auxiliary host through history and public reopening', async () => {
+  await page.goto(baseURL + '?auxiliary'); await page.waitForFunction(() => !!window.documentStructuredFixture)
+  const host = { kind: 'story', sectionId: 'first', story: 'header' }
+  await page.evaluate(host => window.documentStructuredFixture.select('header-code-p', 1, 'header-code-p', 1, host), host)
+  const before = await page.evaluate(host => window.documentStructuredFixture.block('header-code-p', host), host), previous = await history()
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker)
+  await search.fill('🦊')
+  const fox = picker.locator('button[data-character-key][data-character-value="🦊"]')
+  await fox.click(); await fox.click(); await expect(picker).toBeVisible()
+  const expected = before.runs.map(run => run.text).join('').slice(0, 1) + '🦊🦊' + before.runs.map(run => run.text).join('').slice(1)
+  const read = () => page.evaluate(host => window.documentStructuredFixture.block('header-code-p', host).runs.map(run => run.text).join(''), host)
+  await expect.poll(read).toBe(expected)
+  const location = await page.evaluate(() => window.documentStructuredFixture.selection())
+  assert.deepEqual(location.host, host); assert.equal(location.selection.focus.blockId, 'header-code-p')
+  assert.equal(location.selection.focus.offset, 1 + '🦊🦊'.length); assert.equal((await history()).undo, previous.undo + 2)
+  const preferences = await chosenCharacters()
+  await page.evaluate(() => window.documentStructuredFixture.undo()); assert.deepEqual(await chosenCharacters(), preferences)
+  await page.evaluate(() => window.documentStructuredFixture.redo())
+  await page.evaluate(host => window.documentStructuredFixture.saveAndReopen('header-code-p', host), host)
+  assert.equal(await read(), expected); assert.deepEqual(await chosenCharacters(), preferences)
+})
+
+test('character search/custom composition guards and closed outer Ribbon popups cannot issue late insertions or retain nested popups', async () => {
+  await page.evaluate(() => window.documentStructuredFixture.select('code-p', 1))
+  const picker = await openCharacterPicker('emoji'), search = characterSearch(picker), previous = await history(), before = await source()
+  const custom = picker.getByRole('textbox', { name: '自定义字符', exact: true }), insert = picker.getByRole('button', { name: '插入', exact: true })
+  await custom.fill('😀')
+  await search.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })))
+  await expect(insert).toBeDisabled(); await custom.press('Enter'); assert.equal(await source(), before); assert.deepEqual(await history(), previous)
+  await search.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })))
+  await custom.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })))
+  await expect(insert).toBeDisabled(); await custom.press('Enter'); assert.equal(await source(), before)
+  await custom.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })))
+  await picker.locator('button[data-tone-trigger]').click(); await expect(page.locator('.document-character-picker__tone-menu:visible')).toBeVisible()
+  await page.locator('[data-tab-id="view"]:visible').click()
+  await expect(picker).toBeHidden(); await expect(page.locator('.document-character-picker__tone-menu:visible')).toHaveCount(0)
+  assert.deepEqual(await history(), previous); assert.equal(await source(), before)
+})
+
+test('the character picker remains reachable from Ribbon More and keeps its actual rows within a narrow viewport', async () => {
+  await page.setViewportSize({ width: 380, height: 900 })
+  await page.evaluate(() => window.documentStructuredFixture.select('code-p', 1))
+  await page.locator('[data-tab-id="insert"]:visible').click()
+  await page.locator('.ribbon-more-button:visible').click()
+  const trigger = page.locator('.ribbon-overflow-panel:visible [data-ribbon-item="doc-emoji"] .ribbon-button[aria-haspopup="dialog"]')
+  await expect(trigger).toBeVisible(); await trigger.click()
+  const picker = page.locator('.document-character-picker:visible[data-character-mode="emoji"]')
+  await expect(picker).toBeVisible()
+  const bounds = await picker.evaluate(element => { const box = element.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width, viewport: innerWidth } })
+  assert.ok(bounds.left >= 0); assert.ok(bounds.right <= bounds.viewport); assert.ok(bounds.width <= 420)
+  const cell = picker.locator('button[data-character-key]').first()
+  assert.equal(await cell.evaluate(element => element.getBoundingClientRect().height), 32)
+  await cell.click(); await expect(picker).toBeVisible(); assert.equal((await history()).undo, 1)
+})
+
 test('code Tab and Shift+Tab use the current range and one undo item for each indentation action', async () => {
+
   await page.evaluate(() => window.documentStructuredFixture.select('code-last', 3, 'code-p', 1))
   await page.getByRole('textbox', { name: '文档文字输入', exact: true }).focus()
   await page.keyboard.press('Tab')

@@ -34,6 +34,7 @@ interface SheetImageUiContext {
   selectedKey(): string
   ranges(): CellRange[]
   userId(): string
+  region?(): string
   active(): boolean
   finishEdit(): boolean
   prepareView?(view: ExcelWorkbookView, previous: ExcelWorkbookView): ExcelWorkbookView
@@ -154,7 +155,8 @@ export function useSheetImages(context: SheetImageUiContext) {
       if (current()) context.changed({ syncSelection: false, current })
       return true
     }
-    const before = applyExcelWorkbookView(createBlankWorkbook(), view), candidate = cloneModel(before), sheet = candidate.sheets.find(item => item.id === host.sheetId)!
+    const region = context.region?.()
+    const before = applyExcelWorkbookView(createBlankWorkbook(), view, region), candidate = cloneModel(before), sheet = candidate.sheets.find(item => item.id === host.sheetId)!
     const row = input.row!, column = input.column!, merge = sheet.mergedRanges.find(range => row >= range.startRow && row <= range.endRow && column >= range.startCol && column <= range.endCol)
     const isCell = commandId === SHEET_IMAGE_COMMANDS.insertCell || (commandId === SHEET_IMAGE_COMMANDS.update || commandId === SHEET_IMAGE_COMMANDS.remove) && !sheet.images?.some(image => image.id === input.imageId)
     const anchor = isCell && merge ? { row: merge.startRow, column: merge.startCol } : { row, column }
@@ -163,7 +165,8 @@ export function useSheetImages(context: SheetImageUiContext) {
     if (!canViewProtectedRanges(sheet, ranges, state.userId) || !canEditProtectedRanges(sheet, ranges, state.userId)) throw new Error('没有操作目标图片范围的权限。')
     if (!plan.changed) return false
     applySheetImagePlan(sheet, plan)
-    if (plan.cell) assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === sheet.id)!, candidate, sheet.id)
+    if (plan.cell) assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === sheet.id)!, candidate, sheet.id,
+      { userId: state.userId, region })
     const detached = toExcelWorkbookView(candidate), next = context.prepareView?.(detached, cloneModel(view)) ?? detached
     if (view.id === undefined) delete next.id
     else next.id = view.id

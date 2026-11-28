@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Sheets table selector fixture</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { createApp, h, ref, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import { createBlankSheet, createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+const copy = value => JSON.parse(JSON.stringify(value)), model = createBlankWorkbook(), sheet = model.sheets[0]
+model.id = 'table-fixture'; model.name = '表格创建'; model.calculationMode = 'manual'; model.activeSheetId = sheet.id = 'data'
+sheet.name = 'Data'; sheet.rowCount = 80; sheet.columnCount = 16; sheet.defaultColumnWidth = 120; sheet.defaultRowHeight = 28
+sheet.cells['0:0'] = createCell(0, 0, '部门'); sheet.cells['0:1'] = createCell(0, 1, true)
+sheet.cells['1:0'] = createCell(1, 0, '研发'); sheet.cells['1:1'] = createCell(1, 1, 0)
+sheet.cells['2:0'] = createCell(2, 0, '财务'); sheet.cells['2:1'] = createCell(2, 1, false)
+const other = createBlankSheet('Other'); other.id = 'other'; other.rowCount = 80; other.columnCount = 16; model.sheets.push(other)
+const studio = new OfficeStudio({ workbook: model }), api = FOffice.newAPI(studio), dark = ref(false), variant = ref('classic')
+const view = ref(toExcelWorkbookView(studio.editor.workbook.model)), notices = [], requests = [], commands = [], canceled = new Set()
+const active = () => api.getActiveWorkbook()
+watch(() => studio.editor.workbook.model, value => { view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+studio.events.addEvent('SheetTableSelectorRequested', value => requests.push(copy(value)))
+studio.events.addEvent('CommandExecuted', value => commands.push(copy(value)))
+studio.events.addEvent('BeforeCommandExecute', event => { if (canceled.has(event.id)) event.cancel = true })
+window.tableFixture = {
+  snapshot: (id = studio.activeWorkbookId) => copy(studio.getWorkbookModel(id)),
+  history: (id = studio.activeWorkbookId) => { const unit = studio.editor.history.units[id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
+  requests: () => copy(requests), commands: () => copy(commands), notifications: () => copy(notices),
+  appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  selections: ranges => studio.setSelections(studio.activeWorkbookId, studio.editor.workbook.model.activeSheetId, ranges),
+  command: (id, input) => studio.executeCommandSync(id, input),
+  cancelCommand: (id, value) => { if (value) canceled.add(id); else canceled.delete(id) },
+  undo: () => active().undo(), redo: () => active().redo(), save: () => active().save(),
+  reopen: () => api.createWorkbook({ ...active().save(), id: 'table-reopened' }),
+  switchSheet: () => active().getSheetBySheetId('other').activate(),
+  replaceSameId: () => studio.editor.workbook.replace(copy(studio.editor.workbook.model)),
+  clearHistory: () => studio.editor.history.clear(studio.activeWorkbookId),
+  mutate: () => active().getActiveSheet().getRange('G10').setValue('外部修改'),
+  merge: () => { const current = studio.editor.workbook.model; current.sheets[0].mergedRanges = [{ startRow: 1, endRow: 1, startCol: 0, endCol: 1 }]; view.value = toExcelWorkbookView(current) },
+  protectTail: () => { const current = studio.editor.workbook.model; current.sheets[0].rangeProtectionRules = [
+    { id: 'protected-tail', ranges: [{ startRow: 2, endRow: 2, startCol: 1, endCol: 1 }], allowedUserIds: ['owner'] },
+  ]; view.value = toExcelWorkbookView(current) },
+}
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+    canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
+    'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'zh-CN'),
+    onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: value => notices.push(copy(value)),
+  }),
+}) }).use(studio.pinia).mount('#app')
+</script></body></html>

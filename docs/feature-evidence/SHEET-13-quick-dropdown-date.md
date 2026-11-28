@@ -1,8 +1,8 @@
 # SHEET-13：快捷下拉与快捷日期
 
-日期：2026-11-27。固定对照：Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
+日期：2026-11-28。固定对照：Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
 
-本轮修正快捷下拉和规则面板的列表转义，并补充真实命令及浏览器测试草稿。所有运行检查按本轮约定后置；快捷日期的 Canvas 日期/时间控件尚未实现，SHEET-13 保持未验收。
+2026-11-27 修正快捷下拉和规则面板的列表转义；2026-11-28 已补日期/时间及单/多选 Canvas 控件、标签和规则面板 owner/事务链路，见 [完整控件记录](SHEET-13-validation-cell-input-2026-11-28.md)。所有新草稿与运行检查后置，SHEET-13 保持未验收。
 
 <a id="quick-dropdown-date-entry-review-2026-11-27"></a>
 
@@ -55,7 +55,7 @@
 1. [quick-validation.ts](../../packages/office-studio/src/features/sheet-validation/quick-validation.ts) 使用 `planQuickValidation` 生成全部目标范围的一条规则或带类型的清除计划。普通添加使用 decimal / equal / `'100'`；快捷日期以 `metadata.showTime` 表达显示时间。
 2. [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 的 `applyQuickDataValidation` 一次把全部 ranges 交给内容命令；仅明确的 edit 动作在成功后按新规则 ID 打开面板。
 3. [office-studio.ts](../../packages/office-studio/src/api/office-studio.ts) 的 `sheet.command.set-data-validation`、`replace-data-validation`、`clear-quick-data-validation` 复用 `commitWorkbook` 和 [validation-engine.ts](../../packages/office-studio/src/features/sheet-validation/validation-engine.ts)，进入文档隔离的真实内容历史。
-4. 后续单元格编辑以 editingKey / selectedKey 对应的主格调用 [FWorksheet.getCellValidationOptions](../../packages/office-studio/src/api/facade.ts)，由 `sheetDataValidationOptions` 获取这格的真实候选；[SpreadsheetCanvas.vue](../../packages/office-studio/src/components/spreadsheet/SpreadsheetCanvas.vue) 使用现有 Ant AutoComplete / Input.TextArea 和输入会话。规则写入范围与候选查询目标分别是全部选区和当前编辑主格。
+4. 后续日期/列表控件以 editingKey / selectedKey 对应的主格绑定 canonical 输入会话，直接使用受 View 权限约束的权威规则/源候选及日期/列表专用内容命令；Canvas 使用受控 Ant 覆盖层。存在新控件时不再用普通 AutoComplete 文本替换列表标签。规则写入范围仍为全部选区，控件仅提交其绑定的主格。
 
 上述持久化草稿验证本项目原生 WorkbookModel 快照重开，不代表 XLSX 文件写出/重开的验收。
 
@@ -63,12 +63,12 @@
 
 固定 [serializeListOptions / deserializeListOptions](../../../univer/packages/sheets/src/basics/utils.ts) 当前用 JSON 数组字符串，读取时先解析 JSON，旧数据才回退到逗号分隔。本地 `formula1` 使用已有 CSV 列表表达式：逐项处理逗号、双引号和 CR/LF，双引号双写，再加 formula1 外层引号。这是领域模型表示差异，本轮未新增 Univer JSON 兼容层或商业 SDK 依赖。
 
-本轮仅修两处确定错接：
+2026-11-27 的两处确定错接修正：
 
 - `createQuickSheetDataValidationRule` 的旧手写拼接会把 `Green, dark` 拆成两个候选；现复用 `serializeValidationListItems`，同时保留引号和换行所在的单项。
 - `SheetDataValidationPanel.vue` 原来提前反转双引号，再按逗号 split，重新保存会破坏单项边界；现加载时只移除 formula1 外层引号，保存复用 `parseValidationListItems` 和 `serializeValidationListItems`。原有单行 Ant Input、Form、错误反馈和提交命令不变。
 
-规则面板原来的 `apply` 已复制 `rule.metadata`，普通保存不会丢失 `showTime`。本轮没有把这个已存在行为当作缺陷修改。日期类型目前也没有编辑 `showTime` 的勾选项。
+原面板已复制 `rule.metadata`，普通保存不会丢失 `showTime`，该保留行为没有被当作缺陷。2026-11-28 新增日期“显示时间”Ant Checkbox，更新 `metadata.showTime` 并保留其它字段；日期/time/duration 控件和新规则事务的实际接口见完整控件记录。
 
 ## 草稿与静态检查
 
@@ -95,7 +95,7 @@
 
 ## 保留缺口
 
-- 日期验证规则、菜单参数和 `metadata.showTime` 有实际链路；Canvas 日期/时间 picker 和面板显示时间选项尚未实现。具体待确认改动见 [日期控件实施方案](SHEET-13-date-picker-entry-plan.md)。
-- 列表换行仅补了真实命令草稿。单行 Input 中的多行编辑交互未验收，不能由 parser 草稿推断完整 UI 支持。
+- 日期/time/duration picker、面板显示时间和日期专用提交已写入，见 [日期实施记录](SHEET-13-date-picker-entry-plan.md)；草稿未运行，功能仍未验收。
+- 列表换行已接 Ant Input.TextArea 与逐项编辑，另补真实组件浏览器草稿；未运行，不能由 parser 或静态接线推断 UI 已验收。
 - 规则编辑、日期提交、主题、焦点恢复、输入法、权限以及 XLSX 文件闭环的本轮运行证据均未取得；既有 SHEET-13 历史通过结果不覆盖本轮差异。
 - 未执行新大样本测量，不声称本轮性能优化或达标。

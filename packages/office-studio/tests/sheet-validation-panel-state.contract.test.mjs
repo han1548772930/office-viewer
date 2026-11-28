@@ -84,11 +84,11 @@ test('switching between list modes retains items, colors and reference configura
   assert.equal(single.listReference, multi.listReference)
 })
 
-test('validation panel uses antdv-next Form items for editable fields', async () => {
-  const { readFile } = await import('node:fs/promises')
-  const panel = await readFile(new URL('../src/components/spreadsheet/SheetDataValidationPanel.vue', import.meta.url), 'utf8')
-  assert.match(panel, /import \{[^}]*\bForm,\s*FormItem\b[^}]*\} from 'antdv-next'/)
-  assert.match(panel, /<Form v-else class="validation-body validation-form"/)
-  assert.match(panel, /<FormItem :label=/)
-  assert.doesNotMatch(panel, /<input\b|<select\b|<textarea\b/)
+test('date settings preserve the exact source formula anchor and metadata when only showTime and scope are edited', () => {
+  const previous = { id: 'date', type: 'date', operator: 'greaterThan', formula1: '=B2', formulaAnchor: { row: 1, col: 0 },
+    ranges: [{ startRow: 1, startCol: 0, endRow: 2, endCol: 0 }], metadata: { showTime: false, retained: ['Office'] } }
+  const settings = validationPanelSettings(previous), next = validationRuleFromPanel(settings,
+    [{ startRow: 3, startCol: 0, endRow: 4, endCol: 0 }], { metadata: { ...previous.metadata, showTime: true } }, previous)
+  assert.equal(next.id, 'date'); assert.equal(next.formula1, '=B2'); assert.deepEqual(next.formulaAnchor, previous.formulaAnchor)
+  assert.deepEqual(next.metadata, { showTime: true, retained: ['Office'] }); assert.deepEqual(previous.metadata, { showTime: false, retained: ['Office'] })
 })

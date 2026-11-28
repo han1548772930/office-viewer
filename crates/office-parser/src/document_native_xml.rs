@@ -11,7 +11,7 @@ pub(crate) fn opening_namespaces(xml: &str) -> Result<BTreeMap<String, String>, 
     loop {
         match reader.read_event().map_err(|error| error.to_string())? {
             Event::Start(tag) => {
-                let name = String::from_utf8_lossy(tag.name().as_ref()).into_owned();
+                let name = String::from_utf8_lossy(tag.name().as_ref().as_bytes()).into_owned();
                 let end = reader.buffer_position() as usize;
                 return crate::document_format_sidecar::parse_xml(&format!("{}</{name}>", &xml[..end]))
                     .map(|root| root.namespaces.into_iter().collect());

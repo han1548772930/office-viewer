@@ -14,6 +14,7 @@ import {
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts.ts'
 import { SHEET_COMMON_FUNCTION_CATALOG, SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
+import { SHEET_TABLE_COMMANDS } from '../../features/sheet-tables/sheet-table-create.ts'
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
 import SheetBorderSelector from './SheetBorderSelector.vue'
@@ -76,6 +77,8 @@ export interface SheetRibbonState {
   canDeleteColumn: boolean
   chartAvailable: boolean
   pivotChartAvailable?: boolean
+  tableAvailable?: boolean
+  tableEditable?: boolean
   dataValidationAvailable: boolean
   quickValidationEditable?: boolean
   quickConditional?: QuickConditionalFormatSelection
@@ -232,7 +235,7 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
   const outlineItems: RibbonItem[] = [
     createSheetOutlineRibbonItem(outlineContext),
     { id: 'sheet.menu.outline-details', type: 'menu', title: '分组显示', icon: Grid2X2, order: 4, disabled: rowOutlineMenu.disabled,
-      gridLayout: { row: 1, column: 2 }, children: [
+      gridLayout: { row: 1, column: 4 }, children: [
         { ...rowOutlineMenu.children![0]!, title: '组合行', icon: Group },
         { ...columnOutlineMenu.children![0]!, title: '组合列', icon: Group },
         { ...rowOutlineMenu.children![1]!, title: '取消行分组', icon: Ungroup },
@@ -417,6 +420,9 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterHasCriteria }),
             button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled }),
           ] },
+          button(SHEET_TABLE_COMMANDS.openSelector, '创建表格', { icon: TableProperties, order: 2,
+            disabled: !state.hasSheet || state.tableAvailable === false || state.tableEditable === false || state.drawingFocused === true,
+            gridLayout: { row: 1, column: 2 } }),
           ...outlineItems,
         ] },
         { id: 'rules', title: '规则', order: 20, items: [

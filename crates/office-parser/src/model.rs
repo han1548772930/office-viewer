@@ -380,6 +380,9 @@ pub struct WorkbookPayload {
     pub properties: WorkbookPropertiesPayload,
     pub structure_protected: bool,
     pub text_truncated: bool,
+    /// Native reader validation precedes frontend restoration and helper removal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formula_calendar_source: Option<office_io_common::sheet_formula_calendar_source::FormulaCalendarSource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -774,6 +777,7 @@ mod tests {
     #[test]
     fn spreadsheet_payload_uses_tagged_model_type_and_data() {
         let payload = DocumentModel::Spreadsheet(WorkbookPayload {
+            formula_calendar_source: None,
             sheets: Vec::new(),
             pivot_tables: Vec::new(),
             tables: Vec::new(),

@@ -1,6 +1,7 @@
 import type { CellRange, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
+import { sheetValidationSourceReader } from '../sheet-validation/validation-value-read.ts'
 import { canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { createSheetClipboardPastedCell } from './sheet-clipboard-cell.ts'
 import { sheetClipboardCellAt } from './sheet-clipboard-data.ts'
@@ -227,7 +228,7 @@ export function createSheetAutoFillPlan(workbook: WorkbookModel, sheetId: string
       return false
     })
     const validation = validateSheetDataValidationChanges({ ...workbook, sheets: workbook.sheets.map(item => item.id === sheetId ? sheet : item) },
-      sheetId, validationPositions)
+      sheetId, validationPositions, sheetValidationSourceReader(userId), options.region)
     result.issues = validation.issues
     if (validation.blocked) return { target, result: { ...result, applyType: effectiveType, issues: validation.issues,
       supportsSeries: patterns.some(pattern => pattern.supportsSeries), reason: 'validation' } }

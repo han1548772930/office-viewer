@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, ColorPicker, Drawer, Form, FormItem, Input, InputNumber, Select, Tooltip } from 'antdv-next'
-import { ArrowDown, ArrowLeft, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
+import { ArrowDown, ArrowLeft, ArrowUp, GripVertical, Plus, Trash2 } from 'lucide-vue-next'
 import type { CellRange, SheetConditionalFormatFormulaAnchor, SheetConditionalFormatRule, SheetConditionalFormatType, SheetConditionalFormatValueConfig } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { conditionalFormatFormulaAnchor, reanchorConditionalFormatRule } from '../../features/conditional-formatting/conditional-format-formulas.ts'
@@ -17,8 +17,10 @@ import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme.ts'
 
 const props = defineProps<{ open: boolean; rules: SheetConditionalFormatRule[]; defaultRange: string; selectionRange?: CellRange; initialType?: ConditionalFormatPanelInitialType;
+  disabled?: boolean; canCreate?: boolean; canEditRule?: (rule: SheetConditionalFormatRule) => boolean;
+  canApplyRules?: (rules: readonly SheetConditionalFormatRule[]) => boolean;
   submit: (rules: readonly SheetConditionalFormatRule[]) => SheetConditionalFormatSubmitResult }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; closed: [] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; closed: []; preview: [ranges: readonly CellRange[]] }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const themeStyle = useRibbonTheme()
 const draftId = ref<string | null>(null)
@@ -57,7 +59,18 @@ const stopIfTrue = ref(false)
 const error = ref('')
 const localRules = ref<SheetConditionalFormatRule[]>([])
 const ruleListScope = ref<ConditionalFormatRuleListScope>('worksheet')
-const visibleRules = computed(() => conditionalFormatRuleListForScope(localRules.value, ruleListScope.value, props.selectionRange))
+const composing = ref(false), hoveredId = ref(''), focusedId = ref(''), draggedId = ref(''), dropTargetId = ref('')
+const actionsDisabled = computed(() => Boolean(props.disabled || composing.value))
+const scopedRules = computed(() => conditionalFormatRuleListForScope(localRules.value, ruleListScope.value, props.selectionRange))
+const visibleRules = computed(() => scopedRules.value.filter(rule => props.canEditRule?.(rule) ?? true))
+const editorDisabled = computed(() => Boolean(props.disabled || (draftId.value === null ? props.canCreate === false
+  : !localRules.value.some(rule => rule.id === draftId.value && (props.canEditRule?.(rule) ?? true)))))
+const canClearList = computed(() => !actionsDisabled.value && !!scopedRules.value.length
+  && scopedRules.value.every(rule => props.canEditRule?.(rule) ?? true)
+  && candidateAllowed(removeConditionalFormatRuleDraft(localRules.value, scopedRules.value.map(rule => rule.id))))
+const movesAllowed = computed(() => new Map(visibleRules.value.map((rule, index) => [rule.id, {
+  up: moveAllowed(rule.id, visibleRules.value[index - 1]?.id), down: moveAllowed(rule.id, visibleRules.value[index + 1]?.id),
+}] as const)))
 const ruleListScopeOptions = computed(() => [
   { value: 'worksheet', label: t('conditional.scope.worksheet', '工作表') },
   { value: 'selection', label: t('conditional.scope.selection', '当前选区') },
@@ -103,6 +116,8 @@ watch([ruleType, highlightSubtype], ([type]) => {
 }, { flush: 'sync' })
 
 watch(() => props.open, open => {
+  composing.value = false; hoveredId.value = ''; focusedId.value = ''; clearDrag()
+  emit('preview', [])
   if (!open) return
   ruleListScope.value = 'worksheet'
   localRules.value = props.rules.map(cloneRule).sort((left, right) => left.priority - right.priority)
@@ -162,6 +177,21 @@ function newRule() {
   error.value = ''
 }
 
+function createRule() {
+  if (actionsDisabled.value || props.canCreate === false) return
+  newRule()
+}
+function editRule(rule: SheetConditionalFormatRule) {
+  if (actionsDisabled.value || props.canEditRule?.(rule) === false) return
+  clearDrag(); selectRule(rule)
+}
+function candidateAllowed(rules: readonly SheetConditionalFormatRule[]): boolean {
+  return !actionsDisabled.value && (props.canApplyRules?.(rules) ?? true)
+}
+function permissionError(): void {
+  error.value = t('conditional.error.permission', '当前用户没有编辑规则全部应用范围或调整相关优先级的权限。')
+}
+
 function selectRule(rule: SheetConditionalFormatRule) {
   editing.value = true
   draftId.value = rule.id
@@ -206,7 +236,8 @@ function selectRule(rule: SheetConditionalFormatRule) {
   error.value = ''
 }
 
-function saveDraft() {
+function saveDraft(): boolean {
+  if (actionsDisabled.value || editorDisabled.value) return false
   try {
     const ranges = parseRanges(draftRanges.value)
     const existingIndex = localRules.value.findIndex(rule => rule.id === draftId.value)
@@ -254,20 +285,27 @@ function saveDraft() {
       stopIfTrue: stopIfTrue.value,
     }), ranges)
     assertSheetConditionalFormatRuleSnapshot(nextRule, previous)
-    if (existingIndex < 0) localRules.value = prependConditionalFormatRuleDraft(localRules.value, nextRule)
-    else localRules.value = localRules.value.map(rule => rule.id === id ? nextRule : rule)
+    const next = existingIndex < 0 ? prependConditionalFormatRuleDraft(localRules.value, nextRule)
+      : localRules.value.map(rule => rule.id === id ? nextRule : rule)
+    if (!candidateAllowed(next)) { permissionError(); return false }
+    localRules.value = next
     selectRule(localRules.value.find(rule => rule.id === id)!)
     editing.value = false
     error.value = ''
+    return true
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : t('conditional.error.invalid', '条件格式规则无效。')
+    return false
   }
 }
 
 function removeRule(id: string | readonly string[]) {
+  if (actionsDisabled.value) return
   const wasEditing = editing.value
   const removed = new Set(typeof id === 'string' ? [id] : id)
-  localRules.value = removeConditionalFormatRuleDraft(localRules.value, id)
+  const nextRules = removeConditionalFormatRuleDraft(localRules.value, id)
+  if (localRules.value.some(rule => removed.has(rule.id) && props.canEditRule?.(rule) === false) || !candidateAllowed(nextRules)) { permissionError(); return }
+  clearDrag(); localRules.value = nextRules
   if (draftId.value === null || !removed.has(draftId.value)) return
   const next = visibleRules.value[0]
   if (next) {
@@ -281,14 +319,61 @@ function removeRule(id: string | readonly string[]) {
 
 function moveRule(id: string, offset: -1 | 1) {
   const target = visibleRules.value[visibleRules.value.findIndex(rule => rule.id === id) + offset]
-  if (!target) return
+  if (!target || !moveAllowed(id, target.id)) return
   localRules.value = moveConditionalFormatRuleDraft(localRules.value, id, offset, target.id)
+  error.value = ''
 }
 
+function moveAllowed(id: string, targetId: string | undefined): boolean {
+  if (!targetId || id === targetId || actionsDisabled.value) return false
+  const from = visibleRules.value.findIndex(rule => rule.id === id), to = visibleRules.value.findIndex(rule => rule.id === targetId)
+  return from >= 0 && to >= 0 && candidateAllowed(moveConditionalFormatRuleDraft(localRules.value, id, to > from ? 1 : -1, targetId))
+}
+function clearDrag(): void { draggedId.value = ''; dropTargetId.value = '' }
+function startRuleDrag(id: string, event: DragEvent): void {
+  const rule = visibleRules.value.find(rule => rule.id === id)
+  if (!rule || actionsDisabled.value || props.canEditRule?.(rule) === false) { event.preventDefault(); return }
+  draggedId.value = id; dropTargetId.value = ''; hoveredId.value = ''; focusedId.value = ''
+  if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', id) }
+}
+function dragRuleOver(id: string, event: DragEvent): void {
+  const allowed = moveAllowed(draggedId.value, id)
+  dropTargetId.value = allowed ? id : ''
+  if (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? 'move' : 'none'
+}
+function dropRule(id: string): void {
+  const from = visibleRules.value.findIndex(rule => rule.id === draggedId.value), to = visibleRules.value.findIndex(rule => rule.id === id)
+  if (moveAllowed(draggedId.value, id)) {
+    localRules.value = moveConditionalFormatRuleDraft(localRules.value, draggedId.value, to > from ? 1 : -1, id)
+    error.value = ''
+  }
+  clearDrag()
+}
+function closePanel(): void {
+  if (!composing.value) { clearDrag(); emit('preview', []); emit('update:open', false) }
+}
+function panelKeydown(event: KeyboardEvent): void {
+  if ((composing.value || event.isComposing || event.keyCode === 229) && ['Enter', 'Escape'].includes(event.key)) event.stopPropagation()
+}
+watch([() => props.open, () => props.disabled, composing, ruleListScope], () => {
+  if (!props.open || actionsDisabled.value) clearDrag()
+  hoveredId.value = ''; focusedId.value = ''
+})
+watch([() => props.open, () => props.disabled, composing, editing, draftRanges, hoveredId, focusedId, visibleRules, draggedId], () => {
+  if (!props.open || actionsDisabled.value || draggedId.value) { emit('preview', []); return }
+  if (editing.value) {
+    try { emit('preview', parseRanges(draftRanges.value)) } catch { emit('preview', []) }
+    return
+  }
+  const rule = visibleRules.value.find(rule => rule.id === (hoveredId.value || focusedId.value))
+  emit('preview', rule?.ranges ?? [])
+}, { immediate: true })
+
 function apply() {
+  if (actionsDisabled.value) return
   error.value = ''
-  if (editing.value) saveDraft()
-  if (error.value) return
+  if (editing.value && !saveDraft()) return
+  if (!candidateAllowed(localRules.value)) { permissionError(); return }
   try {
     const result = props.submit(localRules.value.map(cloneRule))
     if (!result.accepted) { error.value = result.error; return }
@@ -303,6 +388,7 @@ function afterDrawerOpenChange(open: boolean) {
 }
 
 function returnToRules() {
+  if (actionsDisabled.value) return
   editing.value = false
   error.value = ''
 }
@@ -363,21 +449,25 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="true" :focusable="{ focusTriggerAfterClose: false }" :after-open-change="afterDrawerOpenChange" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' } }" @close="emit('update:open', false)">
-    <div class="conditional-panel" :style="themeStyle">
+  <Drawer :open="open" :title="t('conditional.title', '条件格式')" placement="right" :size="384" :mask="false" :closable="!composing" :keyboard="!composing" :focusable="{ focusTriggerAfterClose: false }" :after-open-change="afterDrawerOpenChange" :styles="{ header: { padding: '16px 16px 8px' }, body: { padding: '16px' }, footer: { padding: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' } }" @close="closePanel">
+    <div class="conditional-panel" :style="themeStyle" @compositionstart.capture="composing = true" @compositionend.capture="composing = false" @keydown.capture="panelKeydown">
       <aside v-if="!editing" class="conditional-rule-list" :aria-label="t('conditional.rules', '规则')">
         <Form layout="vertical" class="conditional-rule-scope" @submit.prevent>
           <FormItem :label="t('conditional.scope.label', '显示规则范围')">
-            <Select v-model:value="ruleListScope" :aria-label="t('conditional.scope.label', '显示规则范围')" :options="ruleListScopeOptions" />
+            <Select v-model:value="ruleListScope" :disabled="actionsDisabled" :aria-label="t('conditional.scope.label', '显示规则范围')" :options="ruleListScopeOptions" />
           </FormItem>
         </Form>
         <div class="conditional-rule-actions">
-          <Button size="small" type="primary" @click="newRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>
-          <Button size="small" danger :disabled="!visibleRules.length" @click="removeRule(visibleRules.map(rule => rule.id))"><Trash2 :size="14" />{{ t('conditional.clear-list', '清除列表规则') }}</Button>
+          <Button size="small" type="primary" :disabled="actionsDisabled || canCreate === false" @click="createRule"><Plus :size="14" />{{ t('conditional.add', '新建规则') }}</Button>
+          <Button size="small" danger :disabled="!canClearList" @click="removeRule(scopedRules.map(rule => rule.id))"><Trash2 :size="14" />{{ t('conditional.clear-list', '清除列表规则') }}</Button>
         </div>
-        <p v-if="!visibleRules.length" class="conditional-empty">{{ ruleListScope === 'selection' ? t('conditional.empty-selection', '当前选区没有条件格式规则。') : t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
-        <div v-for="(rule, index) in visibleRules" :key="rule.id" class="conditional-rule-row">
-          <Button class="conditional-rule-select" type="text" :aria-pressed="draftId === rule.id" @click="selectRule(rule)">
+        <Alert v-if="scopedRules.length > visibleRules.length" type="info" :title="t('conditional.protected-rules', '部分规则受保护，仅显示可编辑的规则。')" show-icon />
+        <p v-if="!scopedRules.length" class="conditional-empty">{{ ruleListScope === 'selection' ? t('conditional.empty-selection', '当前选区没有条件格式规则。') : t('conditional.empty', '此工作表还没有条件格式规则。') }}</p>
+        <div v-for="rule in visibleRules" :key="rule.id" class="conditional-rule-row" :data-rule-id="rule.id" :class="{ 'conditional-drop-target': dropTargetId === rule.id }"
+          @pointerenter="hoveredId = rule.id" @pointerleave="hoveredId = ''" @focusin="focusedId = rule.id" @focusout="focusedId = ''"
+          @dragover.prevent="dragRuleOver(rule.id, $event)" @drop.prevent="dropRule(rule.id)">
+          <Tooltip :title="t('conditional.drag', '拖动调整规则顺序')"><Button type="text" size="small" :disabled="actionsDisabled" :draggable="!actionsDisabled" :aria-label="t('conditional.drag', '拖动调整规则顺序')" @dragstart="startRuleDrag(rule.id, $event)" @dragend="clearDrag"><GripVertical :size="14" /></Button></Tooltip>
+          <Button class="conditional-rule-select" type="text" :disabled="actionsDisabled" :aria-pressed="draftId === rule.id" @click="editRule(rule)">
             <span class="conditional-rule-summary">
               <span><template v-if="rule.type === 'dataBar'">{{ t('conditional.quick.data-bar', '数据条') }}</template>
               <template v-else-if="rule.type === 'iconSet'">{{ t('conditional.quick.icon-set', '图标集') }} · {{ iconSetLabel(rule.config?.iconSet ?? rule.config?.icons?.[0]?.iconType ?? '3Arrows') }}</template>
@@ -385,16 +475,16 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
               <span class="conditional-rule-range">{{ rule.ranges.map(formatRange).join(';') }}</span>
             </span>
           </Button>
-          <Tooltip :title="t('conditional.move-up', '上移规则')"><Button type="text" size="small" :disabled="index === 0" :aria-label="t('conditional.move-up', '上移规则')" @click="moveRule(rule.id, -1)"><ArrowUp :size="14" /></Button></Tooltip>
-          <Tooltip :title="t('conditional.move-down', '下移规则')"><Button type="text" size="small" :disabled="index === visibleRules.length - 1" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)"><ArrowDown :size="14" /></Button></Tooltip>
-          <Tooltip :title="t('conditional.delete', '删除规则')"><Button type="text" size="small" danger :aria-label="t('conditional.delete', '删除规则')" @click="removeRule(rule.id)"><Trash2 :size="14" /></Button></Tooltip>
+          <Tooltip :title="t('conditional.move-up', '上移规则')"><Button type="text" size="small" :disabled="!movesAllowed.get(rule.id)?.up" :aria-label="t('conditional.move-up', '上移规则')" @click="moveRule(rule.id, -1)"><ArrowUp :size="14" /></Button></Tooltip>
+          <Tooltip :title="t('conditional.move-down', '下移规则')"><Button type="text" size="small" :disabled="!movesAllowed.get(rule.id)?.down" :aria-label="t('conditional.move-down', '下移规则')" @click="moveRule(rule.id, 1)"><ArrowDown :size="14" /></Button></Tooltip>
+          <Tooltip :title="t('conditional.delete', '删除规则')"><Button type="text" size="small" danger :disabled="actionsDisabled" :aria-label="t('conditional.delete', '删除规则')" @click="removeRule(rule.id)"><Trash2 :size="14" /></Button></Tooltip>
         </div>
       </aside>
-      <Form v-else layout="vertical" class="conditional-rule-editor" @submit.prevent>
-        <Button type="text" class="conditional-back" @click="returnToRules"><ArrowLeft :size="14" />{{ t('conditional.rules', '规则') }}</Button>
+      <Form v-else layout="vertical" class="conditional-rule-editor" :disabled="editorDisabled" @submit.prevent>
+        <Button type="text" class="conditional-back" :disabled="actionsDisabled" @click="returnToRules"><ArrowLeft :size="14" />{{ t('conditional.rules', '规则') }}</Button>
         <FormItem :label="t('conditional.range', '应用范围')" :extra="formulaBasis"><Input v-model:value="draftRanges" :aria-label="t('conditional.range', '应用范围')" /></FormItem>
         <FormItem v-if="ruleType !== 'office'" label="规则类型"><Select v-model:value="ruleType" aria-label="规则类型" :options="typeOptions" /></FormItem>
-        <Alert v-else type="info" title="原有条件规则" description="保留原有条件，可调整应用范围、格式和顺序。该条件的计算尚未验收。" show-icon />
+        <Alert v-else type="info" title="原有条件规则" description="保留原有条件，可调整应用范围、格式和顺序。" show-icon />
         <FormItem v-if="ruleType === 'highlightCell'" label="条件类型"><Select v-model:value="highlightSubtype" :options="[{value:'text',label:'文本'},{value:'number',label:'数值'},{value:'timePeriod',label:'日期期间'},{value:'duplicateValues',label:'重复值'},{value:'uniqueValues',label:'唯一值'}]" /></FormItem>
         <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'number'" :label="t('conditional.operator', '条件')"><Select v-model:value="operator" :options="operatorOptions" /></FormItem>
         <FormItem v-if="ruleType === 'highlightCell' && highlightSubtype === 'text'" label="文本条件"><Select v-model:value="operator" :options="[{value:'containsText',label:'包含'},{value:'notContainsText',label:'不包含'},{value:'beginsWith',label:'开头为'},{value:'endsWith',label:'结尾为'},{value:'equal',label:'等于'},{value:'notEqual',label:'不等于'},{value:'containsBlanks',label:'包含空白'},{value:'notContainsBlanks',label:'不包含空白'},{value:'containsErrors',label:'包含错误'},{value:'notContainsErrors',label:'不包含错误'}]" /></FormItem>
@@ -405,12 +495,12 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
         </div>
         <div v-if="ruleType === 'top10' && (operator === 'isNotBottom' || operator === 'isBottom')" class="conditional-values"><FormItem label="项数"><InputNumber v-model:value="rank" :min="1" :max="1000" /></FormItem><FormItem :label="null"><Checkbox v-model:checked="rankPercent">百分比</Checkbox></FormItem></div>
         <div v-if="ruleType === 'dataBar' || ruleType === 'colorScale'" class="conditional-rule-editor">
-          <ConditionalThresholdInput v-model:value="minimum" boundary="min" :automatic="ruleType === 'dataBar'" label="最小值" />
+          <ConditionalThresholdInput v-model:value="minimum" :disabled="editorDisabled" boundary="min" :automatic="ruleType === 'dataBar'" label="最小值" />
           <template v-if="ruleType === 'colorScale'">
             <Checkbox v-model:checked="useMidpoint">使用中间值</Checkbox>
-            <ConditionalThresholdInput v-if="useMidpoint" v-model:value="midpoint" label="中间值" />
+            <ConditionalThresholdInput v-if="useMidpoint" v-model:value="midpoint" :disabled="editorDisabled" label="中间值" />
           </template>
-          <ConditionalThresholdInput v-model:value="maximum" boundary="max" :automatic="ruleType === 'dataBar'" label="最大值" />
+          <ConditionalThresholdInput v-model:value="maximum" :disabled="editorDisabled" boundary="max" :automatic="ruleType === 'dataBar'" label="最大值" />
           <div v-if="ruleType === 'dataBar'" class="conditional-colors"><FormItem label="正值颜色"><ColorPicker v-model:value="fill" value-format="hex" /></FormItem><FormItem label="负值颜色"><ColorPicker v-model:value="negativeColor" value-format="hex" /></FormItem></div>
           <template v-if="ruleType === 'dataBar'"><FormItem :label="null"><Checkbox v-model:checked="isGradient">渐变填充</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="showValue">显示数值</Checkbox></FormItem></template>
           <div v-else class="conditional-colors"><FormItem label="最小值颜色"><ColorPicker v-model:value="minimumColor" value-format="hex" /></FormItem><FormItem v-if="useMidpoint" label="中间值颜色"><ColorPicker v-model:value="fill" value-format="hex" /></FormItem><FormItem label="最大值颜色"><ColorPicker v-model:value="maximumColor" value-format="hex" /></FormItem></div>
@@ -421,25 +511,25 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
           <div v-for="(threshold, index) in iconThresholds" :key="index" class="conditional-icon-threshold">
             <FormItem :label="`图标 ${index + 1}`"><Select :value="`${threshold.iconType}:${threshold.iconId}`" :options="individualIconOptions" @update:value="changeIndividualIcon(threshold, $event)" /></FormItem>
             <FormItem v-if="index < iconThresholds.length - 1" label="比较"><Select v-model:value="threshold.operator" :options="[{value:'greaterThanOrEqual',label:'大于或等于'},{value:'greaterThan',label:'大于'}]" /></FormItem>
-            <ConditionalThresholdInput v-if="index < iconThresholds.length - 1" v-model:value="threshold.value" :label="`阈值 ${index + 1}`" />
+            <ConditionalThresholdInput v-if="index < iconThresholds.length - 1" v-model:value="threshold.value" :disabled="editorDisabled" :label="`阈值 ${index + 1}`" />
             <span v-else class="conditional-hint">其余值使用此图标。</span>
           </div>
           <FormItem :label="null"><Checkbox v-model:checked="showValue">显示数值</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="reverseIcons">反转图标顺序</Checkbox></FormItem>
         </div>
         <div v-if="styleRule" class="conditional-colors">
-          <FormItem :label="null"><Checkbox v-model:checked="useFill">{{ t('conditional.fill', '填充') }}</Checkbox><ColorPicker v-model:value="fill" :disabled="!useFill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></FormItem>
-          <FormItem :label="null"><Checkbox v-model:checked="useFontColor">{{ t('conditional.font-color', '文字颜色') }}</Checkbox><ColorPicker v-model:value="fontColor" :disabled="!useFontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="useFill">{{ t('conditional.fill', '填充') }}</Checkbox><ColorPicker v-model:value="fill" :disabled="editorDisabled || !useFill" value-format="hex" :aria-label="t('conditional.fill', '填充')" /></FormItem>
+          <FormItem :label="null"><Checkbox v-model:checked="useFontColor">{{ t('conditional.font-color', '文字颜色') }}</Checkbox><ColorPicker v-model:value="fontColor" :disabled="editorDisabled || !useFontColor" value-format="hex" :aria-label="t('conditional.font-color', '文字颜色')" /></FormItem>
           <FormItem :label="null"><Checkbox v-model:checked="bold">{{ t('conditional.bold', '加粗') }}</Checkbox></FormItem>
           <FormItem :label="null"><Checkbox v-model:checked="italic">斜体</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="underline">下划线</Checkbox></FormItem><FormItem :label="null"><Checkbox v-model:checked="strike">删除线</Checkbox></FormItem>
         </div>
         <FormItem v-if="!visualRule" :label="null"><Checkbox v-model:checked="stopIfTrue">{{ t('conditional.stop-if-true', '匹配后停止') }}</Checkbox></FormItem>
-        <Button type="primary" @click="saveDraft">{{ draftId ? t('conditional.update', '更新规则') : t('conditional.save-rule', '保存规则') }}</Button>
+        <Button type="primary" :disabled="actionsDisabled || editorDisabled" @click="saveDraft">{{ draftId ? t('conditional.update', '更新规则') : t('conditional.save-rule', '保存规则') }}</Button>
       </Form>
       <Alert v-if="error" type="error" :title="error" show-icon role="alert" />
     </div>
     <template #footer>
-      <Button @click="emit('update:open', false)">{{ t('common.cancel', '取消') }}</Button>
-      <Button type="primary" @click="apply">{{ t('common.apply', '应用') }}</Button>
+      <Button :disabled="composing" @click="closePanel">{{ t('common.cancel', '取消') }}</Button>
+      <Button type="primary" :disabled="actionsDisabled || editing && editorDisabled || !candidateAllowed(localRules)" @click="apply">{{ t('common.apply', '应用') }}</Button>
     </template>
   </Drawer>
 </template>
@@ -450,9 +540,10 @@ function cloneRule(rule: SheetConditionalFormatRule): SheetConditionalFormatRule
 .conditional-rule-scope :deep(.ant-form-item) { margin-bottom: 0; }
 .conditional-rule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .conditional-empty { margin: 0; padding: 12px 0; color: var(--ribbon-text-secondary); font-size: 12px; }
-.conditional-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
+.conditional-rule-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 4px; align-items: center; }
+.conditional-drop-target { outline: 2px solid var(--ribbon-primary); outline-offset: 2px; }
 .conditional-rule-select.ant-btn { min-width: 0; height: auto; justify-content: flex-start; overflow: hidden; padding: 6px 8px; border: 1px solid var(--ribbon-border); background: var(--ribbon-background); color: var(--ribbon-text); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.conditional-rule-select.ant-btn:hover { background: var(--ribbon-hover-background); }
+.conditional-rule-select.ant-btn:not(:disabled):hover { background: var(--ribbon-hover-background); }
 .conditional-rule-select.ant-btn[aria-pressed="true"] { border-color: var(--ribbon-primary); background: var(--ribbon-active-background); color: var(--ribbon-primary); }
 .conditional-rule-select.ant-btn:focus-visible { outline: 2px solid var(--ribbon-primary); outline-offset: 2px; }
 .conditional-rule-summary { display: grid; gap: 3px; min-width: 0; max-width: 100%; overflow: hidden; }

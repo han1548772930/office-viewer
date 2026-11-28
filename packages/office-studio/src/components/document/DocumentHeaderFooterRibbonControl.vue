@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Button, Checkbox, Form, FormItem, InputNumber, Select, Popover, Modal, Menu } from 'antdv-next'
+import { Alert, Button, Checkbox, Form, FormItem, InputNumber, Select, Popover, Modal, Menu } from 'antdv-next'
 import { CalendarClock, ChevronDown, Hash } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { headerFooterActionDisabled, headerFooterControlDisabled, headerFooterRequestScopeMatches } from './document-header-footer-capabilities'
 import { CLASSIC_RIBBON, GRID_RIBBON } from '../../platform/ribbon/ribbon-schema'
 import { useRibbonTheme } from '../../platform/ribbon/ribbon-theme'
+import { createDocumentDateTimeField } from '../../features/document/services/document-date-time-field'
 
 export type HeaderFooterRibbonKind = 'insertion' | 'navigation' | 'options' | 'position'
 export interface HeaderFooterRibbonState {
@@ -21,6 +22,9 @@ export interface HeaderFooterRibbonState {
   differentOddEven: boolean
   marginHeader: number
   marginFooter: number
+  locale?: string
+  insertDateTime?: (action: Extract<HeaderFooterAction, { action: 'insert-date-time' }>) => boolean
+  captureDateTimeFocus?: () => (() => void)
 }
 
 export interface HeaderFooterRequestScope { requestScope?: number }
@@ -41,11 +45,10 @@ const controlStyle = computed(() => ({
 }))
 const dateFormat = ref<'short' | 'long' | 'time'>('short')
 const automaticDateTime = ref(true)
-const dateFormatOptions = [
-  { value: 'short', label: '短日期' },
-  { value: 'long', label: '长日期' },
-  { value: 'time', label: '时间' },
-]
+const datePreview = ref(new Date()), dateError = ref('')
+const dateFormatOptions = computed(() => (['short', 'long', 'time'] as const).map(value => ({ value,
+  label: createDocumentDateTimeField(value, props.state.locale ?? 'zh-CN', datePreview.value).cachedResult })))
+let dateClosingFocus: (() => void) | undefined
 const area = computed(() => props.state.area)
 const pageOpen = ref(false), dateOpen = ref(false)
 const pageRequest = ref<HeaderFooterRequestScope>(), dateRequest = ref<HeaderFooterRequestScope>()
@@ -62,7 +65,10 @@ const pageItems = computed(() => [
   { key: 'refresh', label: '更新字段', disabled: refreshActionDisabled.value },
 ])
 watch(pageOpen, open => { pageRequest.value = open ? { requestScope: props.state.requestScope } : undefined }, { flush: 'sync' })
-watch(dateOpen, open => { dateRequest.value = open ? { requestScope: props.state.requestScope } : undefined }, { flush: 'sync' })
+watch(dateOpen, open => {
+  dateRequest.value = open ? { requestScope: props.state.requestScope } : undefined
+  if (open) { datePreview.value = new Date(); dateError.value = ''; dateClosingFocus = props.state.captureDateTimeFocus?.() }
+}, { flush: 'sync' })
 watch([() => props.state.requestScope, () => props.state.visible, insertionDisabled, pageControlDisabled], ([scope, visible, disabled, pageDisabled], [previous]) => {
   if (scope !== previous || !visible) pageOpen.value = dateOpen.value = false
   else { if (disabled) dateOpen.value = false; if (pageDisabled) pageOpen.value = false }
@@ -84,7 +90,22 @@ function runPageAction(key: string | number): void {
 }
 
 function insertDateTime(): void {
-  emitAction({ action: 'insert-date-time', format: dateFormat.value, automatic: automaticDateTime.value }, dateRequest.value)
+  if (dateActionDisabled.value || !dateRequest.value) return
+  const action: Extract<HeaderFooterAction, { action: 'insert-date-time' }> = {
+    action: 'insert-date-time', format: dateFormat.value, automatic: automaticDateTime.value, requestScope: dateRequest.value.requestScope,
+  }
+  if (!props.state.insertDateTime) { emitAction(action, dateRequest.value); return }
+  dateError.value = ''
+  try {
+    if (!props.state.insertDateTime(action)) { dateError.value = '日期和时间未插入，请检查输入位置和编辑权限。'; return }
+    dateClosingFocus = props.state.captureDateTimeFocus?.()
+    dateOpen.value = false
+  } catch (error) { dateError.value = error instanceof Error ? error.message : '日期和时间未插入。' }
+}
+
+function onDateClosed(): void {
+  const focus = dateClosingFocus; dateClosingFocus = undefined
+  focus?.()
 }
 
 function setOptions(patch: Extract<HeaderFooterAction, { action: 'set-options' }>['patch']): void {
@@ -104,8 +125,13 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
         <template #content><Menu :selectable="false" :items="pageItems" @click="({ key }) => runPageAction(key)" /></template>
       </Popover>
       <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="insertionDisabled" @mousedown.prevent @click="dateOpen = true"><span class="header-footer-ribbon-control__caption"><CalendarClock :size="14" /><span>日期和时间</span></span></Button>
-      <Modal v-model:open="dateOpen" :width="360" title="日期和时间" ok-text="插入" :ok-button-props="{ disabled: dateActionDisabled }" @ok="insertDateTime">
-        <Form layout="vertical"><FormItem label="日期和时间格式"><Select v-model:value="dateFormat" :options="dateFormatOptions" :disabled="insertionDisabled" /></FormItem><FormItem><Checkbox v-model:checked="automaticDateTime" :disabled="insertionDisabled">自动更新</Checkbox></FormItem></Form>
+      <Modal v-model:open="dateOpen" :width="360" title="日期和时间" ok-text="插入" :ok-button-props="{ disabled: dateActionDisabled }"
+        :focus-trigger-after-close="false" :after-close="onDateClosed" @ok="insertDateTime">
+        <Form :model="{ format: dateFormat, automatic: automaticDateTime }" layout="vertical" @finish="insertDateTime">
+          <FormItem name="format" label="日期和时间格式"><Select v-model:value="dateFormat" :options="dateFormatOptions" :disabled="dateActionDisabled" aria-label="日期和时间格式" /></FormItem>
+          <FormItem name="automatic"><Checkbox v-model:checked="automaticDateTime" :disabled="dateActionDisabled">自动更新</Checkbox></FormItem>
+          <Alert v-if="dateError" type="error" :title="dateError" show-icon />
+        </Form>
       </Modal>
     </div>
 

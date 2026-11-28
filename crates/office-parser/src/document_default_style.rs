@@ -11,16 +11,16 @@ const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 
 fn canonical_name(reader: &NsReader<&[u8]>, name: QName<'_>, attribute: bool) -> Result<String, String> {
     let (namespace, local) = if attribute { reader.resolver().resolve_attribute(name) } else { reader.resolver().resolve_element(name) };
-    let original = std::str::from_utf8(name.as_ref()).map_err(|error| error.to_string())?;
-    let local = std::str::from_utf8(local.as_ref()).map_err(|error| error.to_string())?;
+    let original = name.into_inner();
+    let local = local.into_inner();
     let prefix = match namespace {
         ResolveResult::Bound(namespace) => match namespace.as_ref() {
-            value if value == WORD.as_bytes() || value == b"http://purl.oclc.org/ooxml/wordprocessingml/main" => Some("w"),
-            value if value == DRAWING.as_bytes() || value == b"http://purl.oclc.org/ooxml/drawingml/main" => Some("a"),
+            value if value == WORD || value == "http://purl.oclc.org/ooxml/wordprocessingml/main" => Some("w"),
+            value if value == DRAWING || value == "http://purl.oclc.org/ooxml/drawingml/main" => Some("a"),
             _ => None,
         },
         ResolveResult::Unbound => None,
-        ResolveResult::Unknown(prefix) => return Err(format!("Default-style XML has an unbound prefix {:?}.", String::from_utf8_lossy(&prefix))),
+        ResolveResult::Unknown(prefix) => return Err(format!("Default-style XML has an unbound prefix {prefix:?}.")),
     };
     if let Some(prefix) = prefix { return Ok(format!("{prefix}:{local}")); }
     if original.starts_with("w:") || original.starts_with("a:") { return Err("Default-style XML rebinds a canonical namespace prefix.".into()); }
@@ -47,12 +47,12 @@ pub(crate) fn canonical_resource(xml: &str, expected: &str) -> Result<String, St
                 let mut result = BytesStart::new(name);
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
-                    let key = attribute.key.as_ref();
+                    let key = attribute.key.as_ref().as_bytes();
                     if key == b"xmlns:w" || key == b"xmlns:a" { continue; }
                     let name = if key == b"xmlns" || key.starts_with(b"xmlns:") {
                         std::str::from_utf8(key).map_err(|error| error.to_string())?.to_owned()
                     } else { canonical_name(&reader, attribute.key, true)? };
-                    result.push_attribute((name.as_bytes(), attribute.value.as_ref()));
+                    result.push_attribute(quick_xml::events::attributes::Attribute { key: QName(&name), value: attribute.value });
                 }
                 if root {
                     result.push_attribute(("xmlns:w", WORD));

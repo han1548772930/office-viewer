@@ -51,6 +51,48 @@ export interface RawParserPayloadData extends Record<string, unknown> {
   officeSource?: DocumentOfficeSourceDto | null
   customXmlParts?: DocumentCustomXmlPart[]
   nativeContentControls?: NativeDocumentContentControlDto[]
+  formulaCalendarSource?: FormulaCalendarSourceDto | null
+}
+
+/** This DTO contains only sources admitted against the native XLSX package. */
+export interface FormulaCalendarSourceDto {
+  version: 1
+  date1904: boolean
+  sheets: FormulaCalendarSheetSourceDto[]
+  helpers: FormulaCalendarHelperDto[]
+  tables: FormulaCalendarTableDto[]
+}
+export interface FormulaCalendarSheetSourceDto {
+  name: string
+  sheetId: string
+  officeSheetId: number
+  import?: Record<string, unknown>
+  cells: FormulaCalendarCellSourceDto[]
+}
+export interface FormulaCalendarCellSourceDto {
+  row: number
+  col: number
+  formula?: string
+  projectedFormula?: string
+  formulaSource?: { version: 1; formula: string; date1904: boolean; dateResult: boolean; aliasSheetId?: string } & Record<string, unknown>
+  dateSource?: { value: number | string; date1904: boolean; targetValue?: number | string; targetDate1904?: boolean; targetFormula?: string | null } & Record<string, unknown>
+  calculationSheet?: string
+  calculationFormula?: string
+}
+export interface FormulaCalendarHelperDto {
+  name: string
+  sheetId: string
+  officeSheetId: number
+  date1904: boolean
+  sourceSheetId?: string
+  fingerprint: string
+  reclaim?: boolean
+}
+export interface FormulaCalendarTableDto {
+  name: string
+  tableId: string
+  officeTableId: number
+  sheetId: string
 }
 
 /** Native parser addresses precede stable domain table/row ID normalization. */

@@ -6,6 +6,15 @@ use serde_json::Value;
 pub const DATE_1904_OFFSET: f64 = 1462.0;
 pub const MAX_DATE_1900_SERIAL: f64 = 2_958_465.0;
 
+/// Preserve civil days across the two serial axes, including the 1900 leap
+/// fiction. Serial 59/60 share one 1904 carrier, so exact provenance is required
+/// to invert that seam. Finite admission belongs to the calling IO boundary.
+pub fn convert_serial(value: f64, before1904: bool, after1904: bool) -> f64 {
+    if before1904 == after1904 { value }
+    else if before1904 { value + if value < -1401.0 { 1461.0 } else { 1462.0 } }
+    else { value - if value < 60.0 { 1461.0 } else { 1462.0 } }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DateZone { None, Utc, Offset }
 
@@ -134,6 +143,16 @@ fn date_serial(year: u32, month: u32, day: u32, date1904: bool) -> Option<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn retained_calendar_carriers_include_fractions_and_the_ambiguous_leap_seam() {
+        assert_eq!(convert_serial(60.5, false, true), -1401.5);
+        assert_eq!(convert_serial(59.5, false, true), -1401.5);
+        assert_eq!(convert_serial(61.0, false, true), -1401.0);
+        assert_eq!(convert_serial(-1402.0, true, false), 59.0);
+        assert_eq!(convert_serial(0.0, true, false), 1462.0);
+        assert_eq!(convert_serial(60.5, false, false), 60.5);
+    }
 
     #[test]
     fn the_shared_io_and_workbench_fixture_has_one_date_contract() {

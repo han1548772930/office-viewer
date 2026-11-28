@@ -253,3 +253,90 @@ test('page setup after auxiliary and checked story input preserves the active in
   assert.deepEqual(story.document.getModel().sectionHeaderFooters, storyBefore.sectionHeaderFooters)
   assert.equal(history(story.studio, story.document.id).undo, storyDepth + 1)
 })
+
+test('flat explicit body coordinates cannot inherit an active footnote host, while omitted coordinates retain that host', () => {
+  for (const explicitBody of [false, true]) {
+    const { studio, document, body } = open(sourceModel('flat-page-host-' + explicitBody))
+    const paragraph = { ...docModel.createParagraph('Note text'), id: 'flat-page-note-p' }
+    const noteId = document.insertFootnote(0, codec.encodeDocumentBody({ blocks: [paragraph], runs: [], paragraphs: [], metadata: {} }))
+    const host = { kind: 'note', noteKind: 'footnote', noteId }, caret = range(paragraph.id)
+    document.setInputSelection(caret, undefined, host)
+    document.executeCommand({ id: 'doc.command.format-text', patch: { bold: true }, host }, caret)
+    const state = copy(document.getInputState()), before = copy(document.getModel()), depth = history(studio, document.id).undo
+    const { id, ...params } = pageCommand({ ...before.page, width: 500 })
+    assert.equal(studio.executeCommandSync(id, { ...params, unitId: document.id, ...(explicitBody ? { selection: body } : {}) }), true)
+    assert.equal(document.getModel().page.width, 500)
+    assert.deepEqual(document.getModel().footnotes, before.footnotes)
+    assert.equal(history(studio, document.id).undo, depth + 1)
+    const current = document.getInputState()
+    assert.deepEqual(current.location, state.location)
+    assert.equal(current.valid, !explicitBody)
+    assert.deepEqual(document.getInputMarks(), explicitBody ? {} : state.marks)
+    assert.ok(current.location.selection.anchor.blockId); assert.ok(current.location.selection.focus.blockId)
+  }
+})
+
+test('flat explicit host coordinates remain independent of the current body selection and reject malformed hosts atomically', () => {
+  const { studio, document, body } = open(sourceModel('flat-page-explicit-host'))
+  const paragraph = { ...docModel.createParagraph('Auxiliary'), id: 'flat-page-host-p' }
+  const noteId = document.insertFootnote(0, codec.encodeDocumentBody({ blocks: [paragraph], runs: [], paragraphs: [], metadata: {} }))
+  const host = { kind: 'note', noteKind: 'footnote', noteId }, caret = range(paragraph.id)
+  document.setInputSelection(body)
+  const before = copy(document.getModel()), depth = history(studio, document.id).undo, { id, ...params } = pageCommand({ ...before.page, width: 500 })
+  assert.equal(studio.executeCommandSync(id, { ...params, host, selection: caret }), true)
+  assert.equal(document.getModel().page.width, 500); assert.deepEqual(document.getModel().footnotes, before.footnotes)
+  assert.equal(history(studio, document.id).undo, depth + 1)
+  const current = copy(document.getModel()), currentDepth = history(studio, document.id).undo
+  for (const invalid of [null, { kind: 'note', noteKind: 'footnote', noteId: '' }, { kind: 'body' }]) {
+    assert.throws(() => studio.executeCommandSync(id, { ...params, host: invalid, selection: caret }))
+    assert.deepEqual(document.getModel(), current); assert.equal(history(studio, document.id).undo, currentDepth)
+  }
+  for (const selectionHost of ['body', false, { kind: 'body' }, { kind: 'story', sectionId: 'first', story: 'unknown' }]) {
+    assert.throws(() => studio.executeCommandSync(id, { unitId: document.id, command: { ...params, id }, selection: body, selectionHost }))
+    assert.deepEqual(document.getModel(), current); assert.equal(history(studio, document.id).undo, currentDepth)
+  }
+})
+
+test('flat default page requests retain a valid legacy header input, while an explicit body selection cannot inherit that story', () => {
+  for (const explicitBody of [false, true]) {
+    const source = sourceModel('flat-page-header-' + explicitBody), text = 'Header text'
+    source.sectionHeaderFooters = { first: { ...sections.EMPTY_SECTION_HEADER_FOOTER, header: text,
+      storyContent: { header: { runs: [docModel.createRun(text)], paragraphs: storyModel.documentStoryParagraphs(text, docModel.defaultParagraphStyle()) } } } }
+    const { studio, document, body } = open(source), story = { sectionId: 'first', story: 'header', start: 2, end: 2 }
+    document.setInputSelection(body, story)
+    document.executeCommand({ id: 'doc.command.format-text', story, patch: { italic: true } }, body)
+    const before = copy(document.getModel()), state = copy(document.getInputState()), depth = history(studio, document.id).undo
+    const { id, ...params } = pageCommand({ ...before.page, width: 500 })
+    assert.equal(studio.executeCommandSync(id, { ...params, ...(explicitBody ? { selection: body } : {}) }), true)
+    assert.equal(document.getModel().page.width, 500); assert.deepEqual(document.getModel().sectionHeaderFooters, before.sectionHeaderFooters)
+    assert.equal(history(studio, document.id).undo, depth + 1)
+    assert.deepEqual(document.getInputState().location, state.location)
+    assert.equal(document.getInputState().valid, !explicitBody)
+    assert.deepEqual(document.getInputMarks(), explicitBody ? {} : state.marks)
+  }
+})
+
+test('page setup with an emptied auxiliary block host preserves nonempty stale coordinates and cannot revive its input session', () => {
+  const { studio, document } = open(sourceModel('page-empty-auxiliary'))
+  const paragraph = { ...docModel.createParagraph('Removed note paragraph'), id: 'page-empty-note-p' }
+  const noteId = document.insertFootnote(0, codec.encodeDocumentBody({ blocks: [paragraph], runs: [], paragraphs: [], metadata: {} }))
+  const host = { kind: 'note', noteKind: 'footnote', noteId }, caret = range(paragraph.id)
+  document.setInputSelection(caret, undefined, host)
+  document.mutate('Empty auxiliary content', 'page-test-empty-note', model => {
+    model.footnotes[noteId] = { ...model.footnotes[noteId], text: '', content: { blocks: [], runs: [], paragraphs: [], metadata: {} } }
+  })
+  const state = copy(document.getInputState()), before = copy(document.getModel()), depth = history(studio, document.id).undo
+  assert.equal(state.valid, false); assert.deepEqual(state.location.selection, caret)
+  const published = []
+  const subscription = document.onInputStateChanged(event => published.push(copy(event)))
+  const result = document.executeCommand({ ...pageCommand({ ...before.page, width: 500 }), host }, caret)
+  subscription.dispose()
+  assert.equal(result.changed, true); assert.equal(result.selectionCurrent, false)
+  assert.ok(result.selection.anchor.blockId); assert.ok(result.selection.focus.blockId)
+  assert.equal(document.getModel().page.width, 500); assert.deepEqual(document.getModel().footnotes, before.footnotes)
+  assert.equal(history(studio, document.id).undo, depth + 1)
+  const current = document.getInputState()
+  assert.equal(current.valid, false); assert.deepEqual(current.location.selection, caret)
+  assert.ok(published.every(event => event.state?.location.kind !== 'body'
+    || event.state.location.selection.anchor.blockId && event.state.location.selection.focus.blockId))
+})

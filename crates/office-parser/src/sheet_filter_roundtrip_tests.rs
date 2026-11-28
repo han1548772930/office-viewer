@@ -16,7 +16,7 @@ fn rewrite(bytes: &[u8], edit: impl Fn(String) -> String) -> Vec<u8> {
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut content = Vec::new();
         entry.read_to_end(&mut content).unwrap();
         if name == "xl/worksheets/sheet1.xml" { content = edit(String::from_utf8(content).unwrap()).into_bytes(); }

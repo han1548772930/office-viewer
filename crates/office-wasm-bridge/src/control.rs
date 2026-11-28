@@ -57,6 +57,8 @@ pub enum TaskKind {
     Filter,
     ChartStatistics,
     SlicerMembers,
+    CheckboxCells,
+    ValidationListQuery,
     Layout,
 }
 

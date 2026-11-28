@@ -63,7 +63,7 @@ test('paste rejects changed authors/resources, foreign units, duplicate IDs and 
   chart.options.wordCloud = { maskImageId: image.id }; workbook.metadata = { chartImageResources: { [image.id]: image } }
   const copied = captureChartObjectClipboard(workbook, target()), input = { unitId: workbook.id, sheetId: destination.id, newChartId: 'pasted' }
   const before = JSON.stringify(workbook)
-  assert.throws(() => chartObjectPasteDefinition(workbook, copied, { ...input, unitId: 'foreign' }), /跨工作簿/)
+  assert.throws(() => chartObjectPasteDefinition(workbook, copied, { ...input, unitId: 'foreign' }), /目标工作簿/)
   assert.throws(() => chartObjectPasteDefinition(workbook, copied, { ...input, newChartId: chart.id }), /已经存在/)
   assert.throws(() => chartObjectPasteDefinition(workbook, copied, { ...input, clipboardId: 'replaced' }), /剪贴板已更新/)
   assert.throws(() => chartObjectPasteDefinition(workbook, copied, { ...input, position: { x: NaN, y: 0 } }), RangeError)

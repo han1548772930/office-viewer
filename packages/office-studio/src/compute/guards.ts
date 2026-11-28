@@ -5,6 +5,8 @@ import { isUnsignedCount, isWasmTaskMetrics, matchesWasmTaskControl } from '../p
 import type { WasmTaskControl } from '../platform/wasm/task-protocol.ts'
 import { readChartStatisticsOutput } from './chart-results.ts'
 import { readSlicerMembersOutput } from './slicer-member-results.ts'
+import { readCheckboxCellsOutput } from './checkbox-cell-results.ts'
+import { readValidationListQueryOutput } from './validation-list-query-results.ts'
 
 function isFiniteOrNull(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value))
@@ -21,6 +23,8 @@ function isMetrics(value: unknown, expected: Pick<ComputeMetrics, 'inputBytes' |
     && value.estimatedPeakBytes === expected.estimatedPeakBytes
 }
 export function progressUnits(task: ComputeTask): Pick<ComputeProgress, 'total' | 'unit'> {
+  if (task.kind === 'validationListQuery') return { total: task.params.rowCount, unit: 'rows' }
+  if (task.kind === 'checkboxCells') return { total: task.params.coveredCells, unit: 'cells' }
   if (task.kind === 'slicerMembers') return { total: task.params.rowCount, unit: 'rows' }
   if (task.kind === 'chartStatistics') return { total: task.params.jobs.length, unit: 'jobs' }
   if (task.kind === 'aggregate') return { total: task.values.length, unit: 'values' }
@@ -42,8 +46,12 @@ export function readResult(data: Record<string, unknown>, context: ComputeContex
   const transport = data.metrics.transport
   const chartTask = task.kind === 'chartStatistics'
   const slicerTask = task.kind === 'slicerMembers'
-  const inputBytes = chartTask || slicerTask ? memory.inputBytes : inputLength * 9
-  const inputCopies = slicerTask ? (task.params.rowCount ? 4 : 0) + 1
+  const checkboxTask = task.kind === 'checkboxCells'
+  const listQueryTask = task.kind === 'validationListQuery'
+  const inputBytes = chartTask || slicerTask || checkboxTask || listQueryTask ? memory.inputBytes : inputLength * 9
+  const inputCopies = listQueryTask ? 1 + (task.params.textByteLength ? 1 : 0) + (task.params.queryByteLength ? 1 : 0)
+    : checkboxTask ? (task.params.rangeCount ? 1 : 0) + (task.params.mergeCount ? 1 : 0) + (task.params.existingCount ? 2 : 0)
+    : slicerTask ? (task.params.rowCount ? 4 : 0) + 1
     + (task.params.textByteLength ? 1 : 0) + (task.params.dictionaryCount ? 1 : 0)
     : (inputLength ? 2 : 0) + (chartTask && task.params.rowCount ? 1 : 0)
   if (boundary.inputBytes !== inputBytes || boundary.inputCopies !== inputCopies
@@ -54,10 +62,21 @@ export function readResult(data: Record<string, unknown>, context: ComputeContex
   let outputCopies = 0
   let outputTransfers = 0
   let structuredResultMessages = 0
-  if (data.output.kind === 'aggregate') {
+  if (data.output.kind === 'validationListQuery') {
+    if (task.kind !== 'validationListQuery' || boundary.controlDtoConversions < 2) return null
+    const window = readValidationListQueryOutput(data.output, task.params)
+    if (!window) return null
+    output = window; outputBytes = window.indices.byteLength; outputCopies = outputBytes ? 1 : 0
+    outputTransfers = 1; structuredResultMessages = 1
+  } else if (data.output.kind === 'aggregate') {
     if (!isNumericStatistics(data.output.statistics, inputLength)) return null
     output = { kind: 'aggregate', statistics: data.output.statistics }
     structuredResultMessages = 1
+  } else if (data.output.kind === 'checkboxCells') {
+    if (task.kind !== 'checkboxCells' || boundary.controlDtoConversions < 2) return null
+    const plan = readCheckboxCellsOutput(data.output, task.params)
+    if (!plan) return null
+    output = plan; outputBytes = plan.runs.byteLength; outputCopies = outputBytes ? 1 : 0; outputTransfers = 1; structuredResultMessages = 1
   } else if (data.output.kind === 'chartStatistics') {
     if (task.kind !== 'chartStatistics') return null
     const chart = readChartStatisticsOutput(data.output, task.params)

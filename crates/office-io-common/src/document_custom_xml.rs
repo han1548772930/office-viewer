@@ -167,12 +167,12 @@ pub fn validate_xml(xml: &str) -> Result<(), String> {
                 elements += 1;
                 if depth == 0 { roots += 1; }
                 if elements > MAX_ELEMENTS || depth >= MAX_DEPTH || roots > 1 { return Err("DOCX_CUSTOM_XML_RESOURCE_LIMIT: XML element count/depth or root count exceeds its contract".into()); }
-                namespaces.push(&tag, reader.decoder()).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
+                namespaces.push(&tag).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
                 namespaces.namespace(tag.name(), false).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
                 let mut names = BTreeSet::new();
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
-                    let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
+                    let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
                     if !value.chars().all(xml_character) { return Err("DOCX_CUSTOM_XML_INVALID_XML: invalid attribute character".into()); }
                     if attribute.key.as_namespace_binding().is_some() { continue; }
                     let namespace = namespaces.namespace(attribute.key, true).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?.unwrap_or_default();
@@ -182,13 +182,13 @@ pub fn validate_xml(xml: &str) -> Result<(), String> {
             },
             Event::End(_) => { depth = depth.checked_sub(1).ok_or("DOCX_CUSTOM_XML_INVALID_XML: unbalanced end tag")?; namespaces.pop(); },
             Event::Text(value) => {
-                let text = value.decode().map_err(|error| error.to_string())?;
+                let text = value.as_ref();
                 if text.contains("]]>") || depth == 0 && !text.chars().all(|character| matches!(character, ' ' | '\t' | '\r' | '\n')) { return Err("DOCX_CUSTOM_XML_INVALID_XML: invalid text outside/inside XML root".into()); }
             },
             Event::CData(_) if depth == 0 => return Err("DOCX_CUSTOM_XML_INVALID_XML: CDATA outside XML root".into()),
             Event::GeneralRef(value) => {
                 if depth == 0 { return Err("DOCX_CUSTOM_XML_INVALID_XML: entity outside XML root".into()); }
-                let named = value.decode().map_err(|error| error.to_string())?;
+                let named = value.as_ref();
                 let resolved = value.resolve_char_ref().map_err(|error| error.to_string())?;
                 if resolved.is_some_and(|character| !xml_character(character)) || resolved.is_none() && quick_xml::escape::resolve_xml_entity(&named).is_none() { return Err("DOCX_CUSTOM_XML_INVALID_XML: unknown or invalid entity".into()); }
             },
@@ -200,7 +200,7 @@ pub fn validate_xml(xml: &str) -> Result<(), String> {
             },
             Event::PI(instruction) => {
                 validate_pi_target(instruction.target()).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
-                if !instruction.content().is_empty() && !instruction.content()[0].is_ascii_whitespace() { return Err("DOCX_CUSTOM_XML_INVALID_XML: invalid processing-instruction separator".into()); }
+                if !instruction.content().is_empty() && !instruction.content().as_bytes()[0].is_ascii_whitespace() { return Err("DOCX_CUSTOM_XML_INVALID_XML: invalid processing-instruction separator".into()); }
             },
             Event::Eof => break,
             _ => {},
@@ -283,9 +283,9 @@ pub fn xml_root_identity(xml: &str) -> Result<(String, Option<String>), String> 
         let event = reader.read_event().map_err(|error| error.to_string())?;
         match event {
             Event::Start(tag) | Event::Empty(tag) => {
-                namespaces.push(&tag, reader.decoder()).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
+                namespaces.push(&tag).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?;
                 let namespace = namespaces.namespace(tag.name(), false).map_err(|error| format!("DOCX_CUSTOM_XML_INVALID_XML: {error}"))?.map(str::to_owned);
-                return Ok((std::str::from_utf8(tag.local_name().as_ref()).map_err(|error| error.to_string())?.to_owned(), namespace));
+                return Ok((std::str::from_utf8(tag.local_name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned(), namespace));
             },
             Event::Eof | Event::DocType(_) => return Err("DOCX_CUSTOM_XML_INVALID_XML: missing XML root or forbidden DTD".into()),
             _ => {},

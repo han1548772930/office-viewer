@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Sheets validation cell fixture</title><style>body{margin:0}#app{height:100vh}</style></head>
+<body><div id="app"></div><script type="module">
+import { createApp, h, ref, watch } from 'vue'
+import { ConfigProvider, theme } from 'antdv-next'
+import { OfficeStudio } from '/packages/office-studio/src/api/office-studio'
+import { FOffice } from '/packages/office-studio/src/api/facade'
+import { createBlankSheet, createBlankWorkbook, createCell } from '/packages/office-studio/src/domain/model'
+import { sheetColumnWidth, sheetRowHeight, sheetRowIsAutoHeight } from '/packages/office-studio/src/domain/sheet-axis'
+import { toExcelWorkbookView } from '/packages/office-studio/src/services/excelViewAdapter'
+import { serializeValidationListItems } from '/packages/office-studio/src/features/sheet-validation/validation-engine'
+import { activeSheetValidationDropdown } from '/packages/office-studio/src/api/sheet-validation-dropdown-operations'
+import { OfficeComputeClient } from '/packages/office-studio/src/compute/client'
+import ExcelWorkbench from '/packages/office-studio/src/components/ExcelWorkbench.vue'
+const copy = value => JSON.parse(JSON.stringify(value)), area = (row, column) => ({ startRow: row, endRow: row, startCol: column, endCol: column })
+const model = createBlankWorkbook(), sheet = model.sheets[0]
+model.id = 'validation-cell-fixture'; model.name = '日期与列表'; model.calculationMode = 'manual'; model.activeSheetId = sheet.id = 'data'
+sheet.name = 'Data'; sheet.rowCount = 160; sheet.columnCount = 30; sheet.defaultColumnWidth = 180; sheet.defaultRowHeight = 32
+for (const [row, serial, pattern] of [[0, 59.125, 'dd/mm/yyyy'], [1, 60.125, 'yyyy-mm-dd hh:mm:ss'], [2, 0.125, 'yyyy-mm-dd hh:mm:ss'],
+  [3, 3000000, 'General'], [4, 45292.125, 'HH:mm:ss'], [5, 2.5, '[h]:mm:ss']]) {
+  const cell = createCell(row, 0, serial); cell.style.numberFormat = pattern; sheet.cells[`${row}:0`] = cell
+}
+sheet.cells['0:1'] = createCell(0, 1, 'Red'); sheet.cells['1:1'] = createCell(1, 1, '1'); sheet.cells['2:1'] = createCell(2, 1, 'Red')
+sheet.cells['3:1'] = createCell(3, 1, 'Red'); sheet.cells['0:3'] = createCell(0, 3, 'Red'); sheet.cells['1:3'] = createCell(1, 3, 'Green, dark')
+sheet.cells['2:3'] = createCell(2, 3, 'Blue'); sheet.cells['3:3'] = createCell(3, 3, 'Approved')
+for (const [row, value] of [[0, 0], [1, 'No'], [2, 'invalid checkbox'], [4, false], [5, 0]]) sheet.cells[`${row}:2`] = createCell(row, 2, value)
+sheet.cells['5:2'].formula = '=1-1'
+sheet.cells['0:4'] = createCell(0, 4, 1.5); sheet.cells['1:4'] = createCell(1, 4, 2)
+sheet.cells['0:5'] = createCell(0, 5, 'Red'); sheet.cells['1:5'] = createCell(1, 5, true)
+sheet.dataValidations = Array.from({ length: 6 }, (_, row) => ({ id: `date-${row}`, type: row < 4 ? 'date' : 'time', ranges: [area(row, 0)],
+  metadata: { showTime: row === 1 || row === 2, retained: ['fixture', row] } })).concat([
+  { id: 'multiple', type: 'listMultiple', ranges: [area(0, 1)], formula1: serializeValidationListItems(['Red', 'Green, dark', 'It"s blue', '1', '=1+1']), formula2: '#ff0000,#00ff00,#0000ff,,', renderMode: 'custom' },
+  { id: 'single', type: 'list', ranges: [area(1, 1)], formula1: serializeValidationListItems(['1', '=1+1', 'Green, dark']), renderMode: 'custom' },
+  { id: 'required', type: 'listMultiple', ranges: [area(2, 1)], formula1: serializeValidationListItems(['Red', 'Blue']), allowBlank: false },
+  { id: 'reference', type: 'listMultiple', ranges: [area(3, 1)], formula1: '=$D$1:$D$2' },
+  { id: 'checkbox-default', type: 'checkbox', ranges: [area(0, 2)] },
+  { id: 'checkbox-custom', type: 'checkbox', ranges: [area(1, 2)], formula1: 'Yes', formula2: 'No' },
+  { id: 'checkbox-invalid', type: 'checkbox', ranges: [area(2, 2)] },
+  { id: 'checkbox-required', type: 'checkbox', ranges: [area(3, 2)], allowBlank: false },
+  { id: 'checkbox-boolean', type: 'checkbox', ranges: [area(4, 2)], formula1: 'TRUE', formula2: 'FALSE' },
+  { id: 'checkbox-formula', type: 'checkbox', ranges: [area(5, 2)] },
+  ...[0, 1].map(row => ({ id: `quantity-${row}`, type: 'whole', ranges: [area(row, 4)], operator: 'between', formula1: '1', formula2: '5',
+    showInputMessage: true, promptTitle: 'Quantity', prompt: 'Enter an integer from 1 through 5', errorTitle: 'Invalid quantity', error: 'Use an integer from 1 through 5' })),
+  { id: 'dynamic-hidden', type: 'listMultiple', ranges: [area(0, 5)], formula1: '=IF($F$2,$D$1:$D$2,$D$3:$D$4)', showDropDown: false, renderMode: 'text' },
+])
+const other = createBlankSheet('Other'); other.id = 'other'; other.rowCount = 160; other.columnCount = 30; model.sheets.push(other)
+const studio = new OfficeStudio({ workbook: model, currentUserId: 'local-user' }), api = FOffice.newAPI(studio)
+const dark = ref(false), variant = ref('classic'), view = ref(toExcelWorkbookView(studio.editor.workbook.model)), notices = [], canceled = new Set(), bulkProgress = []
+const active = () => api.getActiveWorkbook(), current = () => studio.getWorkbookModel(studio.activeWorkbookId)
+// Observe the real production client/Worker path; no replacement matcher or
+// protocol fallback is installed. These browser drafts require the new WASM build.
+const listQueries = [], submitCompute = OfficeComputeClient.prototype.submit
+let switchAtListProgress = false
+OfficeComputeClient.prototype.submit = function (task, options) {
+  if (task.kind !== 'validationListQuery') return submitCompute.call(this, task, options)
+  const record = { params: copy(task.params), documentId: options.documentId, modelRevision: options.modelRevision,
+    inputBytes: task.offsets.byteLength + task.textBytes.byteLength + task.queryBytes.byteLength,
+    progress: [], signal: options.signal, result: false }
+  listQueries.push(record); if (listQueries.length > 8) listQueries.shift()
+  const job = submitCompute.call(this, task, { ...options, onProgress: progress => {
+    record.progress.push(copy(progress)); if (record.progress.length > 128) record.progress.shift()
+    if (switchAtListProgress) { switchAtListProgress = false; active().getSheetBySheetId('other').activate() }
+    options.onProgress?.(progress)
+  } })
+  return { ...job, promise: job.promise.then(result => { record.result = true; record.metrics = copy(result.metrics); return result },
+    error => { record.error = error.code; throw error }) }
+}
+watch(() => studio.editor.workbook.model, value => { view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
+studio.events.addEvent('BeforeCommandExecute', event => { if (canceled.has(event.id)) event.cancel = true })
+function update(label, mutate) { return studio.commitWorkbook(studio.activeWorkbookId, label, mutate, { preserveStyleInheritance: true }) }
+window.validationCellFixture = {
+  snapshot: () => copy(current()),
+  rowHeight: row => sheetRowHeight(current().sheets.find(sheet => sheet.id === 'data'), row),
+  rowAutomatic: row => sheetRowIsAutoHeight(current().sheets.find(sheet => sheet.id === 'data'), row),
+  columnWidth: column => sheetColumnWidth(current().sheets.find(sheet => sheet.id === 'data'), column),
+  history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
+  notifications: () => copy(notices), appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  cancelCommand: (id, value) => { if (value) canceled.add(id); else canceled.delete(id) },
+  command: (id, input) => studio.executeCommandSync(id, input),
+  commandAsync: (id, input, cancelAtPhase) => {
+    const controller = new AbortController(); bulkProgress.length = 0
+    return studio.executeCommand(id, { ...input, signal: controller.signal, onProgress: progress => {
+      bulkProgress.push(copy(progress)); if (progress.phase === cancelAtPhase) controller.abort()
+    } })
+  },
+  bulkProgress: () => copy(bulkProgress),
+  showDropdown: (row, column) => studio.executeCommandSync('sheet.operation.show-data-validation-dropdown', { unitId: studio.activeWorkbookId, subUnitId: 'data', row, column }),
+  hideDropdown: () => studio.executeCommandSync('sheet.operation.hide-data-validation-dropdown', {}),
+  activeDropdown: () => copy(activeSheetValidationDropdown(studio) ?? null),
+  listQueries: () => listQueries.map(({ signal, ...record }) => ({ ...copy(record), aborted: signal?.aborted === true })),
+  switchAtListProgress: () => { switchAtListProgress = true },
+  longList: (count = 4096) => {
+    const labels = Array.from({ length: count }, (_, index) => `候选 ${String(index).padStart(6, '0')}${index === count - 1 ? ' 汉字👩‍💻' : ''}`)
+    active().getSheetBySheetId('data').getRange('B1').setValue('')
+    const rule = current().sheets.find(sheet => sheet.id === 'data').dataValidations.find(rule => rule.id === 'multiple')
+    studio.executeCommandSync('sheet.command.replace-data-validation', { unitId: studio.activeWorkbookId, sheetId: 'data',
+      rule: { ...rule, formula1: serializeValidationListItems(labels), formula2: labels.map((_, index) => ['#ff0000', '#008000', '#0000ff'][index % 3]).join(',') } })
+    studio.editor.history.clear(studio.activeWorkbookId); listQueries.length = 0
+    return { first: labels[0], last: labels.at(-1), count }
+  },
+  undo: () => active().undo(), redo: () => active().redo(), reopen: () => api.createWorkbook({ ...active().save(), id: 'validation-cell-reopened' }),
+  switchSheet: () => active().getSheetBySheetId('other').activate(),
+  clearHistory: () => studio.editor.history.clear(studio.activeWorkbookId),
+  replaceSameId: () => studio.editor.workbook.replace(copy(current())),
+  setCell: (address, value) => active().getActiveSheet().getRange(address).setValue(value),
+  formatListSource: type => {
+    studio.regionalSettings.setRegion('de-DE')
+    update('Fixture numeric list sources', model => {
+      const target = model.sheets.find(sheet => sheet.id === 'data')
+      target.cells['0:3'] = createCell(0, 3, 0.25); target.cells['0:3'].style.numberFormat = '0%'
+      target.cells['1:3'] = createCell(1, 3, 1234.5); target.cells['1:3'].style.numberFormat = '0.00'
+      target.cells['3:1'] = createCell(3, 1, '25%')
+    })
+    const rule = current().sheets.find(sheet => sheet.id === 'data').dataValidations.find(rule => rule.id === 'reference')
+    return studio.executeCommandSync('sheet.command.replace-data-validation', { unitId: studio.activeWorkbookId, sheetId: 'data',
+      rule: { ...rule, type, formula1: '=INDEX($D$1:$D$2,0,1)', formula2: '#ff0000,#008000', renderMode: 'custom' } })
+  },
+  setDateSystem: value => update('Fixture calendar', model => { model.date1904 = value }),
+  stopDate: () => update('Fixture STOP', model => Object.assign(model.sheets[0].dataValidations[0], { operator: 'equal', formula1: '59.125', errorStyle: 'stop', errorTitle: 'Date rule', error: 'Keep original date' })),
+  protectSource: () => update('Fixture View source', model => { model.sheets[0].rangeProtectionRules = [{ id: 'source', ranges: [area(0, 3), area(1, 3)], ownerUserId: 'owner', allowedUserIds: [], viewState: 'noOneElseCanView', editState: 'onlyMe' }] }),
+  protectRule: hidden => update('Fixture remote rule permission', model => { const target = model.sheets[0]; target.dataValidations.find(rule => rule.id === 'multiple').ranges.push(area(14, 13));
+    target.rangeProtectionRules = [{ id: 'remote-rule', ranges: [area(14, 13)], ownerUserId: 'owner', allowedUserIds: [], viewState: hidden ? 'noOneElseCanView' : 'othersCanView', editState: 'onlyMe' }] }),
+  freezeMerge: () => update('Fixture frozen merge', model => { const target = model.sheets[0]; target.frozenRows = 1; target.frozenCols = 1; target.mergedRanges = [{ startRow: 0, endRow: 1, startCol: 0, endCol: 1 }] }),
+  freezeCheckbox: () => update('Fixture frozen checkbox', model => { const target = model.sheets[0]; target.frozenRows = 1; target.frozenCols = 3;
+    target.mergedRanges = [{ startRow: 0, endRow: 1, startCol: 2, endCol: 3 }] }),
+  protectCheckbox: hidden => update('Fixture checkbox permission', model => { model.sheets[0].rangeProtectionRules = [{ id: 'checkbox', ranges: [area(0, 2)],
+    ownerUserId: 'peer', allowedUserIds: [], viewState: hidden ? 'noOneElseCanView' : 'othersCanView', editState: 'onlyMe' }] }),
+  switchAfterChange: () => { const subscription = studio.events.addEvent('SheetValueChanged', () => { subscription.dispose(); active().getSheetBySheetId('other').activate() }) },
+  switchAfterRule: () => { const subscription = studio.events.addEvent('CommandExecuted', event => {
+    if (!['sheet.command.replace-data-validation', 'sheet.command.replace-data-validation-async'].includes(event.id)) return
+    subscription.dispose(); active().getSheetBySheetId('other').activate()
+  }) },
+}
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+    canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
+    'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'zh-CN'),
+    onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: value => notices.push(copy(value)),
+  }),
+}) }).use(studio.pinia).mount('#app')
+</script></body></html>

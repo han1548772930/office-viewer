@@ -147,14 +147,7 @@ fn project_threshold(value: &mut Value, origin: FormulaAnchor, target: FormulaAn
     value["value"] = Value::String(projected);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReferenceKind { Cell, WholeRow, WholeColumn }
-
-#[derive(Debug, Clone)]
-struct Reference {
-    start: usize, end: usize, prefix: String, kind: ReferenceKind,
-    row: u32, col: u32, absolute_row: bool, absolute_col: bool,
-}
+pub(super) use office_io_common::formula_references::{Reference, ReferenceKind, references};
 
 fn shifted(value: u32, absolute: bool, before: u32, after: u32, maximum: u32) -> Option<u32> {
     let next = i64::from(value) + if absolute { 0 } else { i64::from(after) - i64::from(before) };
@@ -210,109 +203,6 @@ fn reference_address(reference: &Reference, row: u32, col: u32) -> String {
     }
 }
 
-fn identifier(character: char) -> bool { character.is_alphanumeric() || matches!(character, '_' | '.' | '\\') }
-fn qualifier_end(source: &str, start: usize) -> Option<usize> {
-    let first = source[start..].chars().next()?;
-    if !first.is_alphabetic() && !matches!(first, '_' | '\\') { return None }
-    let mut cursor = start;
-    while let Some(character) = source[cursor..].chars().next() {
-        if !identifier(character) { break }
-        cursor += character.len_utf8();
-    }
-    (source.as_bytes().get(cursor) == Some(&b'!')).then_some(cursor + 1)
-}
-
-fn read_address(source: &str, start: usize) -> Option<Reference> {
-    let mut cursor = start;
-    let bytes = source.as_bytes();
-    let absolute_first = bytes.get(cursor) == Some(&b'$');
-    if absolute_first { cursor += 1; }
-    let letters = cursor;
-    while bytes.get(cursor).is_some_and(u8::is_ascii_alphabetic) { cursor += 1; }
-    if cursor - letters > 3 { return None }
-    let has_column = cursor > letters;
-    let col = if has_column {
-        source[letters..cursor].bytes().fold(0u32, |value, letter| value * 26 + u32::from(letter.to_ascii_uppercase() - b'A') + 1).checked_sub(1)?
-    } else { 0 };
-    let absolute_row = if has_column { bytes.get(cursor) == Some(&b'$') } else { absolute_first };
-    if has_column && absolute_row { cursor += 1; }
-    let digits = cursor;
-    while bytes.get(cursor).is_some_and(u8::is_ascii_digit) { cursor += 1; }
-    let has_row = cursor > digits;
-    if !has_row && (!has_column || absolute_row) { return None }
-    if source[cursor..].chars().next().is_some_and(identifier) || source[cursor..].trim_start().starts_with('(') { return None }
-    let row = if has_row { source[digits..cursor].parse::<u32>().ok()?.checked_sub(1)? } else { 0 };
-    if row > MAX_ROW || col > MAX_COLUMN { return None }
-    Some(Reference { start, end: cursor, prefix: String::new(),
-        kind: if !has_column { ReferenceKind::WholeRow } else if !has_row { ReferenceKind::WholeColumn } else { ReferenceKind::Cell },
-        row, col, absolute_row: !has_row || absolute_row, absolute_col: !has_column || absolute_first })
-}
-
-fn references(source: &str) -> Vec<Reference> {
-    let mut result = Vec::new();
-    let mut cursor = 0;
-    while cursor < source.len() {
-        let character = source[cursor..].chars().next().unwrap();
-        let start = cursor;
-        if character == '"' {
-            cursor += 1;
-            while cursor < source.len() {
-                if source.as_bytes()[cursor] == b'"' {
-                    cursor += 1;
-                    if source.as_bytes().get(cursor) == Some(&b'"') { cursor += 1; } else { break }
-                } else { cursor += source[cursor..].chars().next().unwrap().len_utf8(); }
-            }
-            continue;
-        }
-        if character == '\'' {
-            cursor += 1;
-            while cursor < source.len() {
-                if source.as_bytes()[cursor] == b'\'' {
-                    cursor += 1;
-                    if source.as_bytes().get(cursor) == Some(&b'\'') { cursor += 1; continue }
-                    if source.as_bytes().get(cursor) == Some(&b'!') {
-                        if let Some(mut reference) = read_address(source, cursor + 1) {
-                            reference.start = start; reference.prefix = source[start..cursor + 1].to_owned(); cursor = reference.end; result.push(reference);
-                        } else { cursor += 1; }
-                    }
-                    break;
-                }
-                cursor += source[cursor..].chars().next().unwrap().len_utf8();
-            }
-            continue;
-        }
-        if character == '[' {
-            let mut nesting = 1;
-            cursor += 1;
-            while cursor < source.len() && nesting > 0 {
-                let next = source[cursor..].chars().next().unwrap();
-                if next == '[' { nesting += 1; } else if next == ']' { nesting -= 1; }
-                cursor += next.len_utf8();
-            }
-            if !source[..start].chars().next_back().is_some_and(identifier) {
-                if let Some(address_start) = qualifier_end(source, cursor) {
-                    if let Some(mut reference) = read_address(source, address_start) {
-                        reference.start = start; reference.prefix = source[start..address_start].to_owned(); cursor = reference.end; result.push(reference);
-                    }
-                }
-            }
-            continue;
-        }
-        if source[..cursor].chars().next_back().is_some_and(identifier) { cursor += character.len_utf8(); continue }
-        let address_start = qualifier_end(source, cursor).unwrap_or(cursor);
-        if let Some(mut reference) = read_address(source, address_start) {
-            reference.start = cursor; reference.prefix = source[cursor..address_start].to_owned(); cursor = reference.end; result.push(reference);
-        } else { cursor += character.len_utf8(); }
-    }
-    // A bare name or numeric literal is not an axis reference. Both endpoints
-    // must describe the same whole axis and be joined by the range operator.
-    let axis_ranges = result.iter().enumerate().map(|(index, reference)| {
-        reference.kind == ReferenceKind::Cell
-            || index > 0 && result[index - 1].kind == reference.kind && source[result[index - 1].end..reference.start].trim() == ":"
-            || index + 1 < result.len() && result[index + 1].kind == reference.kind && source[reference.end..result[index + 1].start].trim() == ":"
-    }).collect::<Vec<_>>();
-    result.into_iter().zip(axis_ranges).filter_map(|(reference, keep)| keep.then_some(reference)).collect()
-}
 
 #[cfg(test)]
 mod tests {

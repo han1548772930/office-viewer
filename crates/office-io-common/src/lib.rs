@@ -1,7 +1,6 @@
 //! Shared, pure Office geometry and worksheet-dimension contracts.
 
 use quick_xml::{Reader, XmlVersion};
-use quick_xml::encoding::Decoder;
 use quick_xml::events::{BytesStart, Event};
 
 mod filter_projection;
@@ -21,6 +20,8 @@ pub mod chart_color;
 pub mod chart_xml;
 mod xml_namespaces;
 pub mod excel_date;
+pub mod formula_references;
+pub mod sheet_formula_calendar_source;
 pub mod document_table_source;
 pub mod document_numbering_source;
 pub mod document_note_source;
@@ -48,8 +49,8 @@ pub fn worksheet_axis_fingerprint(xml: &str) -> Result<String, String> {
     let mut fingerprint = WorksheetAxisFingerprint::default();
     loop {
         match reader.read_event() {
-            Ok(Event::Start(element)) => fingerprint.start(&element, reader.decoder(), false)?,
-            Ok(Event::Empty(element)) => fingerprint.start(&element, reader.decoder(), true)?,
+            Ok(Event::Start(element)) => fingerprint.start(&element, false)?,
+            Ok(Event::Empty(element)) => fingerprint.start(&element, true)?,
             Ok(Event::End(_)) => fingerprint.end()?,
             Ok(Event::DocType(_)) => return Err("Office worksheet DTDs are unsupported".into()),
             Ok(Event::Eof) => break,
@@ -77,10 +78,10 @@ impl WorksheetAxisFingerprint {
     fn hash_text(&mut self, text: &str) {
         for byte in text.bytes() { self.hash ^= u64::from(byte); self.hash = self.hash.wrapping_mul(0x100000001b3); }
     }
-    pub fn start(&mut self, element: &BytesStart<'_>, decoder: Decoder, empty: bool) -> Result<(), String> {
+    pub fn start(&mut self, element: &BytesStart<'_>, empty: bool) -> Result<(), String> {
         if self.path.len() >= 256 { return Err("Office worksheet nesting exceeds the parser limit".into()); }
         let name = element.local_name();
-        let allowed: &[&str] = match name.as_ref() {
+        let allowed: &[&str] = match name.as_ref().as_bytes() {
             b"sheetFormatPr" if self.path_is(&[b"worksheet"]) => &["defaultColWidth", "defaultRowHeight", "customHeight", "zeroHeight"],
             b"col" if self.path_is(&[b"worksheet", b"cols"]) => &["min", "max", "width", "customWidth", "hidden"],
             b"row" if self.path_is(&[b"worksheet", b"sheetData"]) => &["r", "ht", "customHeight", "hidden"],
@@ -90,16 +91,16 @@ impl WorksheetAxisFingerprint {
             let mut attributes = Vec::new();
             for attribute in element.attributes() {
                 let attribute = attribute.map_err(|error| error.to_string())?;
-                let key = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?;
+                let key = std::str::from_utf8(attribute.key.as_ref().as_bytes()).map_err(|error| error.to_string())?;
                 if !allowed.contains(&key) { continue; }
-                let value = attribute.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder).map_err(|error| error.to_string())?;
+                let value = attribute.normalized_value(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
                 let flag = matches!(key, "customHeight" | "customWidth" | "zeroHeight" | "hidden");
                 let normalized = if flag {
                     let enabled = match value.as_ref() { "1" | "true" => true, "0" | "false" => false, _ => return Err("Invalid Office axis flag".into()) };
                     if key == "zeroHeight" { self.zero_height = enabled; }
                     // Under zeroHeight=1 an explicit visible row overrides the
                     // default; its false hidden flag is meaningful.
-                    if !enabled && !(name.as_ref() == b"row" && key == "hidden" && self.zero_height) { continue; }
+                    if !enabled && !(name.as_ref().as_bytes() == b"row" && key == "hidden" && self.zero_height) { continue; }
                     if enabled { "1".to_owned() } else { "0".to_owned() }
                 } else {
                     let number: f64 = value.parse().map_err(|_| "Invalid Office axis number".to_owned())?;
@@ -108,14 +109,14 @@ impl WorksheetAxisFingerprint {
                 };
                 attributes.push((key.to_owned(), normalized));
             }
-            if name.as_ref() != b"row" || attributes.iter().any(|(key, _)| key != "r") {
+            if name.as_ref().as_bytes() != b"row" || attributes.iter().any(|(key, _)| key != "r") {
                 attributes.sort();
-                self.hash_text(std::str::from_utf8(name.as_ref()).map_err(|error| error.to_string())?);
+                self.hash_text(std::str::from_utf8(name.as_ref().as_bytes()).map_err(|error| error.to_string())?);
                 for (key, value) in attributes { self.hash_text("|"); self.hash_text(&key); self.hash_text("="); self.hash_text(&value); }
                 self.hash_text(";");
             }
         }
-        if !empty { self.path.push(name.as_ref().to_vec()); }
+        if !empty { self.path.push(name.as_ref().as_bytes().to_vec()); }
         Ok(())
     }
     pub fn end(&mut self) -> Result<(), String> {

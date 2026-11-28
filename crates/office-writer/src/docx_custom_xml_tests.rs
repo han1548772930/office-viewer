@@ -85,7 +85,8 @@ fn remapping_preserves_prefixed_relationships_comments_pi_and_external_urls() {
     let (bytes, warnings) = crate::export_docx_bytes(&value.to_string()).unwrap();
     assert!(warnings.iter().any(|warning| warning.code == "DOCX_CUSTOM_XML_PART_RELOCATED"));
     let mut archive = ZipArchive::new(Cursor::new(&bytes)).unwrap();
-    let names = archive.file_names().filter(|name| name.starts_with("customXml/office-studio-data/_rels/")).map(str::to_owned).collect::<Vec<_>>();
+    let names = archive.file_names().map(|name| name.unwrap().into_owned())
+        .filter(|name| name.starts_with("customXml/office-studio-data/_rels/")).collect::<Vec<_>>();
     assert_eq!(names.len(), 1);
     let xml = part(&bytes, &names[0]);
     assert!(xml.contains("<!-- literal <!DOCTYPE remains> -->")); assert!(xml.contains("<?keep x?>"));

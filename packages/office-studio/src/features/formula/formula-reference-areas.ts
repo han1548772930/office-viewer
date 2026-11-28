@@ -32,6 +32,7 @@ function columnLabel(column: number): string {
   return result
 }
 function readQualifier(source: string, start: number): Qualifier | undefined {
+  if (source[start - 1] === '#') return undefined
   let text: string | undefined, end = start
   if (source[start] === "'") {
     end += 1
@@ -188,6 +189,13 @@ export interface FormulaSheetQualifier {
   sheetName: string
   external: boolean
   threeDimensional: boolean
+}
+
+/** Shared qualifier reader for reference and identifier transformations. */
+export function readFormulaSheetQualifier(source: string, start: number): (FormulaSheetQualifier & { end: number }) | undefined {
+  if (!Number.isSafeInteger(start) || start < 0 || start >= source.length || identifier(source[start - 1])) return undefined
+  const qualifier = readQualifier(source, start)
+  return qualifier ? { sheetName: qualifier.sheetName, external: qualifier.external, threeDimensional: qualifier.threeDimensional, end: qualifier.end } : undefined
 }
 
 /** The same lexical boundary also covers sheet-local names, which are not A1 reference areas. */

@@ -1,6 +1,6 @@
 # SHEET-13 多选列表 CSV 校验
 
-状态：2026-11-27 已修正多选校验的 CSV 解析错接，真实命令草稿未运行；多选弹层与 Canvas 标签未完成，SHEET-13 未验收。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
+状态：2026-11-27 修正多选校验的 CSV 解析错接；2026-11-28 已写入专用列表内容命令、受控多选弹层、搜索/顺序/清除/重开态、Canvas 标签和规则项/颜色编辑，见 [完整控件记录](SHEET-13-validation-cell-input-2026-11-28.md)。新草稿均未运行，SHEET-13 未验收。固定来源为 `E:\rust_test\univer`，Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`。
 
 ## 固定版行为
 
@@ -23,7 +23,7 @@
 
 例如单个 `Green, dark` 标签的单元格 CSV 为 `"Green, dark"`，公式列表为 `""Green, dark""`。直接把单元格 CSV 传给现有 parser 会误把字段引号当成公式包装移除，标签再次被拆为两项。
 
-本轮把 `listMultiple` 分支的 `String(actual).split(',')` 替换为现有 parser，并在调用处说明包装层。逗号、转义引号和标签自身的首尾引号由同一 CSV 解析处理；单选仍比较整个标签，大小写归一化和逐项候选匹配沿用现有逻辑。没有新增 parser、helper、JSON 兼容层或 UI，也没有改动已有公式列表协议。
+2026-11-27 把 `listMultiple` 分支的 `String(actual).split(',')` 替换为现有 parser，并在调用处说明包装层。逗号、转义引号和标签自身的首尾引号由同一 CSV 解析处理；单选仍比较整个标签，大小写归一化和逐项候选匹配沿用现有逻辑。这项历史校验小修没有新增 parser 或 JSON 兼容层；2026-11-28 的专用 planner/owner/UI 同样复用此 CSV 协议。
 
 真实内容入口为 [sheet-cell-input-commands.ts](../../packages/office-studio/src/api/sheet-cell-input-commands.ts)，调用 [sheet-cell-input-command.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-cell-input-command.ts) 的输入解析、权限和数据验证，再由统一提交写入工作簿历史。候选规则更新使用既有 Facade 数据验证命令。
 
@@ -37,6 +37,6 @@
 
 ## 未完成与差异
 
-[SpreadsheetCanvas.vue](../../packages/office-studio/src/components/spreadsheet/SpreadsheetCanvas.vue) 的 Ant AutoComplete 选择仍调用 `nativeInput.replace` 整段替换输入；没有多选点击切换、原始 CSV 写入、候选顺序去重、重开选中态或保持多选弹层。单个含逗号标签的普通候选点击也未转义为多选单元格 CSV，本轮校验修正不能证明该 UI 闭环可用。
+[SpreadsheetCanvas.vue](../../packages/office-studio/src/components/spreadsheet/SpreadsheetCanvas.vue) 已接专用 Ant 列表覆盖层，多选直接调用 typed 选择命令，按完整候选顺序序列化原始 CSV、去重、保持弹层并重建当前会话；单选完整标签按文本保存，重开恢复候选匹配态。存在此控件时旧 AutoComplete 候选为空，不再整段普通文字替换。实现及新契约/浏览器草稿见完整控件记录，尚未运行验收。
 
-固定版的彩色多选标签绘制、搜索和弹层交互未完成。本地 CSV 与固定版 JSON 数组有明确表示差异，未添加跨协议互操作。第三方 XLSX 样本、规则修改后候选引用动态变化、权限与协作、主题切换、焦点恢复、输入法以及大范围性能均未验收；SHEET-13 保持部分实现。
+彩色标签绘制、搜索、清除、列表项颜色/顺序编辑与共享公式引用的动态/命名候选已写入；2026-11-27 续接见 [下拉操作与动态源记录](SHEET-13-checkbox-feedback-dropdown-2026-11-28.md)。标签自动尺寸、旋转/缩进、纯 INDEX authoring、完整数组/spill、候选数字格式和大源 Worker 仍需推进。本地 CSV 与固定版 JSON 数组有明确表示差异，未添加跨协议互操作。第三方 XLSX 样本、权限与协作、主题切换、焦点恢复、Windows IME 和大范围性能均未验收；SHEET-13 保持部分实现。

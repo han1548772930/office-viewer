@@ -50,7 +50,7 @@ fn rewrite_part(bytes: &[u8], path: &str, xml: &str) -> Vec<u8> {
     let mut found = false;
     for index in 0..archive.len() {
         let mut source = archive.by_index(index).unwrap();
-        let name = source.name().to_owned();
+        let name = source.name().unwrap().into_owned();
         writer.start_file(&name, SimpleFileOptions::default()).unwrap();
         if name == path { found = true; writer.write_all(xml.as_bytes()).unwrap(); }
         else { std::io::copy(&mut source, &mut writer).unwrap(); }

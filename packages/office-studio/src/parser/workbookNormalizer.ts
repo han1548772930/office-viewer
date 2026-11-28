@@ -13,6 +13,8 @@ import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-eng
 import { normalizeSlicerCaches } from '../features/slicer/slicer-connections.ts'
 import { importSlicerStyleResources } from '../features/slicer/slicer-style-resources.ts'
 import { applySheetOutlineImport, reconcileSheetOutlineImportedVisibility } from '../features/sheet-outline/sheet-outline-import.ts'
+import { applyWorkbookFormulaCalendarSource, normalizeWorkbookFormulaCalendarSource } from './workbookFormulaCalendar.ts'
+import { conditionalFormatUtf8Size } from '../features/conditional-formatting/conditional-format-source-budget.ts'
 
 function normalizeCell(value: unknown): SpreadsheetCell {
   const raw = record(value)
@@ -207,7 +209,7 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     : undefined
   const normalized: SpreadsheetSheet = {
     id: id+'-sheet-'+index, name: text(raw.name, 'Sheet'+(index+1)),
-    visible: raw.visible !== 'hidden' && raw.visible !== 'veryHidden' && raw.visible !== false,
+    visible: raw.visible !== false && !['hidden', 'veryhidden'].includes(text(raw.visible).toLowerCase()),
     cells,
     mergedRanges: array(raw.mergedRanges).map((value) => {
       const range = record(value)
@@ -232,7 +234,8 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
     rowCount: Math.max(rowCount, axis.rowExtent, finite(dimensions.lastRow, -1) + 1, autoFilter ? autoFilter.range.endRow + 1 : 0),
     columnCount: Math.max(columnCount, axis.columnExtent, finite(dimensions.lastCol, -1) + 1, autoFilter ? autoFilter.range.endCol + 1 : 0),
     zoom: positive(raw.zoom, 100) / 100,
-    metadata: { source: raw, axisDimensions: { sourceUnit: axis.compatibility, valuesKeptForLegacyView: axis.compatibility === 'legacyUnspecified' } },
+    metadata: { source: raw, ...(text(raw.visible).toLowerCase() === 'veryhidden' ? { hiddenState: 'veryHidden' } : {}),
+      axisDimensions: { sourceUnit: axis.compatibility, valuesKeptForLegacyView: axis.compatibility === 'legacyUnspecified' } },
   }
   const outlineImport = applySheetOutlineImport(normalized, raw)
   const filterExtension = record(record(raw.sourceAxisDimensions).projectAutoFilterExtension)
@@ -306,6 +309,8 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
 }
 
 function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTableModel[] {
+  let sourceBytes = 0
+  const positiveId = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff ? value : undefined
   return array(value).flatMap((entry): SheetTableModel[] => {
     const raw = record(entry)
     const sheet = sheets[finite(raw.sheetIndex)] ?? sheets.find(candidate => candidate.name === text(raw.sheetName))
@@ -317,13 +322,25 @@ function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTable
     const columns = array(raw.columns).flatMap((column, index) => {
       const item = record(column)
       const name = text(item.name)
-      return name ? [{ id: text(item.id) || `${text(raw.id)}-column-${index + 1}`, name }] : []
+      const officeColumnId = positiveId(item.officeColumnId)
+      return name ? [{ id: text(item.id) || `${text(raw.id)}-column-${index + 1}`, name, ...(officeColumnId ? { officeColumnId } : {}) }] : []
     })
     if (!sheet || range.endCol < range.startCol || range.endRow < range.startRow || !text(raw.name) || !columns.length) return []
+    const source = record(raw.officeSource)
+    let officeSource: SheetTableModel['officeSource']
+    if (raw.officeSource !== undefined && raw.officeSource !== null) {
+      if (typeof source.partName !== 'string' || !source.partName || typeof source.xml !== 'string' || !source.xml) throw new TypeError('TABLE_SOURCE_INVALID: 结构化表格来源无效。')
+      const bytes = conditionalFormatUtf8Size(source.xml, 16 * 1024 * 1024)
+      if (bytes > 16 * 1024 * 1024 || sourceBytes + bytes > 64 * 1024 * 1024) throw new RangeError('TABLE_SOURCE_LIMIT: 结构化表格来源超过字节预算。')
+      sourceBytes += bytes
+      officeSource = { partName: source.partName, xml: source.xml }
+    }
+    const officeTableId = positiveId(raw.officeTableId), officeSheetId = positiveId(raw.officeSheetId)
     return [{
       id: text(raw.id) || text(raw.name), name: text(raw.name), sheetId: sheet.id, range, columns,
       showHeaderRow: raw.showHeaderRow !== false, showTotalsRow: raw.showTotalsRow === true,
       styleName: text(raw.styleName) || 'TableStyleMedium2',
+      ...(officeTableId ? { officeTableId } : {}), ...(officeSheetId ? { officeSheetId } : {}), ...(officeSource ? { officeSource } : {}),
     }]
   })
 }
@@ -331,6 +348,7 @@ function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTable
 export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   const data = envelope.payload.data
   assertWorkbookConditionalFormatBudget(data.sheets)
+  const formulaCalendarSource = normalizeWorkbookFormulaCalendarSource(data.formulaCalendarSource)
   const id = crypto.randomUUID()
   const sheets = array(data.sheets).map((sheet, index) => normalizeSheet(sheet, index, id))
   assertWorkbookConditionalFormatBudget(sheets)
@@ -355,6 +373,7 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   if (styleImport.slicerStyles) workbook.slicerStyles = styleImport.slicerStyles
   if (styleImport.timelineStyles) workbook.timelineStyles = styleImport.timelineStyles
   if (styleImport.metadata) Object.assign(workbook.metadata!, styleImport.metadata)
+  applyWorkbookFormulaCalendarSource(workbook, data.sheets, data.tables, formulaCalendarSource)
   normalizeSlicerCaches(workbook)
   return workbook
 }

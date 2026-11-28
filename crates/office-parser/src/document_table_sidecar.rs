@@ -22,8 +22,8 @@ fn opening(xml: &str) -> Result<(usize, String, bool), String> {
     let mut reader = Reader::from_str(xml);
     loop {
         match reader.read_event().map_err(|error| error.to_string())? {
-            Event::Start(tag) => return Ok((reader.buffer_position() as usize, String::from_utf8_lossy(tag.name().as_ref()).into_owned(), false)),
-            Event::Empty(tag) => return Ok((reader.buffer_position() as usize, String::from_utf8_lossy(tag.name().as_ref()).into_owned(), true)),
+            Event::Start(tag) => return Ok((reader.buffer_position() as usize, String::from_utf8_lossy(tag.name().as_ref().as_bytes()).into_owned(), false)),
+            Event::Empty(tag) => return Ok((reader.buffer_position() as usize, String::from_utf8_lossy(tag.name().as_ref().as_bytes()).into_owned(), true)),
             Event::Eof => return Err("Native table source has no opening element".into()),
             Event::DocType(_) => return Err("Native table source must not declare a document type".into()),
             _ => {}

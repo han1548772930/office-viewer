@@ -1,6 +1,6 @@
 //! Normalized XML 1.0 namespace bindings shared by Office tree and streaming readers.
 //! quick-xml's NamespaceResolver stores raw xmlns values; normalize before adding them.
-use quick_xml::{XmlVersion, encoding::Decoder, events::BytesStart,
+use quick_xml::{XmlVersion, events::BytesStart,
     name::{Namespace, NamespaceResolver, QName, ResolveResult}};
 
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
@@ -28,14 +28,14 @@ fn ncname(value: &str) -> bool {
 }
 
 pub(crate) fn validate_qname(value: QName<'_>) -> Result<(), String> {
-    let name = std::str::from_utf8(value.as_ref()).map_err(|error| error.to_string())?;
+    let name = value.as_ref();
     let valid = match name.split_once(':') { Some((prefix, local)) => ncname(prefix) && ncname(local), None => ncname(name) };
     if !valid { return Err(format!("invalid XML qualified name: {name}")); }
     Ok(())
 }
 
-pub(crate) fn validate_pi_target(value: &[u8]) -> Result<(), String> {
-    let name = std::str::from_utf8(value).map_err(|error| error.to_string())?;
+pub(crate) fn validate_pi_target(value: &str) -> Result<(), String> {
+    let name = value;
     let mut characters = name.chars();
     if name.eq_ignore_ascii_case("xml") || !characters.next().is_some_and(|value| value == ':' || name_start(value))
         || !characters.all(|value| value == ':' || name_character(value)) { return Err("invalid XML processing-instruction target".into()); }
@@ -46,7 +46,7 @@ pub(crate) fn validate_pi_target(value: &[u8]) -> Result<(), String> {
 pub(crate) struct XmlNamespaces { resolver: NamespaceResolver }
 
 impl XmlNamespaces {
-    pub(crate) fn push(&mut self, element: &BytesStart<'_>, decoder: Decoder) -> Result<(), String> {
+    pub(crate) fn push(&mut self, element: &BytesStart<'_>) -> Result<(), String> {
         validate_qname(element.name())?;
         // Begin a scope without letting the resolver read unnormalized xmlns attributes.
         self.resolver.push(&BytesStart::new("scope")).map_err(|error| error.to_string())?;
@@ -54,20 +54,20 @@ impl XmlNamespaces {
         for attribute in element.attributes() {
             let attribute = attribute.map_err(|error| error.to_string())?;
             validate_qname(attribute.key)?;
-            if attribute.value.contains(&b'<') { return Err("unescaped angle bracket in XML attribute".into()); }
+            if attribute.value.contains('<') { return Err("unescaped angle bracket in XML attribute".into()); }
             let Some(prefix) = attribute.key.as_namespace_binding() else { continue; };
             declarations += 1;
             if declarations > MAX_DECLARATIONS { return Err("XML namespace declarations exceed 256 per element".into()); }
-            let namespace = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, decoder, 1, quick_xml::escape::resolve_xml_entity)
+            let namespace = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity)
                 .map_err(|error| error.to_string())?;
             if !namespace.chars().all(xml_character) { return Err("invalid character in XML namespace".into()); }
             if namespace == XMLNS_NAMESPACE || matches!(prefix, quick_xml::name::PrefixDeclaration::Default) && namespace == XML_NAMESPACE
                 || !matches!(prefix, quick_xml::name::PrefixDeclaration::Default) && namespace.is_empty() {
                 return Err("invalid reserved or empty XML 1.0 namespace binding".into());
             }
-            self.resolver.add(prefix, Namespace(namespace.as_bytes())).map_err(|error| error.to_string())?;
+            self.resolver.add(prefix, Namespace(&namespace)).map_err(|error| error.to_string())?;
         }
-        if element.name().prefix().is_some_and(|prefix| prefix.as_ref() == b"xmlns") { return Err("the xmlns prefix cannot name an XML element".into()); }
+        if element.name().prefix().is_some_and(|prefix| prefix.as_ref() == "xmlns") { return Err("the xmlns prefix cannot name an XML element".into()); }
         Ok(())
     }
 
@@ -76,16 +76,16 @@ impl XmlNamespaces {
     pub(crate) fn namespace(&self, name: QName<'_>, attribute: bool) -> Result<Option<&str>, String> {
         let (namespace, _) = self.resolver.resolve(name, !attribute);
         match namespace {
-            ResolveResult::Bound(value) => Ok(Some(std::str::from_utf8(value.into_inner()).map_err(|error| error.to_string())?)),
+            ResolveResult::Bound(value) => Ok(Some(value.into_inner())),
             ResolveResult::Unbound => Ok(None),
-            ResolveResult::Unknown(prefix) => Err(format!("undeclared XML namespace prefix: {}", String::from_utf8_lossy(&prefix))),
+            ResolveResult::Unknown(prefix) => Err(format!("undeclared XML namespace prefix: {}", prefix)),
         }
     }
 }
 
-pub(crate) fn validate_declaration(value: &[u8]) -> Result<(), String> {
+pub(crate) fn validate_declaration(value: &str) -> Result<(), String> {
     let invalid = || "invalid XML 1.0 declaration".to_owned();
-    let raw = std::str::from_utf8(value).map_err(|_| invalid())?;
+    let raw = value;
     let mut tail = raw.strip_prefix("xml").ok_or_else(invalid)?;
     let whitespace = |character: char| matches!(character, ' ' | '\t' | '\r' | '\n');
     let mut stage = 0usize;

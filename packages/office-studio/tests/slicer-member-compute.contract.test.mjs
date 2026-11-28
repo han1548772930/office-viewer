@@ -154,7 +154,9 @@ test('transport enforces source revision, consumes exclusive inputs and keeps in
 test('loading rejects protocol-2 artifacts that omit the new typed member binding', async () => {
   const module = { default: async () => ({ memory: new WebAssembly.Memory({ initial: 1 }) }), compute_protocol_version: () => 2,
     compute_version: () => 'fixture', compute_yield: async () => {}, create_numeric_aggregate() {},
-    create_numeric_sort() {}, create_numeric_filter() {}, create_chart_statistics() {} }
+    create_numeric_sort() {}, create_numeric_filter() {}, create_chart_statistics() {},
+    create_checkbox_cells() { throw new Error('Unused checkbox fixture entry') },
+    create_validation_list_query() { throw new Error('Unused list-query fixture entry') } }
   await assert.rejects(() => initializeComputeWasm(module), error => error.code === 'COMPUTE_WASM_API_MISSING')
   assert.equal((await initializeComputeWasm({ ...module, create_slicer_members() {} })).module.compute_protocol_version(), 2)
 })

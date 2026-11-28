@@ -5,6 +5,7 @@ import { createBlankWorkbook } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { mapSheetCellShiftPosition, sheetCellShiftAffectedRange } from '../../domain/sheet-cell-shift.ts'
 import { transformFormulaReferencesForStructureEdit, type FormulaStructureEdit } from '../formula/formula-references.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
 import { planWorkbookCellShiftCommand, sheetCellShiftEdit } from './sheet-cell-shift-command.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
 
@@ -16,13 +17,13 @@ export type SheetCellMoveResult =
 
 /** Compatibility view adapter; its historical reference-only follow-up remains explicit. */
 export function moveSheetCellRange(sheet: ExcelSheetView, range: GridRange, direction: SheetCellMoveDirection,
-  dismantlePartialMerges = false, userId = 'local-user'): SheetCellMoveResult {
+  dismantlePartialMerges = false, userId = 'local-user', region = 'en-US'): SheetCellMoveResult {
   try {
     const model = applyExcelWorkbookView(createBlankWorkbook(), {
       name: 'Cell shift', date1904: false, activeSheetId: sheet.id, sheets: [cloneModel(sheet)], calculationMode: 'manual',
-    }, 'en-US')
+    }, region)
     const target = { startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }
-    const plan = planWorkbookCellShiftCommand(model, sheet.id, target, direction, userId, dismantlePartialMerges)
+    const plan = planWorkbookCellShiftCommand(model, sheet.id, target, direction, userId, dismantlePartialMerges, [target], region)
     if (plan.requiresConfirmation) return { status: 'confirm-merge', mergeRanges: plan.mergeRanges.map(formatProtectionRange) }
     const next = toExcelWorkbookView(plan.workbook).sheets.find(item => item.id === sheet.id)!
     // Legacy callers publish formulas through transformWorkbookReferencesForSheetEdit.
@@ -30,7 +31,7 @@ export function moveSheetCellRange(sheet: ExcelSheetView, range: GridRange, dire
     for (const [key, source] of Object.entries(sheet.cells)) {
       if (!source.formula) continue
       const original = parseCellKey(key), point = original && mapSheetCellShiftPosition(original.row, original.col, plan.edit)
-      if (point) next.cells[cellKey(point.row, point.col)]!.formula = source.formula
+      if (point) rewriteFormulaImportCell(next.cells[cellKey(point.row, point.col)]!, source.formula)
     }
     return { status: 'applied', sheet: next }
   } catch (error: unknown) {
@@ -50,9 +51,12 @@ export function transformWorkbookReferencesForSheetEdit(workbook: ExcelWorkbookV
   if (!target) return workbook
   const sheets = workbook.sheets.map(sheet => ({
     ...sheet,
-    cells: Object.fromEntries(Object.entries(sheet.cells).map(([key, cell]) => [key, cell.formula
-      ? { ...cell, formula: transformFormulaReferencesForStructureEdit(cell.formula, edit, sheet.name, target.name) }
-      : cell])),
+    cells: Object.fromEntries(Object.entries(sheet.cells).map(([key, cell]) => {
+      if (!cell.formula) return [key, cell]
+      const next = cloneModel(cell)
+      rewriteFormulaImportCell(next, transformFormulaReferencesForStructureEdit(cell.formula, edit, sheet.name, target.name))
+      return [key, next]
+    })),
   }))
   const metadata = workbook.metadata ? cloneModel(workbook.metadata) : undefined
   if (metadata) {

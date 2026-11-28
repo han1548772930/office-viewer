@@ -2,6 +2,7 @@
 import { ChevronLeft, ChevronRight, FileText, FileUp, Printer, Save, Search, X } from 'lucide-vue-next'
 import { Alert, Button, Checkbox, ConfigProvider, Form, FormItem, Input, Menu, Modal, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import type { MenuItemType } from 'antdv-next'
+import { createPinia, getActivePinia } from 'pinia'
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
@@ -73,6 +74,8 @@ import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, do
 import { releaseDocumentFieldOpenRefresh, reserveDocumentFieldOpenRefresh, type DocumentFieldCacheAdapter } from '../features/document/services/document-field-open-refresh'
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
 import { documentSectionSetup } from '../features/document/services/document-settings.ts'
+import { documentEffectiveZoomRatio } from '../features/document/services/document-zoom'
+import { useDocumentCharacterPreferencesStore } from '../features/document/stores/document-character-preferences-store'
 import { selectedDocumentContentControlForSelection } from '../features/document/services/content-controls'
 import { contentControlCheckboxStyle } from '../features/document/services/content-control-presentation'
 import type { DocumentContentControlCommandRequest, DocumentContentControlPopupMode, DocumentContentControlRepeatingItemCommand, DocumentContentControlSelectionRequest } from '../features/document/commands/content-control-command-types'
@@ -138,6 +141,7 @@ const emit = defineEmits<{
   'update:fileName': [value: string]
   'document-change': [value: DocumentModel]
   'document-cache-change': [value: DocumentModel]
+  'document-view-change': [value: DocumentModel]
   'import-file': [file: File]
   save: [payload: { fileName: string; html: string; model: DocumentModel }]
   undo: [unitId?: string]
@@ -185,10 +189,13 @@ const workbenchStyle = computed(() => ({
   '--document-shadow': themeToken.value.boxShadowSecondary,
 }))
 const colorMemory = shallowRef<DocumentColorMemory>({})
+const inheritedCharacterPinia = getActivePinia()
+const standaloneCharacterPreferences = useDocumentCharacterPreferencesStore(inheritedCharacterPinia ?? createPinia())
+const characterPreferences = computed(() => props.documentApi?.getCharacterPreferences() ?? standaloneCharacterPreferences)
 const documentTitle = ref(props.fileName || '无标题文档')
 const displayPreference = useWorkbenchDisplay()
 const chrome = computed(() => workbenchVisibility(displayPreference?.value.chrome ?? 'full'))
-const zoom = ref<number>(displayPreference?.value.zoom ?? 100)
+const zoom = ref<number>(100)
 watch(() => displayPreference?.value.zoom, value => { if (value !== undefined) setZoom(value) })
 const paperSize = ref<DocumentPaperSize>('A4')
 const orientation = ref<'portrait' | 'landscape'>('portrait')
@@ -389,6 +396,8 @@ const canComment = computed(() => resolveDocumentPermission(model.value.permissi
 const documentInputComposing = computed(() => storyComposing.value || canvasRef.value?.isBodyComposing() === true)
 const pageSettingsDisabled = computed(() => !inputStateActive || documentInputComposing.value
   || !documentPageSetupCommandState(model.value, permissionContext.value).allowed)
+const zoomDisabled = computed(() => !inputStateActive || documentInputComposing.value
+  || !resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'view').allowed)
 const noteInsertState = computed(() => documentNoteInsertState(model.value, selection.value, {
   permission: permissionContext.value, host: editingHost.value,
   disabled: !inputStateActive || documentInputComposing.value || legacyStoryActive.value,
@@ -709,6 +718,7 @@ const ribbonTabs = computed(() => {
       adjacent: noteAdjacent.value, disabled: !inputStateActive || documentInputComposing.value },
     table: !legacyStoryActive.value ? tableRibbonContext.value : undefined,
     fontList: officeFonts?.value,
+    characterPreferences: characterPreferences.value,
     lastTextColor: colorMemory.value.color, lastHighlightColor: colorMemory.value.highlight,
     defaultTextColor: DOCUMENT_DEFAULT_TEXT_COLOR, defaultHighlightColor: themeToken.value.colorPrimary,
     numbering: { canRestart: canRestartDocumentNumbering(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value), canContinue: canContinueDocumentNumbering(paragraphContext.value.model, paragraphContext.value.selection, permissionContext.value) },
@@ -732,6 +742,13 @@ const ribbonTabs = computed(() => {
       visible: true, area: storyLocation.value.area, disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value,
       refreshDisabled: storyComposing.value || !canRefreshFields.value,
       requestScope: storyActionVersion.value,
+      locale: officeLocale.value.replaceAll('_', '-'),
+      insertDateTime: action => {
+        const feedback = { accepted: false }
+        handleStoryAction(JSON.stringify(action), feedback)
+        return feedback.accepted
+      },
+      captureDateTimeFocus: captureHeaderFooterDateTimeFocus,
       contentDisabled: storyLinkedToPrevious.value, canLinkToPrevious: headerFooterSectionId.value !== 'first',
       linkedToPrevious: storyLinkedToPrevious.value, differentFirstPage: storySection.value.differentFirstPage,
       differentOddEven: storySection.value.differentOddEven, marginHeader: activeSectionSetup.value.marginHeader ?? 48,
@@ -746,6 +763,7 @@ const ribbonTabs = computed(() => {
     paper: paperSize.value,
     orientation: orientation.value,
     zoom: zoom.value,
+    zoomDisabled: zoomDisabled.value,
     contentControlsAvailable: !!props.documentApi,
     selectedContentControl: control ? {
       id: control.id,
@@ -808,7 +826,7 @@ onActivated(() => {
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   refreshDocumentFieldsOnOpen()
 })
-onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++ })
+onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++; if (!inheritedCharacterPinia) { standaloneCharacterPreferences.releaseStorage(); standaloneCharacterPreferences.$dispose() } })
 onDeactivated(() => {
   inputStateActive = false
   inputStateEpoch++
@@ -882,7 +900,13 @@ watch(() => props.documentApi, (next, previous, onCleanup) => {
   standalonePendingMarks.value = {}
   if (!next) return
   const subscription = next.onInputStateChanged(event => applyInputState(next, event))
-  onCleanup(() => { inputStateEpoch++; subscription.dispose() })
+  const zoomSubscription = next.onZoomRatioChanged(event => {
+    if (next !== props.documentApi || next.id !== model.value.id || event.documentId !== next.id
+      || next.getZoomRatio() !== event.zoomRatio) return
+    model.value = { ...model.value, metadata: { ...model.value.metadata, documentZoomRatio: event.zoomRatio } }
+    zoom.value = Math.round(event.zoomRatio * 100)
+  })
+  onCleanup(() => { inputStateEpoch++; subscription.dispose(); zoomSubscription.dispose() })
   void nextTick(() => {
     if (inputStateActive && next === props.documentApi) applyInputState(next, { unitId: next.id, state: next.getInputState() })
   })
@@ -903,6 +927,7 @@ watch(() => props.modelValue, (value) => {
   if (!sameDocument) setPageSettingsOpen(false, false)
   if (!sameDocument) { canvasRef.value?.cancelInput(false); blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined; notesPanelOpen.value = false; noteSettings.value = undefined; notesError.value = '' }
   model.value = normalizeDocument(next)
+  zoom.value = Math.round(documentEffectiveZoomRatio(model.value) * 100)
   documentTitle.value = next.name
   if (editingHost.value) {
     try { resolveDocumentBlockHost(model.value, editingHost.value) }
@@ -2604,7 +2629,26 @@ function savePermissionRules(rules: DocumentPermissionRule[]) {
   if (!canManagePermissionRules.value) return
   execute({ id: 'doc.command.set-document-permission-rules', rules })
 }
-function setZoom(value: number) { zoom.value = clampDocumentZoom(value) }
+function setZoom(value: number): boolean {
+  if (zoomDisabled.value) return false
+  const percent = clampDocumentZoom(value), ratio = percent / 100
+  const api = props.documentApi, unitId = model.value.id
+  if (api) {
+    if (api.id !== unitId) return false
+    try {
+      if (!api.setZoomRatio(ratio) || api !== props.documentApi || unitId !== model.value.id) return false
+      zoom.value = Math.round(api.getZoomRatio() * 100)
+      return true
+    } catch (error) { emit('notify', error instanceof Error ? error.message : '文档缩放未应用。'); return false }
+  }
+  zoom.value = percent
+  if (documentEffectiveZoomRatio(model.value) !== ratio) {
+    model.value = { ...model.value, metadata: { ...model.value.metadata, documentZoomRatio: ratio } }
+    // Standalone hosts may persist view settings without creating content history.
+    emit('document-view-change', model.value)
+  }
+  return true
+}
 function printDocument() {
   if (!canDocumentPermission('print')) return
   void printDocumentModel(model.value).catch((error: unknown) => notify(error instanceof Error ? error.message : String(error)))
@@ -2841,10 +2885,22 @@ function editStory(value: string, caret: number, marks: RunPatch = pendingMarks.
   if (range) storySelection.value = clampDocumentTextRange(storyValue.value ?? '', range)
   scheduleInputFocus(() => canvasRef.value?.focusStory(currentStorySelection.value.start, currentStorySelection.value.end))
 }
-function handleStoryAction(raw: unknown) {
+function captureHeaderFooterDateTimeFocus(): () => void {
+  const api = props.documentApi, source = model.value, epoch = inputStateEpoch, scope = storyActionVersion.value
+  const location = storyLocation.value && { ...storyLocation.value }, host = editingHost.value && { ...editingHost.value }
+  const range = { ...currentStorySelection.value }, generation = api?.getHistoryGeneration()
+  return () => {
+    if (!inputStateActive || documentInputComposing.value || epoch !== inputStateEpoch || scope !== storyActionVersion.value
+      || api !== props.documentApi || source !== model.value || generation !== api?.getHistoryGeneration()
+      || !location || location.page !== storyLocation.value?.page || location.area !== storyLocation.value?.area
+      || !sameDocumentBlockHost(host, editingHost.value)) return
+    scheduleInputFocus(() => host?.kind === 'story' ? canvasRef.value?.focus() : canvasRef.value?.focusStory(range.start, range.end))
+  }
+}
+function handleStoryAction(raw: unknown, feedback?: { accepted: boolean }) {
   const action = parseHeaderFooterAction(raw), currentLocation = storyLocation.value, key = storyKey.value
   if (!inputStateActive || !currentLocation || !key || !action || !headerFooterRequestScopeMatches({ requestScope: storyActionVersion.value }, action)) return
-  if (editingHost.value?.kind === 'story') { handleBlockStoryAction(action, currentLocation, key); return }
+  if (editingHost.value?.kind === 'story') { handleBlockStoryAction(action, currentLocation, key, feedback); return }
   const location = { ...currentLocation }, source = model.value, api = props.documentApi, sectionId = headerFooterSectionId.value, captureScope = storyActionVersion.value
   const targetCurrent = () => inputStateActive && api === props.documentApi && source.id === model.value.id
     && (!api || api.id === model.value.id) && sectionId === headerFooterSectionId.value && key === storyKey.value
@@ -2907,6 +2963,7 @@ function handleStoryAction(raw: unknown) {
         if (!sourceCurrent() || captureScope !== storyActionVersion.value || !rangeCurrent(start, end)) { recoverCurrentInput(); return }
         if (api && (!input || input.range.start !== start || input.range.end !== end)) throw new Error('页眉页脚输入会话已更改，请重新输入。')
         const result = applyHeaderFooter(replaceStoryRange(section, key, start, end, insert, source, marks), input, sectionId)
+        if (feedback) feedback.accepted = result.accepted
         if (!result.selectionCurrent) return
         if (result.accepted) {
           if (advanceStoryInput(caret, marks, input, result.modelRevision)) scheduleInputFocus(() => canvasRef.value?.focusStory(caret))
@@ -2921,7 +2978,7 @@ function handleStoryAction(raw: unknown) {
   }
   if (targetCurrent()) canvasRef.value?.focusStory()
 }
-function handleBlockStoryAction(action: NonNullable<ReturnType<typeof parseHeaderFooterAction>>, location: StoryLocation, key: DocumentStoryKey) {
+function handleBlockStoryAction(action: NonNullable<ReturnType<typeof parseHeaderFooterAction>>, location: StoryLocation, key: DocumentStoryKey, feedback?: { accepted: boolean }) {
   if (action.action === 'navigate') {
     openStory({ page: location.page, area: action.area })
     return
@@ -2948,10 +3005,14 @@ function handleBlockStoryAction(action: NonNullable<ReturnType<typeof parseHeade
     const page = layout.value.pages[location.page]
     if (!page) return
     const date = action.action === 'insert-date-time' ? storyDateField(action.format, officeLocale.value.replaceAll('_', '-'), new Date()) : undefined
-    if (action.action === 'insert-date-time' && !action.automatic) execute({ id: 'doc.command.insert-text', text: date!.cachedResult })
+    if (action.action === 'insert-date-time' && !action.automatic) {
+      const accepted = execute({ id: 'doc.command.insert-text', text: date!.cachedResult })
+      if (feedback) feedback.accepted = accepted
+    }
     else if (action.action === 'insert-field' || action.action === 'insert-date-time') {
       const field = action.action === 'insert-field' ? createDocumentNumericPageField(action.field, page.pageNumber, layout.value.pages.length) : date!
-      execute({ id: 'doc.command.insert-page-field', sectionId, story: key, ...field, textStyle: { ...pendingMarks.value, ...field.textStyle } })
+      const accepted = execute({ id: 'doc.command.insert-page-field', sectionId, story: key, ...field, textStyle: { ...pendingMarks.value, ...field.textStyle } })
+      if (feedback) feedback.accepted = accepted
     }
   }
   scheduleInputFocus(() => canvasRef.value?.focus())
@@ -3000,7 +3061,13 @@ function onRibbonExecute(id: string, params?: unknown) {
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
   if (id === 'core.command.redo') { if (props.canRedo) redo(); return }
   const command = documentCommandFromRibbon(id, params)
-  if (command) { execute(command, true, undefined, id === 'doc.command.insert-special-character' ? id : undefined); return }
+  if (command) {
+    const specialCharacter = id === 'doc.command.insert-special-character'
+    const keepOpen = specialCharacter && params && typeof params === 'object' && 'keepOpen' in params && params.keepOpen === true
+    const accepted = execute(command, !keepOpen, undefined, specialCharacter ? id : undefined)
+    if (specialCharacter && params && typeof params === 'object' && 'onResult' in params && typeof params.onResult === 'function') params.onResult(accepted)
+    return
+  }
   switch (id) {
     case 'doc.operation.insert-table-of-contents':
       if (params && typeof params === 'object' && 'mode' in params && (params.mode === 'automatic' || params.mode === 'custom')) openTocInsertDialog(params.mode)
@@ -3194,8 +3261,11 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.toggle-fullscreen': void toggleFullscreen(); break
     case 'doc.operation.set-zoom':
       if (typeof params !== 'number') break
-      setZoom(params)
-      scheduleInputFocus(() => canvasRef.value?.focus())
+      if (setZoom(params)) scheduleInputFocus(() => canvasRef.value?.focus())
+      break
+    case 'doc.operation.set-zoom-ratio':
+      if (!params || typeof params !== 'object' || !('zoomRatio' in params) || typeof params.zoomRatio !== 'number') break
+      if (setZoom(params.zoomRatio * 100)) scheduleInputFocus(() => canvasRef.value?.focus())
       break
     case 'doc.operation.toggle-find': showFind.value = !showFind.value; if (showFind.value) void nextTick(() => workbenchRef.value?.querySelector<HTMLInputElement>('[data-document-search-input] input')?.focus()); break
     case 'doc.operation.open-page-settings':
@@ -3315,7 +3385,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
         </SplitterPanel>
       </Splitter>
     </main>
-    <DocumentFooter v-if="chrome.footer" :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
+    <DocumentFooter v-if="chrome.footer" :active-page="activePageIndex" :page-count="pages.length" :character-count="wordCount" :selected-characters="selectedCharacters" :zoom="zoom" :zoom-disabled="zoomDisabled" :modified="model.modified" :focus-mode="isFocusMode" @navigate="movePage" @zoom="setZoom" @exit-focus="isFocusMode = false" />
     <div v-if="notice" class="document-notice" role="status"><span>{{ notice }}</span><Tooltip title="关闭提示"><Button type="text" aria-label="关闭提示" @click="notice = ''"><X :size="14" /></Button></Tooltip></div>
     <div v-if="documentContextMenu" class="document-context-menu" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.context.menu-label', 'Document context menu')" :style="{ left: `${documentContextMenu.left}px`, top: `${documentContextMenu.top}px` }">
       <Menu mode="vertical" :selectable="false" :items="documentContextMenuItems" @click="selectDocumentContextMenuItem" />

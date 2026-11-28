@@ -37,7 +37,7 @@ SHEET-29 和 DOC-22 对齐 [Univer Exchange 的公开行为](UNIVER_REFERENCE_RU
 | COMMON-08 | 持久历史版本（Pro/Server 目标） | [共享历史][shared-history]、[Sheets][sheet-history]、[Docs][doc-history] | 版本列表、快照+变更日志、版本内容、对比、恢复和恢复后广播；重启后可查；区别于本地撤销 | 未验收 |
 | COMMON-09 | 语义对比与恢复 | [公开对比规格][shared-compare]及历史规格 | 内容/样式/结构差异、范围定位与只读历史视图；恢复形成新版本而非清空日志 | 未验收 |
 | COMMON-10 | 跨文档嵌入（Pro 目标） | [公开嵌入规格][shared-embed] | Docs 嵌 Sheets、Sheets 对象/标签嵌 Docs；父子独立模型、焦点/权限/保存/生命周期；明确引用与快照语义 | 未验收 |
-| COMMON-11 | Canvas/WebGPU、大文件与 Worker/WASM | 公开源码引擎边界 + 用户技术要求 | Canvas 内容渲染、WebGPU 优先/2D 回退；大计算优先 Rust/WASM；进度/取消/过期结果、稀疏/视口、内存与真实基准 | 未验收；基准方法见 [COMMON-11 基准记录](feature-evidence/COMMON-11-compute-benchmark.md) |
+| COMMON-11 | Canvas/WebGPU、大文件与 Worker/WASM | 公开源码引擎边界 + 用户技术要求 | Canvas 内容渲染、WebGPU 优先/2D 回退；大计算优先 Rust/WASM；进度/取消/过期结果、稀疏/视口、内存与真实基准 | 未验收；基准方法见 [COMMON-11 基准记录](feature-evidence/COMMON-11-compute-benchmark.md)；[依赖升级、XML/ZIP 适配与获准 wasm32 编译检查](feature-evidence/COMMON-11-wasm-dependency-compatibility.md)不代替浏览器/Office/性能验收 |
 | COMMON-12 | 图片/媒体资源管理 | 公开源码 drawing、ImageIo | 资源 ID、二进制/关系、锚点/尺寸/裁剪/旋转/层级、引用计数；复制粘贴和保存后资源不丢失 | 未验收；[Sheets affine/HTML/PNG 与资源保真草稿](feature-evidence/SHEET-19-images.md)、[Docs 图片批量编辑与资源](feature-evidence/DOC-07-image-editing.md#image-batch) |
 
 协作、版本历史、持久评论与权限需要本项目内的真实服务及协议。BroadcastChannel 或多个本地数组只能作为辅助测试，不能替代跨用户服务验收。公开的“collaboration: true”、命令常量或数据类型并不构成能力实现。

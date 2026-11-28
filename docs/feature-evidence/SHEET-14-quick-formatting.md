@@ -1,6 +1,6 @@
 # SHEET-14 快捷条件格式与管理菜单
 
-更新日期：2026-11-26。状态：开发中、未验收。固定源码为 Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地只读目录 `E:\rust_test\univer`。
+更新日期：2026-11-28。状态：开发中、未验收。固定源码为 Univer v1.6.0，提交 `eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地只读目录 `E:\rust_test\univer`。
 
 本批复核已提交的快捷数据条、图标集和类型限定清除，并补齐管理菜单的十个入口及清除整表命令。测试、类型检查、构建、浏览器、Rust/WASM 和基准按用户要求后置；这里记录静态实现，不宣称产品能力已经验收。
 
@@ -86,15 +86,48 @@ API 与工作台继续使用 `planSheetConditionalFormatsCommand`、`commitWorkb
 
 过滤不会截断规则的其他应用范围。列表清除按当前可见规则 ID 删除整条规则，例如规则同时覆盖 A1:A4 与 J15，在 A1 选区中清除列表后两个范围都移除；不交叠的隐藏规则保留。编辑与应用始终提交完整列表，取消不会写入模型。可见规则移动跨过隐藏项时，保留隐藏项的相对顺序，并在受影响的完整序列区间复用原优先级槽；区间之外的规则、范围、配置、来源和优先级保留，相等优先级仍按新数组顺序求值。
 
-权限仍由既有 `planSheetConditionalFormatsCommand` / `assertSheetRangesEditable` 在应用时原子检查变化规则的旧/新全部范围：未变化的隐藏受保护规则允许保留，匹配规则的其他受保护范围会阻止整条清除，跨隐藏受保护规则改变优先级或同优先级次序会拒绝整个提交。固定版 `RuleList` 另按权限隐藏不可编辑行，并据全部匹配规则权限禁用清除；本地本批保留先编辑草稿、应用时拒绝的交互，尚未实现该权限展示策略，不能标记为完全等价。
+权限由既有 `planSheetConditionalFormatsCommand` / `assertSheetRangesEditable` 原子检查变化规则的旧/新全部范围：未变化的隐藏受保护规则允许保留，匹配规则的其他受保护范围会阻止整条清除，跨隐藏受保护规则改变优先级或同优先级次序会拒绝整个提交。2026-11-27 的基线保留先编辑草稿、应用时拒绝；2026-11-28 已补固定 `RuleList` 的权限展示策略：不可编辑规则隐藏，列表清除按全部匹配规则判断，保存、删除及排序在暂存前检查完整候选。该接线仍未运行验收，不能标记为完全等价。
 
 [conditional-formatting.contract.test.mjs](../../packages/office-studio/tests/conditional-formatting.contract.test.mjs) 新增四个未运行声明，覆盖末选区输入、交叠边界、多范围规则、空选区、共享翻译、整条批量清除、全局槽位及相等优先级/来源隔离。[sheet-conditional-formatting-commands.contract.test.mjs](../../packages/office-studio/tests/sheet-conditional-formatting-commands.contract.test.mjs) 新增三个未运行声明，使用真实 standalone 规划与 OfficeStudio 命令，覆盖隐藏规则保留、匹配规则全部旧范围权限、跨隐藏保护排序、一次历史、撤销/重做、值与缓存不变及内部快照重开。
 
 [sheet-format-painter.browser.test.mjs](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) 扩展现有真实 fixture，新增范围样本和真实 `studio.setSelections` 接口；三个参数化声明展开为 10 个未运行场景，覆盖 classic/grid、实时选择与多选末项、空选区、明暗主题、取消焦点、完整列表编辑/清除、隐藏保护、可见邻项排序及撤销/重做/内部重开。该 fixture 选择 Canvas2D，不能作为 WebGPU 验证证据。
 
-本批只增加轻量规则列表状态及既有事务的调用，不新增领域模型、公开 Facade、内容历史或 Worker/WASM 协议。新增可替换控件均使用 `antdv-next`，样式使用既有主题 token；没有运行主题、焦点、输入法或文件样本。固定版拖动排序、规则范围预览高亮、权限展示、外部规则 mutation 下的草稿合并政策、完整 Office 往返、Windows IME、WebGPU 与大样本性能仍有未完成或未验收项。所有运行验证继续后置，静态检查不代表这些行为已经验收。
+本批只增加轻量规则列表状态及既有事务的调用，不新增领域模型、公开 Facade、内容历史或 Worker/WASM 协议。新增可替换控件均使用 `antdv-next`，样式使用既有主题 token；没有运行主题、焦点、输入法或文件样本。2026-11-28 拖动排序、范围预览、权限展示及外部草稿失效政策已继续落盘，详见下一节；完整 Office 往返、Windows IME、WebGPU 与大样本性能仍未验收。所有运行验证继续后置，静态检查不代表这些行为已经验收。
 
 本批只读检查：限定文件 `git diff --check` 通过；四个涉及的 `.mjs` 草稿及浏览器 fixture 内嵌模块通过 `node --check` 静态语法解析。本节文档的 9 个本地文件目标、12 个固定版上游源码目标均存在，链接中的上游提交一致。未执行任何测试、类型检查、构建、dev、浏览器、Rust/WASM、Office 往返或基准。
+
+<a id="conditional-permission-owner-preview-review"></a>
+
+## 2026-11-28 规则权限、宿主与范围预览续接
+
+状态：实现和测试草稿已落盘，全部运行验证后置；SHEET-14 仍未验收。沿用前一节的三个常驻根、十八个子项、工作表/末选区范围列表和完整 `localRules` 提交源，根增量为 0。没有将局部进度作为条件格式完整交付。
+
+固定 [RuleList.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/views/panel/RuleList.tsx) 的 `ruleListByPermissionCheck` 按规则的全部范围隐藏不可编辑行；`isHasAllRuleEditPermission` 仍检查全部匹配规则。拖动以可见源/目标 cfId 进入 [MoveCfCommand](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting/src/commands/commands/move-cf.command.ts)，`useHighlightRange(currentRuleRanges)` 展示临时规则范围。源码依据与本地完整列表一次应用的提交时机差异保留。
+
+本地列表分为完整匹配的 `scopedRules` 与可编辑的 `visibleRules`。例如规则覆盖 A1:A4 和 J15，J15 受保护时，即使当前只选择 A1，整条规则也隐藏且清除列表禁用。保存、单条删除、整条清除、上下移动和原生拖动都先对最终完整列表运行 planner/能力判断；跨过隐藏规则改变优先级槽或相等优先级顺序时，同时检查被跨规则的全部范围。未变化的隐藏规则允许保留和 no-op 应用。拖动只使用本 Drawer 捕获的源 ID，外部 transfer 文本不能制造排序；上下按钮继续提供键盘可用的排序入口。
+
+独立 [use-sheet-conditional-formatting-workbench.ts](../../packages/office-studio/src/components/spreadsheet/use-sheet-conditional-formatting-workbench.ts) 捕获工作簿/工作表身份、内容版本、内容历史 generation、用户及输入会话。打开时从 Studio 权威模型取得完整规则；外部内容编辑、清空历史、同 ID 模型替换、切表/切工作簿、失活、用户或输入会话变化关闭并废弃旧 Drawer。外部规则列表不与旧完整草稿自动合并。普通 `BeforeCommandExecute` 取消保持草稿并允许重试。旧提交、关闭与预览回调只能作用于其 owner；成功及普通取消的回焦在真实关闭回调后检查当前 owner 和宿主。命令观察事件或 refresh 内失活后立即恢复同样结束旧 owner，不能只看最终 active=true。
+
+standalone 继续使用同一 planner、View/Edit 权限和原模型更新事件。成功提交的 `v-model` 回传通过 `receiveView` 仅接受预登记的精确已发布快照引用一次；同字节但不同引用的外部重开仍失效。`commitHistory` 的可选 `onSnapshot` 仅通知当前发布快照，不另建历史，也不授权其他模型替换。条件格式 hook 初始化已移到格式刷状态之后，避免立即订阅读取尚未初始化的 `painterRequest`。
+
+命令 DTO `SetSheetConditionalFormatsInput` / `QuickConditionalFormatInput` 新增可选 `expectedHistoryGeneration` 和 `expectedUserId`，统一校验合法 revision、正整数 generation、非空用户与 `host: 'workbench'`。注册命令在规划前后、commit mutator 和 prepareView 重查模型/工作表身份、规则列表签名、版本/历史/用户及全部变化旧/新范围的 View/Edit；显式非工作台 API 目标继续可编辑非活动工作簿并隔离历史。提交保留样式继承，`recalculate: false`，不修改单元格原值、公式缓存或固定样式。独立 apply 同样补全部旧/新范围 View 判断。
+
+预览由 hover、键盘焦点或编辑范围驱动。Panel 发出临时 `preview`，Canvas 对整个范围列表复查 View 权限，并复用冻结分区、缩放及裁剪的虚线轮廓命令；颜色来自当前 ConfigProvider 主题 primary token。直接新建的初始范围立即预览。预览不改真实选区、单元格样式、内容模型或历史；取消、失效、组合输入、拖动及不可查看范围清除预览。
+
+可替换控件全部沿用 `antdv-next` 的 Button、Tooltip、Drawer、Alert、Form/Form.Item、Input、Select、InputNumber、Checkbox、ColorPicker；阈值子控件实际传 disabled，Form 与颜色控件保留主题状态。组合输入期间阻止保存、应用、取消、清除、排序及 Escape 关闭，文本输入保持可用。19 种语言新增拖动、受保护规则提示和权限错误三个键。没有新增原生表单控件、内容 DTO 或 Worker/WASM 协议；预览几何复用共享 Canvas 场景，两种渲染后端的实际行为仍未验收。
+
+本批生产文件为前述 controller、[conditional-format-command.ts](../../packages/office-studio/src/features/conditional-formatting/conditional-format-command.ts)、[quick-conditional-formatting.ts](../../packages/office-studio/src/features/conditional-formatting/quick-conditional-formatting.ts)、[API 注册](../../packages/office-studio/src/api/sheet-conditional-formatting-commands.ts)、[Panel](../../packages/office-studio/src/components/spreadsheet/ConditionalFormattingPanel.vue)、[阈值输入](../../packages/office-studio/src/components/spreadsheet/ConditionalThresholdInput.vue)、[ExcelWorkbench](../../packages/office-studio/src/components/ExcelWorkbench.vue)、[SpreadsheetCanvas](../../packages/office-studio/src/components/spreadsheet/SpreadsheetCanvas.vue)、[scene](../../packages/office-studio/src/rendering/spreadsheet/scene.ts) 和[语言表](../../packages/office-studio/src/i18n/sheets/locales/conditional-formatting.ts)，共 10 份；共享 Facade 和根导出没有在本批改写。
+
+| 草稿 | 本批新增声明 / 顶层计划 | 覆盖内容 |
+| --- | ---: | --- |
+| [host contract](../../packages/office-studio/tests/sheet-conditional-formatting-host.contract.test.mjs) | 13 / 13 | 权威规则、一次事务/no-op、失活/内容/历史/同 ID 替换、取消重试、事件重入、权限/预览、旧回调隔离及精确 standalone 回传 |
+| [commands contract](../../packages/office-studio/tests/sheet-conditional-formatting-commands.contract.test.mjs) | 6 / 6 | 新上下文参数、旧/新全部 View/Edit、阶段性权限撤销、候选/mutator/prepareView 身份与用户/历史变化、非活动目标隔离；另扩展既有参数合法性声明 |
+| [Canvas preview contract](../../packages/office-studio/tests/rendering/spreadsheet-conditional-preview.contract.test.mjs) | 5 / 5 | 多范围、真实选择/填充柄不变、冻结无内部接缝、缩放/主题、隐藏/离屏/取消及有界可视轮廓 |
+| [browser](../../packages/office-studio/tests/sheet-format-painter.browser.test.mjs) | 7 / 22 | classic/grid 的远端受保护范围、拖动/外部 drop、组合输入、hover/focus/编辑与初始预览、历史/同 ID 重开、事件重入及回焦；纠正旧隐藏行、禁用排序和外部失效预期 |
+
+本批新增合计 31 个声明、46 个顶层计划，内部参数循环不冒充独立注册测试；所有草稿均未运行。浏览器 fixture 观察真实组件 props 接线，未增加产品测试专用 API；该 fixture 默认 Canvas2D。合成 composition 事件不能验收 Windows 原生输入法，场景合同也不能验收 WebGPU、Office 或性能。完整条件计算/优先级/复杂来源、Office 导出独立重开、两后端、真实大样本及输入/主题/动画回焦仍保留未验收。
+
+本轮静态收尾覆盖 15 份代码/草稿文件及本证据文档：16 段脚本语法、5 个 Vue 模板、5 段样式、281 处本地引用、4 份 `.mjs` 与 1 段浏览器内嵌模块语法通过；包含相邻 SHEET-18 Selector Alert 改用 `title` 的静态复核。模板产物确认 owner 回调直接绑定捕获的函数。完整草稿计数为 host 13/13、commands 38/38、preview 5/5、browser 69/105（声明/顶层计划）；19 个 locale 各有 3 个新增值，locale 集合与既有快捷规则一致。23 个本地文档目标、12 个唯一固定源码目标、参考仓库 HEAD 与限定 `git diff --check` 已核对。这里只运行解析、引用、计数和 diff；测试、类型检查、构建、dev、浏览器、Rust/WASM、Office 与性能执行数均为 0。
 
 [schema]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/schema.ts
 [quick]: https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/sheets-conditional-formatting-ui/src/menu/quick-insert.menu.ts

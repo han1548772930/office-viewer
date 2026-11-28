@@ -50,8 +50,13 @@ test('INDEX whole-axis reference results compose with the range operator and pre
 test('unpaired names strings and malformed mixed axes are never interpreted as complete references', () => {
   assert.deepEqual(parseFormula('="A:C"'), { kind: 'literal', value: 'A:C' })
   assert.deepEqual(parseFormula('=3'), { kind: 'literal', value: 3 })
-  for (const formula of ['=A', '=SUM(A:3)', '=SUM(A1:A)', '=SUM($0:$2)', '=SUM(1:1048577)', '=SUM(A:XFE)']) {
+  assert.deepEqual(parseFormula('=A'), { kind: 'name', name: 'A', sheetName: undefined })
+  for (const formula of ['=SUM(A:3)', '=SUM($0:$2)', '=SUM(1:1048577)']) {
     assert.throws(() => parseFormula(formula), undefined, formula)
+  }
+  const workbook = sample()
+  for (const formula of ['=SUM(A1:A)', '=SUM(A:XFE)']) {
+    assert.equal(evaluateFormula(formula, workbook, workbook.sheets[0].id).code, '#NAME?', formula)
   }
   assert.equal(translateFormulaReferences('=SUM(A,3,Table[A:C])+A1', 1, 1), '=SUM(A,3,Table[A:C])+B2')
 })

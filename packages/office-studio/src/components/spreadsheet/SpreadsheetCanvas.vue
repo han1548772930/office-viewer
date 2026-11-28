@@ -65,11 +65,20 @@ import { drawingPaintOrder, DRAWING_ALIGN_MENU, DRAWING_ARRANGE_MENU, DRAWING_GR
 import { sheetDrawingGeometryRange } from '../../features/sheet-drawings/sheet-drawing-viewport.ts'
 import { useSheetDrawingCanvas } from './use-sheet-drawing-canvas.ts'
 import type { SheetDrawingCommandInput } from '../../api/sheet-drawing-commands.ts'
+import SheetValidationCellControl from './SheetValidationCellControl.vue'
+import type { SheetValidationCellEntry, SheetValidationCellPopup } from './use-sheet-validation-cell.ts'
+import { sheetValidationCellControlRect, sheetValidationCellVisibleRect } from '../../rendering/spreadsheet/validation-cell-layout.ts'
+import SheetCheckboxValidationOverlay from './SheetCheckboxValidationOverlay.vue'
+import type { SheetCheckboxCellEntry } from './use-sheet-validation-checkbox.ts'
+import { sheetCheckboxCellPositions } from '../../rendering/spreadsheet/validation-checkbox-layout.ts'
+import SheetValidationFeedbackPopup from './SheetValidationFeedbackPopup.vue'
+import type { SheetValidationFeedbackReader } from '../../features/sheet-validation/validation-cell-feedback.ts'
+import type { SheetValidationTagOptionsReader } from '../../features/sheet-validation/validation-cell-options.ts'
 
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ activeRangeIndex?: number; workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; validationOptions?: readonly string[]; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ activeRangeIndex?: number; workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; conditionalFormatPreview?: readonly CellRange[]; validationOptions?: readonly string[]; validationCellEntry?: SheetValidationCellEntry; validationCellPopup?: SheetValidationCellPopup; validationCurrentYear?: number; validationCheckboxAt?: (row: number, column: number) => SheetCheckboxCellEntry | undefined; validationCheckboxError?: string; validationFeedback?: SheetValidationFeedbackReader; validationTagOptions?: SheetValidationTagOptionsReader; validationInputOwner?: string; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -111,6 +120,7 @@ const emit = defineEmits<{
   (event: 'select-drawing', ref?: SheetDrawingRef, additive?: boolean, preserve?: boolean): void
   (event: 'drawing-command', commandId: string, input: SheetDrawingCommandInput): void
   (event: 'chart-event', eventValue: MouseEvent | KeyboardEvent, chartId: string, view: { scrollLeft: number; scrollTop: number; headerWidth?: number; headerHeight?: number }): void
+  (event: 'clear-checkbox-error'): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
 // The synchronous callback also owns "no session" while Vue is still flushing the previous props.
@@ -161,6 +171,22 @@ const scene = computed(() => {
     region: region.value, activeCell: props.selectedKey, editing: Boolean(props.editingKey), selectedCells: props.selectedRange,
     selectedRanges: props.selectedRanges, fillPreviewRange: fillPreview.value,
     formatPainterSource: props.formatPainter?.sourceSheetId === props.sheet.id ? props.formatPainter.sourceRange : undefined,
+    conditionalFormatPreviewRanges: !props.editingKey && canViewWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
+      && canViewProtectedRanges(props.sheet, props.conditionalFormatPreview ?? [], props.currentUserId ?? 'local-user')
+      ? props.conditionalFormatPreview?.map(sheetClipboardGridRange) : undefined,
+    conditionalFormatPreviewColor: token.value.colorPrimary,
+    validationTagTheme: { fill: token.value.colorFillSecondary, text: token.value.colorText },
+    validationTagOptions: (row, column) => validationTagOptionCells.value.get(cellAddress(row, column)),
+    checkboxRenderable: (row, column) => checkboxControls.value.entries.has(cellAddress(row, column)),
+    validationInvalid: (row, column) => !!validationFeedbackCells.value.get(cellAddress(row, column))?.issues.length,
+    validationInvalidColor: token.value.colorError,
+    canViewCell: (row, column) => {
+      const merge = geometry.value.mergeAt(row, column)
+      const range = merge ? { startRow: merge.startRow, endRow: merge.endRow, startCol: merge.startColumn, endCol: merge.endColumn }
+        : { startRow: row, endRow: row, startCol: column, endCol: column }
+      return canViewWorksheetProtection(props.sheet, props.currentUserId ?? 'local-user')
+        && canViewProtectedRanges(props.sheet, [range], props.currentUserId ?? 'local-user')
+    },
     formatPainterColor: token.value.colorPrimary, suppressFillHandle: Boolean(props.formatPainter || props.selectedImageId || props.selectedDrawingRefs?.length),
     searchText: props.searchText, numberFormatPreview: props.numberFormatPreview, drawingOrder: drawingOrder.value,
     sparklineContext: { sheets: props.sparklineSheets, metadata: props.sparklineMetadata, canReadSource: (sheet, range) =>
@@ -256,6 +282,67 @@ const editLayout = computed(() => {
   return createCellEditorLayout(geometry.value, props.editingKey, viewport.value, { contentHeight: layout.height + 6 * viewport.value.zoom })
 })
 const { token } = theme.useToken()
+const checkboxControls = computed(() => {
+  const entries = new Map<string, SheetCheckboxCellEntry>()
+  const positions = sheetCheckboxCellPositions(geometry.value, viewport.value, (row, column) => {
+    const entry = props.validationCheckboxAt?.(row, column)
+    if (entry) entries.set(entry.key, entry)
+    return !!entry
+  })
+  return { entries, controls: positions.map(position => ({ position, entry: entries.get(position.key)! })) }
+})
+const validationCellPositions = computed(() => {
+  const positions = new Map<string, { row: number; column: number }>()
+  for (const pane of geometry.value.panes(viewport.value)) for (const row of pane.rows) for (const column of pane.columns) {
+    const merge = geometry.value.mergeAt(row, column), position = { row: merge?.startRow ?? row, column: merge?.startColumn ?? column }
+    positions.set(cellAddress(position.row, position.column), position)
+  }
+  const selected = parseAddress(props.selectedKey)
+  if (selected) positions.set(props.selectedKey, selected)
+  return [...positions.values()]
+})
+const validationFeedbackCells = computed(() => props.validationFeedback?.(validationCellPositions.value) ?? new Map())
+const validationTagOptionCells = computed(() => props.validationTagOptions?.(validationCellPositions.value) ?? new Map())
+const selectedValidationFeedback = computed(() => {
+  const position = parseAddress(props.selectedKey), merge = position && geometry.value.mergeAt(position.row, position.column)
+  return position ? validationFeedbackCells.value.get(cellAddress(merge?.startRow ?? position.row, merge?.startColumn ?? position.column)) : undefined
+})
+const hoveredValidationKey = ref<string>(), dismissedValidationPrompt = ref<string>()
+let validationHoverCandidate: string | undefined, validationHoverTimer: ReturnType<typeof setTimeout> | undefined
+const hoveredValidationFeedback = computed(() => hoveredValidationKey.value ? validationFeedbackCells.value.get(hoveredValidationKey.value) : undefined)
+const hoveredValidationPosition = computed(() => hoveredValidationFeedback.value?.issues.length
+  ? sheetValidationCellVisibleRect(geometry.value, viewport.value, hoveredValidationFeedback.value.key) : undefined)
+const validationPromptOwner = computed(() => selectedValidationFeedback.value?.prompt ? JSON.stringify([
+  props.workbookId, props.sheet.id, props.currentUserId, selectedValidationFeedback.value.key, selectedValidationFeedback.value.prompt]) : undefined)
+const validationPromptPosition = computed(() => validationPromptOwner.value && validationPromptOwner.value !== dismissedValidationPrompt.value
+  && !(hoveredValidationPosition.value && hoveredValidationFeedback.value?.key === selectedValidationFeedback.value?.key)
+  ? sheetValidationCellVisibleRect(geometry.value, viewport.value, selectedValidationFeedback.value?.key) : undefined)
+const dismissValidationPrompt = computed(() => {
+  const owner = validationPromptOwner.value
+  return () => { if (owner && !composing.value && validationPromptOwner.value === owner) dismissedValidationPrompt.value = owner }
+})
+function clearValidationHover(): void {
+  if (validationHoverTimer) clearTimeout(validationHoverTimer)
+  validationHoverTimer = undefined; validationHoverCandidate = undefined; hoveredValidationKey.value = undefined
+}
+function scheduleValidationHover(key?: string): void {
+  if (key === validationHoverCandidate) return
+  clearValidationHover()
+  validationHoverCandidate = key
+  if (key) validationHoverTimer = setTimeout(() => {
+    validationHoverTimer = undefined
+    if (active && !disposed && validationHoverCandidate === key) hoveredValidationKey.value = key
+  }, 100)
+}
+watch(() => [props.workbookId, props.sheet.id, props.currentUserId, props.selectedKey], () => {
+  dismissedValidationPrompt.value = undefined; clearValidationHover()
+})
+watch(() => [viewport.value.scrollLeft, viewport.value.scrollTop, viewport.value.zoom], clearValidationHover)
+const validationCellControlPosition = computed(() => {
+  const rect = sheetValidationCellControlRect(geometry.value, viewport.value, props.validationCellEntry?.key)
+  return rect && !props.formatPainter && !props.selectedDrawingRefs?.length && !composing.value
+    ? { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px` } : undefined
+})
 const richTextEditorScene = computed(() => {
   const layout = editLayout.value, cell = props.richTextEditorCell
   if (!layout || !cell || !useRichTextEditor.value) return undefined
@@ -1190,15 +1277,16 @@ function onPointerDown(event: PointerEvent) {
   root.value?.setPointerCapture(event.pointerId)
 }
 function onPointerMove(event: PointerEvent) {
-  if (onSlicerAntScrollMove(event)) return
-  if (drawingCanvas.move(point(event), event)) return
-  if (imageCanvas.move(point(event), event)) return
+  if (gesturePointerId !== undefined) clearValidationHover()
+  if (onSlicerAntScrollMove(event)) { clearValidationHover(); return }
+  if (drawingCanvas.move(point(event), event)) { clearValidationHover(); return }
+  if (imageCanvas.move(point(event), event)) { clearValidationHover(); return }
   if (!active || disposed || gesturePointerId !== undefined && gesturePointerId !== event.pointerId) return
   if (richTextPress) { updateRichTextPointer(point(event)); return }
   if (gesturePointerId === undefined) {
     const drawingHit = drawingCanvas.pick(point(event))
-    if (drawingHit?.leaf.kind === 'chart' && drawingHit.target.kind === 'chart') { emitChartEvent(event, drawingHit); return }
-    if (drawingHit?.target.kind === 'group' || drawingHit?.target.kind === 'shape') { if (root.value) root.value.style.cursor = 'move'; return }
+    if (drawingHit?.leaf.kind === 'chart' && drawingHit.target.kind === 'chart') { clearValidationHover(); emitChartEvent(event, drawingHit); return }
+    if (drawingHit?.target.kind === 'group' || drawingHit?.target.kind === 'shape') { clearValidationHover(); if (root.value) root.value.style.cursor = 'move'; return }
   }
   const position = point(event), hit = geometry.value.hitTest(Math.max(geometry.value.headerWidth + 1, Math.min(viewport.value.width - 1, position.x)), Math.max(geometry.value.headerHeight + 1, Math.min(viewport.value.height - 1, position.y)), viewport.value)
   lastPointer = position
@@ -1219,6 +1307,7 @@ function onPointerMove(event: PointerEvent) {
       ? hitCellEditorFillHandle(geometry.value, props.editingKey, viewport.value, position.x, position.y)
       : hitSelectionFillHandle(geometry.value, props.selectedRanges ?? [], viewport.value, position.x, position.y))
     fillHandleHovered.value = Boolean(fillHandle)
+    scheduleValidationHover(!props.editingKey && !fillHandle && hover?.kind === 'cell' ? hover.key : undefined)
     const hasHyperlink = hover?.kind === 'cell' && Boolean(props.sheet.cells[hover.key]?.hyperlink)
     root.value.style.cursor = fillHandle ? 'crosshair' : hasHyperlink || hover?.kind === 'outline-toggle' || hover?.kind === 'outline-level' ? 'pointer' : resizeDrag?.axis === 'column' || hover?.kind === 'resize-column' ? 'col-resize' : resizeDrag?.axis === 'row' || hover?.kind === 'resize-row' ? 'row-resize' : hover && selectedAxisMoveSource(hover) ? 'grab' : 'cell'
   }
@@ -1448,11 +1537,19 @@ function onInputKeydown(event: KeyboardEvent) {
   if (!(event.target instanceof HTMLElement) || !root.value?.contains(event.target)) return
   if (!event.defaultPrevented && !composing.value && !event.isComposing && event.keyCode !== 229) emit('editor-keydown', event)
 }
+function openValidationFromKey(event: KeyboardEvent): boolean {
+  if (!active || disposed || composing.value || event.isComposing || event.keyCode === 229 || event.defaultPrevented
+    || !event.altKey || event.ctrlKey || event.metaKey || event.key !== 'ArrowDown' || props.formatPainter
+    || props.selectedDrawingRefs?.length || !props.validationCellEntry || props.validationCellEntry.disabled) return false
+  if (!props.validationCellEntry.open()) return false
+  event.preventDefault(); event.stopPropagation(); return true
+}
 function onEditorKeydownCapture(event: KeyboardEvent): void {
   if (!(event.target as HTMLElement).closest('.canvas-cell-input')) return
   nativeInput.capture(event, 'selection')
   // Capture before AutoComplete's option list can interpret an IME Enter or Alt+Enter as a choice.
   if (composing.value || event.isComposing || event.keyCode === 229) { event.stopPropagation(); return }
+  if (openValidationFromKey(event)) return
   const scene = richTextEditorScene.value, element = editorElement()
   if (scene && element && !event.ctrlKey && !event.metaKey && !event.altKey
     && (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Home' || event.key === 'End')) {
@@ -1575,6 +1672,12 @@ function onWheel(event: WheelEvent) {
 function clampOffset(value: number, max: number): number { return Math.min(max, Math.max(0, Math.round(value))) }
 function onKeydown(event: KeyboardEvent) {
   if (!active || disposed || event.defaultPrevented) return
+  if (!props.editingKey && event.target === root.value && event.key === ' ' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+    && !composing.value && !event.isComposing && event.keyCode !== 229 && !props.formatPainter && !props.selectedDrawingRefs?.length) {
+    const checkbox = checkboxControls.value.entries.get(props.selectedKey)
+    if (checkbox && !checkbox.disabled) { event.preventDefault(); event.stopPropagation(); checkbox.activate(); return }
+  }
+  if (!props.editingKey && openValidationFromKey(event)) return
   if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && (slicerAntScrollPress || slicerMenuGesture || slicerLevelPress)) {
     event.preventDefault(); event.stopPropagation(); cancelSlicerControl(props.selectedSlicerId ?? ''); return
   }
@@ -1804,6 +1907,7 @@ onMounted(async () => {
 })
 onActivated(() => { active = true; void nextTick(restoreViewport) })
 onDeactivated(() => {
+  clearValidationHover()
   pasteOptionsOpen.value = false
   drawingContextOpen.value = false
   resetSlicerInteraction()
@@ -1813,7 +1917,7 @@ onDeactivated(() => {
   clearPointerGesture()
   surface?.resize(0, 0, window.devicePixelRatio || 1)
 })
-onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingContextOpen.value = false; resetSlicerInteraction(); document.removeEventListener('focusin', onPasteOptionsFocusIn, true); document.removeEventListener('pointerdown', onSlicerMenuOutsidePointer, true); clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
+onUnmounted(() => { disposed = true; clearValidationHover(); pasteOptionsOpen.value = false; drawingContextOpen.value = false; resetSlicerInteraction(); document.removeEventListener('focusin', onPasteOptionsFocusIn, true); document.removeEventListener('pointerdown', onSlicerMenuOutsidePointer, true); clearPointerGesture(); cancelAnimationFrame(frame); observer?.disconnect(); dprQuery?.removeEventListener('change', onDevicePixelRatioChange); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); document.fonts?.removeEventListener('loadingdone', queueRender); surface?.dispose() })
 </script>
 
 <template>
@@ -1826,6 +1930,7 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingCont
     @focusin.capture="onEditorSelectionCapture" @select.capture="onEditorSelectionCapture" @scroll.capture="onEditorScrollCapture"
     @pointerdown.capture="onEditorPointerDownCapture" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp"
     @pointercancel="onPointerUp" @lostpointercapture="onPointerUp" @dblclick="onDoubleClick" @contextmenu="onContextMenu"
+    @pointerleave="clearValidationHover"
     @copy="event => onClipboard(event, 'copy')" @cut="event => onClipboard(event, 'cut')"
     @paste.capture="onEditorPasteCapture" @paste="event => onClipboard(event, 'paste')" @wheel="onWheel">
     <div ref="scroller" class="canvas-scroll" @scroll="onScroll"><div :style="fullSize" /></div>
@@ -1905,11 +2010,23 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingCont
         :type="control.active ? 'primary' : 'default'" size="small" :aria-label="control.label" :aria-pressed="control.active" :disabled="control.disabled"
         @pointerdown.stop @keydown.stop @dblclick.stop @click.stop="changeOutlineLevel(control)">{{ control.level }}</Button>
     </Tooltip>
+    <SheetValidationCellControl v-if="validationCellEntry && validationCellControlPosition" :key="validationCellEntry.hostKey"
+      :entry="validationCellEntry" :popup="validationCellPopup" :position="validationCellControlPosition" :region="region"
+      :current-year="validationCurrentYear ?? new Date().getFullYear()" />
+    <SheetCheckboxValidationOverlay v-for="control in checkboxControls.controls" :key="control.entry.hostKey"
+      :entry="control.entry" :position="control.position" :selected-key="selectedKey" />
+    <Alert v-if="validationCheckboxError" class="sheet-validation-checkbox-error" type="warning" :title="validationCheckboxError"
+      show-icon closable @pointerdown.stop @close="emit('clear-checkbox-error')" />
+    <SheetValidationFeedbackPopup v-if="validationPromptPosition && selectedValidationFeedback" :key="validationPromptOwner"
+      :feedback="selectedValidationFeedback" :position="validationPromptPosition" mode="prompt" :input-owner="validationInputOwner ?? ''"
+      :composing="composing" :dismiss="dismissValidationPrompt" />
+    <SheetValidationFeedbackPopup v-if="hoveredValidationPosition && hoveredValidationFeedback" :key="`invalid:${hoveredValidationFeedback.key}`"
+      :feedback="hoveredValidationFeedback" :position="hoveredValidationPosition" mode="invalid" :input-owner="validationInputOwner ?? ''" :composing="composing" />
     <AutoComplete v-if="editingKey" :key="editSessionId ?? editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @select="onAutoCompleteSelect" @blur="onEditorBlur" @keydown.stop="onInputKeydown">
       <Input.TextArea v-if="useMultilineEditor" :rows="1" :auto-size="false" :change-on-composing="true" :styles="editTextAreaStyles" :wrap="sheetCellWrapStrategy(editedCell) === 'wrap' ? 'soft' : 'off'" variant="borderless" spellcheck="false" aria-label="单元格编辑" @change="onTextAreaChange" />
     </AutoComplete>
     <span v-if="editingKey && editLayout && !formatPainter" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
-    <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true">{{ selectedKey }} {{ selectedCellText }}</span></div>
+    <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true" :aria-invalid="selectedValidationFeedback?.issues.length ? 'true' : undefined">{{ selectedKey }} {{ selectedCellText }}</span></div>
     <Alert v-if="surfaceError" class="canvas-surface-error" type="error" :title="`画布初始化失败：${surfaceError}`" show-icon />
     <SheetContextMenu
       v-if="contextMenuContext"
@@ -1943,6 +2060,7 @@ onUnmounted(() => { disposed = true; pasteOptionsOpen.value = false; drawingCont
 .rich-text-editor-active :deep(.canvas-cell-input input), .rich-text-editor-active :deep(.canvas-cell-input textarea) { -webkit-text-fill-color: transparent; }
 .rich-text-editor-active :deep(.canvas-cell-input input::selection), .rich-text-editor-active :deep(.canvas-cell-input textarea::selection) { color: transparent; background: transparent; }
 .canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
+.sheet-validation-checkbox-error { position: absolute; z-index: 6; left: 12px; right: 12px; bottom: 12px; }
 .fill-handle-hovered :deep(.canvas-cell-input input), .fill-handle-hovered :deep(.canvas-cell-input textarea) { cursor: crosshair; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .canvas-surface-error { position: absolute; z-index: 4; top: 12px; inset-inline-start: 12px; max-width: calc(100% - 24px); }

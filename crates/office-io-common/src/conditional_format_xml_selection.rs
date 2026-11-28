@@ -260,33 +260,33 @@ pub fn extract<R: BufRead>(input: R, limits: XmlSelectionLimits,
                 leave_scope(undo, &mut bindings, &mut context);
             }
             Event::Text(value) => {
-                let value = value.xml_content(XmlVersion::Implicit1_0).map_err(xml_error)?.into_owned();
+                let value = value.xml_content(XmlVersion::Implicit1_0).into_owned();
                 if !valid_text(&value) || path.is_empty() && !value.trim().is_empty() { return Err(xml_error("invalid text or text outside the root")) }
                 if let Some(active) = &mut capture { push_text(&mut active.stack, value).map_err(xml_error)?; }
             }
             Event::CData(value) => {
-                let value = value.xml_content(XmlVersion::Implicit1_0).map_err(xml_error)?.into_owned();
+                let value = value.xml_content(XmlVersion::Implicit1_0).into_owned();
                 if !valid_text(&value) || path.is_empty() { return Err(xml_error("invalid CDATA or CDATA outside the root")) }
                 if let Some(active) = &mut capture { push_text(&mut active.stack, value).map_err(xml_error)?; }
             }
             Event::GeneralRef(reference) => {
                 let value = if let Some(value) = reference.resolve_char_ref().map_err(xml_error)? { value.to_string() }
-                    else { quick_xml::escape::resolve_xml_entity(&reference.decode().map_err(xml_error)?).ok_or_else(|| xml_error("unsupported XML entity"))?.to_owned() };
+                    else { quick_xml::escape::resolve_xml_entity(&reference.as_ref()).ok_or_else(|| xml_error("unsupported XML entity"))?.to_owned() };
                 if !valid_text(&value) || path.is_empty() { return Err(xml_error("invalid entity or entity outside the root")) }
                 if let Some(active) = &mut capture { push_text(&mut active.stack, value).map_err(xml_error)?; }
             }
             Event::Comment(value) => {
-                let value = String::from_utf8(value.as_ref().to_vec()).map_err(xml_error)?;
+                let value = value.as_ref().to_owned();
                 if !valid_text(&value) { return Err(xml_error("invalid XML comment characters")) }
                 if let Some(active) = &mut capture { active.stack.last_mut().ok_or_else(|| xml_error("comment outside capture"))?.content.push(Content::Comment(value)); }
             }
             Event::PI(value) => {
-                let value = String::from_utf8(value.as_ref().to_vec()).map_err(xml_error)?;
+                let value = value.as_ref().to_owned();
                 if !valid_text(&value) { return Err(xml_error("invalid XML instruction characters")) }
                 if let Some(active) = &mut capture { active.stack.last_mut().ok_or_else(|| xml_error("instruction outside capture"))?.content.push(Content::Instruction(value)); }
             }
             Event::Decl(value) if root.is_none() && path.is_empty() => {
-                if value.version().map_err(xml_error)?.as_ref() != b"1.0" { return Err(xml_error("XML part must use XML 1.0")) }
+                if value.version().map_err(xml_error)?.as_ref() != "1.0" { return Err(xml_error("XML part must use XML 1.0")) }
             }
             Event::Eof => {
                 if !path.is_empty() || !scopes.is_empty() || capture.is_some() { return Err(xml_error("XML part has unclosed elements")) }

@@ -5,6 +5,7 @@ import { retainPivotCollapseInfo } from './pivot-axis-state.ts'
 import { renderPivotTable } from './pivot-engine.ts'
 import { getPivotShowDataAsBaseFieldIds, getPivotShowDataAsRule } from './pivot-show-data-as.ts'
 import { retainPivotValuesIndexAfterRemoval } from './pivot-values-position.ts'
+import { pivotSourceFieldIdentity as fieldIdentity } from './pivot-source-field.ts'
 
 export interface PivotSourceCacheTransform {
   sheetId: string
@@ -33,12 +34,6 @@ const cacheId = (report: PivotTableModel): string | undefined => report.pivotCac
 const reports = (workbook: WorkbookModel): PivotTableModel[] => [...(workbook.pivotTables ?? []),
   ...(workbook.charts ?? []).flatMap(chart => chart.ownedPivot ? [chart.ownedPivot] : [])]
 const inColumns = (column: number, range: CellRange): boolean => column >= range.startCol && column <= range.endCol
-
-/** Freeze provenance before changing physical columns; report-local IDs are never source IDs. */
-function fieldIdentity(report: PivotTableModel, field: PivotFieldModel, cache?: PivotCacheModel): string {
-  return field.sourceFieldId ?? cache?.fields?.find(source => source.sourceColumn === field.sourceColumn)?.id
-    ?? String(field.sourceColumn - report.source.range.startCol)
-}
 
 /** Output hit metadata belongs to one generated matrix, never to a source/cache snapshot. */
 export function invalidatePivotSourceReportOutput(report: PivotTableModel, owned = false): void {

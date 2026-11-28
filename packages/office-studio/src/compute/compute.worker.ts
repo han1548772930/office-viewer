@@ -4,9 +4,11 @@ import { COMPUTE_PROTOCOL_VERSION, isRecord } from './protocol.ts'
 import type { ComputeOutput, ComputeTask, ComputeWorkerEvent, ComputeWorkerRequest } from './protocol.ts'
 import { estimateTaskMemory, taskViews, validateTask } from './tasks.ts'
 import { loadComputeWasm } from './wasm.worker.ts'
-import type { LoadedComputeWasm, WasmAggregate, WasmChartResult, WasmIndexResult, WasmSlicerMemberResult, WasmStepper } from './wasm.worker.ts'
+import type { LoadedComputeWasm, WasmAggregate, WasmChartResult, WasmIndexResult, WasmSlicerMemberResult, WasmCheckboxCellsResult, WasmStepper } from './wasm.worker.ts'
 import { readChartStatisticsOutput } from './chart-results.ts'
 import { readSlicerMembersOutput } from './slicer-member-results.ts'
+import { readCheckboxCellsOutput } from './checkbox-cell-results.ts'
+import { readValidationListQueryOutput } from './validation-list-query-results.ts'
 import { prepareSlicerTextRanks } from './slicer-member.worker.ts'
 import {
   matchesWasmTaskControl, readBoundaryCopyStats, requireIndependentOutput, requireMatchingWasmResult,
@@ -45,6 +47,9 @@ function isChartResult(value: unknown): value is WasmChartResult {
 function isSlicerMemberResult(value: unknown): value is WasmSlicerMemberResult {
   return isRecord(value) && ['copy_indices', 'copy_has_data', 'metadata', 'free'].every((key) => typeof value[key] === 'function')
 }
+function isCheckboxCellsResult(value: unknown): value is WasmCheckboxCellsResult {
+  return isRecord(value) && ['copy_runs', 'metadata', 'free'].every(key => typeof value[key] === 'function')
+}
 interface Calculated { output: ComputeOutput; boundary: BoundaryCopyStats; buffers: ArrayBuffer[] }
 
 async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: WasmTaskControl): Promise<Calculated> {
@@ -65,6 +70,48 @@ async function calculate(loaded: LoadedComputeWasm, task: ComputeTask, context: 
   // Large creation/copy steps remain cancellable by the client's kill/recreate.
   await module.compute_yield()
   checkCancellation(context)
+  if (task.kind === 'validationListQuery') {
+    const candidate: unknown = module.create_validation_list_query(task.offsets, task.textBytes, task.queryBytes, { context, params: task.params })
+    if (!isStepper(candidate)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '列表查询缺少协议 2 步进接口')
+    try {
+      let done = false
+      while (!done) { checkCancellation(context); done = candidate.step(16_384); progress(candidate.progress()); await module.compute_yield() }
+      checkCancellation(context)
+      const result: unknown = candidate.finish()
+      if (!isIndexResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '列表查询缺少结果所有权接口')
+      try {
+        const indices = result.copy_indices()
+        if (!(indices instanceof Uint32Array)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '列表查询必须返回 Uint32Array')
+        const buffer = requireIndependentOutput(indices, loaded.memory), metadata = requireMatchingWasmResult(result.metadata(), context)
+        if (metadata.indexLength !== indices.length || metadata.byteLength !== indices.byteLength) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '列表查询与元数据长度不匹配')
+        const output = readValidationListQueryOutput({ kind: 'validationListQuery', indices, total: metadata.total }, task.params)
+        if (!output) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '列表查询窗口或计数无效')
+        progress(1, true)
+        return { output, boundary: readBoundaryCopyStats(metadata.transfer), buffers: [buffer] }
+      } finally { result.free() }
+    } finally { candidate.free() }
+  }
+  if (task.kind === 'checkboxCells') {
+    const candidate: unknown = module.create_checkbox_cells(task.ranges, task.merges, task.positions, task.actions, { context, params: task.params })
+    if (!isStepper(candidate)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '复选框计划缺少协议 2 步进接口')
+    try {
+      let done = false
+      while (!done) { checkCancellation(context); done = candidate.step(16_384); progress(candidate.progress()); await module.compute_yield() }
+      checkCancellation(context)
+      const result: unknown = candidate.finish()
+      if (!isCheckboxCellsResult(result)) throw new ComputeError('COMPUTE_WASM_API_MISSING', '复选框计划缺少结果所有权接口')
+      try {
+        const runs = result.copy_runs()
+        if (!(runs instanceof Uint32Array)) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '复选框计划必须返回 Uint32Array')
+        const buffer = requireIndependentOutput(runs, loaded.memory), metadata = requireMatchingWasmResult(result.metadata(), context)
+        if (metadata.runLength !== runs.length || metadata.byteLength !== runs.byteLength) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '复选框计划与元数据长度不匹配')
+        const output = readCheckboxCellsOutput({ kind: 'checkboxCells', runs, changedCells: metadata.changedCells }, task.params)
+        if (!output) throw new ComputeError('COMPUTE_PROTOCOL_MISMATCH', '复选框输出范围或变化计数无效')
+        progress(1, true)
+        return { output, boundary: readBoundaryCopyStats(metadata.transfer), buffers: [buffer] }
+      } finally { result.free() }
+    } finally { candidate.free() }
+  }
   if (task.kind === 'slicerMembers') {
     await prepareSlicerTextRanks(task, async () => { checkCancellation(context); await module.compute_yield(); checkCancellation(context) })
     checkCancellation(context)
@@ -193,14 +240,14 @@ async function handle(request: ComputeWorkerRequest): Promise<void> {
     const memory = estimateTaskMemory(request.task)
     const { output, boundary, buffers } = await calculate(wasm, request.task, context)
     checkCancellation(context)
-    const outputBytes = output.kind === 'aggregate' ? 0 : output.kind === 'chartStatistics'
+    const outputBytes = output.kind === 'aggregate' ? 0 : output.kind === 'checkboxCells' ? output.runs.byteLength : output.kind === 'chartStatistics'
       ? output.values.byteLength + output.indices.byteLength : output.kind === 'slicerMembers'
       ? output.indices.byteLength + output.hasData.byteLength : output.indices.byteLength
     scope.postMessage({ type: 'result', context, engineVersion: wasm.module.compute_version(), output, metrics: {
       elapsedMs: performance.now() - started, ...memory, boundary,
       transport: { inputTransfers: taskViews(request.task).length, inputBytes: memory.inputBytes,
         outputTransfers: buffers.length, outputBytes,
-        structuredResultMessages: output.kind === 'aggregate' || output.kind === 'chartStatistics' || output.kind === 'slicerMembers' ? 1 : 0 },
+        structuredResultMessages: output.kind === 'aggregate' || output.kind === 'chartStatistics' || output.kind === 'slicerMembers' || output.kind === 'checkboxCells' ? 1 : 0 },
     } }, buffers)
   } catch (error) {
     const failure = normalizeComputeError(error)
@@ -219,7 +266,7 @@ scope.addEventListener('message', (event) => {
     }
     if (data.type !== 'run' && data.type !== 'cancel') throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求必须使用协议 2')
     if (!isRecord(data.context) || (data.context.kind !== 'aggregate' && data.context.kind !== 'sort' && data.context.kind !== 'filter'
-      && data.context.kind !== 'chartStatistics' && data.context.kind !== 'slicerMembers')) {
+      && data.context.kind !== 'chartStatistics' && data.context.kind !== 'slicerMembers' && data.context.kind !== 'checkboxCells')) {
       throw new WasmProtocolError('WASM_PROTOCOL_MISMATCH', '计算请求的计算域无效')
     }
     context = requireWasmTaskControl(data.context, data.context.kind)

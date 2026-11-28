@@ -66,6 +66,9 @@ export const useDocumentInputStore = defineStore('document-input', () => {
         throw error
       }
     }
+    // An emptied note/embedded host has no valid caret. Keep the last real
+    // coordinates while invalid instead of publishing clampPoint's empty ID.
+    if (!currentScope.blocks.length) return invalidate(unitId)
     const selection = previous.location.selection
     let view = selection.tableSelection
     if (view && previousScope) {

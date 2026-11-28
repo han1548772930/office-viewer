@@ -21,6 +21,7 @@ import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../p
 import type { DocumentToolbarState } from './document-toolbar-state'
 import { localizeRibbon, type OfficeTranslator } from '../../i18n/office-i18n.ts'
 import DocumentCharacterPicker from './DocumentCharacterPicker.vue'
+import type { DocumentCharacterPreferencesStore } from '../../features/document/stores/document-character-preferences-store'
 import DocumentListPicker from './DocumentListPicker.vue'
 import DocumentColorControl from './DocumentColorControl.vue'
 import { DOCUMENT_DEFAULT_TEXT_COLOR, DOCUMENT_STANDARD_COLORS, documentColorIsAutomatic, documentColorPreview, isDocumentColorField } from '../../features/document/services/document-colors'
@@ -37,6 +38,7 @@ import { createDocumentNoteRibbon, type DocumentNoteRibbonContext } from './docu
 import { createDocumentStructureRibbon, type DocumentStructureRibbonContext } from './document-structure-ribbon'
 import { createDocumentLatexRibbon, type DocumentLatexRibbonContext } from './document-latex-ribbon'
 import type { DocumentHyperlinkSelectionState } from '../../features/document/services/document-hyperlinks'
+import { DOCUMENT_ZOOM_SHORTCUTS } from '../../features/document/services/document-zoom'
 
 export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
@@ -67,12 +69,14 @@ export interface DocumentRibbonContext {
   paper: string
   orientation: string
   zoom: number
+  zoomDisabled?: boolean
   contentControlsAvailable: boolean
   mode?: 'traditional' | 'modern'
   editingHeaderFooter?: boolean
   editingAuxiliaryContent?: boolean
   editingDisabled?: boolean
   selectionHasCode?: boolean
+  characterPreferences?: DocumentCharacterPreferencesStore
   pageSettingsDisabled?: boolean
   namedStyleDisabled?: boolean
   namedStyleDisabledReason?: string
@@ -254,8 +258,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
       { ...action('doc-table', '表格', Grid2X2, 'doc.operation.create-table', undefined, { order: 2, disabled: context.editingDisabled, gridLayout: { row: 1, column: 2 } }), type: 'menu', children: [
         action('doc-table-insert', '插入表格', Grid2X2, 'doc.operation.create-table'),
       ] },
-      { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji' }, popupCommandId: 'doc.command.insert-special-character' },
-      { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { order: 6, disabled: context.editingDisabled, gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol' }, popupCommandId: 'doc.command.insert-special-character' },
+      { ...action('doc-emoji', '表情', Smile, 'doc.operation.open-characters', 'emoji', { order: 5, disabled: context.editingDisabled, gridLayout: { row: 1, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'emoji', preferences: context.characterPreferences }, popupCommandId: 'doc.command.insert-special-character' },
+      { ...action('doc-symbol', '符号', Omega, 'doc.operation.open-characters', 'symbol', { order: 6, disabled: context.editingDisabled, gridLayout: { row: 2, column: 3 } }), type: 'menu', popupComponent: DocumentCharacterPicker, popupProps: { mode: 'symbol', preferences: context.characterPreferences }, popupCommandId: 'doc.command.insert-special-character' },
       action('doc-image', '图片', ImagePlus, 'doc.command.insert-float-image', undefined, { order: 0, disabled: context.editingDisabled, gridLayout: { row: 1, column: 4 } }),
       action('doc-link', '链接', Link, 'doc.operation.show-hyper-link-edit-popup', undefined, { order: 1,
         disabled: context.hyperlink ? !context.hyperlink.available : context.editingDisabled || !state.hasSelection,
@@ -311,7 +315,8 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
     { id: 'view', title: '视图', order: 2, groups: [
       { id: 'doc-display', title: '显示', order: 0, items: [
       action('doc-page-settings', '页面设置', FileCog, 'doc.operation.open-page-settings', undefined, { disabled: context.pageSettingsDisabled, showLabel: true, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
-      { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, commandId: 'doc.operation.set-zoom', gridLayout: { row: 1, column: 2 }, options: [50, 80, 100, 130, 150, 170, 200, 400].map((value) => ({ label: `${value}%`, value })) },
+      { id: 'doc-zoom', type: 'select', title: '缩放', width: 90, value: context.zoom, disabled: context.zoomDisabled, commandId: 'doc.operation.set-zoom-ratio',
+        valueParams: value => ({ zoomRatio: Number(value) / 100 }), gridLayout: { row: 1, column: 2 }, options: DOCUMENT_ZOOM_SHORTCUTS.map(value => ({ label: `${value}%`, value })) },
       action('doc-fullscreen', context.fullscreen ? '退出全屏' : '全屏', context.fullscreen ? Minimize : Expand, 'doc.operation.toggle-fullscreen', undefined, { activated: context.fullscreen, gridLayout: { row: 2, column: 2 } }),
       ] },
     ] },

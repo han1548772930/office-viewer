@@ -28,7 +28,8 @@ export function registerSheetCellShiftCommands(api: OfficeStudio): Disposable {
     const range = sheetCellShiftCommandRange(input, target.ranges, currentSelection?.activeRangeIndex)
     if (!range) return false
     if (commandId === SHEET_CELL_SHIFT_CONFIRM_COMMANDS[direction]) assertSheetCellShiftConfirmationAllowed(target.workbook, target.sheetId, sheetCellShiftEdit(range, direction))
-    const plan = planWorkbookCellShiftCommand(target.workbook, target.sheetId, range, direction, userId, input.dismantlePartialMerges, target.ranges)
+    const plan = planWorkbookCellShiftCommand(target.workbook, target.sheetId, range, direction, userId, input.dismantlePartialMerges,
+      target.ranges, api.regionalSettings.region.value)
     for (const [sheetId, ranges] of Object.entries(plan.affected)) {
       api.assertCanViewWorksheet(target.unitId, sheetId); api.assertCanEditWorksheet(target.unitId, sheetId)
       for (const range of ranges) api.assertCanEditRange(target.unitId, sheetId, range)

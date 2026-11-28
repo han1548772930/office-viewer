@@ -5,6 +5,8 @@ import { inverseSheetCellShiftPosition, mapSheetCellShiftPosition, sheetCellShif
 import { conditionalFormatFormulaAnchor, mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from '../sheet-validation/validation-formulas.ts'
 import { readFormulaReferenceArea, transformFormulaReferenceAreasForCellShift, translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
+import { rewriteWorkbookFormulaDefinedNames } from '../formula/formula-defined-names.ts'
 import { compactSheetClipboardRanges } from './sheet-clipboard-changes.ts'
 import { sheetClipboardObjectAxes } from './sheet-clipboard-object-geometry.ts'
 import { resolveSlicerAnchorBounds } from '../slicer/slicer-drawing.ts'
@@ -87,19 +89,6 @@ function internalHyperlink(value: string, original: WorkbookModel, targetId: str
   if (value.slice(1).includes('=')) { const params = new URLSearchParams(value.slice(1)); params.set('range', address); return `#${params}` }
   return `${value.slice(0, value.lastIndexOf('!') + 1)}${address}`
 }
-function definedNames(input: unknown, original: WorkbookModel, target: string, edit: SheetCellShiftEdit, local: boolean): unknown {
-  if (!Array.isArray(input)) return input
-  const active = original.sheets.find(sheet => sheet.id === original.activeSheetId)?.name
-  return input.map((entry: unknown) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
-    const record = entry as Record<string, unknown>
-    if (typeof record.refersTo !== 'string') return entry
-    const owner = typeof record.sheet === 'string' ? record.sheet : typeof record.sheetId === 'string'
-      ? original.sheets.find(sheet => sheet.id === record.sheetId)?.name : local ? undefined : active
-    return { ...record, refersTo: reference(record.refersTo, owner, target, edit) }
-  })
-}
-
 /** All resources read original coordinates and write only a detached workbook candidate. */
 export function transformWorkbookCellShiftResources(workbook: WorkbookModel, original: WorkbookModel, targetId: string, edit: SheetCellShiftEdit): void {
   const target = original.sheets.find(sheet => sheet.id === targetId)
@@ -110,7 +99,7 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
     if (before.conditionalFormats) sheet.conditionalFormats = conditionalRules(before.conditionalFormats, local, sheet.name, target.name, edit)
     if (before.dataValidations) sheet.dataValidations = validationRules(before.dataValidations, local, sheet.name, target.name, edit)
     for (const cell of Object.values(sheet.cells)) {
-      if (cell.formula) cell.formula = reference(cell.formula, sheet.name, target.name, edit)
+      if (cell.formula) rewriteFormulaImportCell(cell, reference(cell.formula, sheet.name, target.name, edit))
       if (cell.sparkline) cell.sparkline.sourceRange = reference(cell.sparkline.sourceRange, sheet.name, target.name, edit)
       if (cell.hyperlink) cell.hyperlink = internalHyperlink(cell.hyperlink, original, targetId, target.name, edit)
       if (cell.richText) cell.richText = cell.richText.map(run => typeof run.hyperlink === 'string'
@@ -188,10 +177,7 @@ export function transformWorkbookCellShiftResources(workbook: WorkbookModel, ori
     if (JSON.stringify(next) !== JSON.stringify(slicer)) next.revision++
     return [next]
   })
-  if (workbook.metadata) {
-    workbook.metadata.definedNames = definedNames(workbook.metadata.definedNames, original, target.name, edit, false)
-    workbook.metadata.localDefinedNames = definedNames(workbook.metadata.localDefinedNames, original, target.name, edit, true)
-  }
+  rewriteWorkbookFormulaDefinedNames(workbook, (formula, owner) => reference(formula, owner, target.name, edit))
   const after = workbook.sheets.find(sheet => sheet.id === targetId)!
   if (target.images) after.images = transformSheetImagesForCellShift(target.images, edit, after,
     { before: sheetClipboardObjectAxes(original, target), after: sheetClipboardObjectAxes(workbook, after) })

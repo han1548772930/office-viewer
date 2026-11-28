@@ -5,16 +5,18 @@ import type {
   SheetDataValidationOperator,
   SheetDataValidationRule,
   SheetDataValidationType,
-  SpreadsheetCell,
   SpreadsheetSheet,
   WorkbookModel,
 } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
-import { evaluateFormula } from '../formula/formula-engine.ts'
 import { parseFormula } from '../formula/formula-parser.ts'
 import { isFormulaError, type FormulaNode } from '../formula/formula-types.ts'
-import { reanchorSheetDataValidationRule, sheetValidationFormulaAt } from './validation-formulas.ts'
+import { reanchorSheetDataValidationRule, sheetValidationFormulaAnchor, sheetValidationFormulaAt } from './validation-formulas.ts'
 import { parseTimelineDate } from '../slicer/timeline-date.ts'
+import { normalizeSheetCheckboxValue, sheetCheckboxRuleValues } from './validation-checkbox.ts'
+import { sheetValidationCellValue, sheetValidationFormulaReference, sheetValidationFormulaValue, type SheetValidationSourceReader } from './validation-value-read.ts'
+import { resolveSheetCellStyle } from '../sheet-workbench/sheet-style-inheritance.ts'
+import { formatSheetValue } from '../sheet-workbench/sheet-number-format.ts'
 
 export interface SheetValidationPosition { row: number; column: number }
 
@@ -58,13 +60,14 @@ const DATA_VALIDATION_OPERATORS: readonly SheetDataValidationOperator[] = [
 export function createSheetDataValidationRule(
   draft: SheetDataValidationDraft,
   ranges: readonly CellRange[],
+  previous?: SheetDataValidationRule,
 ): SheetDataValidationRule {
   if (!DATA_VALIDATION_TYPES.includes(draft.type)) throw new TypeError('数据验证类型无效。')
   if (!ranges.length || ranges.some(range => !isValidRange(range))) throw new RangeError('请选择有效的数据验证区域。')
   if (draft.operator !== undefined && !DATA_VALIDATION_OPERATORS.includes(draft.operator)) throw new TypeError('数据验证条件无效。')
   if (requiresFormula1(draft.type, draft.operator) && !draft.formula1?.trim()) throw new TypeError('此数据验证类型需要规则值。')
   if (draft.type !== 'any' && requiresFormula2(draft.operator) && !draft.formula2?.trim()) throw new TypeError('此比较条件需要第二个规则值。')
-  validateRuleSettings(draft)
+  validateRuleSettings(draft, previous)
   return {
     ...cloneModel(draft),
     id: draft.id?.trim() || crypto.randomUUID(),
@@ -139,13 +142,23 @@ export function validateSheetDataValidationChanges(
   workbook: WorkbookModel,
   sheetId: string,
   positions: readonly SheetValidationPosition[],
+  canReadSource?: SheetValidationSourceReader,
+  region = 'zh-CN',
 ): SheetValidationResult {
   const sheet = workbook.sheets.find(item => item.id === sheetId)
   if (!sheet) throw new Error(`Worksheet not found: ${sheetId}`)
+  const optionValues = new Map<SheetDataValidationRule, string[]>()
+  const optionsForRule = (rule: SheetDataValidationRule): string[] => {
+    const cached = optionValues.get(rule)
+    if (cached) return cached
+    const values = sheetDataValidationOptions(rule, workbook, sheet.id, canReadSource, region)
+    optionValues.set(rule, values)
+    return values
+  }
   const issues = positions.flatMap(position => {
     const cell = sheet.cells[`${position.row}:${position.column}`]
     return dataValidationsAt(sheet, position.row, position.column)
-      .filter(rule => !isValidValue(rule, cell, workbook, sheet, position.row, position.column))
+      .filter(rule => !isValidValue(rule, workbook, sheet, position.row, position.column, canReadSource, optionsForRule))
       .map(rule => toIssue(rule, cell?.value ?? null, position))
   })
   return { valid: issues.length === 0, blocked: issues.some(issue => issue.severity === 'stop'), issues }
@@ -155,20 +168,32 @@ export function sheetDataValidationOptions(
   rule: SheetDataValidationRule,
   workbook: WorkbookModel,
   sheetId: string,
+  canReadSource?: SheetValidationSourceReader,
+  region = 'zh-CN',
 ): string[] {
-  if (rule.type === 'checkbox') return [rule.formula1 ?? 'TRUE', rule.formula2 ?? 'FALSE']
+  if (rule.type === 'checkbox') {
+    const values = sheetCheckboxRuleValues(rule, (formula, anchor) =>
+      sheetValidationFormulaValue(formula, workbook, sheetId, anchor, canReadSource))
+    return values ? [String(values.checked), String(values.unchecked)] : []
+  }
   if (rule.type !== 'list' && rule.type !== 'listMultiple') return []
   const inline = inlineListValues(rule.formula1 ?? '')
   if (inline) return inline
-  const source = validationListSource(rule.formula1 ?? '', workbook, sheetId)
+  const anchor = sheetValidationFormulaAnchor(rule)
+  const source = validationListSource(rule.formula1 ?? '', workbook, sheetId,
+    anchor && { row: anchor.row, column: anchor.col }, canReadSource)
   if (!source) return []
   const sheet = source.sheet
   const values: string[] = []
   const positions = Object.values(sheet.cells).filter(cell => contains(source.range, cell.row, cell.col))
     .sort((left, right) => left.row - right.row || left.col - right.col)
   for (const cell of positions) {
-      const value = cell.formula ? evaluateFormula(cell.formula, workbook, sheet.id) : cell.value
-      if (!isFormulaError(value) && value !== null && value !== '') values.push(String(value))
+    const value = sheetValidationCellValue(workbook, sheet, cell.row, cell.col, canReadSource)
+    if (isFormulaError(value) || value === null || value === '') continue
+    // A referenced list stores its formatted labels as choices; source scalars and formula caches remain untouched.
+    const pattern = typeof value === 'string' ? undefined : resolveSheetCellStyle(sheet, cell.row, cell.col, cell, workbook).numberFormat
+    const formatted = pattern && !/^general$/i.test(pattern) ? formatSheetValue(value, pattern, workbook.date1904, region) : undefined
+    values.push(formatted ?? String(value))
   }
   return [...new Set(values)]
 }
@@ -181,24 +206,25 @@ export function validationPromptForCell(sheet: SpreadsheetSheet, row: number, co
 
 function isValidValue(
   rule: SheetDataValidationRule,
-  cell: SpreadsheetCell | undefined,
   workbook: WorkbookModel,
   sheet: SpreadsheetSheet,
   row: number,
   column: number,
+  canReadSource?: SheetValidationSourceReader,
+  optionsForRule?: (rule: SheetDataValidationRule) => string[],
 ): boolean {
   if (rule.type === 'any') return true
-  const actual = cell?.formula ? evaluateFormula(cell.formula, workbook, sheet.id) : cell?.value ?? null
+  const actual = sheetValidationCellValue(workbook, sheet, row, column, canReadSource)
   if (isBlank(actual)) return rule.allowBlank !== false
   if (isFormulaError(actual)) return false
 
   if (rule.type === 'checkbox') {
-    const value = String(actual).replace(/^true$/i, '1').replace(/^false$/i, '0')
-    return sheetDataValidationOptions(rule, workbook, sheet.id).some(option =>
-      value === option.replace(/^true$/i, '1').replace(/^false$/i, '0'))
+    const value = normalizeSheetCheckboxValue(actual)
+    return (optionsForRule?.(rule) ?? sheetDataValidationOptions(rule, workbook, sheet.id, canReadSource)).some(option =>
+      value === normalizeSheetCheckboxValue(option))
   }
   if (rule.type === 'list' || rule.type === 'listMultiple') {
-    const options = sheetDataValidationOptions(rule, workbook, sheet.id).map(normalizeListValue)
+    const options = (optionsForRule?.(rule) ?? sheetDataValidationOptions(rule, workbook, sheet.id, canReadSource)).map(normalizeListValue)
     if (!options.length) return false
     // Cell CSV has no formula1 wrapper; add it so the parser preserves quoted fields.
     const selected = rule.type === 'listMultiple'
@@ -209,15 +235,15 @@ function isValidValue(
     const formula = rule.formula1?.trim()
     if (!formula) return false
     const shifted = sheetValidationFormulaAt(formula, rule, row, column)
-    const result = evaluateFormula(shifted, workbook, sheet.id)
+    const result = sheetValidationFormulaValue(shifted, workbook, sheet.id, { row, column }, canReadSource)
     return !isFormulaError(result) && (result === true || (typeof result === 'number' && result !== 0))
   }
 
   const typedValue = validationValue(rule.type, actual, workbook.date1904)
   if (typedValue === undefined) return false
   if (!rule.operator) return true
-  const first = evaluateOperand(rule.formula1 && sheetValidationFormulaAt(rule.formula1, rule, row, column), workbook, sheet.id, rule.type)
-  const second = evaluateOperand(rule.formula2 && sheetValidationFormulaAt(rule.formula2, rule, row, column), workbook, sheet.id, rule.type)
+  const first = evaluateOperand(rule.formula1 && sheetValidationFormulaAt(rule.formula1, rule, row, column), workbook, sheet.id, rule.type, { row, column }, canReadSource)
+  const second = evaluateOperand(rule.formula2 && sheetValidationFormulaAt(rule.formula2, rule, row, column), workbook, sheet.id, rule.type, { row, column }, canReadSource)
   if (first === undefined || (requiresFormula2(rule.operator) && second === undefined)) return false
   return compareByOperator(typedValue, first, second, rule.operator ?? 'between')
 }
@@ -235,10 +261,11 @@ function validationValue(type: SheetDataValidationType, value: CellScalar, date1
   return undefined
 }
 
-function evaluateOperand(value: string | undefined, workbook: WorkbookModel, sheetId: string, type: SheetDataValidationType): number | undefined {
+function evaluateOperand(value: string | undefined, workbook: WorkbookModel, sheetId: string, type: SheetDataValidationType,
+  position: SheetValidationPosition, canReadSource?: SheetValidationSourceReader): number | undefined {
   if (value === undefined || !value.trim()) return undefined
   const expression = value.trim()
-  const evaluated = evaluateFormula(expression.startsWith('=') ? expression : `=${expression}`, workbook, sheetId)
+  const evaluated = sheetValidationFormulaValue(expression.startsWith('=') ? expression : `=${expression}`, workbook, sheetId, position, canReadSource)
   if (isFormulaError(evaluated)) {
     if (type === 'date') return parseTimelineDate(expression, workbook.date1904)?.serial
     if (type === 'time') return timeFraction(expression)
@@ -300,7 +327,9 @@ function contains(range: CellRange, row: number, column: number): boolean {
 function normalizeListValue(value: string): string { return value.trim().toLocaleLowerCase() }
 
 function timeFraction(value: CellScalar): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 && value < 1 ? value : undefined
+  // A clock widget can preserve a hidden date, and elapsed-time formats can exceed one day.
+  // Operator comparisons retain the actual serial; an absent operator accepts any finite nonnegative time value.
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : undefined
   if (typeof value !== 'string') return undefined
   const parts = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value.trim())
   if (!parts) return undefined
@@ -335,7 +364,7 @@ export function parseValidationListItems(value: string): string[] {
   return items.filter(item => item.length > 0)
 }
 
-function validateRuleSettings(rule: SheetDataValidationDraft): void {
+function validateRuleSettings(rule: SheetDataValidationDraft, previous?: SheetDataValidationRule): void {
   if (rule.id !== undefined && typeof rule.id !== 'string') throw new TypeError('数据验证标识必须是文本。')
   for (const key of ['formula1', 'formula2', 'errorTitle', 'error', 'promptTitle', 'prompt'] as const) {
     if (rule[key] !== undefined && typeof rule[key] !== 'string') throw new TypeError(`数据验证 ${key} 必须是文本。`)
@@ -353,19 +382,23 @@ function validateRuleSettings(rule: SheetDataValidationDraft): void {
   if (rule.type === 'checkbox' && rule.formula1 !== undefined && rule.formula2 !== undefined && rule.formula1 === rule.formula2) {
     throw new TypeError('复选框的勾选值和未勾选值必须不同。')
   }
-  if (rule.type === 'custom' || ((rule.type === 'list' || rule.type === 'listMultiple') && rule.formula1?.trim().startsWith('='))) {
+  const retainedFormula = (field: 'formula1' | 'formula2') => previous !== undefined && (previous.type === rule.type || field === 'formula1'
+    && previous.type.startsWith('list') && rule.type.startsWith('list'))
+    && previous.operator === rule.operator && previous[field] === rule[field]
+  if (!retainedFormula('formula1') && (rule.type === 'custom' || ((rule.type === 'list' || rule.type === 'listMultiple') && rule.formula1?.trim().startsWith('=')))) {
     validateFormula(rule.formula1!, rule.type === 'list' || rule.type === 'listMultiple')
   }
-  for (const formula of [rule.formula1, requiresFormula2(rule.operator) ? rule.formula2 : undefined]) {
-    if (formula?.trim().startsWith('=')) validateFormula(formula, false)
+  for (const field of ['formula1', 'formula2'] as const) {
+    const formula = field === 'formula1' || requiresFormula2(rule.operator) ? rule[field] : undefined
+    if (!retainedFormula(field) && formula?.trim().startsWith('=')) validateFormula(formula, false)
   }
 }
 
 function validateFormula(formula: string, allowListReferenceFunctions: boolean): void {
   const node = parseFormula(formula)
   const functions = collectFormulaFunctions(node)
-  if (allowListReferenceFunctions && functions.some(name => !['IF', 'INDIRECT', 'CHOOSE', 'OFFSET'].includes(name))) {
-    throw new TypeError('下拉列表引用公式仅支持 IF、INDIRECT、CHOOSE、OFFSET 和区域引用。')
+  if (allowListReferenceFunctions && functions.length && !functions.some(name => ['IF', 'INDIRECT', 'CHOOSE', 'OFFSET', 'INDEX'].includes(name))) {
+    throw new TypeError('下拉列表引用公式仅支持 IF、INDIRECT、CHOOSE、OFFSET、INDEX 和区域引用。')
   }
 }
 
@@ -376,36 +409,12 @@ function collectFormulaFunctions(node: FormulaNode): string[] {
   return []
 }
 
-function validationListSource(formula: string, workbook: WorkbookModel, sheetId: string): { sheet: SpreadsheetSheet; range: CellRange } | undefined {
-  const source = parseListRange(formula)
-  if (!source) return undefined
-  const sheet = source.sheetName
-    ? workbook.sheets.find(item => item.name.toLocaleLowerCase() === source.sheetName!.toLocaleLowerCase())
-    : workbook.sheets.find(item => item.id === sheetId)
-  return sheet ? { sheet, range: source.range } : undefined
-}
-
-function parseListRange(formula: string): { sheetName?: string; range: CellRange } | undefined {
-  const match = /^=?\s*(?:'((?:[^']|'')+)'|([\w ]+))?!?\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?\s*$/i.exec(formula)
-  if (!match) return undefined
-  const first = parseAddress(`${match[3]}${match[4]}`)
-  const last = parseAddress(`${match[5] ?? match[3]}${match[6] ?? match[4]}`)
-  if (!first || !last) return undefined
-  const quotedName = match[1]?.replace(/''/g, "'")
-  const simpleName = match[2]?.trim()
-  return {
-    sheetName: quotedName ?? (simpleName && simpleName.toUpperCase() !== 'TRUE' ? simpleName : undefined),
-    range: { startRow: Math.min(first.row, last.row), startCol: Math.min(first.column, last.column), endRow: Math.max(first.row, last.row), endCol: Math.max(first.column, last.column) },
-  }
-}
-
-function parseAddress(value: string): { row: number; column: number } | undefined {
-  const match = /^([A-Z]{1,3})(\d+)$/i.exec(value)
-  if (!match) return undefined
-  let column = 0
-  for (const character of match[1]!.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64
-  const row = Number(match[2]) - 1
-  return row >= 0 ? { row, column: column - 1 } : undefined
+function validationListSource(formula: string, workbook: WorkbookModel, sheetId: string, position?: SheetValidationPosition,
+  canReadSource?: SheetValidationSourceReader): { sheet: SpreadsheetSheet; range: CellRange } | undefined {
+  const reference = sheetValidationFormulaReference(formula, workbook, sheetId, position, canReadSource)
+  if (isFormulaError(reference)) return undefined
+  const sheet = workbook.sheets.find(candidate => candidate.id === reference.sheetId)
+  return sheet && { sheet, range: reference.range }
 }
 
 function subtractRanges(source: CellRange, cuts: readonly CellRange[]): CellRange[] {

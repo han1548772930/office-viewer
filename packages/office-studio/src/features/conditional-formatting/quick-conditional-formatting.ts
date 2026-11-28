@@ -39,6 +39,8 @@ export interface QuickConditionalFormatInput extends SheetRangeCommandInput,
   types?: readonly SheetConditionalFormatType[]
   stopIfTrue?: boolean
   expectedRevision?: number
+  expectedHistoryGeneration?: number
+  expectedUserId?: string
   host?: 'workbench'
 }
 

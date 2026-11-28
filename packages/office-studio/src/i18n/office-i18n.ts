@@ -29,6 +29,7 @@ import { reviewedSheetsTranslations } from './sheets/locales/reviewed.ts'
 import { sheetFindReplaceLocales } from './sheets/locales/find-replace.ts'
 import { sheetFormulaClipboardLocales } from './sheets/locales/formula-clipboard.ts'
 import { sheetQuickValidationLocales } from './sheets/locales/quick-validation.ts'
+import { sheetValidationInputLocales } from './sheets/locales/validation-input.ts'
 import { sheetTabContextLocales } from './sheets/locales/sheet-tab-context.ts'
 import { sheetFilterMenuLocales } from './sheets/locales/filter-menu.ts'
 import { conditionalFormattingLocaleMessages } from './sheets/locales/conditional-formatting.ts'
@@ -201,6 +202,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...sheetFindReplaceLocales[locale],
       ...sheetFormulaClipboardLocales[locale],
       ...sheetQuickValidationLocales[locale],
+      ...sheetValidationInputLocales[locale],
       ...sheetTabContextLocales[locale],
       ...sheetFilterMenuLocales[locale],
       'groups.rules': sheetRibbonRuleGroupLabels[locale],

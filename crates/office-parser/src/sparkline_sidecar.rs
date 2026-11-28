@@ -125,8 +125,9 @@ fn parse_sheet_fragments(
                 warnings.push(format!("SPARKLINE_LOCAL_STALE: native content at {target} takes precedence over the local Pie record"));
                 continue;
             }
-            budget.include(&record.spec)?; specs.insert(target, record.spec);
+            budget.include(&record.spec)?;
             warnings.push(format!("SPARKLINE_LOCAL_ONLY: Pie at {target} was restored from the editable Office Studio extension"));
+            specs.insert(target, record.spec);
         } else {
             let signature = record.native_signature.as_deref().filter(|value| value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .ok_or("SPARKLINE_MODEL_INVALID: native record needs a valid projection signature")?;

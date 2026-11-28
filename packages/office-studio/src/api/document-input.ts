@@ -14,6 +14,7 @@ import { publicDocumentRecord, publicDocumentResources, reservePublicDocumentCon
 import { applyPublicDocumentStories } from './document-input-stories'
 import { applyPublicDocumentNotes } from './document-input-notes'
 import { assertOfficeDocumentSnapshotCommentAnchors, readOfficeDocumentSnapshotSource } from './document-snapshot-source'
+import { validateDocumentZoomRatio } from '../features/document/services/document-zoom'
 
 function plainTextBody(text: string): { dataStream: string } {
   const stream = text.replace(/\r\n?/g, '\n').replace(/\n/g, T.paragraph)
@@ -53,6 +54,10 @@ export function documentFromPublicInput(input: UniverBodyRecord, candidate: Docu
   delete source.officeStudio
   candidate.metadata = { ...candidate.metadata, ...extension?.metadata, ...decoded.content.metadata, documentStyle: cloneModel(style), documentStyles: cloneModel(styles),
     source: { ...bodyRecord(extension?.metadata?.source), documentStyle: cloneModel(style) }, univerDocumentSource: { version: 1, snapshot: source } }
+  if (input.settings !== undefined) {
+    const settings = publicDocumentRecord(input.settings, 'settings')
+    candidate.metadata.documentZoomRatio = settings.zoomRatio == null ? 1 : validateDocumentZoomRatio(settings.zoomRatio)
+  }
   if (extension?.permissionRules !== undefined) candidate.permissionRules = extension.permissionRules
   const flavor = style.documentFlavor ?? 1
   if (![0, 1, 2, 3].includes(Number(flavor)) || typeof flavor !== 'number') throw new RangeError('文档模式无效。')

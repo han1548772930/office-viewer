@@ -99,7 +99,7 @@ fn restore_sdt_comment_targets(model: &DocModel, comments: &mut [DocumentComment
 /// The production guard uses the same extracted rich text as native control
 /// ranges. Duke's restored scalar FormField.value can trim or synthesize glyphs;
 /// it is not the authoritative literal paragraph after SDT projection.
-pub(super) fn restore_sdt_comment_targets_from_document(model: &DocModel, comments: &mut [DocumentComment], document: &StructuredDocument) -> Vec<String> {
+pub(crate) fn restore_sdt_comment_targets_from_document(model: &DocModel, comments: &mut [DocumentComment], document: &StructuredDocument) -> Vec<String> {
     let part = model.metadata.source_part_names.as_ref().and_then(|parts| parts.get("document")).map_or("word/document.xml", String::as_str);
     let mut text = BTreeMap::new();
     fn collect<'a>(blocks: &'a [DocumentBlock], part: &str, text: &mut BTreeMap<&'a str, &'a str>) {

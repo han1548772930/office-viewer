@@ -24,7 +24,7 @@ fn rewrite(bytes: &[u8], edit: impl Fn(&str, String) -> (String, String)) -> Vec
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut xml = String::new();
         entry.read_to_string(&mut xml).unwrap();
         let (name, xml) = edit(&name, xml);

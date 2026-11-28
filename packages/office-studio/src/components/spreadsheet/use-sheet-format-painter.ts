@@ -112,7 +112,8 @@ export function useSheetFormatPainter(context: SheetFormatPainterContext) {
     if (result.changed) {
       if (result.contentChanged) {
         const before = applyExcelWorkbookView(createBlankWorkbook(), current, context.region())
-        assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === targetId)!, applyExcelWorkbookView(before, candidate, context.region()), targetId)
+        assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === targetId)!, applyExcelWorkbookView(before, candidate, context.region()),
+          targetId, { userId: context.userId(), region: context.region() })
       }
       context.applyView(candidate)
       context.changed(result.contentChanged)

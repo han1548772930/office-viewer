@@ -64,14 +64,14 @@ pub(crate) fn parse_xml(xml: &str) -> Result<Element, String> {
                 if elements > XML_ELEMENT_LIMIT || stack.len() >= XML_DEPTH_LIMIT {
                     return Err("Office XML exceeds the element or nesting limit.".into());
                 }
-                let mut node = Element { name: String::from_utf8_lossy(tag.local_name().as_ref()).into_owned(), qualified_name: String::from_utf8_lossy(tag.name().as_ref()).into_owned(), start: position, end: reader.buffer_position() as usize, ..Default::default() };
+                let mut node = Element { name: String::from_utf8_lossy(tag.local_name().as_ref().as_bytes()).into_owned(), qualified_name: String::from_utf8_lossy(tag.name().as_ref().as_bytes()).into_owned(), start: position, end: reader.buffer_position() as usize, ..Default::default() };
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
-                    let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
-                    let key = String::from_utf8_lossy(attribute.key.as_ref());
+                    let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
+                    let key = String::from_utf8_lossy(attribute.key.as_ref().as_bytes());
                     if key == "xmlns" { node.namespaces.insert(String::new(), value.to_string()); }
                     else if let Some(prefix) = key.strip_prefix("xmlns:") { node.namespaces.insert(prefix.to_owned(), value.to_string()); }
-                    node.attributes.insert(String::from_utf8_lossy(attribute.key.local_name().as_ref()).into_owned(), value.into_owned());
+                    node.attributes.insert(String::from_utf8_lossy(attribute.key.local_name().as_ref().as_bytes()).into_owned(), value.into_owned());
                 }
                 if empty {
                     if let Some(parent) = stack.last_mut() { parent.children.push(node); }
@@ -84,12 +84,12 @@ pub(crate) fn parse_xml(xml: &str) -> Result<Element, String> {
                 if let Some(parent) = stack.last_mut() { parent.children.push(node); }
                 else if root.replace(node).is_some() { return Err("XML has more than one root element.".into()); }
             }
-            Event::Text(value) => if let Some(node) = stack.last_mut() { node.text.push_str(&value.decode().map_err(|error| error.to_string())?); },
-            Event::CData(value) => if let Some(node) = stack.last_mut() { node.text.push_str(&value.decode().map_err(|error| error.to_string())?); },
+            Event::Text(value) => if let Some(node) = stack.last_mut() { node.text.push_str(&value.as_ref()); },
+            Event::CData(value) => if let Some(node) = stack.last_mut() { node.text.push_str(&value.as_ref()); },
             Event::GeneralRef(value) => if let Some(node) = stack.last_mut() {
                 if let Some(character) = value.resolve_char_ref().map_err(|error| error.to_string())? { node.text.push(character); }
                 else {
-                    let entity = value.decode().map_err(|error| error.to_string())?;
+                    let entity = value.as_ref();
                     node.text.push_str(quick_xml::escape::resolve_xml_entity(&entity).ok_or("XML has an unsupported entity.")?);
                 }
             },

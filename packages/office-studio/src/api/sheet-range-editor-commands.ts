@@ -36,7 +36,8 @@ export function registerSheetRangeEditorCommands(api: OfficeStudio): void {
       const sheet = model.sheets.find(candidate => candidate.id === target.sheetId)!
       const filteredRows = [...(sheet.autoFilter?.filteredRows ?? []), ...(model.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => table.autoFilter?.filteredRows ?? [])]
       applySheetClearCommand(sheet, target.ranges, mode, api.currentUserId, filteredRows, model)
-      if (mode !== 'format') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
+      if (mode !== 'format') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId,
+        { userId: api.currentUserId, region: api.regionalSettings.region.value })
     })
     if (changed && mode !== 'format') changedValueEvent(api, target.unitId, target.sheetId, target.ranges)
     return changed
@@ -67,7 +68,8 @@ export function registerSheetRangeEditorCommands(api: OfficeStudio): void {
     } } : undefined
     const changed = api.commitWorkbook(target.unitId, action.kind === 'unmerge' ? '取消合并' : '合并单元格', model => {
       applySheetMergeCommand(model.sheets.find(candidate => candidate.id === target.sheetId)!, target.ranges, action, api.currentUserId)
-      if (action.kind === 'merge') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
+      if (action.kind === 'merge') assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId,
+        { userId: api.currentUserId, region: api.regionalSettings.region.value })
     }, { selections })
     if (changed && action.kind === 'merge') changedValueEvent(api, target.unitId, target.sheetId, target.ranges)
     return changed

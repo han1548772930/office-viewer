@@ -27,6 +27,17 @@ const MILLISECONDS_PER_DAY = DAYSIZE * 1000;
 const dateUTC = Date.UTC as (...values: unknown[]) => number;
 // The 1904 epoch is 1,461 real days after the 1900 epoch; Excel's fictitious 1900-02-29 adds one serial day.
 export const EXCEL_1904_OFFSET = 1462;
+/** Project the same physical date between workbook calendars. Dates before
+ * 1900-03-01 precede Excel's fictitious leap day and use a 1461-day offset.
+ * Serial 60 has no Gregorian counterpart: its numeric projection is a
+ * compatibility carrier, and callers must retain its original calendar/value.
+ * Negative projections are retained for IO rather than silently clamped. */
+export function translateExcelCalendarSerial(serial: number, source: DateSystem, target: DateSystem): number {
+    if (source === target || !Number.isFinite(serial)) return serial;
+    return source === DateSystem.Date1900
+        ? serial - (serial < 60 ? EXCEL_1904_OFFSET - 1 : EXCEL_1904_OFFSET)
+        : serial + (serial < 61 - EXCEL_1904_OFFSET ? EXCEL_1904_OFFSET - 1 : EXCEL_1904_OFFSET);
+}
 // Excel's supported calendar range ends at 9999-12-31.
 const EXCEL_1900_MAX_SERIAL = 2958465;
 const MAX_YEAR = 9999;

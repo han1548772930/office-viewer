@@ -15,7 +15,7 @@ fn rewrite(bytes: &[u8], replacements: &[(&str, Option<String>)]) -> Vec<u8> {
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut seen = HashSet::new();
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().to_owned(); seen.insert(name.clone());
+        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().unwrap().into_owned(); seen.insert(name.clone());
         if let Some((_, replacement)) = replacements.iter().find(|(part, _)| *part == name) {
             if let Some(content) = replacement { output.start_file(&name, options).unwrap(); output.write_all(content.as_bytes()).unwrap(); }
         } else { output.start_file(&name, options).unwrap(); std::io::copy(&mut entry, &mut output).unwrap(); }

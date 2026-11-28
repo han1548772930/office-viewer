@@ -10,6 +10,7 @@
     "build:compute": "wasm-pack build crates/office-compute --target web --release --out-dir ../../public/compute --out-name office_compute",
     "build:writer": "wasm-pack build crates/office-writer --target web --release --out-dir ../../public/wasm-writer --out-name office_writer",
     "build:bridge": "wasm-pack build crates/office-wasm-bridge --target web --release --out-dir ../../public/wasm-bridge --out-name office_wasm_bridge",
+    "generate:document-characters": "node scripts/generate-document-emojis.mjs",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:components": "vitest run --config vitest.components.config.ts",
     "test:compute": "vitest run --config vitest.config.ts packages/office-studio/tests/compute-index-service.contract.test.mjs",

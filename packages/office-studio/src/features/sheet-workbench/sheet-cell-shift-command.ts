@@ -115,7 +115,7 @@ function shiftedMerges(sheet: SpreadsheetSheet, edit: SheetCellShiftEdit): { ran
 
 /** Build and validate the complete candidate before asking about partial merges or publishing any content. */
 export function planWorkbookCellShiftCommand(model: WorkbookModel, sheetId: string, range: CellRange, direction: SheetCellShiftDirection,
-  userId = 'local-user', dismantlePartialMerges = false, selections: readonly CellRange[] = [range]): SheetCellShiftPlan {
+  userId = 'local-user', dismantlePartialMerges = false, selections: readonly CellRange[] = [range], region?: string): SheetCellShiftPlan {
   assertSheetCommandRanges(selections)
   const edit = sheetCellShiftEdit(range, direction), workbook = cloneModel(model), sheet = workbook.sheets.find(item => item.id === sheetId)
   if (!sheet) throw new Error('找不到移位目标工作表。')
@@ -182,7 +182,7 @@ export function planWorkbookCellShiftCommand(model: WorkbookModel, sheetId: stri
   }
   sheet.rowCount = rows; sheet.columnCount = columns
   refreshWorkbookCellStyles(workbook, undefined, false)
-  for (const original of model.sheets) assertSheetRangeChangedValuesValid(original, workbook, original.id)
+  for (const original of model.sheets) assertSheetRangeChangedValuesValid(original, workbook, original.id, { userId, region })
   const affected = assertSheetClipboardWorkbookChangesEditable(model, workbook, userId)
   affected[sheetId] = compactSheetClipboardRanges([scope, ...merges.dismantled, ...(affected[sheetId] ?? [])])
   return { workbook, range: { ...range }, edit, affected, mergeRanges: merges.dismantled, requiresConfirmation: Boolean(merges.dismantled.length && !dismantlePartialMerges) }

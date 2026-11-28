@@ -370,19 +370,19 @@ fn parse_xml(source: &str) -> Result<Node, String> {
                 stack.last_mut().unwrap().children.push(node);
             }
             Ok(Event::Text(text)) => {
-                let decoded = text.decode().map_err(|error| error.to_string())?;
+                let decoded = text.as_ref();
                 if let Some(node) = stack.last_mut() {
                     node.text.push_str(&decoded);
                 }
             }
             Ok(Event::CData(text)) => {
-                let decoded = text.decode().map_err(|error| error.to_string())?;
+                let decoded = text.as_ref();
                 if let Some(node) = stack.last_mut() {
                     node.text.push_str(&decoded);
                 }
             }
             Ok(Event::GeneralRef(reference)) => {
-                let decoded = reference.decode().map_err(|error| error.to_string())?;
+                let decoded = reference.as_ref();
                 let resolved = reference.resolve_char_ref().map_err(|error| error.to_string())?.map(|value| value.to_string())
                     .or_else(|| quick_xml::escape::resolve_xml_entity(&decoded).map(str::to_owned)).ok_or_else(|| format!("unknown Office XML entity &{decoded};"))?;
                 if let Some(node) = stack.last_mut() { node.text.push_str(&resolved); }
@@ -408,17 +408,16 @@ fn node_from(
     reader: &Reader<&[u8]>,
     element: &quick_xml::events::BytesStart<'_>,
 ) -> Result<Node, String> {
-    let name = local_name(element.name().as_ref());
+    let name = local_name(element.name().as_ref().as_bytes());
     let attrs = element
         .attributes()
         .with_checks(false)
         .filter_map(Result::ok)
         .map(|attribute| {
-            let key = local_name(attribute.key.as_ref());
+            let key = local_name(attribute.key.as_ref().as_bytes());
             let value = attribute
-                .decoded_and_normalized_value_with(
+                .normalized_value_with(
                     XmlVersion::Implicit1_0,
-                    reader.decoder(),
                     1,
                     quick_xml::escape::resolve_xml_entity,
                 )

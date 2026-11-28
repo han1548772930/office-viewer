@@ -1,14 +1,15 @@
 import { nextTick, ref, shallowRef, watch } from 'vue'
 import type { OfficeStudio } from '../../api/office-studio.ts'
-import type { CellRange } from '../../domain/model.ts'
+import { createBlankWorkbook, type CellRange } from '../../domain/model.ts'
 import { sheetColumnWidth, sheetRowHeight } from '../../domain/sheet-axis.ts'
-import { toExcelWorkbookView, type ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
+import { applyExcelWorkbookView, toExcelWorkbookView, type ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
 import { applySheetViewAxisDimensionCommand, SHEET_AXIS_DIMENSION_COMMANDS, sheetAxisDimensionActionForCommand,
   sheetAxisDimensionCommandInput, sheetAxisDimensionTargetRanges, type SheetAxisDimensionCommandInput } from '../../features/sheet-workbench/sheet-axis-dimensions.ts'
 import { canEditWorksheetProtection, canViewWorksheetProtection } from '../../features/sheet-protection/range-protection.ts'
 import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { captureSheetAxisCommandHost, type SheetAxisHostChangeOptions } from './sheet-axis-command-host.ts'
+import { createSheetValidationTagOptionsResolver } from '../../features/sheet-validation/validation-cell-options.ts'
 
 interface SheetAxisUiContext {
   studio(): OfficeStudio | undefined
@@ -36,19 +37,37 @@ interface PendingAxisSize {
   unitId?: string
   signature: string
   studio?: OfficeStudio
+  userId: string
+  region: string
+  generation: number
 }
 
 export function useSheetAxisDimensions(context: SheetAxisUiContext) {
   const pending = shallowRef<PendingAxisSize | null>(null), axisSizeError = ref('')
+  let contextGeneration = 0
   function cancelAxisSize(): void { pending.value = null; axisSizeError.value = '' }
-  watch([context.studio, () => context.workbook().id ?? context.workbook().name, context.sheetId, context.active], cancelAxisSize, { flush: 'sync' })
-  function afterAxisSizeClose(): void { void nextTick(() => { if (context.active() && !pending.value) context.focus() }) }
+  watch([context.studio, () => context.workbook().id ?? context.workbook().name, context.sheetId, context.active, context.userId, context.region],
+    () => { contextGeneration++; cancelAxisSize() }, { flush: 'sync' })
+  function captureDimensionHost() {
+    const generation = contextGeneration, host = captureSheetAxisCommandHost(context), userId = context.userId(), region = context.region()
+    const sameTarget = () => host.sameTarget() && generation === contextGeneration && context.userId() === userId && context.region() === region
+    const sourceCurrent = () => host.sourceCurrent() && sameTarget()
+    const publishedCurrent = (revision?: number) => {
+      const current = host.publishedCurrent(revision)
+      return () => current() && sameTarget()
+    }
+    return { ...host, generation, userId, region, sameTarget, sourceCurrent, publishedCurrent }
+  }
+  function afterAxisSizeClose(): void {
+    const current = captureDimensionHost().publishedCurrent()
+    void nextTick(() => { if (!pending.value && current()) context.focus() })
+  }
   function runAxisDimensionCommand(commandId: string, params?: unknown): boolean {
     if (!context.active()) return false
     const input = sheetAxisDimensionCommandInput(params), action = sheetAxisDimensionActionForCommand(commandId)
     if (!action) return false
     if (!context.finishEdit() || !context.active()) return false
-    const host = captureSheetAxisCommandHost(context), { view: workbook, studio } = host
+    const host = captureDimensionHost(), { view: workbook, studio, userId, region } = host
     if (!host.sameTarget()) return false
     const sheetId = input.sheetId ?? input.subUnitId ?? context.sheetId()
     const ranges = input.ranges ?? input.selections ?? (input.range ? [input.range] : context.ranges())
@@ -71,39 +90,52 @@ export function useSheetAxisDimensions(context: SheetAxisUiContext) {
     }
     if (input.unitId !== undefined && input.unitId !== workbook.id) throw new Error('找不到目标工作簿。')
     const sourceSignature = JSON.stringify(workbook), candidate = cloneModel(workbook)
+    const sourceMatches = () => host.sourceCurrent() && JSON.stringify(context.workbook()) === sourceSignature && host.sourceCurrent()
+    if (!sourceMatches()) return false
     const sheet = candidate.sheets.find(item => item.id === sheetId)
-    if (!sheet || !canViewWorksheetProtection(sheet, context.userId())) throw new Error('找不到可访问的目标工作表。')
+    if (!sheet || !canViewWorksheetProtection(sheet, userId)) throw new Error('找不到可访问的目标工作表。')
     const normalized = sheetAxisDimensionCommandInput(request)
+    const validationWorkbook = action.kind === 'auto' || action.kind === 'grow' ? applyExcelWorkbookView(createBlankWorkbook(), candidate, region) : undefined
+    if (!host.sourceCurrent()) return false
     const changed = applySheetViewAxisDimensionCommand(sheet, normalized.ranges?.map(range => 'startCol' in range ? range
       : { startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }) ?? [],
-      action, normalized, context.userId(), { measure: studio?.sheetTextMeasure ?? measureSpreadsheetText, region: context.region() })
-    if (!changed) return false
+      action, normalized, userId, { measure: studio?.sheetTextMeasure ?? measureSpreadsheetText, region, styleContext: candidate, userId,
+        validationTagOptions: validationWorkbook ? createSheetValidationTagOptionsResolver(validationWorkbook, sheet.id, userId, region) : undefined })
+    if (!changed || !sourceMatches()) return false
     const next = context.prepareView?.(candidate, cloneModel(workbook)) ?? candidate
-    if (!host.sourceCurrent() || JSON.stringify(context.workbook()) !== sourceSignature) return false
+    if (!sourceMatches()) return false
     if (workbook.id === undefined) delete next.id
     else next.id = workbook.id
     const preparedSignature = JSON.stringify(next)
+    if (!host.sourceCurrent()) return false
     context.applyView(next)
-    if (host.sameTarget() && JSON.stringify(context.workbook()) === preparedSignature) context.changed({ current: host.publishedCurrent() })
+    if (host.sameTarget() && JSON.stringify(context.workbook()) === preparedSignature && host.sameTarget()) {
+      const current = host.publishedCurrent()
+      if (current()) context.changed({ current })
+    }
     return true
   }
   function openAxisSizeDialog(axis: 'row' | 'column', params?: unknown): void {
     if (!context.active() || !context.finishEdit()) return
-    const input = sheetAxisDimensionCommandInput(params), workbook = context.workbook(), sheetId = input.sheetId ?? input.subUnitId ?? context.sheetId()
+    const host = captureDimensionHost(), { view: workbook, studio, userId, region, generation } = host
+    if (!host.sameTarget()) return
+    const input = sheetAxisDimensionCommandInput(params), sheetId = input.sheetId ?? input.subUnitId ?? context.sheetId()
     const sheet = workbook.sheets.find(item => item.id === sheetId)
-    if (!sheet || !canViewWorksheetProtection(sheet, context.userId())) throw new Error('找不到可访问的目标工作表。')
-    if (!canEditWorksheetProtection(sheet, context.userId())) throw new Error('此工作表受保护，当前用户不能调整行列尺寸。')
+    if (!sheet || !canViewWorksheetProtection(sheet, userId)) throw new Error('找不到可访问的目标工作表。')
+    if (!canEditWorksheetProtection(sheet, userId)) throw new Error('此工作表受保护，当前用户不能调整行列尺寸。')
     const normalized = sheetAxisDimensionCommandInput({ ...input, ranges: input.ranges ?? input.selections ?? (input.range ? [input.range] : context.ranges()) })
     const anchorIndex = input.index ?? (axis === 'row' ? input.anchorRow : input.anchorCol)
     const ranges = sheetAxisDimensionTargetRanges(sheet, axis, normalized.ranges?.map(range => 'startCol' in range ? range
       : { startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn }) ?? [], anchorIndex)
     if (!ranges.length) return
     const anchor = anchorIndex ?? (axis === 'row' ? ranges[0]!.startRow : ranges[0]!.startCol)
-    const studio = context.studio(), unitId = workbook.id
-    pending.value = { request: { axis, sheetId, value: axis === 'row' ? sheetRowHeight(sheet, anchor) : sheetColumnWidth(sheet, anchor),
+    const unitId = workbook.id
+    const state: PendingAxisSize = { request: { axis, sheetId, value: axis === 'row' ? sheetRowHeight(sheet, anchor) : sheetColumnWidth(sheet, anchor),
       count: ranges.reduce((sum, range) => sum + (axis === 'row' ? range.endRow - range.startRow + 1 : range.endCol - range.startCol + 1), 0) },
-      studio, unitId, signature: studio && unitId ? '' : JSON.stringify(workbook), input: { unitId, sheetId, ranges,
+      studio, unitId, userId, region, generation, signature: studio && unitId ? '' : JSON.stringify(workbook), input: { unitId, sheetId, ranges,
         expectedRevision: studio && unitId ? studio.getWorkbookRevision(unitId) : undefined } }
+    if (!host.sourceCurrent()) return
+    pending.value = state
     axisSizeError.value = ''
   }
   function confirmAxisSize(value: number): void {
@@ -111,7 +143,8 @@ export function useSheetAxisDimensions(context: SheetAxisUiContext) {
     if (!state || !context.active()) return
     try {
       if (!context.finishEdit()) return
-      if (state.studio !== context.studio() || state.unitId !== context.workbook().id || state.request.sheetId !== context.sheetId()) throw new Error('目标工作簿或工作表已切换，请重新打开尺寸设置。')
+      if (state !== pending.value || state.generation !== contextGeneration || state.studio !== context.studio() || state.unitId !== context.workbook().id
+        || state.request.sheetId !== context.sheetId() || state.userId !== context.userId() || state.region !== context.region()) throw new Error('目标工作簿、工作表、用户或区域设置已切换，请重新打开尺寸设置。')
       if ((!state.studio || !state.unitId) && state.signature !== JSON.stringify(context.workbook())) throw new Error('工作簿已更改，请重新打开尺寸设置。')
       runAxisDimensionCommand(state.request.axis === 'row' ? SHEET_AXIS_DIMENSION_COMMANDS.rowHeight : SHEET_AXIS_DIMENSION_COMMANDS.columnWidth, { ...state.input, value })
       cancelAxisSize()

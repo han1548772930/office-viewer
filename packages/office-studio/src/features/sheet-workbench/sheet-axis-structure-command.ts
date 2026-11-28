@@ -5,6 +5,7 @@ import { transformSheetAxisDimensions } from '../../domain/sheet-axis-transform.
 import { assertSheetAxisEdit, mergeSheetAxisIntervals, sheetAxisEditSegments, sheetAxisMaximum, sheetRangeAxisInterval,
   sheetRangeWithAxisInterval, transformSheetAxisRange, type SheetAxis, type SheetAxisEdit } from '../../domain/sheet-axis-structure.ts'
 import { translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
 import { assertSheetCommandRanges, assertSheetRangesEditable, normalizeSheetCommandRange, sheetCommandRangesWithoutFilteredRows, sheetRangeCommandInputRanges,
   type SheetCommandRange, type SheetRangeCommandInput } from './sheet-range-command.ts'
 import { transformWorkbookAxisResources } from './sheet-axis-structure-resources.ts'
@@ -220,7 +221,7 @@ export function planWorkbookAxisStructureCommand(model: WorkbookModel, sheetId: 
     transformWorkbookAxisResources(workbook, original, sheet, edit)
     for (const copy of transformed.copies) {
       const cell = sheet.cells[copy.key]!, rowDelta = cell.row - copy.sourceRow, columnDelta = cell.col - copy.sourceColumn
-      if (cell.formula) cell.formula = translateFormulaReferenceAreas(cell.formula, rowDelta, columnDelta)
+      if (cell.formula) rewriteFormulaImportCell(cell, translateFormulaReferenceAreas(cell.formula, rowDelta, columnDelta))
       if (cell.sparkline) cell.sparkline.sourceRange = translateFormulaReferenceAreas(cell.sparkline.sourceRange, rowDelta, columnDelta)
     }
     const start = edit.kind === 'move' ? edit.destination - (edit.destination > edit.start ? edit.count : 0)

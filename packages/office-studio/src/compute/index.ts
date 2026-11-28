@@ -11,3 +11,5 @@ export type { SlicerMembersOutput, SlicerMembersParams, SlicerMembersTask } from
 export { packNumericColumn } from './adapters.ts'
 export type { NumericInputValue } from './adapters.ts'
 export { estimateTaskMemory } from './tasks.ts'
+export type { CheckboxCellsTask, CheckboxCellsParams, CheckboxCellsOutput } from './checkbox-cell-protocol.ts'
+export type { ValidationListQueryTask, ValidationListQueryParams, ValidationListQueryOutput } from './validation-list-query-protocol.ts'

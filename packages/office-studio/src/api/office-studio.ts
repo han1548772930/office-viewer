@@ -2,7 +2,7 @@ import { createPinia } from 'pinia'
 import type { Pinia } from 'pinia'
 import { shallowReactive, watch } from 'vue'
 import { OfficeRegionalSettings } from '../i18n/regional-settings.ts'
-import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetDataValidationRule, SheetDataValidationType, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SheetSlicerConnections, SlicerTimelineRange, WorkbookModel } from '../domain/model'
+import type { ChartModel, CellRange, DocumentModel, OfficeKind, PivotAggregation, PivotDateGroupType, PivotDateGroupingMode, PivotFieldArea, PivotFieldFilter, PivotManualGroup, PivotNumberGroup, PivotTableOptions, SheetFilterCriteria, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetSortCriterion, SheetSlicerConnections, SlicerTimelineRange, WorkbookModel } from '../domain/model'
 import { cloneModel } from '../domain/serialization'
 import { createCell } from '../domain/model'
 import { registerSparklineCommands } from '../features/sparkline/sparkline-command.ts'
@@ -19,12 +19,16 @@ import type { DocumentCommand } from '../features/document/commands/document-com
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshPlan, type DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
 import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../features/document/services/document-history-cache.ts'
 import type { DocumentFieldCacheAdapter, DocumentFieldCacheState } from '../features/document/services/document-field-open-refresh.ts'
-import { createParagraph, runText, runsForTarget, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import { clampPoint, createParagraph, runText, runsForTarget, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
+import { documentEffectiveZoomRatio, equivalentDocumentContent, preserveDocumentZoomRatio } from '../features/document/services/document-zoom'
+import { DOCUMENT_ZOOM_COMMANDS, registerDocumentZoomCommands, resolveDocumentZoomCommand, type DocumentZoomOperationParams } from './document-zoom-commands'
+import { DOCUMENT_PAGE_SETUP_COMMAND, registerDocumentPageSetupCommand } from './document-page-setup-commands'
 import { cloneDocumentSelection } from '../features/document/model/document-table-selection.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host.ts'
 import { documentModelForBlockHost, validateDocumentBlockHost } from '../features/document/services/document-block-host.ts'
 import { useDocumentInputStore } from '../features/document/stores/document-input-store.ts'
+import { useDocumentCharacterPreferencesStore, type DocumentCharacterPreferencesStore } from '../features/document/stores/document-character-preferences-store'
 import { ADVANCE_DOCUMENT_INPUT_MARKS_OPERATION, CLEAR_DOCUMENT_INPUT_MARKS_OPERATION, SET_DOCUMENT_INPUT_SELECTION_OPERATION,
   documentInputLocation, mergeDocumentInputMarks, sameDocumentInputLocation, sanitizeDocumentInputSelection, type DocumentInputLocation,
   type DocumentInputSession } from '../features/document/model/document-input-session.ts'
@@ -69,6 +73,10 @@ import { registerSheetAxisVisibilityCommands } from './sheet-axis-visibility-com
 import { registerSheetAxisStructureCommands } from './sheet-axis-structure-commands.ts'
 import { registerSheetCellShiftCommands } from './sheet-cell-shift-commands.ts'
 import { registerSheetConditionalFormattingCommands } from './sheet-conditional-formatting-commands.ts'
+import { registerSheetTableCommands } from './sheet-table-commands.ts'
+import { registerSheetValidationInputCommands } from './sheet-validation-input-commands.ts'
+import { registerSheetDataValidationCommands } from './sheet-data-validation-commands.ts'
+import { registerSheetValidationDropdownOperations } from './sheet-validation-dropdown-operations.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
 import { refreshWorkbookAutoRowHeights } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
 import type { SheetTextMeasure } from '../features/sheet-workbench/sheet-cell-text-layout.ts'
@@ -107,7 +115,8 @@ import { createChartDefinition, updateChartDefinition, type ChartConfig, type Ch
 import { publishChartImageResourceCandidate, pruneChartImageResources } from '../features/charts/chart-image-resources.ts'
 import { CHART_OBJECT_COMMANDS, PASTE_COPIED_CHART_COMMAND, assertChartObjectAction, assertChartObjectRevision, chartObjectSheetId,
   chartObjectUIHost, chartObjectUISession, clearChartObjectUIHosts, isPrimaryChartObject, resolveChartObjectTarget, type ChartObjectCommandInput, type ChartObjectPasteInput } from '../features/charts/chart-object-commands.ts'
-import { captureChartObjectClipboard, chartObjectClipboardContent, chartObjectPasteDefinition, createChartObjectId } from '../features/charts/chart-object-clipboard.ts'
+import { assertChartObjectClipboardSource, captureChartObjectClipboard, chartObjectClipboardContent, chartObjectPasteDefinition, createChartObjectId } from '../features/charts/chart-object-clipboard.ts'
+import { assertChartSourceImportSource, planChartSourceImportAsync, type ChartSourceImportPlan } from '../features/charts/chart-source-import.ts'
 import { normalizeChartEditPanelRoute, planChartEditPanelRoute } from '../features/charts/chart-edit-panel-route.ts'
 import { chartObjectClipboardStore } from '../features/charts/chart-object-clipboard-store.ts'
 import { CONFIGURE_PIVOT_COMMAND, configurePivotFromPanel, type ConfigurePivotFromPanelInput } from '../features/pivot/services/pivot-panel-state'
@@ -134,7 +143,8 @@ import { NumericIndexService } from '../features/sheet-compute/numeric-index-ser
 import { assertChartReadPermission, ChartStatisticsService, type ChartAuthoringPlan, type ChartStatisticsServiceOptions } from '../features/charts/services/chart-statistics-service.ts'
 import { translateFormulaReferences } from '../features/formula/formula-references.ts'
 import { registerSheetOutlineCommands } from './sheet-outline-commands.ts'
-import { applySheetDataValidationRule, clearSheetDataValidationRanges, clearSheetDataValidationTypes, removeSheetDataValidationRule, replaceSheetDataValidationRule, validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
+import { sheetValidationSourceReader } from '../features/sheet-validation/validation-value-read.ts'
 import { assertWorksheetProtectionChanges, canEditProtectedRanges, canEditWorksheetProtection, canViewProtectedRanges, canViewWorksheetProtection, removeSheetRangeProtectionRule, setSheetRangeProtectionRule, setWorksheetProtectionRule } from '../features/sheet-protection/range-protection.ts'
 import { assertDocumentPermission, permissionTargetsForRange, validateDocumentPermissionRules } from '../features/document/permissions/document-permissions.ts'
 import { registerDocumentContentControlCommands } from './document-content-control-commands'
@@ -202,6 +212,7 @@ export class OfficeStudio {
   readonly sheetClipboard: ReturnType<typeof useSheetClipboardStore>
   readonly sheetFill: ReturnType<typeof useSheetFillStore>
   readonly documentInput: ReturnType<typeof useDocumentInputStore>
+  readonly documentCharacterPreferences: DocumentCharacterPreferencesStore
   readonly events = new EventHub<ApiEventMap>()
   readonly numericIndexService: NumericIndexService
   readonly chartStatisticsService: ChartStatisticsService
@@ -241,6 +252,7 @@ export class OfficeStudio {
     this.sheetClipboard = useSheetClipboardStore(this.pinia)
     this.sheetFill = useSheetFillStore(this.pinia)
     this.documentInput = useDocumentInputStore(this.pinia)
+    this.documentCharacterPreferences = useDocumentCharacterPreferencesStore(this.pinia)
     const workbook = workbookFromInput(options.workbook ?? this.editor.workbook.model)
     const document = documentFromInput(options.document ?? this.editor.document.model)
     if (document.customXmlParts !== undefined) document.customXmlParts = validateDocumentCustomXmlParts(document.customXmlParts)
@@ -320,7 +332,7 @@ export class OfficeStudio {
           this.documentInput.clearMarks(id)
           if (created) this.events.emit('DocCreated', { unitId: id, documentId: id })
         } else this.documents.set(id, next)
-        if (previous.id === id && !equivalentModelData(next, previous, ['modified'])) this.advanceDocumentRevision(id)
+        if (previous.id === id && !equivalentDocumentContent(next, previous)) this.advanceDocumentRevision(id)
       }, { flush: 'sync' }),
       watch(() => this.editor.state.activeKind, (kind, previous) => {
         if (kind !== previous && this.documentInput.clearMarks(this._activeDocumentId)) this.publishDocumentInputState(this._activeDocumentId)
@@ -356,6 +368,34 @@ export class OfficeStudio {
   getDocumentRevision(id: string): number {
     if (!this.getDocumentModel(id)) throw new Error(`Document not found: ${id}`)
     return this.documentRevisions.get(id) ?? 0
+  }
+
+  getDocumentZoomRatio(id: string = this._activeDocumentId): number {
+    this.assertAlive()
+    const model = this.getDocumentModel(id)
+    if (!model) throw new Error(`Document not found: ${id}`)
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: id, userId: this.currentUserId }, 'view')
+    return documentEffectiveZoomRatio(model)
+  }
+
+  setDocumentZoomRatio(id: string, zoomRatio: number): boolean {
+    return this.executeCommandSync<DocumentZoomOperationParams, boolean>(DOCUMENT_ZOOM_COMMANDS.SetRatio, { unitId: id, zoomRatio })
+  }
+
+  private publishDocumentZoomRatio({ unitId, zoomRatio }: DocumentZoomOperationParams): boolean {
+    this.assertContentUnitIdentity('document', unitId)
+    const model = this.getDocumentModel(unitId)
+    if (!model) return false
+    assertDocumentPermission(model.permissionRules ?? [], { documentId: unitId, userId: this.currentUserId }, 'view')
+    const previousZoomRatio = documentEffectiveZoomRatio(model)
+    if (previousZoomRatio === zoomRatio) return true
+    // The model remains the same owner; view publication does not revalidate or
+    // invalidate the input session, create a savepoint, or mark content dirty.
+    model.metadata = { ...model.metadata, documentZoomRatio: zoomRatio }
+    if (unitId === this._activeDocumentId) this.editor.document.notifyViewChange()
+    this.publishObserverEvent('DocumentZoomRatioChanged', () => ({ documentId: unitId, previousZoomRatio, zoomRatio }),
+      () => this.getDocumentModel(unitId) === model && documentEffectiveZoomRatio(model) === zoomRatio)
+    return true
   }
 
   getDocumentInputMarks(unitId: string, selection?: DocumentSelection, story?: DocumentStoryRange, host?: DocumentAuxiliaryBlockHost): RunPatch {
@@ -443,7 +483,9 @@ export class OfficeStudio {
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     const sheet = requireSheet(workbook, sheetId)
-    if (!canEditWorksheetProtection(sheet, this.currentUserId) || !canEditProtectedRanges(sheet, [range], this.currentUserId)) {
+    const scopes = [range, ...sheet.mergedRanges.filter(merge => merge.startRow <= range.endRow && merge.endRow >= range.startRow
+      && merge.startCol <= range.endCol && merge.endCol >= range.startCol)]
+    if (!canEditWorksheetProtection(sheet, this.currentUserId) || !canEditProtectedRanges(sheet, scopes, this.currentUserId)) {
       throw new Error('该区域受保护，当前用户没有编辑权限。')
     }
   }
@@ -460,7 +502,9 @@ export class OfficeStudio {
     const workbook = this.getWorkbookModel(unitId)
     if (!workbook) throw new Error(`Workbook not found: ${unitId}`)
     const sheet = requireSheet(workbook, sheetId)
-    if (!canViewWorksheetProtection(sheet, this.currentUserId) || !canViewProtectedRanges(sheet, [range], this.currentUserId)) {
+    const scopes = [range, ...sheet.mergedRanges.filter(merge => merge.startRow <= range.endRow && merge.endRow >= range.startRow
+      && merge.startCol <= range.endCol && merge.endCol >= range.startCol)]
+    if (!canViewWorksheetProtection(sheet, this.currentUserId) || !canViewProtectedRanges(sheet, scopes, this.currentUserId)) {
       throw new Error('该区域受保护，当前用户没有查看权限。')
     }
   }
@@ -744,13 +788,13 @@ export class OfficeStudio {
   }
 
   async commitChartChange(id: string, label: string, chartId: string, update: (draft: WorkbookModel) => void,
-    authoring: ChartAuthoringPlan, assertHostCurrent?: () => void): Promise<boolean> {
+    authoring: ChartAuthoringPlan, assertHostCurrent?: () => void, options: boolean | WorkbookCommitOptions = false): Promise<boolean> {
     this.assertAlive()
     this.assertContentUnitIdentity('workbook', id)
     const userId = this.currentUserId, savepoint = this.editor.history.captureSavepoint(id)
     // Prepare source-free configuration and the normal formula/filter candidate
     // first. No chart source arrays are allocated by this synchronous mutator.
-    const plan = this.prepareWorkbookChange(id, label, update, false)
+    const plan = this.prepareWorkbookChange(id, label, update, options)
     if (!plan) return false
     const seed = requireChart(plan.candidate, chartId)
     const assertCurrent = (): void => {
@@ -762,7 +806,14 @@ export class OfficeStudio {
         throw new ComputeError('COMPUTE_STALE_RESULT', '图表准备期间工作簿、用户或内容历史已更新')
       }
       this.assertCanEditWorksheet(id, seed.sheetId)
-      assertChartReadPermission(current, seed, userId)
+      const previous = current.charts?.find(chart => chart.id === chartId)
+      if (previous) assertChartReadPermission(current, previous, userId)
+      // Existing sources use their live permissions. Newly imported sheets and
+      // reports must be checked in the detached, fully bound candidate.
+      const permissionWorkbook: WorkbookModel = { ...plan.candidate,
+        sheets: plan.candidate.sheets.map(sheet => current.sheets.find(live => live.id === sheet.id) ?? sheet) }
+      assertChartReadPermission(permissionWorkbook, seed, userId)
+      assertChartReadPermission(plan.candidate, seed, userId)
     }
     assertCurrent()
     const chart = await this.chartStatisticsService.requestAuthoredCandidate(plan.candidate, seed,
@@ -1001,14 +1052,16 @@ export class OfficeStudio {
     // Fixed Univer facade exposes history through its own BeforeUndo/Redo and
     // Undo/Redo events, excluding these commands from generic command events.
     if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P, R>)(params)
+    const commandTarget = this.captureDocumentTransientCommandTarget(id, params) ?? this.captureChartPasteCommandTarget(id, params)
     const event: ApiEventMap['BeforeCommandExecute'] = {
       id,
       params,
-      unitId: commandUnitId(params),
+      unitId: commandTarget?.unitId ?? commandUnitId(params),
       kind: this.commandKind(id, params),
     }
     this.events.emit('BeforeCommandExecute', event)
     if (event.cancel) throw new Error(`Command was canceled: ${id}`)
+    commandTarget?.assertCurrent()
     const result = (handler as OfficeCommandHandler<P, R>)(params)
     this.publishObserverEvent('CommandExecuted', () => ({ ...event, ...(params === undefined ? {} : { params: cloneModel(params) }) }))
     return result
@@ -1020,9 +1073,11 @@ export class OfficeStudio {
       const handler = this.commands.get(id)
       if (!handler) throw new Error(`Unknown command: ${id}`)
       if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P | undefined, R | Promise<R>>)(params)
-      const event: ApiEventMap['BeforeCommandExecute'] = { id, params, unitId: commandUnitId(params), kind: this.commandKind(id, params) }
+      const commandTarget = this.captureDocumentTransientCommandTarget(id, params) ?? this.captureChartPasteCommandTarget(id, params)
+      const event: ApiEventMap['BeforeCommandExecute'] = { id, params, unitId: commandTarget?.unitId ?? commandUnitId(params), kind: this.commandKind(id, params) }
       this.events.emit('BeforeCommandExecute', event)
       if (event.cancel) throw new Error(`Command was canceled: ${id}`)
+      commandTarget?.assertCurrent()
       const result = await (handler as OfficeCommandHandler<P | undefined, R | Promise<R>>)(params)
       this.publishObserverEvent('CommandExecuted', () => ({ ...event, ...(params === undefined ? {} : { params: cloneModel(params) }) }))
       return result
@@ -1281,6 +1336,8 @@ export class OfficeStudio {
     this.documentInput.clear()
     this.pendingDocumentInputPublications.clear()
     this.documentInput.$dispose()
+    this.documentCharacterPreferences.releaseStorage()
+    this.documentCharacterPreferences.$dispose()
     this.documentRevisions.clear()
     this.documentFieldCacheAdapters.clear()
     this.documents.clear()
@@ -1368,7 +1425,7 @@ export class OfficeStudio {
     if (previous && previous !== model) cancelDocumentImageTasksForSource(previous)
     this.documents.set(id, model)
     if (id === this._activeDocumentId) this.editor.document.replace(model)
-    else if (previous && !equivalentModelData(previous, model, ['modified'])) this.advanceDocumentRevision(id)
+    else if (previous && !equivalentDocumentContent(previous, model)) this.advanceDocumentRevision(id)
     if (this.documentInput.revalidateModel(id, model, previous)) this.publishDocumentInputState(id)
   }
 
@@ -1378,6 +1435,7 @@ export class OfficeStudio {
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
     const next = cloneModel(snapshot)
+    preserveDocumentZoomRatio(next, current)
     if (permissionAdminCommand) {
       if (this.currentUserId !== this.permissionAdminUserId) throw new Error('只有文档权限管理员可以撤销或重做权限规则。')
     } else {
@@ -1442,22 +1500,30 @@ export class OfficeStudio {
       || request.command.id === 'docs.command.page-setup' || !!fieldRefresh || tocRefresh
     // Global commands still operate on the full model. Their view selection
     // retains its independent block host instead of being resolved as body text.
-    const selectionHost = request.command.host ?? (globalCommand && sourceCurrent && session?.valid && session.modelRevision === revision
-      && session.location.kind === 'body' ? session.location.host : undefined)
-    const sourceSelection = resolveDocumentEditorSelection(current, request.selection, selectionHost)
-    const sessionStory = globalCommand && session?.valid && session.modelRevision === revision && session.location.kind === 'story' ? session.location.range : undefined
+    const selectionHost = request.selectionHost !== undefined ? request.selectionHost ?? undefined
+      : request.command.host ?? (globalCommand && sourceCurrent && session?.valid && session.modelRevision === revision
+        && session.location.kind === 'body' ? session.location.host : undefined)
+    const sourceModel = selectionHost ? documentModelForBlockHost(current, selectionHost) : current
+    const sourceSelectionUsable = sourceModel.blocks.length > 0
+    const sourceSelection = request.command.id === DOCUMENT_PAGE_SETUP_COMMAND && !textTargets(sourceModel).length
+      ? sourceSelectionUsable ? { anchor: clampPoint(sourceModel, request.selection.anchor), focus: clampPoint(sourceModel, request.selection.focus) }
+        : cloneDocumentSelection(request.selection)
+      : resolveDocumentEditorSelection(current, request.selection, selectionHost)
+    const sessionStory = globalCommand && request.selectionHost === undefined && sourceCurrent && session?.valid
+      && session.modelRevision === revision && session.location.kind === 'story' ? session.location.range : undefined
     const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range ?? sessionStory
       : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story
       : sessionStory
     const sourceLocation = documentInputLocation(sourceSelection, story, selectionHost)
-    const tracksSelection = sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
+    const tracksSelection = sourceSelectionUsable && sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
     let input: RunPatch | undefined
     let command = request.command
     if (command.id === 'doc.command.insert-text' || command.id === 'doc.command.insert-latex-formula') {
       input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection, undefined, selectionHost) : {}, command.marks ?? {})
       command = { ...command, marks: input }
     }
-    const mutationSelection = selectionHost && !command.host ? sanitizeDocumentInputSelection(current, sourceSelection) : sourceSelection
+    const mutationSelection = selectionHost && !command.host && command.id !== DOCUMENT_PAGE_SETUP_COMMAND
+      ? sanitizeDocumentInputSelection(current, sourceSelection) : sourceSelection
     const effective: DocumentEditorCommandRequest = { ...request, selection: mutationSelection, command }
     let selection = sourceSelection, storyAdvance: DocumentInputLocation | undefined
     const selectedFieldHost = fieldRefresh?.id === 'doc.command.update-selected-fields'
@@ -1487,8 +1553,9 @@ export class OfficeStudio {
         return
       }
       const appliedSelection = applyDocumentEditorCommand(model, effective, context)
-      selection = selectionHost && !command.host
-        ? sanitizeDocumentInputSelection(documentModelForBlockHost(model, selectionHost), sourceSelection, true) : appliedSelection
+      const scoped = selectionHost && !command.host ? documentModelForBlockHost(model, selectionHost) : undefined
+      selection = scoped?.blocks.length ? sanitizeDocumentInputSelection(scoped, sourceSelection, true)
+        : scoped ? cloneDocumentSelection(sourceSelection) : appliedSelection
       if (request.command.id === 'doc.command.set-section-header-footer' && request.command.input) {
         storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
           request.command.input, session, revision, context)
@@ -1499,7 +1566,10 @@ export class OfficeStudio {
     const modelRevision = revision + (changed ? 1 : 0)
     if (this.getDocumentModel(request.unitId) && this.getDocumentRevision(request.unitId) === modelRevision
       && this.documentInput.get(request.unitId)?.generation === generation && hostCurrent()) {
-      if (changed && cacheInputLocation && cacheSession) {
+      if (!sourceSelectionUsable) {
+        fieldInputPreserved = false
+        if (this.documentInput.invalidate(request.unitId)) this.publishDocumentInputState(request.unitId)
+      } else if (changed && cacheInputLocation && cacheSession) {
         fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, cacheSession, modelRevision,
           cacheInputLocation, cacheInputLocation.kind === 'body')
         if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)
@@ -1663,6 +1733,10 @@ export class OfficeStudio {
     this.stopModelSync.push(registerSheetAxisStructureCommands(this).dispose)
     this.stopModelSync.push(registerSheetCellShiftCommands(this).dispose)
     this.stopModelSync.push(registerSheetConditionalFormattingCommands(this).dispose)
+    this.stopModelSync.push(registerSheetTableCommands(this).dispose)
+    this.stopModelSync.push(registerSheetValidationInputCommands(this).dispose)
+    this.stopModelSync.push(registerSheetDataValidationCommands(this, this.computeClient).dispose)
+    this.stopModelSync.push(registerSheetValidationDropdownOperations(this).dispose)
     this.stopModelSync.push(registerSheetFormatPainterCommands(this).dispose)
     for (const id of SHEET_BORDER_FORMAT_COMMAND_IDS) {
       this.registerCommand<SheetBorderFormatCommandInput | string | number | undefined, boolean>(id, params => {
@@ -1769,7 +1843,7 @@ export class OfficeStudio {
       this.assertCanEditWorksheet(unitId, sheetId)
       this.assertCanEditRange(unitId, sheetId, { startRow: row, endRow: row, startCol: col, endCol: col })
       setSheetCellHyperlink(model, requireSheet(model, sheetId), row, col, draft)
-      const validation = validateSheetDataValidationChanges(model, sheetId, [{ row, column: col }])
+      const validation = validateSheetDataValidationChanges(model, sheetId, [{ row, column: col }], sheetValidationSourceReader(this.currentUserId), this.regionalSettings.region.value)
       if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '超链接显示文字未通过数据验证。')
     }))
     this.registerCommand<{ unitId: string; sheetId: string; row: number; col: number }, boolean>(REMOVE_SHEET_HYPERLINK_COMMAND, ({ unitId, sheetId, row, col }) => this.commitWorkbook(unitId, '移除单元格超链接', (model) => {
@@ -1811,32 +1885,8 @@ export class OfficeStudio {
         sheet.cells[key] = applyCellValue(sheet.cells[key], row, col, cell, model, sheet)
         positions.push({ row, column: col })
       }
-      const validation = validateSheetDataValidationChanges(model, sheetId, positions)
+      const validation = validateSheetDataValidationChanges(model, sheetId, positions, sheetValidationSourceReader(this.currentUserId), this.regionalSettings.region.value)
       if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '输入值未通过数据验证，数据没有修改。')
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetDataValidationRule }, boolean>('sheet.command.set-data-validation', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, '设置数据验证', (model) => {
-      for (const range of rule.ranges) this.assertCanEditRange(unitId, sheetId, range)
-      applySheetDataValidationRule(requireSheet(model, sheetId), rule)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; rule: SheetDataValidationRule }, boolean>('sheet.command.replace-data-validation', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Update data validation range', (model) => {
-      const sheet = requireSheet(model, sheetId)
-      const previousRanges = sheet.dataValidations?.find(existing => existing.id === rule.id)?.ranges ?? []
-      for (const range of [...previousRanges, ...rule.ranges]) this.assertCanEditRange(unitId, sheetId, range)
-      replaceSheetDataValidationRule(sheet, rule)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; ruleId: string }, boolean>('sheet.command.remove-data-validation', ({ unitId, sheetId, ruleId }) => this.commitWorkbook(unitId, 'Remove data validation rule', (model) => {
-      const sheet = requireSheet(model, sheetId)
-      const rule = sheet.dataValidations?.find(existing => existing.id === ruleId)
-      for (const range of rule?.ranges ?? []) this.assertCanEditRange(unitId, sheetId, range)
-      removeSheetDataValidationRule(sheet, ruleId)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[] }, boolean>('sheet.command.clear-data-validation', ({ unitId, sheetId, ranges }) => this.commitWorkbook(unitId, '清除数据验证', (model) => {
-      for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
-      clearSheetDataValidationRanges(requireSheet(model, sheetId), ranges)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; ranges: CellRange[]; types: SheetDataValidationType[] }, boolean>('sheet.command.clear-quick-data-validation', ({ unitId, sheetId, ranges, types }) => this.commitWorkbook(unitId, '清除快速数据验证', (model) => {
-      for (const range of ranges) this.assertCanEditRange(unitId, sheetId, range)
-      clearSheetDataValidationTypes(requireSheet(model, sheetId), ranges, types)
     }))
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
       setAutoFilter(requireSheet(model, sheetId), range)
@@ -1963,28 +2013,49 @@ export class OfficeStudio {
     this.registerCommand<ChartObjectCommandInput, boolean>(CHART_OBJECT_COMMANDS.delete, removeChartObject)
     this.registerCommand<ChartObjectPasteInput, Promise<boolean>>(PASTE_COPIED_CHART_COMMAND, async (input = {}) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('图表粘贴参数必须为对象。')
+      input = cloneModel(input)
       const unitId = input.unitId ?? this.activeWorkbookId, workbook = this.getWorkbookModel(unitId)
       if (!workbook) throw new Error('粘贴目标工作簿已经关闭。')
       const sheetId = chartObjectSheetId(input) ?? workbook.activeSheetId
-      const clipboard = chartObjectClipboardStore(this.pinia).clipboard
+      const clipboardStore = chartObjectClipboardStore(this.pinia), clipboard = clipboardStore.clipboard, clipboardTicket = clipboardStore.request
       if (!clipboard) return false
+      if (input.clipboardId !== undefined && input.clipboardId !== clipboard.id) throw new Error('图表剪贴板已更新，请重新粘贴。')
+      const source = this.getWorkbookModel(clipboard.source.unitId)
+      if (!source) throw new Error('复制来源工作簿已经关闭，请重新复制图表。')
+      const userId = this.currentUserId, sourceRevision = this.getWorkbookRevision(source.id!), targetRevision = this.getWorkbookRevision(unitId)
+      const sourceSavepoint = this.editor.history.captureSavepoint(source.id!), targetSavepoint = this.editor.history.captureSavepoint(unitId)
+      let sourceImport: ChartSourceImportPlan | undefined
       const newChartId = input.newChartId ?? createChartObjectId()
       const host = input.hostSessionId ? chartObjectUISession(this, input.hostSessionId) : undefined
       const assertCurrent = (): void => {
         this.assertAlive()
         assertChartObjectRevision(this.getWorkbookRevision(unitId), input.expectedRevision)
+        const currentSource = this.getWorkbookModel(source.id!), currentTarget = this.getWorkbookModel(unitId)
+        const sourceHistory = this.editor.history.captureSavepoint(source.id!), targetHistory = this.editor.history.captureSavepoint(unitId)
+        if (!currentSource || !currentTarget || this.currentUserId !== userId || currentSource !== source || currentTarget !== workbook
+          || this.getWorkbookRevision(source.id!) !== sourceRevision || this.getWorkbookRevision(unitId) !== targetRevision
+          || sourceHistory.revision !== sourceSavepoint.revision || sourceHistory.generation !== sourceSavepoint.generation
+          || targetHistory.revision !== targetSavepoint.revision || targetHistory.generation !== targetSavepoint.generation) {
+          throw new ComputeError('COMPUTE_STALE_RESULT', '图表粘贴期间来源、目标、权限用户或内容历史已更改')
+        }
+        if (input.unitId === undefined && this.activeWorkbookId !== unitId
+          || input.sheetId === undefined && input.subUnitId === undefined && currentTarget.activeSheetId !== sheetId) throw new Error('图表粘贴的默认目标已经切换。')
         if (input.hostSessionId && (!host || chartObjectUISession(this, input.hostSessionId) !== host || !host.currentSheet(unitId, sheetId))) throw new Error('图表粘贴宿主已经切换。')
-        if (chartObjectClipboardStore(this.pinia).clipboard?.id !== clipboard.id) throw new Error('图表剪贴板已更新，请重新粘贴。')
+        if (clipboardStore.clipboard?.id !== clipboard.id || clipboardStore.request !== clipboardTicket) throw new Error('图表剪贴板已更新，请重新粘贴。')
         this.assertCanEditWorksheet(unitId, sheetId)
+        assertChartObjectClipboardSource(currentSource, clipboard)
+        assertChartReadPermission(currentSource, clipboard.chart, userId)
+        if (sourceImport) assertChartSourceImportSource(currentSource, sourceImport, userId)
       }
       assertCurrent()
-      assertChartReadPermission(workbook, clipboard.chart, this.currentUserId)
+      if (source.id !== unitId) sourceImport = await planChartSourceImportAsync(source, workbook, clipboard, { userId, targetSheetId: sheetId, assertCurrent })
+      assertCurrent()
       return this.commitChartChange(unitId, 'Paste chart', newChartId, model => {
-        const created = chartObjectPasteDefinition(model, clipboard, { ...input, unitId, sheetId, newChartId })
+        const created = chartObjectPasteDefinition(model, clipboard, { ...input, unitId, sheetId, newChartId }, { sourceWorkbook: source, sourceImport, userId })
         assertChartReadPermission(model, created, this.currentUserId)
         model.charts ??= []
         model.charts.push(created)
-      }, {}, assertCurrent)
+      }, {}, assertCurrent, sourceImport ? { expectedRevision: targetRevision, expectedHistoryGeneration: targetSavepoint.generation } : false)
     }, { asynchronous: true })
     this.registerCommand<{ unitId: string; pivotTableId: string; source: PivotTableSourceInput; anchor: PivotTableAnchorInput }, boolean>('sheet.command.add-pivot-table', ({ unitId, pivotTableId, source, anchor }) => this.commitPivotChange(unitId, pivotTableId, anchor.subUnitId, 'sheet.command.add-pivot-table', 'Add pivot table', (model) => {
       if (model.pivotTables?.some((pivot) => pivot.id === pivotTableId)) throw new Error(`Pivot table already exists: ${pivotTableId}`)
@@ -2217,9 +2288,11 @@ export class OfficeStudio {
       }).changed
     })
     for (const commandId of Object.keys(DOCUMENT_EDITOR_COMMAND_LABELS)) {
-      if (commandId === 'doc.command.insert-text' || commandId === 'doc.command.create-table') continue
+      if (commandId === 'doc.command.insert-text' || commandId === 'doc.command.create-table' || commandId === DOCUMENT_PAGE_SETUP_COMMAND) continue
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
+    registerDocumentPageSetupCommand(this, request => this.commitDocumentEditorCommand(DOCUMENT_PAGE_SETUP_COMMAND, request))
+    registerDocumentZoomCommands(this, params => this.publishDocumentZoomRatio(params))
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
     registerDocumentContentControlCommands(this)
     registerDocumentCustomXmlCommands(this)
@@ -2406,9 +2479,55 @@ export class OfficeStudio {
     const unitId = commandUnitId(params)
     if (unitId && this.documents.has(unitId)) return 'document'
     if (unitId && this.workbooks.has(unitId)) return 'workbook'
-    if (commandId.startsWith('doc.') || commandId.startsWith('docs-latex.')) return 'document'
+    if (commandId.startsWith('doc.') || commandId.startsWith('docs.') || commandId.startsWith('docs-latex.')) return 'document'
     if (commandId.startsWith('sheet.') || commandId.startsWith('workbook.')) return 'workbook'
     return undefined
+  }
+
+  /** A Before listener may reopen the same ID with revision zero. Capture the
+   * model owner and history generation before dispatching view/page operations. */
+  private captureDocumentTransientCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
+    const zoom = commandId === DOCUMENT_ZOOM_COMMANDS.SetRatio || commandId === DOCUMENT_ZOOM_COMMANDS.SetRatioCommand
+    if (!zoom && commandId !== DOCUMENT_PAGE_SETUP_COMMAND) return undefined
+    const resolveUnitId = () => zoom ? resolveDocumentZoomCommand(commandId, params, this._activeDocumentId).unitId
+      : commandUnitId(params) ?? this._activeDocumentId
+    const unitId = resolveUnitId(), source = this.getDocumentModel(unitId), history = this.editor.history.units[unitId]
+    const generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
+    return { unitId, assertCurrent: () => {
+      if (resolveUnitId() !== unitId || this.getDocumentModel(unitId) !== source || this.editor.history.units[unitId] !== history
+        || source && this.editor.history.captureSavepoint(unitId).generation !== generation) {
+        throw new Error('命令执行前文档或打开代数已更改，请重新执行。')
+      }
+    } }
+  }
+
+  /** Capture both units and the clipboard before extension hooks run. A hook
+   * cannot redirect an implicit paste or replace a unit with the same ID. */
+  private captureChartPasteCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
+    if (commandId !== PASTE_COPIED_CHART_COMMAND) return undefined
+    if (params !== undefined && (!params || typeof params !== 'object' || Array.isArray(params))) throw new TypeError('图表粘贴参数必须为对象。')
+    const input = (params ?? {}) as ChartObjectPasteInput
+    const resolveTarget = () => {
+      const unitId = input.unitId ?? this.activeWorkbookId
+      return { unitId, sheetId: chartObjectSheetId(input) ?? this.getWorkbookModel(unitId)?.activeSheetId }
+    }
+    const target = resolveTarget(), targetOwner = this.getWorkbookModel(target.unitId), userId = this.currentUserId
+    const store = chartObjectClipboardStore(this.pinia), clipboardId = store.clipboard?.id, ticket = store.request
+    const sourceUnitId = store.clipboard?.source.unitId, sourceOwner = sourceUnitId ? this.getWorkbookModel(sourceUnitId) : undefined
+    const targetHistory = this.editor.history.units[target.unitId], sourceHistory = sourceUnitId ? this.editor.history.units[sourceUnitId] : undefined
+    const targetGeneration = targetOwner ? this.editor.history.captureSavepoint(target.unitId).generation : undefined
+    const sourceGeneration = sourceOwner && sourceUnitId ? this.editor.history.captureSavepoint(sourceUnitId).generation : undefined
+    return { unitId: target.unitId, assertCurrent: () => {
+      const resolved = resolveTarget()
+      if (resolved.unitId !== target.unitId || resolved.sheetId !== target.sheetId || this.currentUserId !== userId
+        || this.getWorkbookModel(target.unitId) !== targetOwner || this.editor.history.units[target.unitId] !== targetHistory
+        || targetOwner && this.editor.history.captureSavepoint(target.unitId).generation !== targetGeneration
+        || sourceUnitId && (this.getWorkbookModel(sourceUnitId) !== sourceOwner || this.editor.history.units[sourceUnitId] !== sourceHistory
+          || sourceOwner && this.editor.history.captureSavepoint(sourceUnitId).generation !== sourceGeneration)
+        || store.clipboard?.id !== clipboardId || store.request !== ticket) {
+        throw new Error('命令执行前图表粘贴的来源、目标或剪贴板已更改，请重新执行。')
+      }
+    } }
   }
 
   private assertContentUnitIdentity(kind: OfficeKind, id: string): void {
@@ -2423,7 +2542,9 @@ export class OfficeStudio {
 }
 
 function commandUnitId(params: unknown): string | undefined {
-  return params && typeof params === 'object' && 'unitId' in params && typeof params.unitId === 'string' ? params.unitId : undefined
+  if (!params || typeof params !== 'object') return undefined
+  if ('unitId' in params && typeof params.unitId === 'string') return params.unitId
+  return 'documentId' in params && typeof params.documentId === 'string' ? params.documentId : undefined
 }
 
 function requirePivot(model: WorkbookModel, pivotTableId: string) {

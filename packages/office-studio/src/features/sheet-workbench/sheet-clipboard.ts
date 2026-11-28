@@ -2,6 +2,7 @@ import type { CellRange, SpreadsheetSheet, WorkbookModel } from '../../domain/mo
 import { cloneModel } from '../../domain/serialization.ts'
 import { assignSheetAxisSpan, sheetColumnWidth } from '../../domain/sheet-axis.ts'
 import { validateSheetDataValidationChanges, type SheetValidationPosition } from '../sheet-validation/validation-engine.ts'
+import { sheetValidationSourceReader } from '../sheet-validation/validation-value-read.ts'
 import { assertSheetClipboardArea, assertSheetClipboardSnapshot, captureSheetClipboard, sheetClipboardCellAt, sheetClipboardSourceFingerprint } from './sheet-clipboard-data.ts'
 import { createSheetClipboardPastedCell } from './sheet-clipboard-cell.ts'
 import { assertSheetClipboardWorkbookChangesEditable } from './sheet-clipboard-permissions.ts'
@@ -99,11 +100,13 @@ export function createSheetClipboardPastePlan(
     const changed = updatedCells.filter(cell => JSON.stringify(cell) !== JSON.stringify(sheet.cells[cell.id]))
     const resources = { ...sheet }
     moveSheetClipboardLinkedRuleReferences(resources, move)
+    const names = moveSheetClipboardDefinedNames(sheet.metadata, workbook, move, sheet.id)
     if (changed.length || JSON.stringify(resources.conditionalFormats) !== JSON.stringify(sheet.conditionalFormats)
-      || JSON.stringify(resources.dataValidations) !== JSON.stringify(sheet.dataValidations)) {
+      || JSON.stringify(resources.dataValidations) !== JSON.stringify(sheet.dataValidations) || JSON.stringify(names) !== JSON.stringify(sheet.metadata)) {
       const draft = draftFor(sheet)
       for (const cell of changed) draft.cells[cell.id] = cell
       draft.conditionalFormats = resources.conditionalFormats; draft.dataValidations = resources.dataValidations
+      draft.metadata = names
     }
   }
   const targetDraft = draftFor(originalTarget)
@@ -180,7 +183,8 @@ export function createSheetClipboardPastePlan(
     }
   }
   const changedRanges = assertSheetClipboardWorkbookChangesEditable(workbook, candidate, context.userId)
-  const validations = [...validationPositions].map(([sheetId, positions]) => validateSheetDataValidationChanges(candidate, sheetId, [...positions.values()]))
+  const validations = [...validationPositions].map(([sheetId, positions]) => validateSheetDataValidationChanges(candidate, sheetId,
+    [...positions.values()], sheetValidationSourceReader(context.userId), context.region))
   const issues = validations.flatMap(result => result.issues)
   if (validations.some(result => result.blocked)) return { ...failed('validation'), result: { accepted: false, changed: false,
     ranges: geometry.ranges.map(range => ({ ...range })), issues, reason: 'validation' } }

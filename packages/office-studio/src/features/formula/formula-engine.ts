@@ -4,13 +4,19 @@ import { formulaCellKey, formulaError, isFormulaError } from './formula-types.ts
 import type {
   FormulaCellAddress, FormulaDependencyGraph, FormulaEngineDiagnostic, FormulaErrorValue, FormulaNode,
   FormulaEvaluationOptions, FormulaRangeReference, FormulaRecalculationResult, FormulaReference, FormulaValue,
+  FormulaResolvedReference, FormulaValueResolver,
 } from './formula-types.ts'
 import { FormulaSyntaxError, parseFormula } from './formula-parser.ts'
 import { formatSheetValue, isSheetTextNumberFormat } from '../sheet-workbench/sheet-number-format.ts'
 import { parseDate, parseNumber, parseTime } from '../sheet-workbench/number-format-engine/parse-value.ts'
 import { DateSystem } from '../sheet-workbench/number-format-engine/date-system.ts'
-import { getDateSystemMaxSerial } from '../sheet-workbench/number-format-engine/serial-date.ts'
+import { excelDateSerial, excelDateTimePartsToSerial, excelSerialToDateTimeParts, getDateSystemMaxSerial } from '../sheet-workbench/number-format-engine/serial-date.ts'
 import { describeSheetNumberFormat } from '../sheet-workbench/number-format-render.ts'
+import { indexFormulaDefinedNames } from './formula-defined-names.ts'
+import { bindFormulaReferences, formulaRangeReference } from './formula-reference-binding.ts'
+import { formulaCalendarSerial, formulaImportEnvironment, readFormulaImportSource, type FormulaCalendarValue, type FormulaImportAliases } from './formula-import-context.ts'
+import { parseDynamicFormulaReference, remapDynamicFormulaReference } from './formula-dynamic-references.ts'
+import { formulaReadCellAllowed, formulaReadRangeAllowed } from './formula-read-policy.ts'
 
 interface RangeValue { kind: 'rangeValue'; sheet: SpreadsheetSheet; reference: FormulaRangeReference }
 type RuntimeValue = FormulaValue | RangeValue
@@ -72,13 +78,16 @@ export function createFormulaDependencyGraph(workbook: WorkbookModel): FormulaDe
   const dependents = new Map<string, Set<string>>()
   const diagnostics: FormulaEngineDiagnostic[] = []
   const sheetByName = new Map(workbook.sheets.map((sheet) => [sheet.name.toLocaleLowerCase(), sheet]))
+  const names = indexFormulaDefinedNames(workbook)
   for (const sheet of workbook.sheets) for (const cell of Object.values(sheet.cells)) {
     if (!cell.formula) continue
     const owner: FormulaCellAddress = { sheetId: sheet.id, row: cell.row, column: cell.col }
     const ownerKey = formulaCellKey(owner)
     try {
-      const node = parseFormula(cell.formula)
+      const node = bindFormulaReferences(parseFormula(cell.formula), workbook, sheet, names, owner)
       const refs = collectReferences(node)
+      if (containsDynamicReference(node)) for (const source of workbook.sheets) refs.push(formulaRangeReference({ startRow: 0, startCol: 0,
+        endRow: (source.rowCount ?? 1_048_576) - 1, endCol: (source.columnCount ?? 16_384) - 1 }, source.name))
       dependencies.set(ownerKey, refs)
       for (const reference of refs) {
         const targetSheet = resolveSheet(workbook, reference.sheetName, sheet, sheetByName)
@@ -111,15 +120,19 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
   const graph = createFormulaDependencyGraph(workbook)
   const sheetsByName = new Map(workbook.sheets.map((sheet) => [sheet.name.toLocaleLowerCase(), sheet]))
   const memo = new Map<string, FormulaValue>()
+  const calendarValues = new Map<string, FormulaCalendarValue>()
+  const calculatedDate = (sheet: SpreadsheetSheet, row: number, column: number) => calendarValues.get(formulaCellKey({ sheetId: sheet.id, row, column }))
   const active: string[] = []
   const recalculatedCells: FormulaCellAddress[] = []
   const diagnostics = [...graph.diagnostics]
   const cells = new Map<string, { sheet: SpreadsheetSheet; cell: SpreadsheetCell }>()
+  const names = indexFormulaDefinedNames(workbook)
   for (const sheet of workbook.sheets) for (const cell of Object.values(sheet.cells)) {
     cells.set(formulaCellKey({ sheetId: sheet.id, row: cell.row, column: cell.col }), { sheet, cell })
   }
 
-  const evaluateCell = (sheet: SpreadsheetSheet, row: number, column: number): FormulaValue => {
+  const evaluateCell: FormulaValueResolver = (sheet, row, column) => {
+    if (!formulaReadCellAllowed(sheet, row, column, options)) return formulaError('#REF!')
     const address = { sheetId: sheet.id, row, column }
     const key = formulaCellKey(address)
     const cached = memo.get(key)
@@ -138,14 +151,23 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
     let evaluationFailed = false
     const previousCell = previous?.sheets.find((candidate) => candidate.id === sheet.id)?.cells[cellKey(row, column)]
     try {
-      result = normalizeResult(evaluateNode(parseFormula(current.formula), sheet, evaluateCell, workbook, sheetsByName, { row, column }, evaluationTime))
+      const environment = formulaImportEnvironment(workbook, sheet, current, evaluateCell, calculatedDate)
+      const node = bindFormulaReferences(parseFormula(current.formula), workbook, sheet, names, { row, column })
+      result = normalizeResult(evaluateNode(node, sheet, environment.resolve, environment.workbook, sheetsByName, { row, column }, evaluationTime, environment.aliases), environment.resolve)
+      if (environment.source?.dateResult && typeof result === 'number') {
+        const targetValue = formulaCalendarSerial(result, environment.source.date1904, workbook.date1904)
+        calendarValues.set(key, { date1904: environment.source.date1904, value: result, targetValue })
+        result = targetValue
+      }
     } catch (error) {
       result = toFormulaError(error)
       evaluationFailed = true
     }
     // Cached text and cached errors remain distinct when an imported formula is unsupported.
-    if ((evaluationFailed || isFormulaError(result) && result.code === '#NAME?') && previousCell?.formula === current.formula && hasCachedValue(previousCell)) {
-      result = rawCellValue(previousCell)
+    const cacheSource = previousCell?.formula === current.formula ? previousCell : readFormulaImportSource(current) ? current : undefined
+    if (!options.canReadCell && !options.canReadRange && (evaluationFailed || isFormulaError(result) && result.code === '#NAME?') && cacheSource && hasCachedValue(cacheSource)) {
+      result = rawCellValue(cacheSource)
+      calendarValues.delete(key)
       diagnostics.push({ code: 'FORMULA_UNSUPPORTED_CACHE_PRESERVED', message: `${current.formula} is not implemented; the imported cached value was retained`, cell: address, formula: current.formula })
     }
     if (!memo.has(key)) memo.set(key, result)
@@ -154,6 +176,7 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
     if (stored !== null || current.value !== null || current.display !== '') recalculatedCells.push(address)
     return stored
   }
+  evaluateCell.canReadRange = (sheet, range) => formulaReadRangeAllowed(sheet, range, options)
 
   for (const { sheet, cell } of cells.values()) if (cell.formula) evaluateCell(sheet, cell.row, cell.col)
 
@@ -168,9 +191,13 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
       const display = isFormulaError(value) ? value.code
         : formatSheetValue(scalar, cell.style.numberFormat, workbook.date1904, options.numberFormatLocale) ?? displayFormulaValue(value)
       const errorCode = isFormulaError(value) ? value.code : undefined
+      const calendar = calendarValues.get(formulaCellKey({ sheetId: sheet.id, row: cell.row, column: cell.col }))
+      const dateSource = calendar && calendar.targetValue === value ? { version: 1, date1904: calendar.date1904, value: calendar.value,
+        targetDate1904: workbook.date1904, targetValue: calendar.targetValue, targetFormula: cell.formula } : undefined
       if (cell.value === scalar && cell.display === display && cell.dataType === 'formula' && cell.cachedDataType === valueType(value)
-        && cell.metadata?.formulaError === errorCode) continue
+        && cell.metadata?.formulaError === errorCode && (!dateSource || JSON.stringify(cell.metadata?.chartDependencyDateSource) === JSON.stringify(dateSource))) continue
       const metadata = { ...cell.metadata }
+      if (dateSource) metadata.chartDependencyDateSource = dateSource
       if (errorCode) metadata.formulaError = errorCode
       else delete metadata.formulaError
       updatedCells[cellKey(cell.row, cell.col)] = {
@@ -190,6 +217,16 @@ export function recalculateWorkbookFormulas(workbook: WorkbookModel, previous?: 
 }
 
 export function evaluateFormula(formula: string, workbook: WorkbookModel, currentSheetId: string, options: FormulaEvaluationOptions = {}): FormulaValue {
+  return evaluateFormulaResult(formula, workbook, currentSheetId, options, 'scalar')
+}
+export function evaluateFormulaReference(formula: string, workbook: WorkbookModel, currentSheetId: string,
+  options: FormulaEvaluationOptions = {}): FormulaResolvedReference | FormulaErrorValue {
+  return evaluateFormulaResult(formula, workbook, currentSheetId, options, 'reference')
+}
+function evaluateFormulaResult(formula: string, workbook: WorkbookModel, currentSheetId: string, options: FormulaEvaluationOptions, mode: 'scalar'): FormulaValue
+function evaluateFormulaResult(formula: string, workbook: WorkbookModel, currentSheetId: string, options: FormulaEvaluationOptions, mode: 'reference'): FormulaResolvedReference | FormulaErrorValue
+function evaluateFormulaResult(formula: string, workbook: WorkbookModel, currentSheetId: string, options: FormulaEvaluationOptions,
+  mode: 'scalar' | 'reference'): FormulaValue | FormulaResolvedReference {
   const evaluationTime = validEvaluationTime(options.now) ?? new Date()
   const sheet = workbook.sheets.find((candidate) => candidate.id === currentSheetId)
   if (!sheet) return formulaError('#REF!')
@@ -197,7 +234,11 @@ export function evaluateFormula(formula: string, workbook: WorkbookModel, curren
     || options.formulaCell.row < 0 || options.formulaCell.row >= 1_048_576 || options.formulaCell.column < 0 || options.formulaCell.column >= 16_384)) return formulaError('#REF!')
   const byName = new Map(workbook.sheets.map((item) => [item.name.toLocaleLowerCase(), item]))
   const memo = new Map<string, FormulaValue>(), active: string[] = []
-  const resolve = (targetSheet: SpreadsheetSheet, row: number, column: number): FormulaValue => {
+  const calendarValues = new Map<string, FormulaCalendarValue>()
+  const calculatedDate = (sheet: SpreadsheetSheet, row: number, column: number) => calendarValues.get(formulaCellKey({ sheetId: sheet.id, row, column }))
+  const names = indexFormulaDefinedNames(workbook)
+  const resolve: FormulaValueResolver = (targetSheet, row, column) => {
+    if (!formulaReadCellAllowed(targetSheet, row, column, options)) return formulaError('#REF!')
     const key = formulaCellKey({ sheetId: targetSheet.id, row, column })
     if (memo.has(key)) return memo.get(key)!
     const cell = targetSheet.cells[cellKey(row, column)]
@@ -206,13 +247,37 @@ export function evaluateFormula(formula: string, workbook: WorkbookModel, curren
     if (active.includes(key)) return formulaError('#CIRCULAR!')
     active.push(key)
     let value: FormulaValue
-    try { value = normalizeResult(evaluateNode(parseFormula(cell.formula), targetSheet, resolve, workbook, byName, { row, column }, evaluationTime)) }
+    try {
+      const environment = formulaImportEnvironment(workbook, targetSheet, cell, resolve, calculatedDate)
+      const node = bindFormulaReferences(parseFormula(cell.formula), workbook, targetSheet, names, { row, column })
+      value = normalizeResult(evaluateNode(node, targetSheet, environment.resolve, environment.workbook, byName, { row, column }, evaluationTime, environment.aliases), environment.resolve)
+      if (environment.source?.dateResult && typeof value === 'number') {
+        const targetValue = formulaCalendarSerial(value, environment.source.date1904, workbook.date1904)
+        calendarValues.set(key, { date1904: environment.source.date1904, value, targetValue })
+        value = targetValue
+      }
+    }
     catch (error) { value = toFormulaError(error) }
     active.pop()
     memo.set(key, value)
     return value
   }
-  try { return normalizeResult(evaluateNode(parseFormula(formula), sheet, resolve, workbook, byName, options.formulaCell, evaluationTime)) }
+  resolve.canReadRange = (sheet, range) => formulaReadRangeAllowed(sheet, range, options)
+  try {
+    const node = bindFormulaReferences(parseFormula(formula), workbook, sheet, names, options.formulaCell)
+    const current = options.formulaCell ? sheet.cells[cellKey(options.formulaCell.row, options.formulaCell.column)] : undefined
+    const environment = current?.formula === formula ? formulaImportEnvironment(workbook, sheet, current, resolve, calculatedDate) : { workbook, resolve, source: undefined, aliases: undefined }
+    if (mode === 'reference') {
+      const reference = evaluateReferenceOperand(node, sheet, environment.resolve, environment.workbook, byName, options.formulaCell, evaluationTime, environment.aliases)
+      if (isFormulaError(reference)) return reference
+      const range = referenceBounds(reference.reference)
+      return formulaReadRangeAllowed(reference.sheet, range, options)
+        ? { kind: 'reference', sheetId: reference.sheet.id, sheetName: reference.sheet.name, range } : formulaError('#REF!')
+    }
+    let result = normalizeResult(evaluateNode(node, sheet, environment.resolve, environment.workbook, byName, options.formulaCell, evaluationTime, environment.aliases), environment.resolve)
+    if (environment.source?.dateResult && typeof result === 'number') result = formulaCalendarSerial(result, environment.source.date1904, workbook.date1904)
+    return result
+  }
   catch (error) { return toFormulaError(error) }
 }
 
@@ -222,11 +287,12 @@ export function formulaErrorCode(error: FormulaErrorValue): string { return erro
 function evaluateNode(
   node: FormulaNode,
   currentSheet: SpreadsheetSheet,
-  resolveCell: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue,
+  resolveCell: FormulaValueResolver,
   workbook: WorkbookModel,
   sheetsByName: Map<string, SpreadsheetSheet>,
   formulaCell?: Pick<FormulaCellAddress, 'row' | 'column'>,
   evaluationTime: Date = new Date(),
+  aliases?: FormulaImportAliases,
 ): RuntimeValue {
   switch (node.kind) {
     case 'literal': return node.value
@@ -236,10 +302,10 @@ function evaluateNode(
     }
     case 'range': {
       const targetSheet = resolveSheet(workbook, node.reference.sheetName, currentSheet, sheetsByName)
-      return targetSheet ? { kind: 'rangeValue', sheet: targetSheet, reference: node.reference } : formulaError('#REF!')
+      return targetSheet ? checkedReference({ kind: 'rangeValue', sheet: targetSheet, reference: node.reference }, resolveCell) : formulaError('#REF!')
     }
     case 'unary': {
-      const value = evaluateNode(node.operand, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+      const value = singleRangeValue(evaluateNode(node.operand, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime, aliases), resolveCell)
       if (isFormulaError(value)) return value
       const number = numericCoercion(value)
       if (isFormulaError(number)) return number
@@ -247,64 +313,122 @@ function evaluateNode(
     }
     case 'binary': {
       if (node.operator === ':') {
-        const endpoint = (part: FormulaNode) => evaluateReferenceOperand(part, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+        const endpoint = (part: FormulaNode) => evaluateReferenceOperand(part, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime, aliases)
         const left = endpoint(node.left)
         if (isFormulaError(left)) return left
         const right = endpoint(node.right)
         if (isFormulaError(right)) return right
         if (left.sheet.id !== right.sheet.id) return formulaError('#REF!')
-        return { kind: 'rangeValue', sheet: left.sheet, reference: {
+        return checkedReference({ kind: 'rangeValue', sheet: left.sheet, reference: {
           kind: 'range', sheetName: left.reference.sheetName,
           start: { ...left.reference.start, row: Math.min(left.reference.start.row, left.reference.end.row, right.reference.start.row, right.reference.end.row),
             column: Math.min(left.reference.start.column, left.reference.end.column, right.reference.start.column, right.reference.end.column) },
           end: { ...right.reference.end, row: Math.max(left.reference.start.row, left.reference.end.row, right.reference.start.row, right.reference.end.row),
             column: Math.max(left.reference.start.column, left.reference.end.column, right.reference.start.column, right.reference.end.column) },
-        } }
+        } }, resolveCell)
       }
-      const left = evaluateNode(node.left, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+      const left = singleRangeValue(evaluateNode(node.left, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime, aliases), resolveCell)
       if (isFormulaError(left)) return left
-      const right = evaluateNode(node.right, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+      const right = singleRangeValue(evaluateNode(node.right, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime, aliases), resolveCell)
       if (isFormulaError(right)) return right
       return evaluateBinary(node.operator, scalarValue(left), scalarValue(right))
     }
-    case 'function': return evaluateFunction(node.name, node.arguments, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime)
+    case 'function': return evaluateFunction(node.name, node.arguments, currentSheet, resolveCell, workbook, sheetsByName, formulaCell, evaluationTime, aliases)
+    case 'name': return formulaError('#NAME?')
+    case 'structured': return formulaError('#REF!')
     case 'error': return formulaError(node.code)
   }
   return formulaError('#VALUE!')
 }
 
 function evaluateReferenceOperand(
-  node: FormulaNode, sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue,
+  node: FormulaNode, sheet: SpreadsheetSheet, resolve: FormulaValueResolver,
   workbook: WorkbookModel, byName: Map<string, SpreadsheetSheet>, formulaCell: Pick<FormulaCellAddress, 'row' | 'column'> | undefined, evaluationTime: Date,
+  aliases?: FormulaImportAliases,
 ): RangeValue | FormulaErrorValue {
   if (node.kind === 'reference') {
     const target = resolveSheet(workbook, node.reference.sheetName, sheet, byName)
-    return target ? { kind: 'rangeValue', sheet: target, reference: { kind: 'range', sheetName: node.reference.sheetName, start: { ...node.reference }, end: { ...node.reference } } } : formulaError('#REF!')
+    return target ? checkedReference({ kind: 'rangeValue', sheet: target, reference: { kind: 'range', sheetName: node.reference.sheetName,
+      start: { ...node.reference }, end: { ...node.reference } } }, resolve) : formulaError('#REF!')
   }
-  if (node.kind === 'function' && node.name === 'INDEX') {
-    return indexReference(node.arguments.map(argument => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)), node.arguments.length)
-  }
-  const value = evaluateNode(node, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
-  return isFormulaError(value) || isRangeValue(value) ? value : formulaError('#VALUE!')
+  const value = evaluateNode(node, sheet, resolve, workbook, byName, formulaCell, evaluationTime, aliases)
+  return isFormulaError(value) ? value : isRangeValue(value) ? checkedReference(value, resolve) : formulaError('#VALUE!')
 }
 
 function evaluateFunction(
   name: string,
   args: FormulaNode[],
   sheet: SpreadsheetSheet,
-  resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue,
+  resolve: FormulaValueResolver,
   workbook: WorkbookModel,
   byName: Map<string, SpreadsheetSheet>,
   formulaCell?: Pick<FormulaCellAddress, 'row' | 'column'>,
   evaluationTime: Date = new Date(),
+  aliases?: FormulaImportAliases,
 ): RuntimeValue {
-  const evaluateArgument = (argument: FormulaNode): RuntimeValue => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+  const evaluateArgument = (argument: FormulaNode): RuntimeValue => evaluateNode(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime, aliases)
   const evaluateArrayArgument = (argument: FormulaNode): RuntimeValue => argument.kind === 'reference' || argument.kind === 'range'
-    || argument.kind === 'binary' && argument.operator === ':' || argument.kind === 'function' && argument.name === 'INDEX'
-    ? evaluateReferenceOperand(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime)
+    || argument.kind === 'binary' && argument.operator === ':' || argument.kind === 'function' && ['INDEX', 'INDIRECT', 'OFFSET'].includes(argument.name)
+    ? evaluateReferenceOperand(argument, sheet, resolve, workbook, byName, formulaCell, evaluationTime, aliases)
     : evaluateArgument(argument)
   if ((name === 'AND' || name === 'OR' || name === 'XOR') && (args.length < 1 || args.length > 255)) return formulaError('#N/A')
   if (name === 'NOT' && args.length !== 1) return formulaError('#N/A')
+  if (name === 'INDIRECT') {
+    if (args.length < 1 || args.length > 2) return formulaError('#N/A')
+    const text = singleRangeValue(evaluateArgument(args[0]!), resolve)
+    if (isFormulaError(text)) return text
+    const mode = args.length === 2 ? singleRangeValue(evaluateArgument(args[1]!), resolve) : true
+    if (isFormulaError(mode)) return mode
+    const a1 = typeof mode === 'string' ? /^(?:TRUE|FALSE)$/i.test(mode) ? mode.toUpperCase() === 'TRUE'
+      : Number.isFinite(Number(mode)) ? Number(mode) !== 0 : formulaError('#VALUE!') : booleanCoercion(mode)
+    if (isFormulaError(a1)) return a1
+    const refText = remapDynamicFormulaReference(scalarToText(text).trim(), aliases, a1)
+    if (!refText || refText.startsWith('=')) return formulaError('#REF!')
+    try {
+      const parsed = parseDynamicFormulaReference(refText, a1, formulaCell)
+      if (parsed.kind === 'error') return formulaError(parsed.code)
+      const bound = bindFormulaReferences(parsed, workbook, sheet, indexFormulaDefinedNames(workbook), formulaCell)
+      const result = evaluateReferenceOperand(bound, sheet, resolve, workbook, byName, formulaCell, evaluationTime, aliases)
+      return isFormulaError(result) && (result.code === '#VALUE!' || result.code === '#NAME?') ? formulaError('#REF!') : result
+    } catch { return formulaError('#REF!') }
+  }
+  if (name === 'OFFSET') {
+    if (args.length < 3 || args.length > 5) return formulaError('#N/A')
+    const reference = evaluateReferenceOperand(args[0]!, sheet, resolve, workbook, byName, formulaCell, evaluationTime, aliases)
+    if (isFormulaError(reference)) return reference
+    const numbers: number[] = []
+    for (let index = 1; index < args.length; index++) {
+      const value = singleRangeValue(evaluateArgument(args[index]!), resolve)
+      if (isFormulaError(value)) return value
+      if (value === null && index >= 3) { numbers.push(index === 3 ? Math.abs(reference.reference.end.row - reference.reference.start.row) + 1
+        : Math.abs(reference.reference.end.column - reference.reference.start.column) + 1); continue }
+      const number = numericTextCoercion(value, workbook, evaluationTime, false)
+      if (isFormulaError(number)) return number
+      if (!Number.isFinite(number)) return formulaError('#VALUE!')
+      numbers.push(Math.trunc(number))
+    }
+    const first = reference.reference.start, last = reference.reference.end
+    const height = numbers[2] ?? Math.abs(last.row - first.row) + 1, width = numbers[3] ?? Math.abs(last.column - first.column) + 1
+    if (!height || !width) return formulaError('#REF!')
+    const row = Math.min(first.row, last.row) + numbers[0]!, column = Math.min(first.column, last.column) + numbers[1]!
+    const endRow = row + height - Math.sign(height), endColumn = column + width - Math.sign(width)
+    if ([row, endRow].some(value => value < 0 || value > 1_048_575) || [column, endColumn].some(value => value < 0 || value > 16_383)) return formulaError('#REF!')
+    return checkedReference({ ...reference, reference: formulaRangeReference({ startRow: Math.min(row, endRow), endRow: Math.max(row, endRow),
+      startCol: Math.min(column, endColumn), endCol: Math.max(column, endColumn) }, reference.sheet.name) }, resolve)
+  }
+  if (name === 'INDEX') {
+    if (args.length !== 2 && args.length !== 3) return formulaError('#VALUE!')
+    const values = [evaluateArrayArgument(args[0]!), ...args.slice(1).map(argument => singleRangeValue(evaluateArgument(argument), resolve))]
+    const reference = indexReference(values, args.length)
+    return isFormulaError(reference) ? reference : checkedReference(reference, resolve)
+  }
+  if (name === 'CHOOSE') {
+    if (args.length < 2 || args.length > 255) return formulaError('#VALUE!')
+    const indexValue = numericCoercion(singleRangeValue(evaluateArgument(args[0]!), resolve))
+    if (isFormulaError(indexValue)) return indexValue
+    const index = Math.trunc(indexValue)
+    return index < 1 || index >= args.length ? formulaError('#VALUE!') : evaluateArrayArgument(args[index]!)
+  }
   if (name === 'ADDRESS') return evaluateAddress(args, evaluateArgument)
   if (name === 'ROW' || name === 'COLUMN') return evaluateReferenceIndex(name, args, evaluateArgument, formulaCell, workbook, sheet, byName)
   if (name === 'AREAS') return evaluateReferenceAreas(args, evaluateArgument)
@@ -678,7 +802,7 @@ function evaluateFunction(
       const value = evaluateArgument(argument)
       const values = isRangeValue(value)
         ? cellsInRange(value).sort((left, right) => left.row - right.row || left.col - right.col)
-          .map(cell => cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell))
+          .map(cell => resolve(value.sheet, cell.row, cell.col))
         : [value]
       for (const item of values) {
         if (item === null) continue
@@ -1015,22 +1139,26 @@ function evaluateFunction(
   }
   if (name === 'IF') {
     if (args.length < 2 || args.length > 3) return formulaError('#N/A')
-    const condition = evaluateArgument(args[0]!)
+    const condition = singleRangeValue(evaluateArgument(args[0]!), resolve)
     if (isFormulaError(condition)) return condition
     const truth = booleanCoercion(condition)
     if (isFormulaError(truth)) return truth
     const selected = truth ? args[1] : args[2]
-    return selected ? evaluateArgument(selected) : false
+    return selected ? evaluateArrayArgument(selected) : false
   }
   if (name === 'IFERROR') {
     if (args.length !== 2) return formulaError('#N/A')
-    const value = evaluateArgument(args[0]!)
-    return isFormulaError(value) ? evaluateArgument(args[1]!) : value
+    const value = evaluateArrayArgument(args[0]!)
+    const scalar = isRangeValue(value) && value.reference.start.row === value.reference.end.row
+      && value.reference.start.column === value.reference.end.column ? singleRangeValue(value, resolve) : value
+    return isFormulaError(scalar) ? evaluateArrayArgument(args[1]!) : value
   }
   if (name === 'IFNA') {
     if (args.length !== 2) return formulaError('#N/A')
-    const value = evaluateArgument(args[0]!)
-    return isFormulaError(value) && value.code === '#N/A' ? evaluateArgument(args[1]!) : value
+    const value = evaluateArrayArgument(args[0]!)
+    const scalar = isRangeValue(value) && value.reference.start.row === value.reference.end.row
+      && value.reference.start.column === value.reference.end.column ? singleRangeValue(value, resolve) : value
+    return isFormulaError(scalar) && scalar.code === '#N/A' ? evaluateArrayArgument(args[1]!) : value
   }
   if (name === 'IFS') {
     if (args.length < 2 || args.length > 255 || args.length % 2 !== 0) return formulaError('#N/A')
@@ -1210,11 +1338,9 @@ function evaluateFunction(
   if (['COUNTIF', 'COUNTIFS', 'SUMIF', 'SUMIFS', 'AVERAGEIF', 'AVERAGEIFS'].includes(name)) {
     return evaluateConditionalAggregate(name, evaluated, args, sheet, resolve, workbook)
   }
-  if (name === 'INDEX') return evaluateIndex(evaluated, args.length, resolve)
   if (name === 'MATCH') return evaluateMatch(evaluated, args.length, resolve)
   if (name === 'VLOOKUP') return evaluateVlookup(evaluated, args.length, resolve)
   if (name === 'HLOOKUP') return evaluateHlookup(evaluated, args.length, resolve)
-  if (name === 'CHOOSE') return evaluateChoose(evaluated)
   if (name === 'ROWS' || name === 'COLUMNS') return evaluateDimension(name, evaluated)
   if (name === 'PMT' || name === 'PV' || name === 'FV' || name === 'NPER' || name === 'RATE' || name === 'IPMT' || name === 'PPMT') return evaluateFinancialValue(name, evaluated)
   if (name === 'FVSCHEDULE') return evaluateFutureValueSchedule(evaluated, sheet, resolve)
@@ -1232,7 +1358,7 @@ function evaluateFunction(
       const value = evaluated[index]!
       if (isRangeValue(value)) {
         for (const cell of cellsInRange(value)) {
-          const item = cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell)
+          const item = resolve(value.sheet, cell.row, cell.col)
           if (isFormulaError(item)) {
             if (name === 'COUNTA') { values.push(item); continue }
             if (name === 'COUNT') continue
@@ -1283,12 +1409,14 @@ function evaluateFunction(
   if (name === 'NOT') return invertBoolean(evaluated[0]!)
   if (name === 'DATE') {
     if (evaluated.length !== 3) return formulaError('#VALUE!')
-    const parts = evaluated.map(numericCoercion)
+    const parts = evaluated.map(value => numericCoercion(singleRangeValue(value, resolve)))
     const error = parts.find(isFormulaError)
     if (error) return error
-    const [rawYear, month, day] = parts as number[]
-    if (![rawYear, month, day].every(Number.isFinite) || ![rawYear, month, day].every(Number.isInteger)) return formulaError('#VALUE!')
-    let year = rawYear
+    const [rawYear, rawMonth, rawDay] = parts as number[]
+    if (![rawYear, rawMonth, rawDay].every(Number.isFinite)) return formulaError('#NUM!')
+    let year = Math.floor(rawYear!)
+    const month = Math.floor(rawMonth!), day = Math.floor(rawDay!)
+    if (year < 0) return formulaError('#NUM!')
     if (year >= 0 && year < 1900) year += 1900
     if (year < 1900 || year > 9999 || Math.abs(month) > 120_000 || Math.abs(day) > 1_000_000) return formulaError('#NUM!')
     return dateArgumentsToSerial(year, month, day, workbook.date1904)
@@ -1702,14 +1830,6 @@ function indexReference(values: RuntimeValue[], argumentCount: number): RangeVal
   }
 }
 
-function evaluateIndex(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): RuntimeValue {
-  const reference = indexReference(values, argumentCount)
-  if (isFormulaError(reference)) return reference
-  if (numericCoercion(values[1]!) === 0 || argumentCount === 3 && numericCoercion(values[2]!) === 0) return reference
-  const row = reference.reference.start.row, column = reference.reference.start.column
-  const cell = reference.sheet.cells[cellKey(row, column)]
-  return cell ? cell.formula ? resolve(reference.sheet, row, column) : rawCellValue(cell) : null
-}
 
 function evaluateMatch(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
   if (argumentCount < 2 || argumentCount > 3 || !isRangeValue(values[1]!)) return formulaError('#VALUE!')
@@ -1730,7 +1850,7 @@ function evaluateMatch(values: RuntimeValue[], argumentCount: number, resolve: (
     const row = maxRow === minRow ? minRow : minRow + index
     const column = maxColumn === minColumn ? minColumn : minColumn + index
     const cell = range.sheet.cells[cellKey(row, column)]
-    const value = cell ? cell.formula ? resolve(range.sheet, row, column) : rawCellValue(cell) : null
+    const value = cell ? resolve(range.sheet, row, column) : null
     if (isFormulaError(value)) { if (matchType === 0) return value; continue }
     const ordering = compare(value, lookup, '=') ? 0 : compare(value, lookup, '<') ? -1 : 1
     if (matchType === 0 && ordering === 0) return index + 1
@@ -1759,7 +1879,7 @@ function evaluateVlookup(values: RuntimeValue[], argumentCount: number, resolve:
   let bestRow = -1
   for (let row = minRow; row <= maxRow; row += 1) {
     const first = range.sheet.cells[cellKey(row, minColumn)]
-    const value = first ? first.formula ? resolve(range.sheet, row, minColumn) : rawCellValue(first) : null
+    const value = first ? resolve(range.sheet, row, minColumn) : null
     if (isFormulaError(value)) { if (!approximate) return value; continue }
     if (compare(value, lookup, '=')) { bestRow = row; break }
     if (approximate && compare(value, lookup, '<')) bestRow = row
@@ -1767,7 +1887,7 @@ function evaluateVlookup(values: RuntimeValue[], argumentCount: number, resolve:
   }
   if (bestRow < 0) return formulaError('#N/A')
   const resultCell = range.sheet.cells[cellKey(bestRow, minColumn + columnNumber - 1)]
-  return resultCell ? resultCell.formula ? resolve(range.sheet, bestRow, minColumn + columnNumber - 1) : rawCellValue(resultCell) : null
+  return resultCell ? resolve(range.sheet, bestRow, minColumn + columnNumber - 1) : null
 }
 
 function evaluateHlookup(values: RuntimeValue[], argumentCount: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
@@ -1788,7 +1908,7 @@ function evaluateHlookup(values: RuntimeValue[], argumentCount: number, resolve:
   let bestColumn = -1
   for (let column = minColumn; column <= maxColumn; column += 1) {
     const cell = range.sheet.cells[cellKey(minRow, column)]
-    const value = cell ? cell.formula ? resolve(range.sheet, minRow, column) : rawCellValue(cell) : null
+    const value = cell ? resolve(range.sheet, minRow, column) : null
     if (isFormulaError(value)) { if (!approximate) return value; continue }
     if (compare(value, lookup, '=')) { bestColumn = column; break }
     if (approximate && compare(value, lookup, '<')) bestColumn = column
@@ -1796,16 +1916,9 @@ function evaluateHlookup(values: RuntimeValue[], argumentCount: number, resolve:
   }
   if (bestColumn < 0) return formulaError('#N/A')
   const resultCell = range.sheet.cells[cellKey(minRow + rowNumber - 1, bestColumn)]
-  return resultCell ? resultCell.formula ? resolve(range.sheet, minRow + rowNumber - 1, bestColumn) : rawCellValue(resultCell) : null
+  return resultCell ? resolve(range.sheet, minRow + rowNumber - 1, bestColumn) : null
 }
 
-function evaluateChoose(values: RuntimeValue[]): RuntimeValue {
-  if (values.length < 2 || values.length > 255) return formulaError('#VALUE!')
-  const index = numericCoercion(values[0]!)
-  if (isFormulaError(index)) return index
-  if (!Number.isInteger(index) || index < 1 || index >= values.length) return formulaError('#VALUE!')
-  return values[index]!
-}
 
 function evaluateAddress(args: FormulaNode[], evaluateArgument: (argument: FormulaNode) => RuntimeValue): FormulaValue {
   if (args.length < 2 || args.length > 5) return formulaError('#VALUE!')
@@ -1946,7 +2059,7 @@ function weekendPattern(value: RuntimeValue): number[] | FormulaErrorValue {
 
 function readHolidays(value: RuntimeValue | undefined, workbook: WorkbookModel, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): number[] | FormulaErrorValue {
   if (value === undefined) return []
-  const inputs = isRangeValue(value) ? cellsInRange(value).map(cell => cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell)) : [value]
+  const inputs = isRangeValue(value) ? cellsInRange(value).map(cell => resolve(value.sheet, cell.row, cell.col)) : [value]
   const holidays: number[] = []
   for (const item of inputs) {
     if (isFormulaError(item)) return item
@@ -2336,7 +2449,7 @@ function conditionalCells(value: RuntimeValue, node: FormulaNode, _sheet: Spread
     const cells: ConditionalCell[] = []
     for (let row = minRow; row <= maxRow; row++) for (let column = minColumn; column <= maxColumn; column++) {
       const cell = value.sheet.cells[cellKey(row, column)]
-      cells.push({ row, column, value: cell ? cell.formula ? resolve(value.sheet, row, column) : rawCellValue(cell) : null })
+      cells.push({ row, column, value: cell ? resolve(value.sheet, row, column) : null })
     }
     return cells
   }
@@ -2442,7 +2555,7 @@ function alignConditionalTarget(value: RuntimeValue, target: ConditionalCell[], 
     const row = startRow + cell.row - first.row
     const column = startColumn + cell.column - first.column
     const source = value.sheet.cells[cellKey(row, column)]
-    return { row, column, value: source ? source.formula ? resolve(value.sheet, row, column) : rawCellValue(source) : null }
+    return { row, column, value: source ? resolve(value.sheet, row, column) : null }
   })
 }
 
@@ -2575,16 +2688,29 @@ function compare(left: FormulaValue, right: FormulaValue, operator: string): boo
 }
 
 function collectReferences(node: FormulaNode): Array<FormulaReference | FormulaRangeReference> {
-  switch (node.kind) {
-    case 'reference': return [node.reference]
-    case 'range': return [node.reference]
-    case 'unary': return collectReferences(node.operand)
-    case 'binary': return [...collectReferences(node.left), ...collectReferences(node.right)]
-    case 'function': return node.arguments.flatMap(collectReferences)
-    case 'literal': return []
-    case 'error': return []
+  const result: Array<FormulaReference | FormulaRangeReference> = [], queue = [node], visited = new Set<FormulaNode>()
+  while (queue.length) {
+    const current = queue.pop()!
+    if (visited.has(current)) continue
+    visited.add(current)
+    if (current.kind === 'reference' || current.kind === 'range') result.push(current.reference)
+    else if (current.kind === 'unary') queue.push(current.operand)
+    else if (current.kind === 'binary') queue.push(current.left, current.right)
+    else if (current.kind === 'function') queue.push(...current.arguments)
   }
-  return []
+  return result
+}
+function containsDynamicReference(node: FormulaNode): boolean {
+  const queue = [node], visited = new Set<FormulaNode>()
+  while (queue.length) {
+    const current = queue.pop()!
+    if (visited.has(current)) continue
+    visited.add(current)
+    if (current.kind === 'function') { if (['INDIRECT', 'OFFSET'].includes(current.name)) return true; queue.push(...current.arguments) }
+    else if (current.kind === 'unary') queue.push(current.operand)
+    else if (current.kind === 'binary') queue.push(current.left, current.right)
+  }
+  return false
 }
 
 function getSparseRangeTargets(sheet: SpreadsheetSheet, reference: FormulaRangeReference): string[] {
@@ -2604,6 +2730,13 @@ function cellsInRange(value: RangeValue): SpreadsheetCell[] {
   const minCol = Math.min(value.reference.start.column, value.reference.end.column), maxCol = Math.max(value.reference.start.column, value.reference.end.column)
   return Object.values(value.sheet.cells).filter((cell) => cell.row >= minRow && cell.row <= maxRow && cell.col >= minCol && cell.col <= maxCol)
 }
+function referenceBounds(reference: FormulaRangeReference): import('../../domain/model').CellRange {
+  return { startRow: Math.min(reference.start.row, reference.end.row), endRow: Math.max(reference.start.row, reference.end.row),
+    startCol: Math.min(reference.start.column, reference.end.column), endCol: Math.max(reference.start.column, reference.end.column) }
+}
+function checkedReference(value: RangeValue, resolve: FormulaValueResolver): RangeValue | FormulaErrorValue {
+  return resolve.canReadRange?.(value.sheet, referenceBounds(value.reference)) === false ? formulaError('#REF!') : value
+}
 
 function rawCellValue(cell: SpreadsheetCell): FormulaValue {
   const type = normalizeSheetCellValueType(cell.formula ? cell.cachedDataType : cell.dataType)
@@ -2615,7 +2748,7 @@ function rawCellValue(cell: SpreadsheetCell): FormulaValue {
 
 function flattenScalar(value: RuntimeValue, _sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue[] {
   if (!isRangeValue(value)) return [value]
-  return cellsInRange(value).map((cell) => cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell))
+  return cellsInRange(value).map((cell) => resolve(value.sheet, cell.row, cell.col))
 }
 
 function flattenText(values: RuntimeValue[], sheet: SpreadsheetSheet, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): string | FormulaErrorValue {
@@ -2672,13 +2805,12 @@ function singleRangeValue(value: RuntimeValue, resolve: (sheet: SpreadsheetSheet
   if (!isRangeValue(value)) return value
   const { start, end } = value.reference
   if (start.row !== end.row || start.column !== end.column) return formulaError('#VALUE!')
-  const cell = value.sheet.cells[cellKey(start.row, start.column)]
-  return cell ? cell.formula ? resolve(value.sheet, cell.row, cell.col) : rawCellValue(cell) : null
+  return resolve(value.sheet, start.row, start.column)
 }
 function formulaReferenceCellValue(sheet: SpreadsheetSheet, row: number, column: number, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue {
+  const value = resolve(sheet, row, column)
   const cell = sheet.cells[cellKey(row, column)]
-  if (!cell) return null
-  const value = cell.formula ? resolve(sheet, row, column) : rawCellValue(cell)
+  if (!cell) return value
   if (typeof value !== 'number') return value
   if (normalizeSheetCellValueType(cell.formula ? cell.cachedDataType : cell.dataType) === 'number'
     && isSheetTextNumberFormat(cell.style.numberFormat)) return String(value)
@@ -2695,7 +2827,7 @@ function formulaArgumentMatrix(value: RuntimeValue, resolve: (sheet: Spreadsheet
     valueAt: (index: number) => formulaReferenceCellValue(value.sheet, startRow + Math.floor(index / columnCount), startColumn + index % columnCount, resolve),
   }
 }
-function normalizeResult(value: RuntimeValue): FormulaValue { return isRangeValue(value) ? formulaError('#VALUE!') : value }
+function normalizeResult(value: RuntimeValue, resolve: (sheet: SpreadsheetSheet, row: number, column: number) => FormulaValue): FormulaValue { return singleRangeValue(value, resolve) }
 function isRangeValue(value: RuntimeValue): value is RangeValue { return Boolean(value && typeof value === 'object' && 'kind' in value && value.kind === 'rangeValue') }
 function factorial(integer: number, step = 1) {
   let result = 1
@@ -2729,21 +2861,8 @@ interface DateParts { year: number; month: number; day: number }
 const MS_PER_DAY = 86_400_000
 
 function datePartsToSerial(year: number, month: number, day: number, date1904: boolean): FormulaValue {
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) return formulaError('#NUM!')
-  if (date1904) {
-    const value = Date.UTC(year, month - 1, day)
-    const epoch = Date.UTC(1904, 0, 1)
-    const normalized = new Date(value)
-    if (normalized.getUTCFullYear() !== year || normalized.getUTCMonth() !== month - 1 || normalized.getUTCDate() !== day) return formulaError('#NUM!')
-    return (value - epoch) / MS_PER_DAY
-  }
-  if (year === 1900 && month === 2 && day === 29) return 60
-  const value = Date.UTC(year, month - 1, day)
-  const epoch = Date.UTC(1899, 11, 31)
-  const normalized = new Date(value)
-  if (normalized.getUTCFullYear() !== year || normalized.getUTCMonth() !== month - 1 || normalized.getUTCDate() !== day) return formulaError('#NUM!')
-  const days = (value - epoch) / MS_PER_DAY
-  return days >= 60 ? days + 1 : days
+  return excelDateTimePartsToSerial({ year, month, day, hours: 0, minutes: 0, seconds: 0, fractionalSecond: 0 },
+    { dateSystem: date1904 ? DateSystem.Date1904 : DateSystem.Date1900 }) ?? formulaError('#NUM!')
 }
 
 function dateArgumentsToSerial(year: number, month: number, day: number, date1904: boolean): FormulaValue {
@@ -2751,22 +2870,16 @@ function dateArgumentsToSerial(year: number, month: number, day: number, date190
   const normalizedMonth = ((month - 1) % 12 + 12) % 12
   if (normalizedYear < 0 || normalizedYear > 9999) return formulaError('#NUM!')
   const normalizedMonthNumber = normalizedMonth + 1
-  const normalizedDay = Math.trunc(day)
-  if (!date1904 && normalizedYear === 1900 && normalizedMonthNumber === 2 && normalizedDay === 29) return 60
-  const timestamp = Date.UTC(normalizedYear, normalizedMonth, normalizedDay)
-  const epoch = Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 31)
-  const serial = (timestamp - epoch) / MS_PER_DAY
-  return Number.isFinite(serial) ? (!date1904 && serial >= 60 ? serial + 1 : serial) : formulaError('#NUM!')
+  const first = new Date(0)
+  first.setUTCFullYear(normalizedYear, normalizedMonthNumber - 1, 1)
+  const dateSystem = date1904 ? DateSystem.Date1904 : DateSystem.Date1900
+  const serial = excelDateSerial(first, dateSystem) + Math.trunc(day) - 1
+  return Number.isFinite(serial) && serial >= 0 && serial < getDateSystemMaxSerial(dateSystem) + 1 ? serial : formulaError('#NUM!')
 }
 
 function serialToDateParts(serial: number, date1904: boolean): DateParts | undefined {
-  if (!Number.isFinite(serial) || serial < 0) return undefined
-  if (!date1904 && serial === 60) return { year: 1900, month: 2, day: 29 }
-  const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 31)
-  const days = date1904 || serial < 60 ? serial : serial - 1
-  const date = new Date(epoch + Math.floor(days) * MS_PER_DAY)
-  if (!Number.isFinite(date.getTime())) return undefined
-  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() }
+  const parts = excelSerialToDateTimeParts(serial, { dateSystem: date1904 ? DateSystem.Date1904 : DateSystem.Date1900 })
+  return parts ? { year: parts.year, month: parts.month, day: parts.day } : undefined
 }
 
 function parseDateText(value: string): DateParts | undefined {

@@ -71,7 +71,8 @@ function commitImage(api: OfficeStudio, state: ReturnType<typeof imageTarget>, i
       if (sheet.rowCount !== undefined) sheet.rowCount = Math.max(sheet.rowCount, range.endRow + 1)
       if (sheet.columnCount !== undefined) sheet.columnCount = Math.max(sheet.columnCount, range.endCol + 1)
     }
-    if (plan.cell) assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId)
+    if (plan.cell) assertSheetRangeChangedValuesValid(target.sheet, model, target.sheetId,
+      { userId: api.currentUserId, region: api.regionalSettings.region.value })
   }, { preserveStyleInheritance: true, recalculate: Boolean(plan.cell), expectedRevision: state.revision,
     expectedHistoryGeneration: state.historyGeneration, prepareView: model => { toExcelWorkbookView(model) } })
 }

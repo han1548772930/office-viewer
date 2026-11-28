@@ -4,7 +4,7 @@ import type { CSSProperties } from 'vue'
 import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { RibbonEditorFocusScopeKey } from '../platform/ribbon/ribbon-popup-scope'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme.ts'
-import { Alert, Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Select, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
+import { Alert, Button, Checkbox, ConfigProvider, Form, FormItem, Input, InputNumber, Modal, Progress, Select, Spin, Splitter, SplitterPanel, Tooltip, Upload, theme } from 'antdv-next'
 import { FOffice, type FChart } from '../api/facade'
 import type { OfficeStudio } from '../api/office-studio'
 import type { ApiSheetSelection } from '../api/events.ts'
@@ -19,6 +19,7 @@ import { COMMIT_SHEET_CELL_INPUT_COMMAND, planSheetCellInput, sheetCellInputConf
 import type { ExcelCellView, ExcelWorkbookView as DomainExcelWorkbookView } from '../services/excelViewAdapter'
 import { applyExcelWorkbookView, parseCellKey, sheetViewCellAt, toExcelCellView, toExcelWorkbookView } from '../services/excelViewAdapter'
 import { createBlankWorkbook } from '../domain/model'
+import { cloneModel } from '../domain/serialization.ts'
 import type { ChartModel } from '../domain/model'
 import { useSheetChartPanels } from '../features/charts/views/use-sheet-chart-panels'
 import type { SlicerModel } from '../domain/model'
@@ -79,6 +80,9 @@ import { sheetAxisHeaderRange } from '../features/sheet-workbench/sheet-axis-hea
 import SheetAxisSizeDialog from './spreadsheet/SheetAxisSizeDialog.vue'
 import SheetRangeThemeDialog from './spreadsheet/SheetRangeThemeDialog.vue'
 import { useSheetRangeTheme } from './spreadsheet/use-sheet-range-theme.ts'
+import { useSheetTableWorkbench } from './spreadsheet/use-sheet-table-workbench.ts'
+import SheetTableSelectorDialog from './spreadsheet/SheetTableSelectorDialog.vue'
+import { SHEET_TABLE_COMMANDS } from '../features/sheet-tables/sheet-table-create.ts'
 import { OPEN_SHEET_RANGE_THEME_OPERATION, SHEET_RANGE_THEME_COMMANDS } from '../features/sheet-workbench/sheet-range-theme-command.ts'
 import { useSheetImages } from './spreadsheet/use-sheet-images.ts'
 import { useSheetDrawings } from './spreadsheet/use-sheet-drawings.ts'
@@ -100,7 +104,8 @@ import type { SheetNumberFormatPreview } from '../rendering/spreadsheet/scene.ts
 import { buildSheetFunctionFormula, SHEET_COMMON_FUNCTION_CATALOG, SHEET_FUNCTION_CATALOG } from '../features/sheet-workbench/sheet-function-catalog'
 import { findVisibleSheetRow, findVisibleSheetColumn } from '../features/sheet-workbench/sheet-row-visibility'
 import { validateSheetDataValidationChanges } from '../features/sheet-validation/validation-engine.ts'
-import { planQuickValidation } from '../features/sheet-validation/quick-validation.ts'
+import { useSheetQuickValidationWorkbench } from './spreadsheet/use-sheet-quick-validation-workbench.ts'
+import { sheetValidationSourceReader } from '../features/sheet-validation/validation-value-read.ts'
 import { formatValidationRange } from '../features/sheet-validation/validation-panel-state.ts'
 import { resolveSheetClipboardCommand } from '../features/sheet-workbench/sheet-clipboard.ts'
 import { useSheetClipboard } from './spreadsheet/use-sheet-clipboard.ts'
@@ -110,8 +115,12 @@ import { useSheetAutoFill } from './spreadsheet/use-sheet-auto-fill.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../features/sheet-protection/range-protection.ts'
 import { SHEET_FORMAT_PAINTER_COMMAND_IDS } from '../features/sheet-workbench/sheet-format-painter-session.ts'
 import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts'
-import { applySheetConditionalFormatsCommand, SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
-  type SheetConditionalFormatSubmitResult } from '../features/conditional-formatting/conditional-format-command.ts'
+import { applySheetConditionalFormatsCommand } from '../features/conditional-formatting/conditional-format-command.ts'
+import { useSheetConditionalFormattingWorkbench } from './spreadsheet/use-sheet-conditional-formatting-workbench.ts'
+import { useSheetValidationCell } from './spreadsheet/use-sheet-validation-cell.ts'
+import { useSheetValidationCheckbox } from './spreadsheet/use-sheet-validation-checkbox.ts'
+import { useSheetValidationFeedback } from './spreadsheet/use-sheet-validation-feedback.ts'
+import { useSheetDataValidationWorkbench } from './spreadsheet/use-sheet-data-validation-workbench.ts'
 import {
   CONDITIONAL_FORMAT_EDITOR_TYPES, QUICK_CONDITIONAL_FORMAT_COMMANDS, quickConditionalFormatRules, quickConditionalFormatSelection,
   type ConditionalFormatPanelInitialType, type QuickConditionalFormatCommandId, type QuickConditionalFormatInput,
@@ -328,6 +337,7 @@ const functionName = ref('SUM')
 const functionArguments = ref('')
 const functionError = ref('')
 const validationPanelOpen = ref(false)
+const validationPanelComposing = ref(false)
 const validationPanelRange = ref('A1')
 const validationPanelRuleId = ref<string>()
 const validationPanelInitialType = ref<'checkbox' | 'list' | 'date' | 'time' | undefined>()
@@ -347,9 +357,7 @@ const numberFormatPreview = ref<SheetNumberFormatPreview>()
 const sheetSidebarWidth = ref(384)
 const workbenchActive = ref(true)
 const conditionalFormattingOpen = ref(false)
-const conditionalFormattingRange = ref('A1')
-const conditionalFormattingContext = shallowRef<{ studio?: OfficeStudio; unitId: string | undefined; sheetId: string; expectedRevision?: number;
-  standaloneSnapshot?: string; initialType?: ConditionalFormatPanelInitialType }>()
+const validationCellOpen = ref(false)
 const functionEntry = computed(() => SHEET_FUNCTION_CATALOG.find(entry => entry.name === functionName.value))
 const functionEntries = computed(() => functionCategory.value === '常用与统计' ? SHEET_COMMON_FUNCTION_CATALOG
   : SHEET_FUNCTION_CATALOG.filter(entry => functionCategory.value === null || entry.category === functionCategory.value))
@@ -376,7 +384,7 @@ const { chartModalOpen, chartEditorOpen, pivotChartPanelOpen, chartInsertBusy, c
   openInsertChart, openChartEditor, openPivotChart } = useSheetChartPanels({
   studio: () => props.studio, unitId: () => workbook.value.id, sheetId: () => activeSheet.value?.id,
   sheets: () => availableSheets.value, active: () => workbenchActive.value,
-  canRestoreFocus: () => !editingKey.value && !editComposing.value && !rangeThemePending.value && !cellShiftPending.value
+  canRestoreFocus: () => !editingKey.value && !editComposing.value && !rangeThemePending.value && !cellShiftPending.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value
     && (!props.studio || props.studio.activeWorkbookId === workbook.value.id && props.studio.editor.state.activeKind === 'workbook'),
   refresh: (studio, unitId) => {
     const model = studio.getWorkbookModel(unitId)
@@ -500,6 +508,7 @@ const selectionFormat = computed(() => {
   }
 })
 const validationOptions = computed(() => {
+  if (validationCellEntry.value) return []
   const workbookId = workbook.value.id
   const sheetId = activeSheet.value?.id
   if (!props.studio || !workbookId || !sheetId) return []
@@ -520,7 +529,7 @@ const { canMerge, canUnmerge, mergeActive, mergeRequest, mergeError, runClear, r
   },
   active: () => workbenchActive.value, applyView: value => { workbook.value = value },
   changed: recalculate => { if (recalculate) recalculateFormulas(); commitHistory() },
-  focus: () => { if (!editingKey.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
 })
 const { pending: axisSizePending, axisSizeError, openAxisSizeDialog, runAxisDimensionCommand,
   confirmAxisSize, cancelAxisSize, afterAxisSizeClose } = useSheetAxisDimensions({
@@ -529,7 +538,7 @@ const { pending: axisSizePending, axisSizeError, openAxisSizeDialog, runAxisDime
   active: () => workbenchActive.value, finishEdit,
   prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
   changed: options => { clearPainterSession(); commitHistory({ ...options, prepared: true }) },
-  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
 })
 const axisSizeRequest = computed(() => axisSizePending.value?.request ?? null)
 const { pending: rangeThemePending, request: rangeThemeRequest, rangeThemeError, openRangeThemeDialog, runRangeThemeCommand,
@@ -546,7 +555,7 @@ const { pending: rangeThemePending, request: rangeThemeRequest, rangeThemeError,
     clearPainterSession()
     if (!options?.current || options.current()) commitHistory({ ...options, prepared: true })
   },
-  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
 })
 const { runAxisStructureCommand } = useSheetAxisStructure({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value,
@@ -583,7 +592,7 @@ const { pending: cellShiftPending, request: cellShiftRequest, cellShiftError, ru
   },
   focus: () => {
     if (!editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value
-      && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
+      && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus()
   },
 })
 const { pending: imagePickerPending, editor: imageEditorPending, saving: imageSavePending, pickerRequest: imagePickerRequest,
@@ -591,12 +600,12 @@ const { pending: imagePickerPending, editor: imageEditorPending, saving: imageSa
   runImageCommand, confirmPicker: confirmImagePicker, cancelPicker: cancelImagePicker, openImageEditor, confirmEditor: confirmImageEditor,
   cancelEditor: cancelImageEditor, confirmSave: confirmImageSave, cancelSave: cancelImageSave, afterClose: afterImageClose, saveImage } = useSheetImages({
   studio: () => props.studio, workbook: () => workbook.value, sheetId: () => activeSheetId.value, selectedKey: () => selectedKey.value,
-  ranges: selectedModelRanges, userId: () => userId.value, active: () => workbenchActive.value,
+  ranges: selectedModelRanges, userId: () => userId.value, region: () => officeRegion.value, active: () => workbenchActive.value,
   finishEdit: () => !editComposing.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && finishEdit(),
   prepareView: prepareAxisWorkbookView, applyView: applyExternalWorkbook,
   changed: options => { if (options?.current && !options.current()) return; clearPainterSession(); if (!options?.current || options.current()) commitHistory({ ...options, prepared: true }) },
   notify: message => emit('notify', { type: 'error', message }),
-  focus: () => { if (!editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
   crop: (id, input) => spreadsheetCanvas.value?.operateImageCrop(id, input) ?? { handled: false },
 })
 const imageUiOpen = computed(() => Boolean(imagePickerPending.value || imageEditorPending.value || imageSavePending.value))
@@ -705,7 +714,7 @@ const { capabilities: clipboardCapabilities, copyRange: clipboardCopyRange, past
     clearPainterSession()
     if (options.current()) commitHistory({ ...options, prepared: true })
   },
-  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
   notify: value => emit('notify', value),
 })
 const { fillOptions: sheetFillOptions, fillSelection, refill: refillSelection, runFillCommand, handleFillKeydown } = useSheetAutoFill({
@@ -726,10 +735,12 @@ const { fillOptions: sheetFillOptions, fillSelection, refill: refillSelection, r
     clearPainterSession()
     if (options.current()) commitHistory({ ...options, prepared: true })
   },
-  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
   notify: value => emit('notify', value),
 })
 const canEditValidationSelection = computed(() => Boolean(props.studio && workbook.value.id && activeSheet.value && selectedRanges.value.length
+  && workbenchActive.value && !editComposing.value && !validationCellOpen.value && !validationPanelComposing.value && canViewWorksheetProtection(activeSheet.value, userId.value)
+  && canViewProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)
   && canEditWorksheetProtection(activeSheet.value, userId.value) && canEditProtectedRanges(activeSheet.value, selectedModelRanges(), userId.value)))
 const borderFormatState = ref<SheetBorderFormatState>(createSheetBorderFormatState())
 const borderOptions = computed(() => sheetBorderFormatOptions(borderFormatState.value))
@@ -785,6 +796,27 @@ const canStartRangeTheme = computed(() => canQuickFormatSelection.value && !rang
 const canQuickFormatWorksheet = computed(() => workbenchActive.value && !!activeSheet.value
   && canEditWorksheetProtection(activeSheet.value, userId.value)
   && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
+const tableHostBlocked = computed(() => editComposing.value || !!selectedDrawingRefs.value.length
+  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value
+  || !!cellShiftPending.value || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value
+  || functionPanelOpen.value || hyperlinkDialogOpen.value || !!renameSheetId.value
+  || customNumberFormatOpen.value || validationPanelOpen.value || conditionalFormattingOpen.value || validationCellOpen.value
+  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value
+  || pivotPanelOpen.value || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value)
+const { open: tableSelectorOpen, request: tableSelectorRequest, error: tableSelectorError,
+  canSubmit: canSubmitTable, openSelector: openTableSelector, confirm: confirmTableSelector,
+  cancel: cancelTableSelector, afterClose: afterTableSelectorClose } = useSheetTableWorkbench({
+  state: () => ({ studio: props.studio, unitId: workbook.value.id, sheetId: activeSheetId.value,
+    active: workbenchActive.value, blocked: tableHostBlocked.value || !!editingKey.value, userId: userId.value, ranges: selectedModelRanges() }),
+  refresh: (studio, unitId) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
+  },
+  canRestoreFocus: () => !tableHostBlocked.value && !editingKey.value,
+  focus: () => spreadsheetCanvas.value?.focus(),
+})
+const canCreateTable = computed(() => !!props.studio && !!workbook.value.id && workbenchActive.value
+  && canFormatSelection.value && !tableHostBlocked.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value)
 const quickConditionalSelection = computed(() => {
   const sheet = activeSheet.value
   return sheet && quickConditionalFormatSelection(sheet.conditionalFormats ?? [], selectedModelRanges(), parseCellKey(selectedKey.value),
@@ -816,7 +848,142 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
     syncApiSelection()
   },
   changed: recalculate => { if (recalculate) recalculateFormulas(); commitHistory() },
-  focus: () => { if (!editingKey.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() },
+  focus: () => { if (!editingKey.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
+  notify: message => emit('notify', { type: 'error', message }),
+})
+const conditionalFormattingHostBlocked = computed(() => !!editingKey.value || editComposing.value || !!selectedDrawingRefs.value.length
+  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
+  || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value || tableSelectorOpen.value || functionPanelOpen.value
+  || hyperlinkDialogOpen.value || !!renameSheetId.value || customNumberFormatOpen.value || validationPanelOpen.value
+  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value || pivotPanelOpen.value
+  || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value || validationCellOpen.value)
+const { context: conditionalFormattingContext, disabled: conditionalFormattingDisabled, canCreate: canCreateConditionalFormat,
+  previewRanges: conditionalFormattingPreview, openPanel: openConditionalFormattingOwner,
+  receiveView: receiveConditionalFormattingView } = useSheetConditionalFormattingWorkbench({
+  open: conditionalFormattingOpen,
+  state: () => ({ studio: props.studio, model: workbook.value, sheet: activeSheet.value, sheetId: activeSheetId.value,
+    userId: userId.value, active: workbenchActive.value, blocked: conditionalFormattingHostBlocked.value,
+    inputSessionId: editSession.value?.sessionId, ranges: selectedModelRanges(),
+    defaultRange: selectedModelRanges().map(formatValidationRange).join(';') || selectedKey.value }),
+  refresh: (studio, unitId, current) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (!model || !current()) return
+    applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) commitHistory({ prepared: true, syncSelection: false, current })
+  },
+  applyStandalone: (rules, current, expectEcho) => {
+    const candidate = cloneWorkbook(workbook.value), sheet = candidate.sheets.find(item => item.id === activeSheetId.value)
+    if (!sheet || !current()) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
+    const changed = applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed
+    if (!current()) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
+    if (changed) {
+      workbook.value = candidate
+      const published = workbook.value
+      commitHistory({ current: () => current() && workbook.value === published, onSnapshot: expectEcho })
+    }
+    return changed
+  },
+  canRestoreFocus: () => !conditionalFormattingHostBlocked.value,
+  focus: () => spreadsheetCanvas.value?.focus(),
+})
+const validationFeedbackHostBlocked = computed(() => !!selectedDrawingRefs.value.length
+  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
+  || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value || tableSelectorOpen.value || functionPanelOpen.value
+  || hyperlinkDialogOpen.value || !!renameSheetId.value || customNumberFormatOpen.value || validationPanelOpen.value || conditionalFormattingOpen.value
+  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value || pivotPanelOpen.value
+  || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value)
+const validationCellHostBlocked = computed(() => editComposing.value || validationFeedbackHostBlocked.value)
+const { read: validationFeedback, readTagOptions: validationTagOptions } = useSheetValidationFeedback(() => ({ studio: props.studio, model: workbook.value,
+  sheetId: activeSheetId.value, userId: userId.value, region: officeRegion.value, active: workbenchActive.value,
+  blocked: validationFeedbackHostBlocked.value || validationCellOpen.value }))
+const { entry: validationCellEntry, popup: validationCellPopup, open: validationCellOwnerOpen,
+  receiveView: receiveValidationCellView } = useSheetValidationCell({
+  state: () => ({ studio: props.studio, model: workbook.value, sheetId: activeSheetId.value, key: editingKey.value ?? selectedKey.value,
+    userId: userId.value, active: workbenchActive.value, blocked: validationCellHostBlocked.value, inputSession: editSession.value,
+    region: officeRegion.value, currentYear: new Date().getFullYear(), inputOwner: ribbonEditorOwner }),
+  refresh: (studio, unitId, current) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (!model || !current()) return
+    applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) commitHistory({ prepared: true, syncSelection: false, current })
+  },
+  applyStandalone: (plan, _model, current, expectEcho) => {
+    if (!plan.result.accepted || !plan.result.changed || !plan.cell) return cloneModel(plan.result)
+    if (!current()) throw new Error('选择控件的目标已切换，请重新打开。')
+    const previous = workbook.value, candidate = cloneWorkbook(previous), target = candidate.sheets.find(sheet => sheet.id === activeSheetId.value)
+    if (!target) throw new Error('选择控件的目标工作表已关闭。')
+    const key = `${columnName(plan.position.column)}${plan.position.row + 1}`
+    target.cells[key] = toExcelCellView(plan.cell)
+    const next = prepareAxisWorkbookView(candidate, previous)
+    if (!current()) throw new Error('选择控件的目标已切换，请重新打开。')
+    applyExternalWorkbook(next)
+    const published = workbook.value
+    commitHistory({ prepared: true, current: () => current() && workbook.value === published, onSnapshot: expectEcho })
+    return cloneModel(plan.result)
+  },
+  endEditing: sessionId => { if (editSession.value?.sessionId === sessionId) cancelEdit() },
+  reveal: key => { if (!spreadsheetCanvas.value) return false; spreadsheetCanvas.value.ensureVisible(key); return true },
+  openRule: ruleId => openDataValidationPanel(undefined, ruleId),
+  canRestoreFocus: () => !validationCellHostBlocked.value,
+  focus: session => { if (session) restoreCellInputFocus(session); else spreadsheetCanvas.value?.focus() },
+})
+watch(validationCellOwnerOpen, value => { validationCellOpen.value = value }, { immediate: true, flush: 'sync' })
+const { entryAt: validationCheckboxAt, error: validationCheckboxError, clearError: clearValidationCheckboxError } = useSheetValidationCheckbox({
+  state: () => ({ studio: props.studio, model: workbook.value, sheetId: activeSheetId.value, userId: userId.value,
+    active: workbenchActive.value, blocked: validationCellHostBlocked.value || validationCellOpen.value || !!editingKey.value,
+    inputSession: editSession.value, region: officeRegion.value, currentYear: new Date().getFullYear(), inputOwner: ribbonEditorOwner }),
+  refresh: (studio, unitId, current) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (!model || !current()) return
+    applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) commitHistory({ prepared: true, syncSelection: false, current })
+  },
+  applyStandalone: (plan, _model, current, published) => {
+    if (!plan.result.accepted || !plan.result.changed || !plan.cell) return cloneModel(plan.result)
+    if (!current()) throw new Error('复选框目标已切换，请重新操作。')
+    const studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value, user = userId.value
+    const previous = workbook.value, candidate = cloneWorkbook(previous), target = candidate.sheets.find(sheet => sheet.id === sheetId)
+    if (!target) throw new Error('复选框目标工作表已关闭。')
+    target.cells[`${columnName(plan.position.column)}${plan.position.row + 1}`] = toExcelCellView(plan.cell)
+    const next = prepareAxisWorkbookView(candidate, previous)
+    if (!current()) throw new Error('复选框目标已切换，请重新操作。')
+    applyExternalWorkbook(next)
+    const snapshot = workbook.value
+    published(snapshot)
+    commitHistory({ prepared: true, syncSelection: false, current: () => props.studio === studio && workbook.value === snapshot
+      && workbook.value.id === unitId && activeSheetId.value === sheetId && userId.value === user && workbenchActive.value })
+    return cloneModel(plan.result)
+  },
+  canRestoreFocus: () => !validationCellHostBlocked.value && !validationCellOpen.value && !editingKey.value,
+  focus: () => spreadsheetCanvas.value?.focus(),
+})
+const dataValidationPanelHostBlocked = computed(() => editComposing.value || !!selectedDrawingRefs.value.length
+  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
+  || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value || tableSelectorOpen.value || functionPanelOpen.value
+  || hyperlinkDialogOpen.value || !!renameSheetId.value || customNumberFormatOpen.value || conditionalFormattingOpen.value || validationCellOpen.value
+  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value || pivotPanelOpen.value
+  || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value)
+const { context: dataValidationPanelContext, openPanel: openDataValidationOwner } = useSheetDataValidationWorkbench({
+  open: validationPanelOpen,
+  state: () => ({ studio: props.studio, model: workbook.value, sheetId: activeSheetId.value, userId: userId.value,
+    active: workbenchActive.value, blocked: dataValidationPanelHostBlocked.value, inputSessionId: editSession.value?.sessionId,
+    inputOwner: ribbonEditorOwner, ranges: selectedModelRanges(), defaultRange: validationPanelRange.value }),
+  refresh: (studio, unitId, current) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (!model || !current()) return
+    applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) commitHistory({ prepared: true, syncSelection: false, current })
+  },
+  canRestoreFocus: () => !dataValidationPanelHostBlocked.value && !editingKey.value,
+  focus: () => spreadsheetCanvas.value?.focus(),
+})
+watch(() => dataValidationPanelContext.value?.composing, value => { validationPanelComposing.value = value === true }, { immediate: true, flush: 'sync' })
+const { apply: submitQuickDataValidation, busy: quickDataValidationBusy, progress: quickDataValidationProgress, cancel: cancelQuickDataValidation } = useSheetQuickValidationWorkbench({
+  state: () => ({ studio: props.studio, unitId: workbook.value.id, sheetId: activeSheetId.value, userId: userId.value,
+    active: workbenchActive.value, blocked: dataValidationPanelHostBlocked.value, ranges: selectedModelRanges() }),
+  translator: () => createRibbonTranslator(officeLocale.value, 'sheet'),
+  owner: () => validationPanelOpen.value ? dataValidationPanelContext.value : undefined,
+  refresh: refreshValidationView, openRule: ruleId => openDataValidationPanel(undefined, ruleId),
   notify: message => emit('notify', { type: 'error', message }),
 })
 const slicerRibbonControl = computed<SlicerRibbonControlState | undefined>(() => {
@@ -888,9 +1055,10 @@ const ribbonTabs = computed(() => createSheetRibbon({
   canDeleteRow: totalRows.value > 1, canDeleteColumn: (activeSheet.value?.columnCount ?? 0) > 1,
   chartAvailable: Boolean(props.studio && workbook.value.id), gridlines: activeSheet.value?.showGridlines !== false,
   pivotChartAvailable: Boolean(props.studio && workbook.value.id && activeSheet.value),
+  tableAvailable: Boolean(props.studio && workbook.value.id), tableEditable: canCreateTable.value,
   dataValidationAvailable: Boolean(props.studio && workbook.value.id),
   validationPanelOpen: validationPanelOpen.value,
-  quickValidationEditable: canEditValidationSelection.value,
+  quickValidationEditable: canEditValidationSelection.value && !quickDataValidationBusy.value,
   quickConditional: quickConditionalSelection.value,
   quickConditionalEditable: canQuickFormatSelection.value,
   quickConditionalWorksheetEditable: canQuickFormatWorksheet.value,
@@ -920,7 +1088,7 @@ const searchMatches = computed(() => findSheetMatches(availableSheets.value, act
 watch(
   () => props.modelValue,
   (value) => {
-    if (value) applyExternalWorkbook(value)
+    if (value) receiveConditionalFormattingView(value, () => receiveValidationCellView(value, () => applyExternalWorkbook(value)))
   },
 )
 
@@ -928,7 +1096,7 @@ watch(
   () => props.model,
   (value) => {
     if (!value || props.modelValue) return
-    applyExternalWorkbook(value)
+    receiveConditionalFormattingView(value, () => receiveValidationCellView(value, () => applyExternalWorkbook(value)))
   },
 )
 
@@ -963,7 +1131,7 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   if (nextSheetId !== previousSheetId || (editingKey.value && !parseSheetAddress(editingKey.value, sheet ?? { rowCount: 0, columnCount: 0 }))) cancelEdit()
 }
 
-function commitHistory(options: { prepared?: boolean; syncSelection?: boolean; current?: () => boolean } = {}) {
+function commitHistory(options: { prepared?: boolean; syncSelection?: boolean; current?: () => boolean; onSnapshot?: (snapshot: ExcelWorkbook) => void } = {}) {
   if (options.current && !options.current()) return
   workbook.value.activeSheetId = activeSheetId.value
   if (!options.prepared) refreshWorkbookViewAutoRowHeights(workbook.value, autoHeightBaseline, {
@@ -972,6 +1140,7 @@ function commitHistory(options: { prepared?: boolean; syncSelection?: boolean; c
   const snapshot = cloneWorkbook(workbook.value)
   // The emitted snapshot is separate from the mutable view and doubles as the next measurement baseline.
   autoHeightBaseline = snapshot
+  options.onSnapshot?.(snapshot)
   emit('update:modelValue', snapshot)
   if (options.current && !options.current()) return
   emit('update:model', snapshot)
@@ -1002,7 +1171,7 @@ function validateIncomingValues(entries: readonly { key: string; value: string }
     candidateSheet.cells[entry.key] = editSheetCellText(candidateSheet.cells[entry.key], entry.value, date1904, region, currentYear)
   }
   const model = applyExcelWorkbookView(props.studio?.getWorkbookModel(workbook.value.id ?? '') ?? createBlankWorkbook(), candidateView, region)
-  const result = validateSheetDataValidationChanges(model, sheet.id, positions)
+  const result = validateSheetDataValidationChanges(model, sheet.id, positions, sheetValidationSourceReader(userId.value), region)
   if (result.blocked) {
     const issue = result.issues.find(item => item.severity === 'stop')!
     emit('notify', { type: 'error', message: `${issue.title}：${issue.message}` })
@@ -1816,7 +1985,7 @@ function keepCellEditFocus(target: Element | null): boolean {
   const session = editSession.value
   if (!target || !session || !workbenchActive.value || workbook.value.id !== session.documentId || activeSheetId.value !== session.sheetId) return false
   if (target.closest('[data-ribbon-editor-owner]')?.getAttribute('data-ribbon-editor-owner') === ribbonEditorOwner) return true
-  const popup = target.closest('.ant-select-dropdown, .ant-popover, .ant-dropdown, .ant-color-picker')
+  const popup = target.closest('.ant-select-dropdown, .ant-popover, .ant-dropdown, .ant-color-picker, .ant-picker-dropdown')
   return [...(popup?.querySelectorAll('[data-ribbon-editor-owner]') ?? [])]
     .some(element => element.getAttribute('data-ribbon-editor-owner') === ribbonEditorOwner)
 }
@@ -2115,7 +2284,7 @@ function runWorksheetLifecycle(command: WorksheetLifecycleCommandId, input: Work
     }
     const active = activeSheetId.value
     nextTick(() => {
-      if (props.studio === studio && workbook.value.id === unitId && activeSheetId.value === active && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
+      if (props.studio === studio && workbook.value.id === unitId && activeSheetId.value === active && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus()
     })
     return true
   } catch (reason) {
@@ -2151,7 +2320,7 @@ function copySheet(id: string) {
       commitHistory()
     }
     nextTick(() => {
-      if (workbook.value.id === unitId && activeSheetId.value === targetSheetId && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
+      if (workbook.value.id === unitId && activeSheetId.value === targetSheetId && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus()
     })
   } catch (reason) {
     emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '无法复制工作表。' })
@@ -2416,7 +2585,7 @@ function applyFindReplace(replaceAll: boolean) {
       const [column, row] = splitKey(key)
       return { row: row - 1, column }
     })
-    const result = validateSheetDataValidationChanges(candidateModel, sheetId, positions)
+    const result = validateSheetDataValidationChanges(candidateModel, sheetId, positions, sheetValidationSourceReader(userId.value), officeRegion.value)
     const issue = result.issues.find(item => item.severity === 'stop')
     if (issue) {
       emit('notify', { type: 'error', message: `${issue.title}: ${issue.message}` })
@@ -2444,7 +2613,7 @@ function applyFindReplace(replaceAll: boolean) {
     : t('find.replaced-one', 'Replaced 1 match') })
   if (replaceAll) moveFindMatch(1)
 }
-function closeSearch() { searchOpen.value = false; searchText.value = ''; replaceText.value = ''; findSelectionOnly.value = false; findSelectionRanges.value = []; if (!rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() }
+function closeSearch() { searchOpen.value = false; searchText.value = ''; replaceText.value = ''; findSelectionOnly.value = false; findSelectionRanges.value = []; if (!rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() }
 function syncFullscreen() { isFullscreen.value = document.fullscreenElement === workbenchRef.value }
 async function toggleFullscreen() {
   const workbench = workbenchRef.value
@@ -2497,11 +2666,14 @@ function openDataPanel(mode: 'filter' | 'sort'): void {
   dataPanelOpen.value = true
 }
 function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time', ruleId?: string): void {
+  if (!finishEdit()) return
   closeNumberFormatPanel()
   validationPanelRuleId.value = ruleId
   validationPanelRange.value = selectedModelRanges().map(range => formatValidationRange(range)).join(', ') || selectedKey.value
   validationPanelInitialType.value = initialType
-  validationPanelOpen.value = true
+  const owner = dataValidationPanelContext.value
+  if (validationPanelOpen.value && owner) { if (ruleId) owner.showRule(ruleId); else owner.showRules() }
+  else openDataValidationOwner(initialType, ruleId)
 }
 
 function selectedModelRanges() {
@@ -2513,28 +2685,16 @@ function selectedModelRanges() {
   }))
 }
 
-function refreshValidationView(): void {
-  const model = workbook.value.id && props.studio?.getWorkbookModel(workbook.value.id)
-  if (!model) return
-  workbook.value = toExcelWorkbookView(model)
-  commitHistory()
+function refreshValidationView(studio: OfficeStudio, unitId: string, current: () => boolean): void {
+  const model = studio.getWorkbookModel(unitId)
+  if (!model || !current()) return
+  applyExternalWorkbook(toExcelWorkbookView(model))
+  if (current()) commitHistory({ prepared: true, syncSelection: false, current })
 }
 
 function applyQuickDataValidation(action: unknown): void {
-  if (!props.studio || !workbook.value.id || !activeSheet.value) return
-  try {
-    const plan = planQuickValidation(action === 'dropdown' ? 'edit-dropdown' : action, selectedModelRanges(), createRibbonTranslator(officeLocale.value, 'sheet'))
-    if (!plan) return
-    const target = { unitId: workbook.value.id, sheetId: activeSheet.value.id }
-    const changed = plan.kind === 'set'
-      ? props.studio.executeCommandSync('sheet.command.set-data-validation', { ...target, rule: plan.rule })
-      : props.studio.executeCommandSync('sheet.command.clear-quick-data-validation', { ...target, ranges: plan.ranges, types: plan.types })
-    if (!changed) return
-    refreshValidationView()
-    if (plan.kind === 'set' && plan.edit) openDataValidationPanel(undefined, plan.rule.id)
-  } catch (error) {
-    emit('notify', { type: 'error', message: error instanceof Error ? error.message : t('sheet.validation.save-failed', 'Could not apply data validation') })
-  }
+  if (!props.studio || !workbook.value.id || !activeSheet.value || !canEditValidationSelection.value || !finishEdit()) return
+  void submitQuickDataValidation(action)
 }
 function conditionalFormattingHostCurrent(studio: OfficeStudio | undefined, unitId: string | undefined, sheetId: string): boolean {
   return workbenchActive.value && props.studio === studio && workbook.value.id === unitId && activeSheetId.value === sheetId
@@ -2542,21 +2702,8 @@ function conditionalFormattingHostCurrent(studio: OfficeStudio | undefined, unit
       && studio.getWorkbookModel(unitId)?.activeSheetId === sheetId)
 }
 function openConditionalFormattingPanel(initialType?: ConditionalFormatPanelInitialType): void {
-  const sheet = activeSheet.value, studio = props.studio, unitId = workbook.value.id
-  if (!sheet || conditionalFormattingOpen.value || !conditionalFormattingHostCurrent(studio, unitId, sheet.id)
-    || initialType && !canQuickFormatSelection.value) return
-  try {
-    if (studio && unitId) studio.assertCanViewWorksheet(unitId, sheet.id)
-    if (!studio && !canViewWorksheetProtection(sheet, userId.value)) throw new Error('该工作表受保护，当前用户没有查看权限。')
-    conditionalFormattingContext.value = { studio, unitId, sheetId: sheet.id,
-      expectedRevision: studio && unitId ? studio.getWorkbookRevision(unitId) : undefined,
-      standaloneSnapshot: studio ? undefined : JSON.stringify(workbook.value), initialType }
-  } catch (reason) {
-    emit('notify', { type: 'error', message: reason instanceof Error ? reason.message : '无法打开条件格式面板。' })
-    return
-  }
-  conditionalFormattingRange.value = selectedModelRanges().map(range => formatValidationRange(range)).join(';') || selectedKey.value
-  conditionalFormattingOpen.value = true
+  if (initialType && !canQuickFormatSelection.value) return
+  openConditionalFormattingOwner(initialType)
 }
 function runQuickConditionalFormatting(id: QuickConditionalFormatCommandId, params?: unknown): void {
   const sheet = activeSheet.value
@@ -2566,56 +2713,25 @@ function runQuickConditionalFormatting(id: QuickConditionalFormatCommandId, para
   if (!current()) return
   const options = params as Pick<QuickConditionalFormatInput, 'types' | 'iconSet'> | undefined
   if (studio) {
+    const expectedRevision = unitId ? studio.getWorkbookRevision(unitId) : undefined
+    const expectedHistoryGeneration = unitId ? studio.editor.history.captureSavepoint(unitId).generation : undefined
+    const expectedUserId = studio.currentUserId
     if (!unitId || !studio.executeCommandSync<QuickConditionalFormatInput, boolean>(id, {
-      ...options, unitId, sheetId, ranges, host: 'workbench', expectedRevision: studio.getWorkbookRevision(unitId),
+      ...options, unitId, sheetId, ranges, host: 'workbench', expectedRevision, expectedHistoryGeneration, expectedUserId,
     })) return
-    if (!current()) return
-    workbook.value = toExcelWorkbookView(studio.getWorkbookModel(unitId)!)
+    const model = studio.getWorkbookModel(unitId)
+    if (!model || !current() || studio.getWorkbookRevision(unitId) !== (expectedRevision ?? 0) + 1
+      || studio.editor.history.captureSavepoint(unitId).generation !== expectedHistoryGeneration || studio.currentUserId !== expectedUserId) return
+    workbook.value = toExcelWorkbookView(model)
     commitHistory({ prepared: true, syncSelection: false, current })
     return
   }
-  const rules = quickConditionalFormatRules(sheet.conditionalFormats ?? [], ranges, id, options ?? {})
-  if (!applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed) return
+  const candidate = cloneWorkbook(workbook.value), candidateSheet = candidate.sheets.find(item => item.id === sheetId)
+  if (!candidateSheet) return
+  const rules = quickConditionalFormatRules(candidateSheet.conditionalFormats ?? [], ranges, id, options ?? {})
+  if (!applySheetConditionalFormatsCommand(candidateSheet, rules, userId.value).changed || !current()) return
+  workbook.value = candidate
   commitHistory()
-}
-function applyConditionalFormatting(rules: SetSheetConditionalFormatsInput['rules']): SheetConditionalFormatSubmitResult {
-  const context = conditionalFormattingContext.value
-  try {
-    if (!context) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
-    const { studio, unitId, sheetId } = context
-    const current = () => conditionalFormattingContext.value === context && conditionalFormattingHostCurrent(studio, unitId, sheetId)
-    if (!current()) throw new Error('条件格式目标已切换，请重新打开面板后编辑。')
-    if (studio && unitId) {
-      const changed = studio.executeCommandSync<SetSheetConditionalFormatsInput, boolean>(SET_SHEET_CONDITIONAL_FORMATS_COMMAND,
-        { unitId, sheetId, rules, host: 'workbench', expectedRevision: context.expectedRevision })
-      if (changed && current()) {
-        workbook.value = toExcelWorkbookView(studio.getWorkbookModel(unitId)!)
-        commitHistory({ prepared: true, syncSelection: false, current })
-      }
-      return { accepted: true, changed }
-    }
-    if (context.standaloneSnapshot !== JSON.stringify(workbook.value)) throw new Error('工作簿已更改，请重新打开条件格式面板后编辑。')
-    const candidate = cloneWorkbook(workbook.value), sheet = candidate.sheets.find(item => item.id === sheetId)!
-    const changed = applySheetConditionalFormatsCommand(sheet, rules, userId.value).changed
-    if (changed) {
-      workbook.value = candidate
-      commitHistory({ current })
-    }
-    return { accepted: true, changed }
-  } catch (reason) {
-    const message = reason instanceof Error ? reason.message : '无法应用条件格式，草稿已保留。'
-    return { accepted: false, error: message.startsWith('Command was canceled:') ? '条件格式操作已取消，草稿已保留。' : message }
-  }
-}
-function onConditionalFormattingClosed(): void {
-  if (conditionalFormattingOpen.value) return
-  const context = conditionalFormattingContext.value
-  conditionalFormattingContext.value = undefined
-  void nextTick(() => {
-    if (context && conditionalFormattingHostCurrent(context.studio, context.unitId, context.sheetId)
-      && !conditionalFormattingOpen.value && !editingKey.value && !customNumberFormatOpen.value
-      && !validationPanelOpen.value && !hyperlinkDialogOpen.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
-  })
 }
 function openSparklinePanel(params?: unknown): void {
   const studio = props.studio, sheet = activeSheet.value, unitId = workbook.value.id
@@ -2639,7 +2755,7 @@ function openSparklinePanel(params?: unknown): void {
       sparklineContext.value = undefined
       if (!owner || !sparklinePanelOwnerCurrent(owner, true)) return
       void nextTick(() => { if (!sparklineContext.value && workbenchActive.value && props.studio === studio && !editingKey.value
-        && !imageUiOpen.value && !conditionalFormattingOpen.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value
+        && !imageUiOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value
         && sparklinePanelOwnerCurrent(owner, true)) spreadsheetCanvas.value?.focus() })
     },
   }
@@ -2762,6 +2878,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
   const newRangeProtectionRequested = commandId === 'sheet.operation.open-range-protection'
     && typeof params === 'object' && params !== null && 'mode' in params && params.mode === 'add'
   if (newRangeProtectionRequested && !canQuickFormatSelection.value) return
+  if (commandId === SHEET_TABLE_COMMANDS.openSelector && !canCreateTable.value) return
   if ((commandId === OPEN_SHEET_RANGE_THEME_OPERATION || commandId === SHEET_RANGE_THEME_COMMANDS.set
     || commandId === SHEET_RANGE_THEME_COMMANDS.remove) && !canStartRangeTheme.value) return
   if (['sheet.operation.open-function', 'sheet.operation.insert-function', 'sheet.operation.start-formula'].includes(commandId)
@@ -2823,6 +2940,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
       await updateSlicerPresentation(id, { style: patch.style }, revision)
     },
     'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
+    [SHEET_TABLE_COMMANDS.openSelector]: () => { openTableSelector() },
     'sheet.operation.open-data-validation': openDataValidationPanel,
     'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
     'sheet.operation.quick-data-validation': () => applyQuickDataValidation(params),
@@ -2950,14 +3068,14 @@ async function executeRibbon(commandId: string, params?: unknown) {
   if (!command) return
   try { await command() } catch (error) {
     emit('notify', { type: error instanceof SheetAxisVisibilityError ? 'warning' : 'error', message: error instanceof Error ? error.message : '操作失败' })
-    void nextTick(() => { if (workbenchActive.value && !editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
+    void nextTick(() => { if (workbenchActive.value && !editingKey.value && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() })
     return
   }
   if (crosshairOperation && editSession.value) restoreCellInputFocus(editSession.value)
   if ((!commandId.startsWith('sheet.operation.') || commandId.startsWith('sheet.operation.zoom') || commandId === 'sheet.operation.set-zoom' || crosshairOperation
     || SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId)) && !mergeRequest.value && !painterRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value) {
     void nextTick(() => { if (workbenchActive.value && !editingKey.value && !editComposing.value && !mergeRequest.value && !painterRequest.value
-      && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() })
+      && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() })
   }
 }
 
@@ -2970,11 +3088,12 @@ function handlePainterEscape(event: KeyboardEvent): void {
   event.preventDefault()
   cancelFormatPainter()
   if (!painterActive.value) void nextTick().then(() => nextTick(() => {
-    if (workbenchActive.value && !painterRequest.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
+    if (workbenchActive.value && !painterRequest.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus()
   }))
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229 || editComposing.value || validationPanelComposing.value) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     // The application shell owns global shortcuts when it supplies the header.
     if (!props.showHeader) return
@@ -2999,21 +3118,17 @@ watch(selectedRanges, (next, previous) => {
 watch([() => workbook.value.id, activeSheetId, () => activeSheet.value?.rowCount, () => activeSheet.value?.columnCount], resetHeaderSelection, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], cancelEdit, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], () => { validationPanelOpen.value = false })
-watch([() => props.studio, () => workbook.value.id, activeSheetId, workbenchActive], () => {
-  conditionalFormattingOpen.value = false
-  conditionalFormattingContext.value = undefined
-}, { flush: 'sync' })
 watch([() => workbook.value.id, activeSheetId], closeNumberFormatPanel, { flush: 'sync' })
 watch(numberFormatSelectionKey, () => { numberFormatPreview.value = undefined }, { flush: 'sync' })
 watch(editingKey, key => { if (key) closeNumberFormatPanel() }, { flush: 'sync' })
 watch(canFormatSelection, editable => { if (!editable) closeNumberFormatPanel() }, { flush: 'sync' })
-watch([customNumberFormatOpen, validationPanelOpen], async ([numberFormatOpen, validationOpen]) => {
+watch(customNumberFormatOpen, async numberFormatOpen => {
   if (!numberFormatOpen) numberFormatPreview.value = undefined
-  if (numberFormatOpen || validationOpen) return
+  if (numberFormatOpen) return
   await nextTick()
-  if (workbenchActive.value && !customNumberFormatOpen.value && !validationPanelOpen.value && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus()
+  if (workbenchActive.value && !customNumberFormatOpen.value && !validationPanelOpen.value && !editingKey.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus()
 })
-watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => { if (workbenchActive.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value) spreadsheetCanvas.value?.focus() }) })
+watch(hyperlinkDialogOpen, open => { if (!open) void nextTick(() => { if (workbenchActive.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() }) })
 watch(() => workbook.value.id, id => { if (hyperlinkCell.value?.unitId !== id) hyperlinkDialogOpen.value = false })
 defineExpose({ save: saveWorkbook, focus: () => spreadsheetCanvas.value?.focus() })
 
@@ -3116,13 +3231,16 @@ onActivated(() => { workbenchActive.value = true })
       :crosshair-highlight="{ enabled: crosshairEnabled, color: crosshairColor }"
       :workbook-revision="studio && workbook.id ? studio.getWorkbookRevision(workbook.id) : undefined"
       :workbook-history-generation="studio && workbook.id ? studio.editor.history.captureSavepoint(workbook.id).generation : undefined"
-      :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview"
+      :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview" :conditional-format-preview="conditionalFormattingPreview"
       :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :fill-options="sheetFillOptions" :clipboard-capabilities="clipboardCapabilities"
       :paste-options-capabilities="clipboardPasteOptionsCapabilities"
-      :validation-options="validationOptions" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
+      :validation-options="validationOptions" :validation-cell-entry="validationCellEntry" :validation-cell-popup="validationCellPopup"
+      :validation-checkbox-at="validationCheckboxAt" :validation-checkbox-error="validationCheckboxError" @clear-checkbox-error="clearValidationCheckboxError"
+      :validation-feedback="validationFeedback" :validation-tag-options="validationTagOptions" :validation-input-owner="ribbonEditorOwner"
+      :validation-current-year="new Date().getFullYear()" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
       :drawing-scene="drawingScene" :selected-drawing-refs="selectedDrawingRefs"
       @select-drawing="selectDrawing" @drawing-command="runDrawingCommand" @chart-event="routeCanvasChartEvent"
-      :selected-image-id="selectedImageId" :selected-image-ids="selectedImageIds" :image-interaction-blocked="imageUiOpen || outlineUiOpen || Boolean(rangeThemePending || cellShiftPending || axisSizePending || mergeRequest || painterRequest)"
+      :selected-image-id="selectedImageId" :selected-image-ids="selectedImageIds" :image-interaction-blocked="imageUiOpen || outlineUiOpen || validationPanelOpen || validationCellOpen || Boolean(rangeThemePending || cellShiftPending || axisSizePending || mergeRequest || painterRequest)"
       @select-image="selectImage" @edit-image="openImageEditor" @save-image="saveImage" @image-command="runImageCommand"
       @select-cell="startCellSelection" @extend-selection="extendCellSelection" @extend-header-selection="extendHeaderSelection"
       @selection-end="finishCanvasSelection" @fill-selection="fillSelection" @refill-selection="refillSelection" @select-header="selectHeader" @edit-cell="beginEdit" @finish-edit="finishEdit"
@@ -3140,9 +3258,14 @@ onActivated(() => { workbenchActive.value = true })
       </SplitterPanel>
       <SplitterPanel class="sheet-context-panel" :size="sheetSidebarOpen ? sheetSidebarWidth : 0" :min="sheetSidebarOpen ? 280 : 0" :max="800" :resizable="sheetSidebarOpen">
         <CustomNumberFormatPanel v-if="customNumberFormatOpen" v-model:open="customNumberFormatOpen" :disabled="!canFormatSelection" :date1904="activeDate1904" :current-pattern="numberFormatSource.pattern" :sample-value="numberFormatSource.sample" :selection-key="numberFormatSelectionKey" @preview="previewNumberFormat" @apply="applyCustomNumberFormat" @preference-error="(message) => emit('notify', { type: 'warning', message })" />
-        <SheetDataValidationPanel v-else-if="validationPanelOpen && activeSheet && studio && workbook.id" v-model:open="validationPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :initial-type="validationPanelInitialType" :initial-rule-id="validationPanelRuleId" :canvas-ranges="selectedModelRanges()" :can-add="canEditValidationSelection" @add="applyQuickDataValidation('add-default')" @applied="refreshValidationView" />
+        <SheetDataValidationPanel v-else-if="validationPanelOpen && dataValidationPanelContext" :key="dataValidationPanelContext.key" :open="validationPanelOpen" :context="dataValidationPanelContext" :source-range="dataValidationPanelContext.defaultRange" :canvas-ranges="selectedModelRanges()" @add="applyQuickDataValidation('add-default')" />
       </SplitterPanel>
     </Splitter>
+    <div v-if="quickDataValidationBusy && !validationPanelOpen" class="quick-validation-progress" role="status" aria-live="polite">
+      <Spin size="small" /><span>{{ t(`sheet.validation.bulk.${quickDataValidationProgress?.phase ?? 'processing'}`, '正在处理单元格') }}<template v-if="quickDataValidationProgress"> {{ quickDataValidationProgress.processed }}<template v-if="quickDataValidationProgress.total !== null"> / {{ quickDataValidationProgress.total }}</template></template></span>
+      <Progress v-if="quickDataValidationProgress?.total" :percent="Math.min(100, quickDataValidationProgress.processed / quickDataValidationProgress.total * 100)" :show-info="false" />
+      <Button size="small" @click="cancelQuickDataValidation">{{ t('common.cancel', '取消') }}</Button>
+    </div>
     <Alert v-if="drawingError" type="error" :title="drawingError" show-icon closable @close="drawingError = ''" />
 
     <ChartEditorPanel v-if="chartEditorContext" :key="chartEditorContext.key" :open="chartEditorOpen" :chart="chartEditorChart" :sheet="chartEditorSheet" :sheets="chartEditorSheets" :source-revision="chartSourceRevision" :load-source="chartEditorContext.loadSource" :load-statistics="chartEditorContext.loadStatistics" :route="chartEditorRoute" :route-key="chartEditorRouteKey" :navigation-current="chartEditorContext.navigationCurrent" :date1904="activeDate1904" :busy="chartEditorBusy" :error="chartEditorError" @update:open="chartEditorContext.setOpen" @apply="chartEditorContext.apply" @closed="chartEditorContext.closed" />
@@ -3182,6 +3305,8 @@ onActivated(() => { workbenchActive.value = true })
     </Modal>
     <SheetAxisSizeDialog :request="axisSizeRequest" :error="axisSizeError" @confirm="confirmAxisSize" @cancel="cancelAxisSize" @closed="afterAxisSizeClose" />
     <SheetRangeThemeDialog :request="rangeThemeRequest" :error="rangeThemeError" @confirm="confirmRangeTheme" @cancel="cancelRangeTheme" @closed="afterRangeThemeClose" />
+    <SheetTableSelectorDialog :open="tableSelectorOpen" :range="tableSelectorRequest?.range ?? { startRow: 0, endRow: 0, startCol: 0, endCol: 0 }"
+      :error="tableSelectorError" :can-submit="canSubmitTable" :submit="confirmTableSelector" @cancel="cancelTableSelector" @closed="afterTableSelectorClose" />
     <SheetImagePickerDialog :request="imagePickerRequest" :busy="imageBusy" :error="imageError" :progress="imageProgress" @confirm="confirmImagePicker" @cancel="cancelImagePicker" @closed="afterImageClose" />
     <SheetImageEditorDialog :request="imageEditorRequest" :busy="imageBusy" :error="imageError" @confirm="confirmImageEditor" @cancel="cancelImageEditor" @closed="afterImageClose" />
     <SheetImageSaveDialog :request="imageSaveRequest" :busy="imageBusy" :error="imageError" @confirm="confirmImageSave" @cancel="cancelImageSave" @closed="afterImageClose" />
@@ -3195,8 +3320,11 @@ onActivated(() => { workbenchActive.value = true })
       @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @owner-change="pivotChartContext.ownerChanged" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
     <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
-    <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" v-model:open="conditionalFormattingOpen"
-      :rules="activeSheet.conditionalFormats ?? []" :default-range="conditionalFormattingRange" :selection-range="selectedModelRanges().at(-1)" :initial-type="conditionalFormattingContext.initialType" :submit="applyConditionalFormatting" @closed="onConditionalFormattingClosed" />
+    <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" :key="conditionalFormattingContext.key" :open="conditionalFormattingOpen"
+      :rules="conditionalFormattingContext.rules" :default-range="conditionalFormattingContext.defaultRange" :selection-range="selectedModelRanges().at(-1)"
+      :initial-type="conditionalFormattingContext.initialType" :submit="conditionalFormattingContext.submit" :disabled="conditionalFormattingDisabled"
+      :can-create="canCreateConditionalFormat" :can-edit-rule="conditionalFormattingContext.canEditRule" :can-apply-rules="conditionalFormattingContext.canApplyRules"
+      @preview="conditionalFormattingContext.preview" @update:open="conditionalFormattingContext.setOpen" @closed="conditionalFormattingContext.closed" />
     <SheetRangeProtectionPanel v-if="protectionPanelOpen && activeSheet && studio && workbook.id" v-model:open="protectionPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="validationPanelRange" :start-new="protectionStartNew" />
     <SheetProtectionPanel v-if="worksheetProtectionSheetId && studio && workbook.id" :open="Boolean(worksheetProtectionSheetId)" :studio="studio" :workbook-id="workbook.id" :sheet-id="worksheetProtectionSheetId" :rule="workbook.sheets.find(sheet => sheet.id === worksheetProtectionSheetId)?.worksheetProtection" @update:open="open => { if (!open) worksheetProtectionSheetId = null }" @applied="refreshWorksheetProtection" />
     <SheetOutlineActionDialog v-if="outlineActionRequest" :key="outlineActionRequest.key" :open="outlineActionOpen" :studio="outlineActionRequest.studio" :workbook-id="outlineActionRequest.workbookId" :sheet-id="outlineActionRequest.sheetId" :ranges="outlineActionRequest.ranges" :operation="outlineActionRequest.operation"
@@ -3210,6 +3338,8 @@ onActivated(() => { workbenchActive.value = true })
 </template>
 
 <style scoped>
+.quick-validation-progress { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.quick-validation-progress :deep(.ant-progress) { flex: 0 1 180px; min-width: 80px; }
 .excel-workbench { --ink: #172033; --muted: #718096; --line: #dfe5ee; --blue: #246bfd; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; color: var(--ink); background: #fff; font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
 .excel-header { display: flex; flex: 0 0 53px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 18px; background: #fff; }
 .document-brand, .header-actions { display: flex; align-items: center; gap: 10px; }

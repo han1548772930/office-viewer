@@ -1,7 +1,7 @@
 //! Bounded, namespace-aware native-chart XML and authored-source freshness.
 
 use std::collections::BTreeMap;
-use quick_xml::{Reader, XmlVersion, encoding::Decoder, events::{BytesStart, Event}};
+use quick_xml::{Reader, XmlVersion, events::{BytesStart, Event}};
 use crate::xml_namespaces::{XmlNamespaces, xml_character, validate_declaration, validate_pi_target};
 use crate::chart_options::{SOURCE_EXTENSION_NS, SOURCE_EXTENSION_URI};
 
@@ -48,19 +48,19 @@ fn charge_retained(bytes: &mut usize, amount: usize, limit: usize) -> Result<(),
     Ok(())
 }
 
-fn element(decoder: Decoder, namespaces: &XmlNamespaces, value: &BytesStart<'_>, namespace: Option<&str>, retained: &mut usize, retained_limit: usize) -> Result<Node, String> {
-    charge_retained(retained, std::mem::size_of::<Node>() + value.local_name().as_ref().len() + namespace.map_or(0, str::len), retained_limit)?;
-    let name = String::from_utf8_lossy(value.local_name().as_ref()).into_owned();
+fn element(namespaces: &XmlNamespaces, value: &BytesStart<'_>, namespace: Option<&str>, retained: &mut usize, retained_limit: usize) -> Result<Node, String> {
+    charge_retained(retained, std::mem::size_of::<Node>() + value.local_name().as_ref().as_bytes().len() + namespace.map_or(0, str::len), retained_limit)?;
+    let name = String::from_utf8_lossy(value.local_name().as_ref().as_bytes()).into_owned();
     let mut attrs = BTreeMap::new();
     let mut attr_namespaces = BTreeMap::new();
     let mut expanded_attrs = BTreeMap::<String, BTreeMap<String, String>>::new();
     for attr in value.attributes() {
         let attr = attr.map_err(|error| error.to_string())?;
-        if attr.key.as_ref() == b"xmlns" || attr.key.as_ref().starts_with(b"xmlns:") { continue; }
-        if attr.value.as_ref().contains(&b'<') { return Err("invalid unescaped native XML attribute character".into()); }
-        let key = String::from_utf8_lossy(attr.key.local_name().as_ref()).into_owned();
+        if attr.key.as_ref().as_bytes() == b"xmlns" || attr.key.as_ref().as_bytes().starts_with(b"xmlns:") { continue; }
+        if attr.value.as_ref().contains('<') { return Err("invalid unescaped native XML attribute character".into()); }
+        let key = String::from_utf8_lossy(attr.key.local_name().as_ref().as_bytes()).into_owned();
         let attr_namespace = namespaces.namespace(attr.key, true)?;
-        let decoded = attr.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, decoder, 1, quick_xml::escape::resolve_xml_entity)
+        let decoded = attr.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity)
             .map_err(|error| error.to_string())?.into_owned();
         if !decoded.chars().all(xml_character) { return Err("invalid native XML attribute character".into()); }
         // Expanded attributes and the compatibility lookup retain separate keys/values.
@@ -113,35 +113,35 @@ fn parse_with_limits(source: &str, reserved_nodes: usize, retained_limit: usize)
             Event::Start(value) => {
                 count += 1;
                 if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
-                namespaces.push(&value, reader.decoder())?;
+                namespaces.push(&value)?;
                 let namespace = namespaces.namespace(value.name(), false)?;
-                let node = element(reader.decoder(), &namespaces, &value, namespace, &mut retained, retained_limit)?;
+                let node = element(&namespaces, &value, namespace, &mut retained, retained_limit)?;
                 stack.push(node);
             }
             Event::Empty(value) => {
                 count += 1;
                 if count > node_limit || stack.len() > MAX_DEPTH { return Err("CHART_XML_RESOURCE_LIMIT: chart tree is too large or deep".into()); }
-                namespaces.push(&value, reader.decoder())?;
+                namespaces.push(&value)?;
                 let namespace = namespaces.namespace(value.name(), false)?;
-                let node = element(reader.decoder(), &namespaces, &value, namespace, &mut retained, retained_limit)?;
+                let node = element(&namespaces, &value, namespace, &mut retained, retained_limit)?;
                 namespaces.pop();
                 stack.last_mut().ok_or_else(|| "empty chart XML root".to_owned())?.children.push(node);
             }
             Event::Text(value) => {
-                let decoded = value.decode().map_err(|error| error.to_string())?;
+                let decoded = value.as_ref();
                 if decoded.contains("]]>") || stack.len() == 1 && !decoded.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) { return Err("invalid native XML text outside its root or CDATA terminator".into()); }
                 charge_retained(&mut retained, decoded.len(), retained_limit)?;
                 if let Some(node) = stack.last_mut() { node.text.push_str(&decoded); }
             }
             Event::CData(value) => {
                 if stack.len() == 1 { return Err("native XML CDATA must be inside the root".into()); }
-                let decoded = value.decode().map_err(|error| error.to_string())?;
+                let decoded = value.as_ref();
                 charge_retained(&mut retained, decoded.len(), retained_limit)?;
                 if let Some(node) = stack.last_mut() { node.text.push_str(&decoded); }
             }
             Event::GeneralRef(value) => {
                 if stack.len() == 1 { return Err("native XML entity must be inside the root".into()); }
-                let decoded = value.decode().map_err(|error| error.to_string())?;
+                let decoded = value.as_ref();
                 let resolved = value.resolve_char_ref().map_err(|error| error.to_string())?.map(|value| value.to_string())
                     .or_else(|| quick_xml::escape::resolve_xml_entity(&decoded).map(str::to_owned))
                     .ok_or_else(|| format!("unknown chart XML entity &{decoded};"))?;
@@ -163,7 +163,7 @@ fn parse_with_limits(source: &str, reserved_nodes: usize, retained_limit: usize)
             }
             Event::PI(instruction) => {
                 validate_pi_target(instruction.target())?;
-                if !instruction.content().is_empty() && !instruction.content()[0].is_ascii_whitespace() { return Err("invalid native XML processing-instruction separator".into()); }
+                if !instruction.content().is_empty() && !instruction.content().as_bytes()[0].is_ascii_whitespace() { return Err("invalid native XML processing-instruction separator".into()); }
             }
             Event::Eof => break,
             _ => {}

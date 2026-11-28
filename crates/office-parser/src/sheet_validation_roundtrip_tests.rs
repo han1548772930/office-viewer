@@ -20,7 +20,7 @@ fn rewrite(bytes: &[u8], edit: impl Fn(String) -> String) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().to_owned();
+        let mut entry = archive.by_index(index).unwrap(); let name = entry.name().unwrap().into_owned();
         let mut bytes = Vec::new(); entry.read_to_end(&mut bytes).unwrap();
         if name == "xl/worksheets/sheet1.xml" { bytes = edit(String::from_utf8(bytes).unwrap()).into_bytes(); }
         writer.start_file(name, options).unwrap(); writer.write_all(&bytes).unwrap();

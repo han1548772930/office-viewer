@@ -1,6 +1,6 @@
 # Docs 页眉页脚 Ribbon 尺寸与主题
 
-功能：DOC-03，关联 COMMON-01 / COMMON-04。更新日期：2026-11-27。
+功能：DOC-03，关联 COMMON-01 / COMMON-04。更新日期：2026-11-28。
 固定基线：`dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`，本地 `E:\rust_test\univer`，本轮已核对 HEAD。
 状态：未验收；组件改动与浏览器测试草稿已落盘，运行验证统一后置。
 
@@ -59,7 +59,7 @@
 | 审阅组件 / 宿主 | 注册与既有尺寸约束 |
 | --- | --- |
 | [DocumentListPicker.vue](../../packages/office-studio/src/components/document/DocumentListPicker.vue) | 有序、无序列表两个常规 split 根；弹层通过 `doc.command.change-list-type` 执行。三列 72px 卡片、80px 高度，预览在卡片内；重新编号表单独占整行 |
-| [DocumentCharacterPicker.vue](../../packages/office-studio/src/components/document/DocumentCharacterPicker.vue) | 表情、符号两个常规菜单根；本轮改为 `doc.command.insert-special-character`，保留旧字符串调用兼容，接线与缺口见下节。字符格仍使用 minmax(42px, 1fr)、42px 按钮和纵向滚动；分类、自定义字符沿用 Form 与库中输入控件 |
+| [DocumentCharacterPicker.vue](../../packages/office-studio/src/components/document/DocumentCharacterPicker.vue) | 表情、符号两个常规菜单根；本轮改为 `doc.command.insert-special-character`，保留旧字符串调用兼容，接线与缺口见下节。2026-11-28 已改为完整目录、10 列 32px 字符行、24px 标题和 Ant Listy；搜索、类别、肤色/变体及整值输入见[当前实现](#doc-character-picker-plan) |
 | [DocumentLatexTemplateGallery.vue](../../packages/office-studio/src/components/document/DocumentLatexTemplateGallery.vue) | `document-latex-ribbon.ts` 注册十一类上下文菜单，均转发 `docs-latex.operation.insert-formula-template`。gallery 宽 440px、max-width 100%，桌面三列、≤640px 两列；标签有省略约束。已读 `DocumentLatexPreview.vue`，Canvas 使用 width / max-width 100%、height auto |
 | [DocumentWorkbench.vue](../../packages/office-studio/src/components/DocumentWorkbench.vue) 的 tab-extra | 只读查找替换浮层：查找 Input 可收缩，图标按钮 24px，替换行 ≤650px 换行。示例 `main.ts` 已导入 `antdv-next/dist/reset.css`；已核对其通配 border-box，不能据未局部声明 box-sizing 就认定 padding / border 导致宽度越界 |
 
@@ -78,7 +78,7 @@
 | [schema.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/schema.ts)、[menu.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/menu/menu.ts) | Insert 媒体组内表情 order 5 / r1c3，符号 order 6 / r2c3；两个常规菜单根，共用插入命令。未新增插件扩展、上下文或溢出根，More 呈现副本不重复计数 |
 | [insert-special-character.command.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/docs-ui/src/commands/commands/insert-special-character.command.ts) | ID 为 `doc.command.insert-special-character`，参数 `{ value: string }`；空串返回 false，空格及 NBSP 属于非空输入。读取当前选区、segmentId 和字符格式，以 UTF-16 `value.length` 插入整个值，并继承当前位置 customRange / customDecorations，再复用 InsertTextCommand |
 | [symbols.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/symbol-picker/symbols.ts)、[SymbolPicker.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/symbol-picker/SymbolPicker.tsx) | 固定目录按数组项静态计数：mathematics 70、greek 48、common 32，共 150 项，包含重复 `%` 和 `|a|` / `kg` 等多字符值；三组、10 列、32px 单元、420×340 宿主，有 activeSymbol / aria-pressed 与 keepOpen |
-| [EmojiPicker.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/emoji-picker/EmojiPicker.tsx)、[emoji-picker-utils.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/emoji-picker/emoji-picker-utils.ts)、[generate-emojis.mts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/scripts/generate-emojis.mts) | 七个目录类别加最近项；搜索、肤色、家庭及混合肤色变体、持久最近项。最近项上限 11，持久键为 `univer.ui.recent-emojis` / `univer.ui.emoji-skin-tone`。虚拟列表 10 列、32px 行、24px 分组标题、overscan 3。生成器指定 Unicode Emoji 17.0.0 / CLDR JSON 48.2.0；当前固定工作树没有 `emojis.generated.ts`，未执行生成或统计全部 Emoji 项数 |
+| [EmojiPicker.tsx](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/emoji-picker/EmojiPicker.tsx)、[emoji-picker-utils.ts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/src/views/emoji-picker/emoji-picker-utils.ts)、[generate-emojis.mts](https://github.com/dream-num/univer/blob/eaf4cfa04fabdbcfc922c692f3450459f8a29546/packages/ui/scripts/generate-emojis.mts) | 七个目录类别加最近项；搜索、肤色、家庭及混合肤色变体、持久最近项。最近项上限 11，持久键为 `univer.ui.recent-emojis` / `univer.ui.emoji-skin-tone`。虚拟列表 10 列、32px 行、24px 分组标题、overscan 3。生成器指定 Unicode Emoji 17.0.0 / CLDR JSON 48.2.0；固定上游工作树没有 `emojis.generated.ts`；本项目已依据同版本来源生成数据，完整计数和差异见[当前实现](#doc-character-picker-plan) |
 
 实际接线：
 
@@ -97,7 +97,7 @@
 | --- | --- |
 | [document-toolbar-state.contract.test.mjs](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs) | 1 项：两个根的固定 ID / 布局、整值 adapter、旧字符串兼容、空值 / 参数拒绝、空格 / NBSP 与禁用 |
 | [document-editor-commands.contract.test.mjs](../../packages/office-studio/tests/document-editor-commands.contract.test.mjs) | 3 项：真实 Studio / Facade 的固定事件、输入偏好、UTF-16 光标、一次历史与保存重开；flat 当前选区、empty envelope、不匹配命令、取消、输入代数失效与内容锁；表格单元格坐标、撤销重做和保存重开 |
-| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 1 项、八个组合场景：classic / light 正文 Code 与 grid / dark 页眉 Code，各插入家庭 Emoji、多字符符号 / 组合字、纯空格及纯 NBSP；从真实 popup 检查固定事件、classic 28px / grid 24px 菜单按钮与箭头中心、hover 背景、42px 字符按钮及 Ant Tooltip、焦点恢复、一次历史、宿主光标及保存重开 |
+| [document-structured-workbench.browser.test.mjs](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs) | 1 项、八个组合场景：classic / light 正文 Code 与 grid / dark 页眉 Code，各插入家庭 Emoji、多字符符号 / 组合字、纯空格及纯 NBSP；从真实 popup 检查固定事件、classic 28px / grid 24px 菜单按钮与箭头中心、hover 背景、字符按钮及 Ant Tooltip（2026-11-28 已改为 32px 草稿）、焦点恢复、一次历史、宿主光标及保存重开 |
 
 字符接线子任务收尾时只静态重读共享注册与相关修改，当时未执行语法检查。随后主线已完成 84 个 TS/JS、25 个 Vue、26 个 CSS/样式块、13 段夹具脚本及 1378 处本地引用的静态检查，并核对 30 份 Markdown、907 条本地链接、66 处锚点及空白，见[顶部控件静态收尾](../UNIVER_TOOLBAR_PARITY.md#top-ribbon-control-sizing)。这些数字覆盖此前字符与尺寸批次，不覆盖下节的新改动。测试、类型、构建、浏览器/dev、Rust/WASM、服务和基准仍未运行；实际 hover、Tooltip、主题、布局、Code / story / 表格输入、IME、历史和保存重开继续保留未验收。
 
@@ -134,7 +134,7 @@
 
 既有页眉页脚草稿新增两个紧凑状态用例，并扩展完整控件及主题用例的真实 CSS 边框断言。[document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) 复用两个颜色根的 classic/grid、明色 LTR/暗色 RTL 用例，检查主按钮与箭头 idle/hover/active 零边框；权限禁用及 More 箭头也检查零边框。按下/抬起在真实按钮上完成，未提交的状态检查在移出按钮后抬起，保留零模型变化和零历史断言。
 
-本批仍属于 Vue 交互与主题适配，根入口增量为零；命令 ID、模型、内容历史、保存与 Worker/WASM 协议不变。所有可替换控件仍使用 `antdv-next`。静态检查通过：七段脚本（含两段夹具）、三个 Vue 模板、三个样式块、22 处本地导入引用、本文 32 条本地链接及两处锚点；六个文本文件尾空白/冲突标记与限定 diff 检查通过。未运行测试、类型检查、构建、dev、浏览器、Rust/WASM、服务或基准；真实 hover/active、弹层关闭、主题、焦点恢复、IME、编辑及保存重开继续未验收。完整 Picker 多文件方案仍待确认，本批没有实施。
+本批仍属于 Vue 交互与主题适配，根入口增量为零；命令 ID、模型、内容历史、保存与 Worker/WASM 协议不变。所有可替换控件仍使用 `antdv-next`。静态检查通过：七段脚本（含两段夹具）、三个 Vue 模板、三个样式块、22 处本地导入引用、本文 32 条本地链接及两处锚点；六个文本文件尾空白/冲突标记与限定 diff 检查通过。未运行测试、类型检查、构建、dev、浏览器、Rust/WASM、服务或基准；真实 hover/active、弹层关闭、主题、焦点恢复、IME、编辑及保存重开继续未验收。该批尚未实施完整 Picker；2026-11-28 的已授权实现见[当前实现](#doc-character-picker-plan)。
 
 ## 列表预览标记列续核
 
@@ -144,7 +144,7 @@
 
 已读取 [document-toolbar.browser.test.mjs](../../packages/office-studio/tests/document-toolbar.browser.test.mjs)，其中没有列表弹层检查。主线复用 [document-home-colors.browser.test.mjs](../../packages/office-studio/tests/document-home-colors.browser.test.mjs) 的 `an open numbering popup disables every preset and numbering action when edit permission changes`：它在真实 Workbench 中打开编号弹层，已有六张卡片和 72×80px 边界检查。追加 ORDER_LIST_2 的完整多级标记/可访问名称、实际裁切与非收缩、正文预览线边界及 hover 前后矩形不变断言；没有增加用例声明，所有浏览器用例均未执行。
 
-本轮只改上述预览 CSS 和本节证据。控件仍使用 `antdv-next Button`，沿用 ConfigProvider 主题及原有焦点/命令/历史/保存链路；没有接口或 Worker/WASM 协议变化。标记列的真实布局、主题、hover、焦点、IME 及编辑重开未验收。完整符号与表情选择器方案仍待确认，本轮没有实施。
+本轮只改上述预览 CSS 和本节证据。控件仍使用 `antdv-next Button`，沿用 ConfigProvider 主题及原有焦点/命令/历史/保存链路；没有接口或 Worker/WASM 协议变化。标记列的真实布局、主题、hover、焦点、IME 及编辑重开未验收。该轮未实施完整选择器；2026-11-28 的已授权实现见[当前实现](#doc-character-picker-plan)。
 
 ## 页眉页脚面板与插表对话框续核
 
@@ -174,46 +174,51 @@
 
 本批静态检查通过：3 段 TS/JS（含夹具脚本）的语法、1 个 Vue SFC 解析、125 处本地引用、本文 42 条本地文件链接，以及 3 个修改文件的尾空白/冲突标记与限定 diff 检查。仅加载解析工具，没有执行产品模块或上述浏览器草稿；测试、类型、构建、Rust/WASM、dev、浏览器和基准继续后置。
 
-字符选择器继续使用库中 Select/Form/Input/Button 和 42px 字符格，按钮的禁用由实际 Button props、表单输入的禁用由 Form 上下文传递；未确认新的箭头/hover/尺寸冲突。本轮不实施完整目录、搜索、family/肤色、持久最近项或 keepOpen 方案。全部新增/涉及控件仍使用 `antdv-next`，没有输入桥、接口、Worker/WASM 或性能改动；真实尺寸、主题、焦点、IME、打开/禁用交互与编辑重开均未验收。
+2026-11-27 的字符选择器仍使用 Select/Form/Input/Button 和 42px 字符格，该尺寸小修未实施完整目录。2026-11-28 已替换为下节完整实现，全部可替换控件继续使用 `antdv-next`。全部新增/涉及控件仍使用 `antdv-next`，没有输入桥、接口、Worker/WASM 或性能改动；真实尺寸、主题、焦点、IME、打开/禁用交互与编辑重开均未验收。
 
 <a id="doc-character-picker-plan"></a>
 
-## 完整符号与表情选择器的待确认方案
+## 完整符号与表情选择器实现（未验收）
 
-本方案仅供较大改动确认，尚未实施，也未创建下列计划新增文件。命令保持 `{ value: string }`，已有空格、NBSP、组合字符、宿主、历史及保存链路继续复用。目录和选择器属于独立批次，不能由本节方案或生成数量认定功能完成。
+2026-11-28 已按用户授权实施，本节替代此前待确认方案。表情、符号继续使用现有两个常规根、相同分组、顺序、grid 行列与固定命令；常驻、插件扩展、上下文和溢出根入口增量均为 0。目录项数不代表功能完成，浏览器、Office 样本和性能验收仍后置。
 
-| 计划文件（相对项目根） | 预计手写改动 | 具体工作 |
-| --- | --- | --- |
-| `scripts/generate-document-emojis.mjs`（新增） | 约 220 行 | 固定 Unicode Emoji 17.0.0 / CLDR JSON 48.2.0，复核固定版分类与 family 分组，生成下面两个数据文件及版本/来源/计数信息；不生成到 Univer 工作树 |
-| `packages/office-studio/src/features/document/model/document-emojis.generated.ts`（新增，生成） | 0 行；生成行数未知 | 七类完整 base family、完整 Unicode 序列、默认 recent、统一和 mixed skin tone 变体映射；Emoji/family/变体的数量尚未知 |
-| `packages/office-studio/src/features/document/model/document-emoji-locales.generated.ts`（新增，生成） | 0 行；生成行数未知 | 项目 19 个 locale 的 CLDR 标题/搜索词及固定 UI 类别文案；记录 locale 映射和缺失项，条目数/字节尚未知 |
-| `packages/office-studio/src/features/document/services/document-special-characters.ts`（新增） | 约 190 行 | 保存上游三组 150 个符号数组项及顺序，保留重复 `%` 与多字符值；将本地箭头/标点/货币等额外值列为扩展。实现目录查询、搜索、family/肤色选择、最近项归族去重与虚拟行计算，供 UI 与合同测试共用 |
-| `packages/office-studio/src/features/document/stores/document-character-preferences-store.ts`（新增） | 约 80 行 | Pinia 管理 recent/肤色/活动符号；外部存储读入一次校验，最近项按 family 去重、最多 11，使用本项目命名的存储键。偏好不进入文档快照或内容历史 |
-| `packages/office-studio/src/components/document/DocumentCharacterPicker.vue` | 约 360 行 | 现有组件改用完整目录；Ant Form/Input 搜索、类别导航、肤色及 family 变体弹层、随机选择、active/aria-pressed、32px 单元与虚拟滚动；保留自定义整值输入与总 disabled。布局按 10 列、32px 行、24px 分组标题、overscan 3 和可用宽度实现 |
-| `packages/office-studio/src/components/document/document-ribbon.ts` | 约 12 行 | 两个现有根透传同一偏好状态与呈现选项；固定命令、分组和入口计数保留 |
-| `packages/office-studio/src/platform/ribbon/RibbonItem.vue` | 约 12 行 | insert 事件另传 UI 的 keepOpen 选项；默认沿用菜单关闭，明确要求 keepOpen 的调用保留弹层。选项不混入 `{ value }` 命令参数，关闭/焦点仍共用现有 scope |
-| `packages/office-studio/src/components/DocumentWorkbench.vue` | 约 24 行 | API 与独立 modelValue 两种既有用法提供同一偏好 store；重复插入时沿当前选区/宿主推进光标，协调 keepOpen 的选择器焦点与 Canvas 输入焦点 |
-| `packages/office-studio/src/api/office-studio.ts` | 约 8 行 | 在现有实例 Pinia 中建立偏好 store，不改变特殊字符事务 |
-| `packages/office-studio/src/api/facade.ts` | 约 6 行 | 为 Workbench 提供实例的偏好状态/操作；内容 API 和命令事件仍只使用原参数 |
-| `packages/office-studio/src/i18n/docs/locales/document-characters.ts`（新增） | 约 110 行 | 补齐 19 个 locale 的本地扩展/自定义输入文案，复用生成的目录标题与搜索词 |
-| `packages/office-studio/src/i18n/office-i18n.ts` | 约 4 行 | 合并字符文案，与既有 locale/direction 注入同用 |
-| `package.json` | 约 2 行 | 增加 pnpm 的显式目录生成入口，不在普通构建时临时下载数据 |
+[生成器](../../scripts/generate-document-emojis.mjs) 校验固定 Univer commit，读取固定符号数组与 19 个 UI locale 字符串，按 Unicode Emoji **17.0.0** 的 fully-qualified 序列和 CLDR JSON **48.2.0** 的 base/derived annotations 生成数据；没有执行上游代码，也没有修改 `E:\rust_test\univer`。已实际执行显式生成入口 `pnpm generate:document-characters` 对应的 Node 脚本，复用项目内缓存；23 个模型生成文件共 **6,009,962 UTF-8 字节**，许可证另计。普通 build 不自动下载或生成数据。
 
-固定七类为 people / nature / foods / activity / places / objects / symbols，recent 是额外呈现组，不能算第八个目录类。当前本地六组 Emoji 与六组符号不是这套目录；保留本地有用值时标成扩展，生成后再记录扩展与上游重叠/新增数量。本方案没有生成 Emoji 数据，不承诺总数量，也不把肤色序列简单拼接到任意 Emoji。
+| 固定目录类别 | family 数 | 全部实际序列数 |
+| --- | ---: | ---: |
+| people | 559 | 2,589 |
+| nature | 160 | 160 |
+| foods | 131 | 131 |
+| activity | 85 | 85 |
+| places | 219 | 219 |
+| objects | 266 | 266 |
+| symbols | 224 | 224 |
+| 合计 | **1,644** | **3,674** |
 
-搜索同时使用实际字符、固定标题和 CLDR 词，按当前 locale 更新；肤色选择按生成 family 映射选择真实序列，不支持该肤色的 family 保持 base。family 弹层列出全部实际变体，包括 mixed skin tone。recent 保存实际选择值并按 family 去重，换文档/重开工作台可读取偏好，但撤销文档内容不撤销偏好。符号 active 按完整值呈现；`keepOpen` 是 popup 回调的呈现选项，固定来源的 embedded onChange 与 popup onSelect 分开，本地默认菜单关闭行为保持，显式 keepOpen 路径连续插入且保持同一宿主。
+其中真实肤色变体 **2,030** 条，包括 mixed skin tone；recent 是呈现组，不能算第八个目录类。Flags 按固定上游分类映射排除，不把它列为已包含目录。全部序列、版本、SHA-256、来源 URL、locale 映射和标题缺失列表保存在[生成清单](../../packages/office-studio/src/features/document/model/document-character-source.generated.json)；上游 Apache-2.0 归属与[Unicode 数据许可证](../third-party/UNICODE_DATA_LICENSE.txt)保留。
 
-| 计划草稿/证据文件 | 预计改动 | 验证目标 |
-| --- | --- | --- |
-| `packages/office-studio/tests/document-character-catalog.contract.test.mjs`（新增） | 约 200 行 | 直接测真实目录/服务/Pinia：150 符号顺序与重复/多字符、七类、版本、完整 family/肤色映射、中文/英文/RTL 搜索、recent 去重/11 上限、序列化读回及虚拟行边界 |
-| `packages/office-studio/tests/document-toolbar-state.contract.test.mjs` | 约 30 行 | 两根、fixed ID、偏好透传和 UI keepOpen 不进入领域参数 |
-| `packages/office-studio/tests/document-structured-workbench.browser.test.mjs` | 约 180 行 | 复用真实 Workbench/Studio：完整目录搜索、统一/混合肤色、最近项持久化、随机项属于目录、active/keepOpen 连续插入、虚拟滚动尾部、classic/grid/More、主题/RTL/焦点、锁与一次历史、Code/story/table 保存重开；同步原 42px 草稿为实际 32px 目录规格 |
-| `docs/feature-evidence/DOC-03-header-footer-ribbon-sizing.md` | 约 45 行 | 记录生成来源、分类计数、实现差异、实测和未核实项 |
-| `docs/UNIVER_FEATURE_PARITY.md` | 约 3 行 | 更新完整 Picker 实际完成/未验收口径 |
-| `docs/UNIVER_TOOLBAR_PARITY.md` | 约 3 行 | 链接证据，保持根入口统计 |
-| `docs/feature-evidence/TOP-RIBBON-PARITY-CHECKLIST-2026-11-21.md` | 约 5 行 | 更新菜单与上下文可观察行为，不把目录项数当功能完成证明 |
+符号固定三组保持原数组顺序：mathematics 70 / greek 48 / common 32，共 **150 数组项**。重复 `%` 以及完整 `|a|`、`kg`、`mm`、`cm`、`m²`、`°C` 保留。另列 arrows 22 / punctuation 24 / currency 15 / additional 17，共 **78 本地扩展项**；其中 71 个不同值是相对上游的新增，重叠没有冒充新增。
 
-目录加载、搜索和虚拟行计算先作为同步可测试模块；测试、浏览器和基准按用户约定统一后置。在统一验证阶段，用同一完整数据测加载/搜索/滚动、主线程长任务与内存，再按实测选择计算路径；本方案没有预报达标或优化。Office 样本独立重开、真实 IME、字体显示及其他辅助宿主继续按完整验收标准检查。
+| 实际文件 / 边界 | 已落盘行为 |
+| --- | --- |
+| [目录类型](../../packages/office-studio/src/features/document/model/document-character-catalog.ts)、[Emoji 数据](../../packages/office-studio/src/features/document/model/document-emojis.generated.ts)、[符号数据](../../packages/office-studio/src/features/document/model/document-symbols.generated.ts)、[固定文案](../../packages/office-studio/src/features/document/model/document-emoji-ui.generated.ts) | 家族、全部实际变体、七类、符号来源、默认 11 个 recent 与 19 个固定 locale；生成模块含来源和许可证说明 |
+| [目录服务](../../packages/office-studio/src/features/document/services/document-special-characters.ts) | 按实际 family 映射选择统一肤色，完整列出混合变体；搜索完整 Unicode 值、英文/本地 base/variant 标题和 CLDR aliases；随机选择来自实际目录；10 列行几何、分组偏移、短行/标题间的方向键及 RTL 导航 |
+| 19 个 `model/emoji-locales/*.generated.ts` | 每个 locale 懒加载独立模块。拒绝的 Promise 从服务缓存移除，UI 用 generation 拒绝旧语言结果；加载失败仍可英文/实际字符搜索并显示重试。实际浏览器重试与乱序响应尚未验收 |
+| [Pinia 偏好](../../packages/office-studio/src/features/document/stores/document-character-preferences-store.ts) | 本项目键 `office-studio.document.character-preferences.v1`，version 1；recent / skinTone / active 两个入口共用。Emoji recent 按 family 去重、上限 11，符号上限 32；一次存储读取、版本/形状检查、存储失败保留内存行为、释放 adapter |
+| [选择器](../../packages/office-studio/src/components/document/DocumentCharacterPicker.vue)、[补充文案](../../packages/office-studio/src/components/document/document-character-picker-labels.ts) | Ant Form/Input 搜索与整值输入、Listy 虚拟目录、Segmented/Select 类别、Popover/Radio 肤色和全部变体、Button/Tooltip/Spin/Alert。通过 ConfigProvider/token 适配弹层、主题、RTL 和禁用；没有自绘或原生表单控件 |
+| [Ribbon](../../packages/office-studio/src/components/document/document-ribbon.ts)、[Workbench](../../packages/office-studio/src/components/DocumentWorkbench.vue)、共享 [RibbonItem](../../packages/office-studio/src/platform/ribbon/RibbonItem.vue)、Studio / Facade | 两根透传同一个实例偏好 store；独立 modelValue 用法提供自有 Pinia。Facade `getCharacterPreferences()` 返回 Studio 实例 store。UI intent 和第二个事件参数传 keepOpen；Workbench 只将完整 value 投影到领域 command，固定事件 ID 不变 |
+
+默认 recent 为 `👍 😀 😘 😍 😆 😜 😅 😂 😱 😞 😒`。存储预算统一为每值 8,192、总值 32,768 UTF-16 单元和完整 JSON 131,072 UTF-16 单元，包含 JSON 转义。按较新的两类完整项交替保留，超预算的偏好项跳过；实际自定义插入文本从不截断。读写使用相同预算，避免合法写入后无法读回。偏好不写入文档快照、内容历史或撤销栈；Studio disposal 释放 adapter/store，没有留存的存储监听、定时器或异步任务。
+
+19 个 locale 的每条实际序列都有展示标题。严格依据 CLDR tts **实际缺失**记录英文回退，不能用标题与英文相等推断缺失：`id-ID` 3 条、`zh-HK` 1,255 条，其余 17 个 locale 为 0。缺失列表保留在清单中；有 fallback 的 locale 仍保留完整目录和英文搜索。
+
+字符行高 32px、分组标题 24px、十列、列表高 200px、选择器宽 420px 并随可用视口收缩；分组活动偏移保持 28px。固定上游使用 overscan 3，本地 `antdv-next Listy` 公共 API 没有对应参数，因此采用其动态测量/虚拟窗口，不声称复刻同一 overscan 或达到性能目标。
+
+目录、随机和变体选值明确 keepOpen，连续插入沿当前真实选区/宿主推进；自定义整值插入关闭 popup 并由工作台恢复输入。只有工作台确认接受命令才提升 recent/active。空值、权限、取消及失效输入不提升偏好；UI 回调和 keepOpen 不进入公开 `{ value }` 或领域/历史数据。嵌套 tone/family Escape 恢复自己的触发器；外层持久挂载 popup 的 `open=false` 关闭内层弹窗并取消焦点重试。键盘跨虚拟区的焦点最多延后两帧，按 owner、generation、当前焦点及禁用状态复查，卸载取消；Canvas 焦点与输入会话仍由原工作台处理。
+
+新增及更新的[目录/生成器/偏好/API 契约草稿](../../packages/office-studio/tests/document-character-catalog.contract.test.mjs)、[Ribbon 草稿](../../packages/office-studio/tests/document-toolbar-state.contract.test.mjs)、[真实 Canvas 工作台浏览器草稿](../../packages/office-studio/tests/document-structured-workbench.browser.test.mjs)覆盖来源数组、全部序列、统一/混合肤色、19 locale、短行/RTL、存储预算/失败、偏好与文档隔离、连续插入、取消、懒加载重试/语言切换、virtual tail、主题、More、组合文字、Code / header Code / table cell、历史及公开保存重开。原 42px 草稿已改为实际 32px，目录点击保留 popup，自定义插入才关闭。草稿均未执行，合成 composition 事件不替代真实 Windows IME。
+
+本批属于目录模型、应用偏好、Vue 交互与命令边界，没有新增计算引擎、Worker/WASM 协议或内存 lease。目录加载/搜索/虚拟行计算使用同一权威 TypeScript 服务；统一验证阶段须以同一完整数据记录加载、搜索、滚动、长任务与内存，再据实测判断路径和阈值。没有前后基准，不声称已优化。完整 Docs / Sheets / Pro 范围与全部 65 功能组“未验收”状态保持。
 
 ## 检查与剩余验证
 

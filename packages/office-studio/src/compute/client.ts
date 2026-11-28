@@ -125,7 +125,8 @@ export class OfficeComputeClient {
         maxInputBytes: this.memoryBudget, maxOutputBytes: this.memoryBudget, maxWorkingBytes: this.memoryBudget,
       })
       const job: PendingJob = { requestId, documentId: options.documentId, modelRevision: options.modelRevision, control, task: ownedTask,
-        options: { ...options }, resolve, reject, settled: false, memory, inputLength: ownedTask.values.length,
+        options: { ...options }, resolve, reject, settled: false, memory, inputLength: ownedTask.kind === 'validationListQuery' ? ownedTask.params.rowCount
+          : ownedTask.kind === 'checkboxCells' ? ownedTask.params.existingCount : ownedTask.values.length,
         progressUnits: progressUnits(ownedTask), submittedAt }
       this.setDocumentRevision(options.documentId, options.modelRevision)
       if (options.signal) {

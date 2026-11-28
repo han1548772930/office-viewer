@@ -5,6 +5,7 @@ import { applyExcelCellView, cellKey, parseCellKey, sheetModelCellViewAt } from 
 import { resolveSheetCellStyle, setSheetCellStyleProperties } from './sheet-style-inheritance.ts'
 import { canEditProtectedRanges, canEditWorksheetProtection, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
+import { sheetValidationSourceReader } from '../sheet-validation/validation-value-read.ts'
 import { editSheetCellInlineText, editSheetCellText, sheetCellInputText } from './sheet-cell-edit.ts'
 import { getSheetCellEditConflict, type SheetCellEditConflict, type SheetCellEditSession } from './sheet-cell-edit-session.ts'
 import { editSheetCellRichText, sheetCellRichTextMatches } from './sheet-cell-rich-text-edit.ts'
@@ -193,7 +194,8 @@ export function planSheetCellInput(workbook: WorkbookModel, value: unknown, defa
     ? { ...sheet, cells: { ...sheet.cells, [cell.id]: cell } } : item) }
   const formattingOnly = input.inlineFormats?.length && previous && Object.is(previous.value, cell.value)
     && previous.formula === cell.formula && normalizeSheetCellValueType(previous.dataType) === normalizeSheetCellValueType(cell.dataType)
-  const validation = formattingOnly ? { blocked: false, issues: [] } : validateSheetDataValidationChanges(candidate, sheet.id, [position])
+  const validation = formattingOnly ? { blocked: false, issues: [] } : validateSheetDataValidationChanges(candidate, sheet.id,
+    [position], sheetValidationSourceReader(defaults.userId), interpretation.region)
   if (validation.blocked) {
     const issue = validation.issues.find(item => item.severity === 'stop')!
     return { position, result: { accepted: false, changed: false, reason: 'validation', issues: cloneModel(validation.issues), message: `${issue.title}：${issue.message}` } }

@@ -1,6 +1,8 @@
-# SHEET-13：日期控件实施方案
+# SHEET-13：日期控件实施与实现记录
 
-日期：2026-11-27。状态：具体方案，尚未实现。较大改动由主任务按 AGENTS.md 的文件/行数确认规则提交用户确认；本轮只完成 [快捷入口证据](SHEET-13-quick-dropdown-date.md) 中的小修和测试草稿。
+日期：2026-11-28。状态：日期、列表控件及规则面板的生产实现、接线和测试草稿已写入，未验收；详细实际接口见 [完整控件记录](SHEET-13-validation-cell-input-2026-11-28.md)。原方案的逐批文件/行数确认约束已由当前 AGENTS.md 的持续授权替代，本批按完整范围直接推进。以下历史方案保留设计依据，当前文件归属与接口以实际记录为准。
+
+<a id="date-validation-cell-input-2026-11-28"></a>
 
 目标是在现有 Sheets Canvas 选中/编辑主格上提供真实日期和时间选择，复用本项目 serial、输入会话、权限、数据验证和内容历史。快捷入口仍将规则写入全部选区；日期控件只编辑其绑定的目标格。
 
@@ -23,9 +25,9 @@
 - [ExcelWorkbench.vue](../../packages/office-studio/src/components/ExcelWorkbench.vue) 已有 `cellInputContext`、workbenchActive / IME 状态、`ribbonEditorOwner`、`keepCellEditFocus` 和 `restoreCellInputFocus`。`keepCellEditFocus` 当前识别所属 Ribbon 控件及 Select / Popover / Dropdown / ColorPicker 弹层；新增日期控件需把所属 picker 弹层纳入同一焦点判断。
 - [antdv-locales.ts](../../packages/office-studio/src/i18n/antdv-locales.ts) 已配置 Dayjs / Ant 日期 locale；[package.json](../../packages/office-studio/package.json) 已声明 dayjs。新控件复用统一 ConfigProvider、主题 token 和翻译入口。
 
-## 生产文件与预估行数
+## 历史生产文件方案
 
-以下路径均相对于 `packages/office-studio/src/`。7 个生产文件，约 525–765 行；测试和证据另列。现有共享文件由主任务协调归属，不由子任务覆盖。
+以下为实现前的路径与行数估计，仅保留历史设计依据。实际已拆为共用 widget planner、日期/列表 planner、两个 owner hook、统一命令适配、Canvas 标签/定位及 Ant 控件；日期 API 的实际文件为 `api/sheet-validation-input-commands.ts`，规则事务为 `api/sheet-data-validation-commands.ts`。当前改动清单见完整控件记录；OfficeStudio、根导出和 locale 注册由主任务协调。
 
 | 文件 | 预估行数 | 具体改动 |
 | --- | --- | --- |
@@ -45,8 +47,8 @@ UI 只持有草稿和控件适配值。权威值仍是 SpreadsheetCell 的数值
 
 成功提交一次发布数值、类型与格式；accepted false 时不产生内容历史并保持草稿。accepted true / changed false 的未改确认关闭所属弹层，保留原值及格式，不再次进行文本写入。撤销/重做还原同一内容事务；原生保存/重开保留 serial、numberFormat 和 showTime metadata。
 
-## 后置验证范围
+## 后置验证范围与实际草稿
 
 - 新单元/命令契约草稿：1900 serial 0 / 59 / 60 / 61、1904 epoch / 1462 差值、纯日期保留隐藏时间、时间修改保留伪日期、fractionalSecond、空格午夜、no-op、不可表示 serial、STOP 拒绝、受保护目标、会话冲突、一次历史及原生重开。
-- 现有 [浏览器草稿](../../tests/browser/sheet-quick-validation.spec.ts) 后续补真实 Canvas picker、面板 showTime、日期系统切换、冻结/缩放定位、关闭与焦点恢复、主题和输入法；不能仅用规则 metadata 断言冒充日期控件验收。
+- 已补 [真实 Canvas/Studio 浏览器草稿](../../packages/office-studio/tests/sheet-validation-cell.browser.test.mjs) 与 [fixture](../../packages/office-studio/tests/fixtures/sheet-validation-cell.html)，包含日期/时间/数字/duration、面板 showTime、日期系统、冻结缩放、关闭回焦、主题和合成 composition；这些草稿尚未运行，不能仅用 metadata 或合成事件冒充日期控件/Windows IME 验收。
 - XLSX 文件样本和浏览器运行、类型、前端、Rust/WASM 及性能检查统一后置。取得实际证据后更新 SHEET-13 状态；当前全部保持未验收。

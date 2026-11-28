@@ -23,6 +23,10 @@ import type { SheetImageResource } from '../../domain/sheet-images.ts'
 import type { SheetDrawingLeafRef } from '../../domain/sheet-drawings.ts'
 import { orderSheetDrawingCommands } from './drawing-order.ts'
 import { fitSheetCellImage } from '../../features/sheet-images/sheet-image-layout.ts'
+import { createSheetValidationTagCommands, type SheetValidationTagTheme } from './validation-cell-tags.ts'
+import { createSheetValidationInvalidMarker } from './validation-cell-markers.ts'
+import { sheetValidationCellArrowSpace, sheetValidationListRuleAt, sheetValidationSingleOptionColor,
+  type SheetValidationTagOptionsAt } from '../../features/sheet-validation/validation-tag-layout.ts'
 
 function gradientDataBarColor(color: string, strength: number): string {
   const channels = color.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
@@ -49,6 +53,9 @@ export interface SpreadsheetSceneOptions {
   /** Format-painter source is a transient view mark, rendered only by its owning worksheet. */
   formatPainterSource?: GridRange
   formatPainterColor?: string
+  /** Rule ranges are a transient preview; selection and authored styles remain unchanged. */
+  conditionalFormatPreviewRanges?: readonly GridRange[]
+  conditionalFormatPreviewColor?: string
   suppressFillHandle?: boolean
   searchText?: string
   /** Temporary presentation for selected numeric cells; it is excluded from document history. */
@@ -62,6 +69,14 @@ export interface SpreadsheetSceneOptions {
   imageCommands?: readonly DrawCommand[]
   drawingOrder?: readonly SheetDrawingLeafRef[]
   crosshairHighlight?: { enabled: boolean; color: string }
+  validationTagTheme?: SheetValidationTagTheme
+  /** Formatted candidates arrive from a permission/owner-aware feature reader; rendering does not evaluate list formulas. */
+  validationTagOptions?: SheetValidationTagOptionsAt
+  /** Replaceable checkbox controls are owned by the Ant overlay, while cell backgrounds/borders stay on Canvas. */
+  checkboxRenderable?: (row: number, column: number) => boolean
+  validationInvalid?: (row: number, column: number) => boolean
+  validationInvalidColor?: string
+  canViewCell?: (row: number, column: number) => boolean
 }
 export function displayCell(cell: ExcelCellView | undefined, date1904 = false, region?: string, previewPattern?: string): string {
   return presentSheetCellNumber(cell, date1904, region, previewPattern).text
@@ -78,13 +93,14 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
   const panes = geometry.panes(viewport), z = viewport.zoom
   const conditionalScopeValues = Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
     const position = parseAddress(address)
-    return position ? [{ row: position.row, column: position.column, value: cell.rawValue }] : []
+    return position && (!options.canViewCell || options.canViewCell(position.row, position.column))
+      ? [{ row: position.row, column: position.column, value: cell.rawValue }] : []
   })
   const formulaSheet = createBlankSheet(geometry.sheet.name)
   formulaSheet.id = geometry.sheet.id
   formulaSheet.cells = Object.fromEntries(Object.entries(geometry.sheet.cells).flatMap(([address, cell]) => {
     const position = parseAddress(address)
-    if (!position) return []
+    if (!position || options.canViewCell && !options.canViewCell(position.row, position.column)) return []
     const style = defaultCellStyle()
     style.font.bold = cell.bold ?? false
     style.font.italic = cell.italic ?? false
@@ -112,6 +128,14 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const visible = intersectRect(rect, clip)
     if (rect.width <= 0 || rect.height <= 0 || !foregroundOnly && (visible.width <= 0 || visible.height <= 0)) return
     if (!foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: cell?.background ?? (geometry.sheet.backgroundImage ? 'transparent' : '#ffffff'), clip })
+    if (options.canViewCell && !options.canViewCell(row, column)) {
+      if (geometry.sheet.showGridlines !== false && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'transparent', stroke: '#e5e9f0', strokeWidth: 1, clip })
+      return
+    }
+    const validationRule = sheetValidationListRuleAt(geometry.sheet.dataValidations, row, column)
+    const validationOptions = validationRule && options.validationTagOptions?.(row, column)
+    const validationFill = sheetValidationSingleOptionColor(validationRule, cell, validationOptions)
+    if (validationFill && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: validationFill, clip })
     const conditionalFormulaValue = (formula: string, rule: NonNullable<typeof geometry.sheet.conditionalFormats>[number]) => {
         try {
           const translated = conditionalFormatFormulaAt(formula, rule, row, column)
@@ -171,11 +195,19 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
     const hideValue = Boolean(conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue)
     const text = hideValue ? '' : presentation.text
     if (search && text.toLocaleLowerCase().includes(search) && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
-    if (text || !hideValue && presentation.runs?.some(run => run.kind === 'fill' && run.character.trim())) {
+    const validationTags = !hideValue && (!options.canViewCell || options.canViewCell(row, column))
+      ? createSheetValidationTagCommands(validationRule, { ...cell, value: cell?.value ?? '', color: conditionalStyle.fontColor ?? cell?.color,
+        bold: conditionalStyle.bold ?? cell?.bold, italic: conditionalStyle.italic ?? cell?.italic,
+        underline: conditionalStyle.underline ?? cell?.underline, strike: conditionalStyle.strike ?? cell?.strike }, rect, clip, z,
+        options.validationTagTheme ?? { fill: '#f0f2f5', text: '#1f2937' }, undefined, validationOptions) : undefined
+    if (validationTags) foreground.push(...validationTags)
+    else if (!options.checkboxRenderable?.(row, column) && (text || !hideValue && presentation.runs?.some(run => run.kind === 'fill' && run.character.trim()))) {
       const align = sheetCellTextAlignment(cell)
       const iconPadding = conditionalIcon ? 18 * z : 0
-      let start = rect.x + 3 * z + iconPadding, end = rect.x + rect.width - 3 * z
-      if (canSheetCellTextOverflow(cell) && !merge) {
+      const arrowSpace = sheetValidationCellArrowSpace(validationRule, z)
+      const textRect = arrowSpace ? { ...rect, width: Math.max(0, rect.width - arrowSpace) } : rect
+      let start = rect.x + 3 * z + iconPadding, end = textRect.x + textRect.width - 3 * z
+      if (!validationRule && canSheetCellTextOverflow(cell) && !merge) {
         const bounds = geometry.overflowColumnBounds(row, column)
         if (align !== 'left') start = geometry.cellRect(row, bounds.startColumn, viewport, false).x + 3 * z + iconPadding
         if (align !== 'right') {
@@ -184,11 +216,13 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
         }
       }
       const textClip = intersectRect(clip, { x: start, y: rect.y + z, width: Math.max(0, end - start), height: Math.max(0, rect.height - 2 * z) })
-      foreground.push(...createSheetCellTextCommands({ cell, presentation: { ...presentation, text }, rect, clip: textClip, zoom: z, iconPadding,
+      foreground.push(...createSheetCellTextCommands({ cell, presentation: { ...presentation, text }, rect: textRect, clip: textClip, zoom: z, iconPadding,
         color: conditionalStyle.fontColor, underline: conditionalStyle.underline, strike: conditionalStyle.strike,
         fontOverrides: { bold: conditionalStyle.bold, italic: conditionalStyle.italic } }))
     }
     if (!foregroundOnly) foreground.push(...sparklineCommandsForCell(geometry.sheet, cell, rect, sparklineContext).map(command => ({ ...command, clip: intersectRect(command.clip ?? rect, clip) })))
+    if (!foregroundOnly && options.validationInvalid?.(row, column)) foreground.push(...createSheetValidationInvalidMarker(
+      rect, clip, z, options.validationInvalidColor ?? '#fe4b4b'))
   }
   for (const pane of panes) {
     if (pane.clip.width <= 0 || pane.clip.height <= 0) continue
@@ -207,7 +241,8 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       for (const row of pane.rows) {
         for (const column of [geometry.contentColumnBefore(row, firstColumn), geometry.contentColumnAfter(row, lastColumn)]) {
           if (column === undefined || (column < geometry.frozenColumns) !== (firstColumn < geometry.frozenColumns)
-            || geometry.mergeAt(row, column) || !canSheetCellTextOverflow(geometry.sheet.cells[cellAddress(row, column)])) continue
+            || geometry.mergeAt(row, column) || sheetValidationListRuleAt(geometry.sheet.dataValidations, row, column)
+            || !canSheetCellTextOverflow(geometry.sheet.cells[cellAddress(row, column)])) continue
           paintCell(row, column, pane.clip, foreground, borders, visibleRange, true)
         }
       }
@@ -269,6 +304,7 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       }
     }
   }
+  for (const range of options.conditionalFormatPreviewRanges ?? []) commands.push(...sheetRangeDashedOutlineCommands(geometry, range, viewport, options.conditionalFormatPreviewColor))
   if (options.formatPainterSource) commands.push(...sheetRangeDashedOutlineCommands(geometry, options.formatPainterSource, viewport, options.formatPainterColor))
   // Overlay drawing objects share the same scroll/zoom transform as the sheet;
   // headers are painted afterwards and therefore stay above floating objects.

@@ -88,10 +88,15 @@ test('module initializers require protocol 2 interfaces and a real memory handle
   const parser = { default: async () => ({ memory: memory() }), parser_protocol_version: () => 1, parse_office: async () => ({}) }
   await assert.rejects(() => initializeParserWasm(parser), error => error.code === 'WASM_PROTOCOL_MISMATCH')
   const compute = { default: async () => ({ memory: memory() }), compute_protocol_version: () => 1, compute_version: () => '1.0.0',
-    compute_yield: async () => {}, create_numeric_aggregate() {}, create_numeric_sort() {}, create_numeric_filter() {}, create_chart_statistics() {}, create_slicer_members() {} }
+    compute_yield: async () => {}, create_numeric_aggregate() {}, create_numeric_sort() {}, create_numeric_filter() {}, create_chart_statistics() {}, create_slicer_members() {},
+    create_checkbox_cells() { throw new Error('Unused checkbox fixture entry') },
+    create_validation_list_query() { throw new Error('Unused list-query fixture entry') } }
   await assert.rejects(() => initializeComputeWasm(compute), error => error.code === 'COMPUTE_PROTOCOL_MISMATCH')
   const { create_chart_statistics: _chart, ...incompleteCompute } = compute
   await assert.rejects(() => initializeComputeWasm({ ...incompleteCompute, compute_protocol_version: () => 2 }),
+    error => error.code === 'COMPUTE_WASM_API_MISSING')
+  const { create_validation_list_query: _query, ...missingQuery } = compute
+  await assert.rejects(() => initializeComputeWasm({ ...missingQuery, compute_protocol_version: () => 2 }),
     error => error.code === 'COMPUTE_WASM_API_MISSING')
   await assert.rejects(() => initializeParserWasm({ ...parser, parser_protocol_version: () => 2, default: async () => ({ memory: new ArrayBuffer(8) }) }), error => error.code === 'WASM_API_MISSING')
 })

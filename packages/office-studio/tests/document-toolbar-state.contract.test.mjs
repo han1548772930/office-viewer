@@ -227,14 +227,17 @@ test('zoom clamps invalid, fractional and out of range values at the shared boun
 
 test('symbol and emoji roots share the fixed value command and preserve whole UTF-16 strings with the legacy string adapter', () => {
   const model = createBlankDocument(), state = documentToolbarState(model, collapsedSelection({ blockId: model.blocks[0].id, offset: 0 }))
-  const context = { state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100 }
+  const characterPreferences = { activeSymbol: '|a|', activeEmoji: '👍🏽' }
+  const context = { state, canUndo: false, canRedo: false, outline: false, focus: false, paper: 'A4', orientation: 'portrait', zoom: 100, characterPreferences }
   const items = createDocumentRibbon(context).flatMap(tab => tab.groups.flatMap(group => group.items))
   for (const [id, mode, row] of [['doc-emoji', 'emoji', 1], ['doc-symbol', 'symbol', 2]]) {
     const item = items.find(item => item.id === id), value = mode === 'emoji' ? '👨‍👩‍👧‍👦' : '|a|e\u0301'
     assert.equal(item.popupCommandId, 'doc.command.insert-special-character')
-    assert.deepEqual(item.popupProps, { mode })
+    assert.equal(item.popupProps.mode, mode)
+    assert.equal(item.popupProps.preferences, characterPreferences)
     assert.deepEqual(item.gridLayout, { row, column: 3 })
     assert.deepEqual(documentCommandFromRibbon(item.popupCommandId, { value }), { id: 'doc.command.insert-text', text: value })
+    assert.deepEqual(documentCommandFromRibbon(item.popupCommandId, { value, keepOpen: true, onResult() {} }), { id: 'doc.command.insert-text', text: value })
   }
   for (const params of ['', { value: '' }, { value: 1 }, { text: '©' }, null, ['©']]) assert.equal(documentCommandFromRibbon('doc.command.insert-special-character', params), undefined)
   assert.deepEqual(documentCommandFromRibbon('doc.command.insert-special-character', { value: ' ' }), { id: 'doc.command.insert-text', text: ' ' })

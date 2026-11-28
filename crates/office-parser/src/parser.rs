@@ -72,7 +72,7 @@ fn parse_document_impl(
         None => parse_document_model(bytes).map_err(ParseFailure::office_file)?,
     };
     let mut archive = if matches!(format.as_str(), "docx" | "odt") {
-        Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ParseFailure::office_file)?)
+        Some(zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| ParseFailure::office_file(error.to_string()))?)
     } else { None };
     let mut format_warnings = Vec::new();
     let custom_xml_parts = archive.as_mut().filter(|_| is_docx).map(crate::document_custom_xml::read).transpose()
@@ -81,7 +81,7 @@ fn parse_document_impl(
         crate::document_format_sidecar::restore_numbering_with_extensions(&mut source_model, zip)
     } else {
         let mut restoration = crate::document_format_sidecar::NumberingRestoration::default();
-        restoration.definitions = source_model.metadata.numbering_definitions.as_ref().map(serde_json::to_value).transpose().map_err(ParseFailure::office_file)?;
+        restoration.definitions = source_model.metadata.numbering_definitions.as_ref().map(serde_json::to_value).transpose().map_err(|error| ParseFailure::office_file(error.to_string()))?;
         restoration
     };
     format_warnings.append(&mut numbering_restoration.warnings);
@@ -369,11 +369,11 @@ fn story_distances(xml: &str) -> (Option<f64>, Option<f64>) {
     let mut depth = 0usize;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(element) | Event::Empty(element)) if depth == 1 && local_name(element.name().as_ref()) == b"pgMar" => {
+            Ok(Event::Start(element) | Event::Empty(element)) if depth == 1 && local_name(element.name().as_ref().as_bytes()) == b"pgMar" => {
                 let (mut header, mut footer) = (None, None);
                 for attr in element.attributes().flatten() {
-                    let pixels = std::str::from_utf8(attr.value.as_ref()).ok().and_then(|s| s.parse::<u32>().ok()).map(|twips| f64::from(twips) / 15.0);
-                    match local_name(attr.key.as_ref()) {
+                    let pixels = attr.normalized_value(XmlVersion::Implicit1_0).ok().and_then(|value| value.parse::<u32>().ok()).map(|twips| f64::from(twips) / 15.0);
+                    match local_name(attr.key.as_ref().as_bytes()) {
                         b"header" => header = pixels,
                         b"footer" => footer = pixels,
                         _ => {}
@@ -528,18 +528,17 @@ fn section_break_type(xml: Option<&str>) -> Result<&'static str, ()> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element) | Event::Empty(element))
-                if local_name(element.name().as_ref()) == b"type" =>
+                if local_name(element.name().as_ref().as_bytes()) == b"type" =>
             {
                 let value = element
                     .attributes()
                     .with_checks(false)
                     .filter_map(Result::ok)
-                    .find(|attribute| local_name(attribute.key.as_ref()) == b"val")
+                    .find(|attribute| local_name(attribute.key.as_ref().as_bytes()) == b"val")
                     .and_then(|attribute| {
                         attribute
-                            .decoded_and_normalized_value_with(
+                            .normalized_value_with(
                                 XmlVersion::Implicit1_0,
-                                reader.decoder(),
                                 1,
                                 quick_xml::escape::resolve_xml_entity,
                             )
@@ -568,18 +567,17 @@ fn word_break_type(xml: &str) -> Result<Option<&'static str>, ()> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element) | Event::Empty(element))
-                if local_name(element.name().as_ref()) == b"br" =>
+                if local_name(element.name().as_ref().as_bytes()) == b"br" =>
             {
                 let value = element
                     .attributes()
                     .with_checks(false)
                     .filter_map(Result::ok)
-                    .find(|attribute| local_name(attribute.key.as_ref()) == b"type")
+                    .find(|attribute| local_name(attribute.key.as_ref().as_bytes()) == b"type")
                     .and_then(|attribute| {
                         attribute
-                            .decoded_and_normalized_value_with(
+                            .normalized_value_with(
                                 XmlVersion::Implicit1_0,
-                                reader.decoder(),
                                 1,
                                 quick_xml::escape::resolve_xml_entity,
                             )
@@ -650,6 +648,12 @@ fn parse_workbook(
     } else {
         crate::table_sidecar::TableSidecar::default()
     };
+    if let Some(details) = table_sidecar.failure.as_deref() {
+        return Err(ParseFailure::new(
+            if details.contains("LIMIT") || details.contains("limit") { crate::model::ParseErrorCode::ParserFailure } else { crate::model::ParseErrorCode::InvalidOfficeFile },
+            "Could not preserve structured tables from the XLSX file", Some(details.to_owned()),
+        ));
+    }
     let mut conditional_format_sidecar = if format == "xlsx" {
         ConditionalFormatSidecar::read(bytes)
     } else {
@@ -731,7 +735,8 @@ fn parse_workbook(
         }
     }
     validation_sidecar.warn_unmatched_rules();
-    let payload = WorkbookPayload {
+    let mut payload = WorkbookPayload {
+        formula_calendar_source: None,
         sheets,
         pivot_tables: pivot_sidecar.pivot_tables,
         tables: table_sidecar.tables,
@@ -774,6 +779,12 @@ fn parse_workbook(
     warnings.extend(table_sidecar.warnings);
     warnings.extend(dimension_sidecar.warnings);
     warnings.extend(outline_sidecar.warnings);
+    if format == "xlsx" {
+        warnings.extend(crate::formula_calendar_sidecar::restore(bytes, &mut payload).map_err(|details| ParseFailure::new(
+            if details.contains("LIMIT") || details.contains("limit") { crate::model::ParseErrorCode::ParserFailure } else { crate::model::ParseErrorCode::InvalidOfficeFile },
+            "Could not preserve imported formula calendars from the XLSX file", Some(details),
+        ))?);
+    }
     if workbook.text_truncated {
         warnings.push("Some text cells were omitted after the parser allocation limit".into());
     }
@@ -2002,7 +2013,7 @@ mod tests {
         let mut output = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).expect("XLSX package entry");
-            let name = entry.name().to_owned();
+            let name = entry.name().unwrap().into_owned();
             let mut contents = Vec::new();
             entry
                 .read_to_end(&mut contents)
@@ -2038,7 +2049,7 @@ mod tests {
         let mut output = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).expect("XLSX package entry");
-            let name = entry.name().to_owned();
+            let name = entry.name().unwrap().into_owned();
             let mut contents = Vec::new();
             entry.read_to_end(&mut contents).expect("XLSX package entry contents");
             if name == "xl/worksheets/sheet1.xml" {

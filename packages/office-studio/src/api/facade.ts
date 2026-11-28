@@ -1,4 +1,5 @@
 import type { OfficeDirection } from '../i18n/regional-settings.ts'
+import type { DocumentCharacterPreferencesStore } from '../features/document/stores/document-character-preferences-store'
 import type {
   CellScalar,
   ChartAxisOptions,
@@ -144,6 +145,8 @@ import { chartDescriptionSourceContext } from './chart-description-host'
 import type { ChartComputedStatistics } from '../features/charts/chart-derived'
 import { assertChartReadPermission, chartStatisticsSignature, type ChartStatisticsRequestContext } from '../features/charts/services/chart-statistics-service'
 import { ComputeError } from '../compute/errors'
+import { SHEET_DATA_VALIDATION_ASYNC_COMMANDS } from '../features/sheet-validation/validation-rule-command.ts'
+import type { SheetDataValidationAsyncOptions } from '../features/sheet-validation/validation-checkbox-rule-cells-async.ts'
 import { CONTENT_HISTORY_COMMANDS, ContentHistoryCanceledError, type ContentHistoryDirection } from './content-history-commands.ts'
 import {
   getCommonDocumentTextStyle,
@@ -346,6 +349,7 @@ import { canViewProtectedRanges, canViewWorksheetProtection } from '../features/
 import { assertSlicerSourceReadPermission, assertSlicerViewPermission } from '../features/slicer/slicer-permissions.ts'
 import { expandVisibleSortOrder, getFilteredRows, getNumericSortColumns, getSortedRowOrder, type SortRangeOptions } from '../features/sheet-sort-filter/sort-filter-engine'
 import { createSheetDataValidationRule, sheetDataValidationOptions, validateSheetDataValidationChanges, type SheetDataValidationDraft, type SheetValidationIssue } from '../features/sheet-validation/validation-engine.ts'
+import { sheetValidationSourceReader } from '../features/sheet-validation/validation-value-read.ts'
 import { createSheetRangeProtectionRule } from '../features/sheet-protection/range-protection.ts'
 
 export interface CreateUnitOptions { makeCurrent?: boolean }
@@ -817,10 +821,15 @@ export class FWorksheet {
     const style = sheetAxisStyleSource(this.sheet(), key === 'rowStyles' ? 'row' : 'column', index)
     return cloneModel((keepRaw ? style : resolveSheetStyleSource(style, this.workbook())) ?? null)
   }
-  getDataValidations(): DataValidationRule[] { return cloneModel(this.sheet().dataValidations ?? []) }
+  getDataValidations(): DataValidationRule[] {
+    this.api.assertCanViewWorksheet(this.unitId, this.id)
+    const sheet = this.sheet(), canRead = sheetValidationSourceReader(this.api.currentUserId)!
+    return cloneModel((sheet.dataValidations ?? []).filter(rule => rule.ranges.every(range => canRead(sheet, range))))
+  }
   getDataValidation(range: FRange | FRangeCoordinates | string): DataValidationRule | null {
     const bounds = this.ownedRange(range)
-    return cloneModel(this.sheet().dataValidations?.find(rule => rule.ranges.some(item => rangesIntersect(item, bounds))) ?? null)
+    this.api.assertCanViewRange(this.unitId, this.id, bounds)
+    return this.getDataValidations().find(rule => rule.ranges.some(item => rangesIntersect(item, bounds))) ?? null
   }
   setDataValidation(range: FRange | FRangeCoordinates | string, input: DataValidationRuleInput | null): this {
     const bounds = this.ownedRange(range)
@@ -831,12 +840,26 @@ export class FWorksheet {
     }
     return this
   }
+  /** Large checkbox rules use the shared cancellable compute transaction. */
+  async setDataValidationAsync(range: FRange | FRangeCoordinates | string, input: DataValidationRuleInput | null,
+    options: SheetDataValidationAsyncOptions = {}): Promise<this> {
+    if (options.signal?.aborted) throw new ComputeError('COMPUTE_CANCELLED', '数据验证操作已取消。')
+    const bounds = this.ownedRange(range)
+    if (input === null) await this.api.executeCommand('sheet.command.clear-data-validation', { ...options, unitId: this.unitId, sheetId: this.id, ranges: [bounds] })
+    else {
+      const rule = createSheetDataValidationRule(input, [bounds])
+      await this.api.executeCommand(SHEET_DATA_VALIDATION_ASYNC_COMMANDS.set, { ...options, unitId: this.unitId, sheetId: this.id, rule })
+    }
+    return this
+  }
   getDataValidationErrors(range: FRange | FRangeCoordinates | string): DataValidationError[] {
     const bounds = this.ownedRange(range)
-    const positions = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, rowOffset) =>
-      Array.from({ length: bounds.endCol - bounds.startCol + 1 }, (_, columnOffset) => ({ row: bounds.startRow + rowOffset, column: bounds.startCol + columnOffset })),
-    ).flat()
-    return validateSheetDataValidationChanges(this.workbook(), this.id, positions).issues
+    this.api.assertCanViewRange(this.unitId, this.id, bounds)
+    const count = (bounds.endRow - bounds.startRow + 1) * (bounds.endCol - bounds.startCol + 1)
+    if (!Number.isSafeInteger(count) || count > 250_000) throw new RangeError('数据验证错误查询超出 250000 格预算，请按区域查询。')
+    const positions: Array<{ row: number; column: number }> = []
+    for (let row = bounds.startRow; row <= bounds.endRow; row++) for (let column = bounds.startCol; column <= bounds.endCol; column++) positions.push({ row, column })
+    return validateSheetDataValidationChanges(this.workbook(), this.id, positions, sheetValidationSourceReader(this.api.currentUserId), this.api.regionalSettings.region.value).issues
   }
   addRowOutline(startRow: number, numRows: number): this { return this.addDimensionOutline(DimensionOutlineAxis.ROW, startRow, numRows) }
   addColumnOutline(startColumn: number, numColumns: number): this { return this.addDimensionOutline(DimensionOutlineAxis.COLUMN, startColumn, numColumns) }
@@ -960,8 +983,13 @@ export class FWorksheet {
     return this.api.executeCommandSync('sheet.command.remove-range-protection', { unitId: this.unitId, sheetId: this.id, ruleId })
   }
   getCellValidationOptions(row: number, column: number): string[] {
-    const rules = this.sheet().dataValidations?.filter(rule => rule.ranges.some(range => row >= range.startRow && row <= range.endRow && column >= range.startCol && column <= range.endCol)) ?? []
-    return rules.flatMap(rule => sheetDataValidationOptions(rule, this.workbook(), this.id))
+    const bounds = this.ownedRange({ startRow: row, endRow: row, startColumn: column, endColumn: column })
+    this.api.assertCanViewRange(this.unitId, this.id, bounds)
+    const merge = this.sheet().mergedRanges.find(range => rangesIntersect(range, bounds))
+    const position = merge ? { row: merge.startRow, column: merge.startCol } : { row, column }
+    const rules = this.getDataValidations().filter(rule => rule.ranges.some(range => position.row >= range.startRow && position.row <= range.endRow
+      && position.column >= range.startCol && position.column <= range.endCol))
+    return rules.flatMap(rule => sheetDataValidationOptions(rule, this.workbook(), this.id, sheetValidationSourceReader(this.api.currentUserId), this.api.regionalSettings.region.value))
   }
   setAutoFilter(range: CellRange | FRangeCoordinates | FRange | string | null): this {
     const normalized = range === null ? null : this.ownedRange(typeof range === 'object' && !(range instanceof FRange) && 'startCol' in range
@@ -2406,6 +2434,10 @@ export class FRange {
     new FWorksheet(this.api, this.unitId, this.sheetId).setDataValidation(this.range, rule)
     return this
   }
+  async setDataValidationAsync(rule: DataValidationRuleInput | null, options: SheetDataValidationAsyncOptions = {}): Promise<this> {
+    await new FWorksheet(this.api, this.unitId, this.sheetId).setDataValidationAsync(this.range, rule, options)
+    return this
+  }
   getDataValidationErrors(): DataValidationError[] { return new FWorksheet(this.api, this.unitId, this.sheetId).getDataValidationErrors(this.range) }
   getRangeProtectionRules(): SheetRangeProtectionRule[] { return new FWorksheet(this.api, this.unitId, this.sheetId).getRangeProtectionRulesForRange(this.range) }
   setRangeProtection(draft: SheetRangeProtectionDraft): this {
@@ -2460,7 +2492,7 @@ export class FRange {
       candidateSheet.cells[`${targetRow}:${targetColumn}`] = applyCellValue(candidateSheet.cells[`${targetRow}:${targetColumn}`], targetRow, targetColumn, values[row]![column]!, candidate, candidateSheet)
       positions.push({ row: targetRow, column: targetColumn })
     }
-    const validation = validateSheetDataValidationChanges(candidate, this.sheetId, positions)
+    const validation = validateSheetDataValidationChanges(candidate, this.sheetId, positions, sheetValidationSourceReader(this.api.currentUserId), this.api.regionalSettings.region.value)
     if (validation.blocked) throw new Error(validation.issues.find(issue => issue.severity === 'stop')?.message ?? 'Input violates data validation')
     this.mutate('sheet.command.set-range-values', 'Set range values', (model) => {
       const sheet = this.sheet(model)
@@ -3207,6 +3239,15 @@ export class FDocument {
   getPermissionAdminUserId(): string { return this.api.permissionAdminUserId }
   getName(): string { return this.model().name }
   setName(name: string): this { this.api.executeCommandSync('doc.command.set-name', { unitId: this.id, name }); return this }
+  getZoomRatio(): number { return this.api.getDocumentZoomRatio(this.id) }
+  getCharacterPreferences(): DocumentCharacterPreferencesStore {
+    this.model()
+    return this.api.documentCharacterPreferences
+  }
+  setZoomRatio(ratio: number): boolean { return this.api.setDocumentZoomRatio(this.id, ratio) }
+  onZoomRatioChanged(listener: (event: ApiEventMap['DocumentZoomRatioChanged']) => void): Disposable {
+    return this.api.events.addEvent('DocumentZoomRatioChanged', event => { if (event.documentId === this.id) listener(event) })
+  }
   /** Read the complete detached public snapshot without creating a savepoint. */
   getSnapshot(): UniverDocumentData {
     const model = this.model()

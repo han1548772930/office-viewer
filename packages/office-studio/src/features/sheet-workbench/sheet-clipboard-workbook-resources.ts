@@ -1,6 +1,7 @@
 import type { CellRange, PivotTableModel, SheetAutoFilter, SheetTableModel, SlicerModel, WorkbookModel } from '../../domain/model.ts'
 import { sheetImageClipboardBounds } from '../sheet-images/sheet-image-clipboard.ts'
 import { cloneModel } from '../../domain/serialization.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
 import { resolveSlicerBounds, slicerGeometryWithBounds } from '../slicer/slicer-drawing.ts'
 import { chartDrawingWorldBounds } from '../charts/chart-drawing-affine.ts'
 import { assertSheetCommandRanges, sheetRangeContainsCell, sheetRangesEqual, sheetRangesIntersect } from './sheet-range-command.ts'
@@ -343,7 +344,7 @@ export function pasteSheetClipboardWorkbookResources(
       }
       if (formulaNames.size) for (let row = rowTile; row < rowTile + snapshot.rows.length; row++) for (let col = colTile; col < colTile + snapshot.columns.length; col++) {
         const cell = targetSheet.cells[`${geometry.rows[row]}:${geometry.columns[col]}`]
-        if (cell?.formula) cell.formula = remapSheetClipboardTableFormula(cell.formula, formulaNames)
+        if (cell?.formula) rewriteFormulaImportCell(cell, remapSheetClipboardTableFormula(cell.formula, formulaNames))
       }
       for (const entries of [resources.tables, resources.pivotTables, resources.pivotCaches, resources.charts, resources.slicers, resources.slicerCaches]) if ((entries?.length ?? 0) > RESOURCE_BUDGET) {
         throw new RangeError('粘贴的工作簿对象数量超出当前同步预算。')

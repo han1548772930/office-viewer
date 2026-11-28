@@ -10,6 +10,7 @@ import { sheetCellRecordValue } from '../sheet-workbench/sheet-record-value.ts'
 import type { RecordValue } from '../../domain/record-value.ts'
 import { normalizeSlicerCacheOptions } from './slicer-cache-options.ts'
 import { normalizeRetainedTimelineCache, readTimelineReportFilterState } from './timeline-state.ts'
+import { pivotSourceFieldIdentity } from '../pivot/services/pivot-source-field.ts'
 import type { TimelineDateFilterState } from '../../domain/timeline-filters.ts'
 
 export type SlicerConnectionErrorCode = 'invalid-resource' | 'invalid-target' | 'source-missing' | 'field-missing' | 'permission-denied'
@@ -59,9 +60,10 @@ export function ensurePivotCache(workbook: WorkbookModel, pivot: PivotTableModel
   }
   const fields = new Map((current?.fields ?? []).map(field => [field.id, { ...field }]))
   for (const field of pivot.fields) {
-    const fieldId = sourceFieldId(pivot, field), previous = fields.get(fieldId)
+    const fieldId = pivotSourceFieldIdentity(pivot, field, current), previous = fields.get(fieldId)
     if (previous && previous.sourceColumn !== field.sourceColumn) throw new SlicerConnectionError('invalid-resource', '同一透视缓存字段引用了不同来源列。')
     fields.set(fieldId, { id: fieldId, sourceColumn: field.sourceColumn, name: field.name })
+    field.sourceFieldId = fieldId
   }
   const occupiedColumns = new Set([...fields.values()].map(field => field.sourceColumn))
   let nextFieldId = current?.nextFieldId ?? 0

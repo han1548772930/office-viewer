@@ -128,6 +128,8 @@ export interface CellRange {
 export interface SheetTableColumn {
   id: string
   name: string
+  /** Native OOXML identity stays separate from the domain column ID. */
+  officeColumnId?: number
 }
 
 export interface SheetTableModel {
@@ -140,6 +142,10 @@ export interface SheetTableModel {
   showTotalsRow: boolean
   styleName: string
   autoFilter?: SheetAutoFilter
+  officeTableId?: number
+  officeSheetId?: number
+  /** Complete native table XML, including fields not projected by the editor. */
+  officeSource?: { partName: string; xml: string }
 }
 
 export type SheetSortDirection = 'ascending' | 'descending'

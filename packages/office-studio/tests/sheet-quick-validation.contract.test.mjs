@@ -113,8 +113,10 @@ for (const formulas of [{ formula1: 'TRUE', formula2: 'FALSE' }, { formula1: '1'
       const book = office.createWorkbook({ id: 'checkbox-input', calculationMode: 'manual' })
       const sheet = book.getActiveSheet()
       sheet.setDataValidation('A1', { type: 'checkbox', ...formulas })
-      const options = [formulas.formula1 ?? 'TRUE', formulas.formula2 ?? 'FALSE']
+      const options = [formulas.formula1 ?? '1', formulas.formula2 ?? '0']
       assert.deepEqual(sheet.getCellValidationOptions(0, 0), options)
+      const initialValue = sheet.getRange('A1').getValue()
+      assert.equal(initialValue, formulas.formula2 ?? 0)
       studio.editor.history.clear(book.getId())
       const target = { unitId: book.getId(), sheetId: sheet.getSheetId(), row: 0, column: 0 }
       const checkedInput = formulas.formula1 === 'DONE' ? 'DONE' : 'TRUE'
@@ -127,7 +129,7 @@ for (const formulas of [{ formula1: 'TRUE', formula2: 'FALSE' }, { formula1: '1'
       assert.equal(rejected.accepted, false)
       assert.equal(JSON.stringify(book.save()), beforeInvalid)
       book.undo()
-      assert.equal(sheet.getRange('A1').getValue(), null)
+      assert.equal(sheet.getRange('A1').getValue(), initialValue)
       assert.deepEqual(sheet.getCellValidationOptions(0, 0), options)
       book.redo()
       const uncheckedInput = formulas.formula2 === 'NO' ? 'NO' : 'FALSE'

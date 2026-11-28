@@ -1,7 +1,7 @@
 import type { CellRange, SheetConditionalFormatRule, SheetConditionalFormatValueConfig, SpreadsheetSheet } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { parseFormula } from '../formula/formula-parser.ts'
-import { canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
+import { canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSheetCommandRanges, assertSheetRangesEditable } from '../sheet-workbench/sheet-range-command.ts'
 import { validateConditionalIconConfig, validateConditionalThreshold } from './icon-set-config.ts'
 import { assertConditionalFormatKnownFields, conditionalFormatOfficeBaseline, conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from './conditional-format-office-source.ts'
@@ -15,6 +15,8 @@ export interface SetSheetConditionalFormatsInput {
   subUnitId?: string
   rules: readonly SheetConditionalFormatRule[]
   expectedRevision?: number
+  expectedHistoryGeneration?: number
+  expectedUserId?: string
   host?: 'workbench'
 }
 
@@ -34,13 +36,22 @@ export function assertConditionalFormatExpectedRevision(revision: number | undef
   if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw new TypeError('工作簿版本无效。')
 }
 
+export function assertConditionalFormatCommandContext(input: Pick<SetSheetConditionalFormatsInput,
+  'expectedRevision' | 'expectedHistoryGeneration' | 'expectedUserId' | 'host'>): void {
+  assertConditionalFormatExpectedRevision(input.expectedRevision)
+  if (input.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(input.expectedHistoryGeneration)
+    || input.expectedHistoryGeneration <= 0)) throw new TypeError('工作簿历史版本无效。')
+  if (input.expectedUserId !== undefined && (typeof input.expectedUserId !== 'string' || !input.expectedUserId.trim())) throw new TypeError('条件格式用户标识无效。')
+  if (input.host !== undefined && input.host !== 'workbench') throw new TypeError('条件格式宿主无效。')
+}
+
 export function sheetConditionalFormatsCommandInput(input: SetSheetConditionalFormatsInput | undefined): SetSheetConditionalFormatsInput {
   if (!input || typeof input !== 'object' || Array.isArray(input) || !Array.isArray(input.rules)) throw new TypeError('条件格式命令需要规则列表。')
   for (const id of [input.unitId, input.sheetId, input.subUnitId]) {
     if (id !== undefined && (typeof id !== 'string' || !id.trim())) throw new TypeError('工作簿或工作表标识无效。')
   }
   if (input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('条件格式目标工作表不一致。')
-  assertConditionalFormatExpectedRevision(input.expectedRevision)
+  assertConditionalFormatCommandContext(input)
   return input
 }
 
@@ -191,6 +202,7 @@ export function planSheetConditionalFormatsCommand(sheet: Pick<SpreadsheetSheet,
 export function applySheetConditionalFormatsCommand(sheet: ConditionalFormatSheet, rules: readonly SheetConditionalFormatRule[], userId: string): SheetConditionalFormatsPlan {
   if (!canViewWorksheetProtection(sheet, userId)) throw new Error('该工作表受保护，当前用户没有查看权限。')
   const plan = planSheetConditionalFormatsCommand(sheet, rules)
+  if (!canViewProtectedRanges(sheet, plan.ranges, userId)) throw new Error('规则应用范围受保护，当前用户没有查看权限。')
   assertSheetRangesEditable(sheet, plan.ranges, userId)
   if (plan.changed) sheet.conditionalFormats = cloneModel(plan.rules)
   return plan

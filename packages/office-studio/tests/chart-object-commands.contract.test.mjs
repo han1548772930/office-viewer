@@ -50,8 +50,9 @@ test('focused copy is a non-content command; paste adds a fresh author in one hi
   } finally { reopened?.dispose(); studio.dispose() }
 })
 
-test('same-workbook cross-sheet paste keeps live source bindings and rejects unsupported cross-workbook import without losing its clipboard', async () => {
+test('cross-sheet paste keeps live bindings; cross-workbook paste detaches sources in one history entry and reopens', async () => {
   const { studio, facade, workbook, sheet, chart, target } = await setup()
+  let reopened
   try {
     const destination = workbook.insertSheet('Destination')
     await studio.executeCommand(commands.CHART_OBJECT_COMMANDS.copy, target())
@@ -60,11 +61,28 @@ test('same-workbook cross-sheet paste keeps live source bindings and rejects uns
       { unitId: workbook.getId(), sheetId: destination.getSheetId(), clipboardId: token, newChartId: 'across-sheet' }), true)
     const pasted = destination.getChartById('across-sheet').getInfo()
     assert.equal(pasted.source.sheetId, sheet.getSheetId()); assert.equal(pasted.sheetId, destination.getSheetId()); assert.equal(pasted.title, chart.getInfo().title)
-    const foreign = facade.createWorkbook({ id: 'foreign-object-book' }), before = json(foreign.save()), revision = studio.getWorkbookRevision(foreign.getId())
-    await assert.rejects(studio.executeCommand(commands.PASTE_COPIED_CHART_COMMAND,
-      { unitId: foreign.getId(), sheetId: foreign.getActiveSheet().getSheetId(), newChartId: 'foreign-copy' }), /跨工作簿|工作表/)
-    assert.deepEqual(json(foreign.save()), before); assert.equal(studio.getWorkbookRevision(foreign.getId()), revision); assert.equal(store(studio).clipboard.id, token)
-  } finally { studio.dispose() }
+    const foreign = facade.createWorkbook({ id: 'foreign-object-book' }), foreignSheet = foreign.getActiveSheet()
+    foreignSheet.getRange('D1').setValue('Existing target')
+    const before = json(foreign.save()), sourceBefore = json(workbook.save()), revision = studio.getWorkbookRevision(foreign.getId()), count = history(studio, foreign.getId())
+    assert.equal(await studio.executeCommand(commands.PASTE_COPIED_CHART_COMMAND,
+      { unitId: foreign.getId(), sheetId: foreignSheet.getSheetId(), clipboardId: token, newChartId: 'foreign-copy' }), true)
+    const imported = foreignSheet.getChartById('foreign-copy').getInfo(), saved = json(foreign.save())
+    assert.notEqual(imported.source.sheetId, sheet.getSheetId()); assert.equal(imported.sheetId, foreignSheet.getSheetId())
+    assert.equal(imported.title, chart.getInfo().title); assert.deepEqual(imported.options, chart.getInfo().options)
+    const sourceCopy = studio.getWorkbookModel(foreign.getId()).sheets.find(item => item.id === imported.source.sheetId)
+    assert.equal(sourceCopy.visible, false); assert.equal(sourceCopy.cells['1:1'].value, 7)
+    assert.equal(foreignSheet.getRange('D1').getValue(), 'Existing target')
+    assert.deepEqual(json(workbook.save()), sourceBefore); assert.equal(studio.getWorkbookRevision(foreign.getId()), revision + 1)
+    assert.equal(history(studio, foreign.getId()), count + 1); assert.equal(store(studio).clipboard.id, token)
+    foreign.undo(); assert.deepEqual(json(foreign.save()), before); assert.equal(foreignSheet.getChartById('foreign-copy'), null)
+    foreign.redo(); assert.deepEqual(json(foreign.save()), saved)
+    sheet.getRange('B2').setValue(99)
+    assert.equal(studio.getWorkbookModel(foreign.getId()).sheets.find(item => item.id === imported.source.sheetId).cells['1:1'].value, 7)
+    reopened = new api.OfficeStudio({ workbook: saved })
+    const reopenedBook = api.FOffice.newAPI(reopened).getActiveWorkbook()
+    assert.deepEqual(reopenedBook.getSheetBySheetId(foreignSheet.getSheetId()).getChartById('foreign-copy').getInfo(), imported)
+    assert.equal(reopened.getWorkbookModel(foreign.getId()).sheets.find(item => item.id === imported.source.sheetId).cells['1:1'].value, 7)
+  } finally { reopened?.dispose(); studio.dispose() }
 })
 
 test('the four focused roots and legacy removal share permission/identity checks and one Before/Executed event per action', async () => {

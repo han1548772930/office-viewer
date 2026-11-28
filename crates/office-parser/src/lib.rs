@@ -5,6 +5,9 @@ mod sheet_dimension_sidecar;
 mod sheet_outline_sidecar;
 mod sheet_filter_import;
 mod xlsx_parts;
+mod formula_calendar_sidecar;
+#[cfg(test)]
+mod formula_calendar_roundtrip_tests;
 #[cfg(test)]
 mod sheet_dimensions_roundtrip_tests;
 #[cfg(test)]

@@ -236,12 +236,12 @@ fn valid_text(value: &str) -> bool { !value.chars().any(|value| value < '\u{20}'
 fn namespace(result: ResolveResult<'_>) -> Result<String, String> {
     match result {
         ResolveResult::Bound(value) => {
-            let value = String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string())?;
+            let value = value.as_ref().to_owned();
             let normalized = value.replace("\r\n", " ").replace(['\r', '\n', '\t'].as_slice(), " ");
             quick_xml::escape::unescape(&normalized).map(|value| value.into_owned()).map_err(|error| error.to_string())
         }
         ResolveResult::Unbound => Ok(String::new()),
-        ResolveResult::Unknown(prefix) => Err(format!("Conditional-format XML uses undeclared prefix {}", String::from_utf8_lossy(&prefix))),
+        ResolveResult::Unknown(prefix) => Err(format!("Conditional-format XML uses undeclared prefix {}", prefix)),
     }
 }
 
@@ -258,17 +258,17 @@ fn valid_namespace_declaration(name: &str, value: &str) -> bool {
 }
 
 fn node_from_tag<R>(reader: &NsReader<R>, tag: &BytesStart<'_>, resolved_namespace: String) -> Result<Element, String> {
-    let mut node = Element { name: String::from_utf8(tag.local_name().as_ref().to_vec()).map_err(|error| error.to_string())?,
-        qualified_name: String::from_utf8(tag.name().as_ref().to_vec()).map_err(|error| error.to_string())?, namespace: resolved_namespace, ..Element::default() };
+    let mut node = Element { name: String::from_utf8(tag.local_name().as_ref().as_bytes().to_vec()).map_err(|error| error.to_string())?,
+        qualified_name: String::from_utf8(tag.name().as_ref().as_bytes().to_vec()).map_err(|error| error.to_string())?, namespace: resolved_namespace, ..Element::default() };
     let mut expanded = BTreeSet::new();
     for attribute in tag.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;
-        let name = String::from_utf8(attribute.key.as_ref().to_vec()).map_err(|error| error.to_string())?;
+        let name = String::from_utf8(attribute.key.as_ref().as_bytes().to_vec()).map_err(|error| error.to_string())?;
         let (resolved, local) = reader.resolver().resolve_attribute(attribute.key);
         let declaration = name == "xmlns" || name.starts_with("xmlns:");
         let namespace = if declaration { XMLNS_NAMESPACE.into() } else { namespace(resolved)? };
-        if !expanded.insert((namespace.clone(), local.as_ref().to_vec())) { return Err("Conditional-format XML has duplicate expanded attributes".into()); }
-        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
+        if !expanded.insert((namespace.clone(), local.as_ref().to_owned())) { return Err("Conditional-format XML has duplicate expanded attributes".into()); }
+        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
         if !valid_text(&value) { return Err("Conditional-format XML has invalid characters".into()); }
         if declaration && !valid_namespace_declaration(&name, &value) { return Err("Conditional-format XML has an invalid namespace declaration".into()); }
         node.attribute_namespaces.insert(name.clone(), namespace); node.attrs.insert(name, value);
@@ -296,17 +296,17 @@ pub fn parse(source: &str) -> Result<Element, String> {
                 let node = stack.pop().ok_or("Conditional-format XML has an unmatched closing element")?;
                 if let Some(parent) = stack.last_mut() { parent.push(node); } else if root.replace(node).is_some() { return Err("Conditional-format XML has multiple roots".into()); }
             }
-            Event::Text(value) => push_text(&mut stack, value.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned())?,
-            Event::CData(value) => push_text(&mut stack, value.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?.into_owned())?,
+            Event::Text(value) => push_text(&mut stack, value.xml_content(XmlVersion::Implicit1_0).into_owned())?,
+            Event::CData(value) => push_text(&mut stack, value.xml_content(XmlVersion::Implicit1_0).into_owned())?,
             Event::GeneralRef(reference) => {
                 let value = if let Some(value) = reference.resolve_char_ref().map_err(|error| error.to_string())? { value.to_string() }
-                    else { quick_xml::escape::resolve_xml_entity(&reference.decode().map_err(|error| error.to_string())?).ok_or("Conditional-format XML has an unsupported entity")?.to_owned() };
+                    else { quick_xml::escape::resolve_xml_entity(&reference.as_ref()).ok_or("Conditional-format XML has an unsupported entity")?.to_owned() };
                 if !valid_text(&value) { return Err("Conditional-format XML has invalid characters".into()); }
                 let node = stack.last_mut().ok_or("Conditional-format XML has an entity outside its root")?; node.text.push_str(&value); node.content.push(Content::Text(value));
             }
-            Event::Comment(value) => { if let Some(node) = stack.last_mut() { node.content.push(Content::Comment(String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string())?)); } }
-            Event::PI(value) => { if let Some(node) = stack.last_mut() { node.content.push(Content::Instruction(String::from_utf8(value.as_ref().to_vec()).map_err(|error| error.to_string())?)); } }
-            Event::Decl(value) if root.is_none() && stack.is_empty() => { if value.version().map_err(|error| error.to_string())?.as_ref() != b"1.0" { return Err("Conditional-format XML must use XML 1.0".into()); } }
+            Event::Comment(value) => { if let Some(node) = stack.last_mut() { node.content.push(Content::Comment(value.as_ref().to_owned())); } }
+            Event::PI(value) => { if let Some(node) = stack.last_mut() { node.content.push(Content::Instruction(value.as_ref().to_owned())); } }
+            Event::Decl(value) if root.is_none() && stack.is_empty() => { if value.version().map_err(|error| error.to_string())?.as_ref() != "1.0" { return Err("Conditional-format XML must use XML 1.0".into()); } }
             Event::Eof => { if !stack.is_empty() { return Err("Conditional-format XML has unclosed elements".into()); } break; }
             Event::DocType(_) | Event::Decl(_) => return Err("Conditional-format XML has an unsupported declaration".into()),
         }

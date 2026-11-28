@@ -3,6 +3,7 @@ import { inferSheetCellValueType, isForcedSheetCellValueType, normalizeSheetCell
 import { cloneModel } from '../../domain/serialization.ts'
 import { applyExcelCellView, sheetViewCellStylePatch, toExcelCellView } from '../../services/excelViewAdapter.ts'
 import { translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
 import { editSheetCellText } from './sheet-cell-edit.ts'
 import { clearSheetCellRichTextFonts, sheetCellRichTextRunView } from './sheet-cell-rich-text-style.ts'
 import { formatSheetValue, isSheetTextNumberFormat } from './sheet-number-format.ts'
@@ -67,8 +68,13 @@ export function createSheetClipboardPastedCell(
   if (options.targetStyle) target.style = cloneModel(options.targetStyle)
   const source = originalSource && options.externalFormat ? externalCell(originalSource, target, options) : originalSource
   if (mode === 'formulas' && source?.formula) {
-    target.formula = options.externalFormat ? source.formula
-      : translateFormulaReferenceAreas(source.formula, options.rowDelta, options.columnDelta)
+    target.formula = source.formula
+    const marker = source.metadata?.chartDependencyFormulaSource
+    target.metadata = { ...target.metadata }
+    if (marker && !options.externalFormat) target.metadata.chartDependencyFormulaSource = cloneModel(marker)
+    else delete target.metadata.chartDependencyFormulaSource
+    rewriteFormulaImportCell(target, options.externalFormat || options.preserveFormulaReferences ? source.formula
+      : translateFormulaReferenceAreas(source.formula, options.rowDelta, options.columnDelta))
     target.value = null; target.display = target.formula; target.dataType = 'formula'; target.cachedDataType = null
     delete target.richText; delete target.sparkline; delete target.image; invalidateContentMetadata(target)
     return { ...target, id: `${position.row}:${position.col}`, ...position }
@@ -133,7 +139,7 @@ export function createSheetClipboardPastedCell(
   if (options.externalFormat !== 'text') { delete cell.authoredStyleReference; delete cell.clearedStyleProperties }
   else { cell.authoredStyleReference = target.authoredStyleReference; cell.clearedStyleProperties = target.clearedStyleProperties }
   if (cell.formula && !options.preserveFormulaReferences) {
-    cell.formula = options.externalFormat ? cell.formula : translateFormulaReferenceAreas(cell.formula, options.rowDelta, options.columnDelta)
+    rewriteFormulaImportCell(cell, options.externalFormat ? cell.formula : translateFormulaReferenceAreas(cell.formula, options.rowDelta, options.columnDelta))
     cell.value = null; cell.display = cell.formula; cell.dataType = 'formula'; cell.cachedDataType = null
     delete cell.richText; invalidateContentMetadata(cell)
   } else if (!cell.formula) cell.display = presentation(cell.value, cell, options)

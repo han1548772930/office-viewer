@@ -1,6 +1,7 @@
 import type { SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { mapFormulaReferenceAreas, mapFormulaSheetQualifiers } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell, rewriteFormulaImportSheetAliases } from '../formula/formula-import-context.ts'
 import { normalizeSheetHyperlinkTarget, parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { renamePivotSourceWorksheet } from '../pivot/services/pivot-source-lifecycle.ts'
 
@@ -114,6 +115,7 @@ export function rebindWorksheetScopedNames(metadata: Record<string, unknown> | u
         ...(owns && typeof record.sheet === 'string' ? { sheet: change.newName } : {}),
         ...(owns && typeof record.sheetName === 'string' ? { sheetName: change.newName } : {}),
         ...(typeof record.refersTo === 'string' ? { refersTo: rewrite(record.refersTo) } : {}),
+        ...(typeof record.formulaOrRefString === 'string' ? { formulaOrRefString: rewrite(record.formulaOrRefString) } : {}),
       }]
     })
   }
@@ -131,7 +133,7 @@ export function rewriteWorkbookWorksheetReferences(candidate: WorkbookModel, ori
   }
   for (const sheet of candidate.sheets) {
     for (const cell of Object.values(sheet.cells)) {
-      if (cell.formula) cell.formula = rewrite(cell.formula)
+      if (cell.formula) rewriteFormulaImportCell(cell, rewrite(cell.formula))
       if (cell.sparkline) cell.sparkline.sourceRange = rewrite(cell.sparkline.sourceRange)
       if (cell.hyperlink) cell.hyperlink = rewriteLink(cell.hyperlink) ?? null
       if (cell.richText) cell.richText = cell.richText.map(run => {
@@ -148,6 +150,7 @@ export function rewriteWorkbookWorksheetReferences(candidate: WorkbookModel, ori
     }))
     sheet.conditionalFormats = sheet.conditionalFormats?.map(rule => mapConditionalFormatFormulas(rule, rewrite))
     rebindWorksheetScopedNames(sheet.metadata, original.sheets, candidate.sheets, rewrite, change)
+    rewriteFormulaImportSheetAliases(sheet, change.oldName, change.newName)
   }
   rebindWorksheetScopedNames(candidate.metadata, original.sheets, candidate.sheets, rewrite, change)
   if (change.newName !== undefined) renamePivotSourceWorksheet(original, candidate, change.sheetId, change.newName)

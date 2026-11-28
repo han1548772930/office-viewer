@@ -1,6 +1,7 @@
 import type { CellRange, SheetDataValidationOperator, SheetDataValidationRule, SheetDataValidationType } from '../../domain/model.ts'
 import { parseSheetAddress } from '../sheet-workbench/sheet-workbench.ts'
 import { createSheetDataValidationRule, parseValidationListItems, serializeValidationListItems } from './validation-engine.ts'
+import { sheetOpaqueColorHex } from '../sheet-workbench/sheet-colors.ts'
 
 export type ValidationRangeTarget = 'range' | 'list' | 'formula1' | 'formula2'
 
@@ -11,6 +12,23 @@ export function validationPickedAddress(target: ValidationRangeTarget, ranges: r
   return target === 'range' ? addresses.join(', ') : `=${addresses[0]}`
 }
 export interface ValidationListItem { id: string; label: string; color: string }
+export function validationListItemsFromCsv(value: string, previous: readonly ValidationListItem[], createId: () => string = () => crypto.randomUUID()): ValidationListItem[] {
+  const items = parseValidationListItems(`"${value}"`), used = new Set<string>()
+  return items.flatMap(label => {
+    const key = label.trim().toLocaleLowerCase()
+    if (used.has(key)) return []
+    used.add(key)
+    const retained = previous.find(item => item.label.trim().toLocaleLowerCase() === key)
+    return [{ id: retained?.id ?? createId(), label, color: retained?.color ?? '' }]
+  })
+}
+export function moveValidationListItem(items: readonly ValidationListItem[], id: string, offset: -1 | 1): ValidationListItem[] {
+  const result = items.map(item => ({ ...item })), index = result.findIndex(item => item.id === id), target = index + offset
+  if (index < 0 || target < 0 || target >= result.length) return result
+  const item = result.splice(index, 1)[0]!
+  result.splice(target, 0, item)
+  return result
+}
 export interface ValidationPanelSettings {
   type: SheetDataValidationType
   operator: SheetDataValidationOperator | ''
@@ -101,17 +119,32 @@ export function validationRuleFromPanel(
     operator: undefined,
     formula1: undefined,
     formula2: undefined,
+    formulaAnchor: undefined,
   }
   if (settings.type === 'list' || settings.type === 'listMultiple') {
     if (settings.listMode === 'reference') {
       draft.formula1 = settings.listReference.trim()
+      draft.formula2 = settings.formula2 || (previous?.formula2 === '' ? '' : undefined)
     } else {
       const unique = new Map<string, ValidationListItem>()
       for (const item of settings.listItems) {
-        if (item.label.trim() && !unique.has(item.label)) unique.set(item.label, item)
+        const key = item.label.trim().toLocaleLowerCase()
+        if (key && !unique.has(key)) unique.set(key, item)
       }
-      draft.formula1 = serializeValidationListItems([...unique.keys()])
-      draft.formula2 = [...unique.values()].map(item => item.color).join(',')
+      const previousList = previous && (previous.type === 'list' || previous.type === 'listMultiple') ? previous : undefined
+      const items = [...unique.values()], originalLabels = previousList && !previousList.formula1?.trim().startsWith('=') ? parseValidationListItems(previousList.formula1 ?? '') : []
+      if (!items.length) throw new TypeError('请输入至少一个下拉选项。')
+      const originalColors = previous?.formula2?.split(',') ?? []
+      const sameLabels = previousList !== undefined
+        && originalLabels.length === items.length && items.every((item, index) => item.label === originalLabels[index])
+      const sameColors = sameLabels && items.every((item, index) => item.color === (originalColors[index] ?? ''))
+      for (const item of items) {
+        const originalIndex = originalLabels.findIndex(label => label.trim().toLocaleLowerCase() === item.label.trim().toLocaleLowerCase())
+        if (item.color && item.color !== originalColors[originalIndex] && !sheetOpaqueColorHex(item.color)) throw new TypeError('列表颜色必须是有效的不透明颜色。')
+      }
+      draft.formula1 = sameLabels && previousList ? previousList.formula1 : serializeValidationListItems(items.map(item => item.label))
+      draft.formula2 = sameColors && previousList ? previousList.formula2 : items.some(item => item.color) || previousList?.formula2 !== undefined
+        ? items.map(item => item.color).join(',') : undefined
     }
   } else if (settings.type === 'checkbox') {
     if (settings.checkboxCustomValues) {
@@ -125,7 +158,10 @@ export function validationRuleFromPanel(
     draft.formula1 = settings.formula1.trim()
     if (validationUsesTwoFormulas(settings.type, settings.operator)) draft.formula2 = settings.formula2.trim()
   }
-  return createSheetDataValidationRule(draft, ranges)
+  const relatedList = previous?.type.startsWith('list') && draft.type.startsWith('list')
+  if (previous && (previous.type === draft.type || relatedList) && previous.formula1 === draft.formula1
+    && (relatedList || previous.formula2 === draft.formula2)) draft.formulaAnchor = previous.formulaAnchor
+  return createSheetDataValidationRule(draft, ranges, previous ?? undefined)
 }
 
 export function parseValidationRanges(value: string, sheetName?: string): CellRange[] {

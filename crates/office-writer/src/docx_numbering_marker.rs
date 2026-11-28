@@ -442,13 +442,13 @@ mod tests {
         let mut result = Vec::new();
         loop {
             match reader.read_event().unwrap() {
-                Event::Empty(tag) | Event::Start(tag) if tag.local_name().as_ref() == b"bookmarkStart" => {
+                Event::Empty(tag) | Event::Start(tag) if tag.local_name().as_ref().as_bytes() == b"bookmarkStart" => {
                     let mut id = String::new();
                     let mut name = String::new();
                     for attribute in tag.attributes() {
                         let attribute = attribute.unwrap();
                         let value = String::from_utf8(attribute.value.to_vec()).unwrap();
-                        match attribute.key.local_name().as_ref() { b"id" => id = value, b"name" => name = value, _ => {} }
+                        match attribute.key.local_name().as_ref().as_bytes() { b"id" => id = value, b"name" => name = value, _ => {} }
                     }
                     result.push((id, name));
                 }

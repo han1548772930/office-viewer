@@ -1,5 +1,6 @@
 import type { ExcelCellView } from '../../services/excelViewAdapter.ts'
 import { translateFormulaReferenceAreas } from '../formula/formula-references.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { clearSheetCellFormat } from './sheet-toolbar-format.ts'
 import { inferSheetCellValueType } from '../../domain/sheet-cell-value.ts'
@@ -86,10 +87,12 @@ export function pasteSheetCell(
 ): ExcelCellView {
   if (mode === 'formulas') {
     if (!source?.formula) return target
-    return {
+    const pasted: ExcelCellView = {
       ...cloneModel(target),
       value: '',
-      formula: translateFormulaReferenceAreas(source.formula, rowDelta, columnDelta),
+      formula: source.formula,
+      metadata: { ...target.metadata, ...(source.metadata?.chartDependencyFormulaSource
+        ? { chartDependencyFormulaSource: cloneModel(source.metadata.chartDependencyFormulaSource) } : { chartDependencyFormulaSource: undefined }) },
       cachedValue: undefined,
       rawValue: null,
       dataType: 'formula',
@@ -97,12 +100,14 @@ export function pasteSheetCell(
       displayValue: undefined,
       richText: null,
     }
+    rewriteFormulaImportCell(pasted, translateFormulaReferenceAreas(source.formula, rowDelta, columnDelta))
+    return pasted
   }
   if (mode === 'values') return pasteValue(source, target)
   if (mode === 'formats') return pasteFormat(source, target)
   const copied = source ? cloneModel(source) : clearSheetCellFormat({ value: '' })
   if (copied.formula) {
-    copied.formula = translateFormulaReferenceAreas(copied.formula, rowDelta, columnDelta)
+    rewriteFormulaImportCell(copied, translateFormulaReferenceAreas(copied.formula, rowDelta, columnDelta))
     copied.value = ''
     copied.cachedValue = undefined
     copied.rawValue = null

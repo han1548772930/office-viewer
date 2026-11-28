@@ -98,10 +98,10 @@ fn document_namespaces(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<HashMa
                 let mut namespaces = HashMap::new();
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
-                    let name = String::from_utf8_lossy(attribute.key.as_ref());
+                    let name = String::from_utf8_lossy(attribute.key.as_ref().as_bytes());
                     let prefix = if name == "xmlns" { Some("") } else { name.strip_prefix("xmlns:") };
                     if let Some(prefix) = prefix {
-                        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
+                        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
                         namespaces.insert(prefix.to_owned(), value.into_owned());
                     }
                 }

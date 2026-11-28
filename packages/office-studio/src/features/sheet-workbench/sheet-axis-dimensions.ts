@@ -1,12 +1,13 @@
-import type { CellRange, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
+import type { CellRange, SheetDataValidationRule, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
 import { assignSheetAxisSpan, canonicalSheetAxisSpans, sheetAxisSpanAt, sheetColumnWidth, sheetManualRowHeight, sheetRowHeight, sheetRowIsAutoHeight,
   type SheetAxisDimensions, type SheetAxisSpan } from '../../domain/sheet-axis.ts'
 import { cellKey, parseCellKey, toExcelCellView, type ExcelCellView, type ExcelSheetView, type ExcelWorkbookView } from '../../services/excelViewAdapter.ts'
 import { canEditWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { assertSheetCommandRanges, normalizeSheetCommandRange, type SheetRangeCommandInput } from './sheet-range-command.ts'
 import { calculateSheetAxisAutoFit, type SheetAutoFitOptions } from './sheet-auto-fit.ts'
-import type { SheetTextMeasure } from './sheet-cell-text-layout.ts'
 import { hiddenSheetRows, hiddenSheetColumns, isSheetColumnVisible } from './sheet-row-visibility.ts'
+import type { SheetStyleContext } from './sheet-style-inheritance.ts'
+import { createSheetValidationTagOptionsResolver } from '../sheet-validation/validation-cell-options.ts'
 
 export const SHEET_AXIS_DIMENSION_COMMANDS = {
   rowHeight: 'sheet.command.set-row-height', columnWidth: 'sheet.command.set-worksheet-col-width',
@@ -26,7 +27,7 @@ export interface SheetAxisDimensionCommandInput extends SheetRangeCommandInput {
   expectedRevision?: number
 }
 export type SheetAxisDimensionAction = { axis: 'row' | 'column'; kind: 'set' | 'delta' | 'auto' | 'grow' }
-export interface SheetAxisDimensionOptions { measure: SheetTextMeasure; region?: string }
+export interface SheetAxisDimensionOptions extends Pick<SheetAutoFitOptions, 'measure' | 'region' | 'styleContext' | 'validationTagOptions'> { userId?: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 export function sheetAxisDimensionCommandInput(params?: unknown): SheetAxisDimensionCommandInput {
@@ -225,8 +226,9 @@ export function applySheetViewAxisDimensionCommand(sheet: ExcelSheetView, ranges
   return before !== dimensionSignature(sheet)
 }
 
-function modelDimensionView(sheet: SpreadsheetSheet, date1904: boolean, withCells = true): ExcelSheetView {
+function modelDimensionView(sheet: SpreadsheetSheet, date1904: boolean, withCells = true, styleContext?: SheetStyleContext): ExcelSheetView {
   const cells: Record<string, ExcelCellView> = {}, view: ExcelSheetView = { ...sheet, cells, date1904,
+    ...(styleContext ? { workbookDefaultStyle: styleContext.defaultStyle, styles: styleContext.styles, rangeThemes: styleContext.rangeThemes } : {}),
     rowHeights: { ...sheet.rowHeights }, columnWidths: { ...sheet.columnWidths }, rowAutoHeights: { ...sheet.rowAutoHeights },
     rowHeightSpans: sheet.rowHeightSpans?.map(span => ({ ...span })), columnWidthSpans: sheet.columnWidthSpans?.map(span => ({ ...span })),
     rowAutoHeightSpans: sheet.rowAutoHeightSpans?.map(span => ({ ...span })),
@@ -242,7 +244,7 @@ function copyDimensions(target: SpreadsheetSheet, source: ExcelSheetView): void 
 }
 export function applySheetAxisDimensionCommand(sheet: SpreadsheetSheet, ranges: readonly CellRange[], action: SheetAxisDimensionAction,
   input: SheetAxisDimensionCommandInput, userId: string, options: SheetAxisDimensionOptions, date1904 = false): boolean {
-  const view = modelDimensionView(sheet, date1904, action.kind === 'auto' || action.kind === 'grow')
+  const view = modelDimensionView(sheet, date1904, action.kind === 'auto' || action.kind === 'grow', options.styleContext)
   const changed = applySheetViewAxisDimensionCommand(view, ranges, action, input, userId, options)
   if (changed) copyDimensions(sheet, view)
   return changed
@@ -250,17 +252,51 @@ export function applySheetAxisDimensionCommand(sheet: SpreadsheetSheet, ranges: 
 
 function heightCellSignature(cell: ExcelCellView | undefined): string {
   return cell ? JSON.stringify([cell.value, cell.formula, cell.rawValue, cell.cachedValue, cell.displayValue, cell.rawNumberFormat, cell.numberFormat,
-    cell.fontFamily, cell.fontSize, cell.bold, cell.italic, cell.wrap, cell.wrapStrategy, cell.rotation, cell.rotationVertical, cell.indent, cell.shrinkToFit, cell.richText]) : ''
+    cell.dataType, cell.cachedDataType, cell.fontFamily, cell.fontSize, cell.bold, cell.italic, cell.align, cell.wrap, cell.wrapStrategy,
+    cell.rotation, cell.rotationVertical, cell.indent, cell.shrinkToFit, cell.richText, Boolean(cell.image),
+    cell.authoredStyle, cell.authoredStyleReference, cell.clearedStyleProperties, cell.themeStyle]) : ''
+}
+function heightRuleSignature(rule: SheetDataValidationRule, index: number): string {
+  return JSON.stringify([index, rule.type, rule.ranges, rule.formula1, rule.formula2, rule.renderMode, rule.showDropDown])
+}
+/** Rule-only changes invalidate sparse populated rows in both the old and new layout ranges. */
+function validationHeightRanges(sheet: ExcelSheetView, previous: ExcelSheetView): CellRange[] {
+  const rules = (value: ExcelSheetView) => (value.dataValidations ?? []).filter(rule => rule.type === 'list' || rule.type === 'listMultiple')
+  const before = new Map(rules(previous).map((rule, index) => [rule.id, { rule, signature: heightRuleSignature(rule, index) }]))
+  const ranges: CellRange[] = []
+  rules(sheet).forEach((rule, index) => {
+    const old = before.get(rule.id)
+    if (old?.signature !== heightRuleSignature(rule, index)) ranges.push(...rule.ranges, ...(old?.rule.ranges ?? []))
+    before.delete(rule.id)
+  })
+  for (const { rule } of before.values()) ranges.push(...rule.ranges)
+  return ranges
+}
+function tableHeightSignature(context: SheetStyleContext | undefined, sheetId: string): string {
+  return JSON.stringify((context?.tables ?? []).filter(table => table.sheetId === sheetId).map(table => table.autoFilter?.filteredRows ?? []))
+}
+function heightStyleSignature(sheet: ExcelSheetView, context?: SheetStyleContext): string {
+  return JSON.stringify([context ? context.defaultStyle : sheet.workbookDefaultStyle, context ? context.styles : sheet.styles,
+    context ? context.rangeThemes : sheet.rangeThemes, sheet.defaultStyle, sheet.rowStyles, sheet.columnStyles,
+    sheet.rowStyleSpans, sheet.columnStyleSpans, sheet.rowStylePriority, sheet.rangeThemeRules,
+    sheet.rangeThemeRules?.length ? [tableHeightSignature(context, sheet.id), sheet.hiddenRows, sheet.rowHiddenSpans, sheet.filteredRows,
+      sheet.autoFilter?.filteredRows, sheet.outlineHiddenRows, sheet.outlineHiddenRowSpans, sheet.outline?.groups,
+      sheet.rowHeights, sheet.rowHeightSpans, sheet.rowAutoHeights] : undefined])
 }
 /** Refresh in the same content transaction, after formula values settle. Only sparse populated/cache rows are measured. */
-export function refreshSheetViewAutoRowHeights(sheet: ExcelSheetView, previous: ExcelSheetView | undefined, options: SheetAxisDimensionOptions): boolean {
-  const all = !previous || JSON.stringify([sheet.columnWidths, sheet.columnWidthSpans, sheet.hiddenColumns, sheet.columnHiddenSpans, sheet.outlineHiddenColumns, sheet.outlineHiddenColumnSpans,
+export function refreshSheetViewAutoRowHeights(sheet: ExcelSheetView, previous: ExcelSheetView | undefined, options: SheetAxisDimensionOptions,
+  previousStyleContext: SheetStyleContext | undefined = options.styleContext, invalidatedValidationRanges: readonly CellRange[] = []): boolean {
+  const all = !previous || heightStyleSignature(sheet, options.styleContext) !== heightStyleSignature(previous, previousStyleContext) || JSON.stringify([sheet.columnWidths, sheet.columnWidthSpans, sheet.hiddenColumns, sheet.columnHiddenSpans, sheet.outlineHiddenColumns, sheet.outlineHiddenColumnSpans,
     sheet.merges, sheet.defaultColumnWidth, sheet.defaultRowHeight, sheet.defaultRowAutoHeight, sheet.rowAutoHeightSpans, sheet.date1904]) !== JSON.stringify([previous.columnWidths, previous.columnWidthSpans, previous.hiddenColumns, previous.columnHiddenSpans, previous.outlineHiddenColumns, previous.outlineHiddenColumnSpans,
     previous.merges, previous.defaultColumnWidth, previous.defaultRowHeight, previous.defaultRowAutoHeight, previous.rowAutoHeightSpans, previous.date1904])
   const affected = new Set<number>()
+  const validationRanges = previous && !all ? [...validationHeightRanges(sheet, previous), ...invalidatedValidationRanges] : []
   if (!all) for (const key of new Set([...Object.keys(sheet.cells), ...Object.keys(previous!.cells)])) {
-    if (heightCellSignature(sheet.cells[key]) === heightCellSignature(previous!.cells[key])) continue
-    const position = parseCellKey(key); if (position) affected.add(position.row)
+    const sameCell = heightCellSignature(sheet.cells[key]) === heightCellSignature(previous!.cells[key])
+    if (sameCell && !validationRanges.length) continue
+    const position = parseCellKey(key)
+    if (position && (!sameCell || validationRanges.some(range => position.row >= range.startRow && position.row <= range.endRow
+      && position.col >= range.startCol && position.col <= range.endCol))) affected.add(position.row)
   }
   if (!all && !affected.size) return false
   const groups = groupedCells(sheet, 'row'), context = measurementContext(sheet, options), heights = { ...(sheet.rowAutoHeights ?? {}) }
@@ -282,13 +318,36 @@ export function refreshSheetViewAutoRowHeights(sheet: ExcelSheetView, previous: 
   return changed
 }
 export function refreshWorkbookAutoRowHeights(workbook: WorkbookModel, previous: WorkbookModel | undefined, options: SheetAxisDimensionOptions): void {
-  for (const sheet of workbook.sheets) {
-    const old = previous?.sheets.find(item => item.id === sheet.id)
-    if (sheet === old) continue
-    const view = modelDimensionView(sheet, workbook.date1904), before = old && modelDimensionView(old, previous!.date1904)
-    if (refreshSheetViewAutoRowHeights(view, before, options)) copyDimensions(sheet, view)
-  }
+  const previousSheets = new Map(previous?.sheets.map(sheet => [sheet.id, sheet]))
+  const sameStyleSources = previous ? [workbook.defaultStyle === previous.defaultStyle, workbook.styles === previous.styles,
+    workbook.rangeThemes === previous.rangeThemes].every(Boolean) || JSON.stringify([workbook.defaultStyle, workbook.styles, workbook.rangeThemes])
+      === JSON.stringify([previous.defaultStyle, previous.styles, previous.rangeThemes]) : false
+  const sourceChanged = !!previous && (workbook.metadata !== previous.metadata || workbook.sheets.length !== previous.sheets.length
+    || workbook.sheets.some(sheet => {
+      const old = previousSheets.get(sheet.id)
+      return !old || sheet.name !== old.name || sheet.cells !== old.cells || sheet.rowCount !== old.rowCount || sheet.columnCount !== old.columnCount
+        || sheet.rangeProtectionRules !== old.rangeProtectionRules || sheet.worksheetProtection !== old.worksheetProtection
+    }))
+  let sheets = workbook.sheets
+  workbook.sheets.forEach((sheet, index) => {
+    const old = previousSheets.get(sheet.id)
+    const sourceRanges = sourceChanged ? (sheet.dataValidations ?? []).filter(rule => (rule.type === 'list' || rule.type === 'listMultiple')
+      && rule.formula1?.trim().startsWith('=')).flatMap(rule => rule.ranges) : []
+    const sameTables = !sheet.rangeThemeRules?.length || workbook.tables === previous?.tables
+      || tableHeightSignature(workbook, sheet.id) === tableHeightSignature(previous, sheet.id)
+    // Unchanged shared sheets need no cell projection or sparse-cell scan. Source/list and table-theme changes remain observable.
+    if (sheet === old && previous && sameStyleSources && workbook.date1904 === previous.date1904 && sameTables && !sourceRanges.length) return
+    const view = modelDimensionView(sheet, workbook.date1904, true, workbook), before = old && modelDimensionView(old, previous!.date1904, true, previous)
+    if (refreshSheetViewAutoRowHeights(view, before, { ...options, styleContext: workbook,
+      validationTagOptions: createSheetValidationTagOptionsResolver(workbook, sheet.id, options.userId, options.region) }, previous, sourceRanges)) {
+      const target = sheet === old ? { ...sheet } : sheet
+      copyDimensions(target, view)
+      if (target !== sheet) { if (sheets === workbook.sheets) sheets = [...sheets]; sheets[index] = target }
+    }
+  })
+  if (sheets !== workbook.sheets) workbook.sheets = sheets
 }
 export function refreshWorkbookViewAutoRowHeights(workbook: ExcelWorkbookView, previous: ExcelWorkbookView | undefined, options: SheetAxisDimensionOptions): void {
-  for (const sheet of workbook.sheets) refreshSheetViewAutoRowHeights(sheet, previous?.sheets.find(item => item.id === sheet.id), options)
+  const previousSheets = new Map(previous?.sheets.map(sheet => [sheet.id, sheet]))
+  for (const sheet of workbook.sheets) refreshSheetViewAutoRowHeights(sheet, previousSheets.get(sheet.id), { ...options, styleContext: workbook }, previous)
 }

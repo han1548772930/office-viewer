@@ -4,6 +4,7 @@ import { toExcelWorkbookView } from '../services/excelViewAdapter.ts'
 import { resolveSheetRangeCommandTarget } from './sheet-range-editor-commands.ts'
 import { applySheetAxisDimensionCommand, SHEET_AXIS_DIMENSION_COMMAND_IDS, sheetAxisDimensionActionForCommand,
   sheetAxisDimensionCommandInput, sheetAxisDimensionTargetRanges } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
+import { createSheetValidationTagOptionsResolver } from '../features/sheet-validation/validation-cell-options.ts'
 
 export function registerSheetAxisDimensionCommands(api: OfficeStudio): Disposable {
   const registrations = SHEET_AXIS_DIMENSION_COMMAND_IDS.map(id => api.registerCommand<unknown, boolean>(id, params => {
@@ -19,8 +20,10 @@ export function registerSheetAxisDimensionCommands(api: OfficeStudio): Disposabl
     const changed = api.commitWorkbook(target.unitId, action.axis === 'row' ? action.kind === 'auto' ? '自动行高' : '设置行高'
       : action.kind === 'auto' ? '自动列宽' : '设置列宽', model => {
       const sheet = model.sheets.find(item => item.id === target.sheetId)!
+      const region = api.regionalSettings.region.value
       applySheetAxisDimensionCommand(sheet, ranges, action, input,
-        api.currentUserId, { measure: api.sheetTextMeasure, region: api.regionalSettings.region.value }, model.date1904)
+        api.currentUserId, { measure: api.sheetTextMeasure, region, styleContext: model, userId: api.currentUserId,
+          validationTagOptions: createSheetValidationTagOptionsResolver(model, sheet.id, api.currentUserId, region) }, model.date1904)
     }, { recalculate: false, prepareView: model => { toExcelWorkbookView(model) } })
     if (changed) api.publishObserverEvent('SheetDimensionsChanged', () => ({ workbookId: target.unitId, sheetId: target.sheetId,
       axis: action.axis, automatic: action.kind === 'auto', ranges: ranges.map(range => ({ startRow: range.startRow, endRow: range.endRow,

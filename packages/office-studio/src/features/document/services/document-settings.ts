@@ -24,10 +24,23 @@ export interface DocumentPageSetupRequest {
 
 export const DOCUMENT_MODERN_PAGE_MARGIN = 50 / 0.75
 
+/** Validate public and editor DTOs before creating a candidate or touching input state. */
+export function assertDocumentPageSetupRequest(value: unknown): asserts value is DocumentPageSetupRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('页面设置参数无效。')
+  const size = Reflect.get(value, 'pageSize')
+  if (!size || typeof size !== 'object' || Array.isArray(size)) throw new TypeError('页面尺寸参数无效。')
+  if (![Reflect.get(size, 'width'), Reflect.get(size, 'height')].every(dimension => typeof dimension === 'number' && Number.isFinite(dimension) && dimension >= 1)
+    || !['marginTop', 'marginBottom', 'marginLeft', 'marginRight'].every(key => {
+      const margin = Reflect.get(value, key)
+      return typeof margin === 'number' && Number.isFinite(margin) && margin >= 0
+    })) throw new RangeError('页面尺寸须为正数，页边距须为非负数。')
+  const orientation = Reflect.get(value, 'pageOrient'), flavor = Reflect.get(value, 'documentFlavor')
+  if (orientation !== 0 && orientation !== 1) throw new RangeError('页面方向无效。')
+  if (flavor !== undefined && (typeof flavor !== 'number' || ![0, 1, 2, 3].includes(flavor))) throw new RangeError('文档模式无效。')
+}
+
 export function prepareDocumentPageSetup(model: DocumentModel, request: DocumentPageSetupRequest): DocumentModel {
-  if (!request || typeof request !== 'object' || Array.isArray(request) || !request.pageSize || typeof request.pageSize !== 'object' || Array.isArray(request.pageSize)) throw new TypeError('页面设置参数无效。')
-  if (request.pageOrient !== 0 && request.pageOrient !== 1) throw new RangeError('页面方向无效。')
-  if (request.documentFlavor !== undefined && ![0, 1, 2, 3].includes(request.documentFlavor)) throw new RangeError('文档模式无效。')
+  assertDocumentPageSetupRequest(request)
   const page = { ...model.page, width: request.pageSize.width, height: request.pageSize.height, marginTop: request.marginTop, marginBottom: request.marginBottom,
     marginLeft: request.marginLeft, marginRight: request.marginRight }
   if (![page.width, page.height].every(value => Number.isFinite(value) && value >= 1)

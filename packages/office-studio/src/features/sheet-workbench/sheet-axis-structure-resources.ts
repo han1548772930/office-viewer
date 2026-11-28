@@ -4,6 +4,8 @@ import { sheetAxisEditSegments, sheetAxisInsertionEdit, sheetRangeAxisInterval, 
 import { conditionalFormatFormulaAnchor, mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { sheetValidationFormulaAnchor, sheetValidationUsesRelativeAnchor } from '../sheet-validation/validation-formulas.ts'
 import { transformFormulaReferenceAreasForAxisEdit, translateFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
+import { rewriteFormulaImportCell } from '../formula/formula-import-context.ts'
+import { rewriteWorkbookFormulaDefinedNames } from '../formula/formula-defined-names.ts'
 import { parseSheetHyperlinkTarget } from './sheet-hyperlink.ts'
 import { formatProtectionRange } from '../sheet-protection/range-protection.ts'
 import { transformSheetImagesForAxisEdit } from '../sheet-images/sheet-image-structure.ts'
@@ -168,18 +170,6 @@ function internalHyperlink(value: string, original: WorkbookModel, targetId: str
   if (value.slice(1).includes('=')) { const params = new URLSearchParams(value.slice(1)); params.set('range', address); return `#${params}` }
   return `${value.slice(0, value.lastIndexOf('!') + 1)}${address}`
 }
-function updateDefinedNames(value: unknown, original: WorkbookModel, targetName: string, edit: SheetAxisEdit, local: boolean): unknown {
-  if (!Array.isArray(value)) return value
-  const active = original.sheets.find(sheet => sheet.id === original.activeSheetId)?.name
-  return value.map((entry: unknown) => {
-    const record = object(entry)
-    if (!record || typeof record.refersTo !== 'string') return entry
-    const owner = typeof record.sheet === 'string' ? record.sheet : typeof record.sheetId === 'string'
-      ? original.sheets.find(sheet => sheet.id === record.sheetId)?.name : local ? undefined : active
-    return { ...record, refersTo: referenceFormula(record.refersTo, owner, targetName, edit) }
-  })
-}
-
 /** Update typed resources and formula-bearing fields against the same original coordinates. */
 export function transformWorkbookAxisResources(workbook: WorkbookModel, original: WorkbookModel, target: SpreadsheetSheet, edit: SheetAxisEdit): void {
   for (const sheet of workbook.sheets) {
@@ -187,7 +177,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
     sheet.conditionalFormats = before.conditionalFormats?.flatMap(rule => conditionalForEdit(rule, sheet.name, target.name, edit, local))
     sheet.dataValidations = before.dataValidations?.flatMap(rule => validationForEdit(rule, sheet.name, target.name, edit, local))
     for (const cell of Object.values(sheet.cells)) {
-      if (cell.formula) cell.formula = referenceFormula(cell.formula, sheet.name, target.name, edit)
+      if (cell.formula) rewriteFormulaImportCell(cell, referenceFormula(cell.formula, sheet.name, target.name, edit))
       if (cell.sparkline) cell.sparkline = { ...cell.sparkline, sourceRange: referenceFormula(cell.sparkline.sourceRange, sheet.name, target.name, edit) }
       if (cell.hyperlink) cell.hyperlink = internalHyperlink(cell.hyperlink, original, target.id, edit)
       if (cell.richText) cell.richText = cell.richText.map(run => typeof run.hyperlink === 'string' ? { ...run, hyperlink: internalHyperlink(run.hyperlink, original, target.id, edit) } : run)
@@ -259,10 +249,7 @@ export function transformWorkbookAxisResources(workbook: WorkbookModel, original
     if (JSON.stringify(next) !== JSON.stringify(slicer)) next.revision++
     return [next]
   })
-  if (workbook.metadata) {
-    workbook.metadata.definedNames = updateDefinedNames(workbook.metadata.definedNames, original, target.name, edit, false)
-    workbook.metadata.localDefinedNames = updateDefinedNames(workbook.metadata.localDefinedNames, original, target.name, edit, true)
-  }
+  rewriteWorkbookFormulaDefinedNames(workbook, (formula, owner) => referenceFormula(formula, owner, target.name, edit))
   const before = original.sheets.find(sheet => sheet.id === target.id)!, after = workbook.sheets.find(sheet => sheet.id === target.id)!
   if (before.images) after.images = transformSheetImagesForAxisEdit(before.images, edit, after,
     { before: sheetClipboardObjectAxes(original, before), after: sheetClipboardObjectAxes(workbook, after) })

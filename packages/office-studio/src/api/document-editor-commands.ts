@@ -20,6 +20,9 @@ export interface DocumentEditorCommandRequest {
   unitId: string
   command: DocumentCommand
   selection: DocumentSelection
+  /** Global model commands can preserve a separate auxiliary caret. null
+   * explicitly addresses the body; undefined retains command/session routing. */
+  selectionHost?: DocumentAuxiliaryBlockHost | null
   /** Optional facade guard for content changes made by BeforeCommandExecute listeners. */
   expectedRevision?: number
   /** Reject a same-ID reopen or history reset even when the model revision matches. */
@@ -147,6 +150,7 @@ export function assertDocumentEditorCommandRequest(request: DocumentEditorComman
   assertPoint(request.selection.anchor)
   assertPoint(request.selection.focus)
   if (request.command.host) validateDocumentBlockHost(request.command.host)
+  if (request.selectionHost !== undefined && request.selectionHost !== null) validateDocumentBlockHost(request.selectionHost)
   if (request.command.activeContentControlId !== undefined && (typeof request.command.activeContentControlId !== 'string'
     || !request.command.activeContentControlId.trim())) throw new TypeError('内容控件输入标识无效。')
   if (request.selection.tableSelection !== undefined) assertDocumentTableViewSelectionShape(request.selection.tableSelection)

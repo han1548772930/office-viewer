@@ -3,8 +3,12 @@ import { COMPUTE_LIMITS, isRecord } from './protocol.ts'
 import type { ComputeTask } from './protocol.ts'
 import { estimateChartTaskMemory, validateChartTask } from './chart-tasks.ts'
 import { estimateSlicerMembersMemory, validateSlicerMembersTask } from './slicer-member-tasks.ts'
+import { estimateCheckboxCellsMemory, validateCheckboxCellsTask } from './checkbox-cell-tasks.ts'
+import { estimateValidationListQueryMemory, validateValidationListQueryTask } from './validation-list-query-tasks.ts'
 
 export function taskViews(task: ComputeTask): Array<Float64Array | Uint8Array | Uint32Array> {
+  if (task.kind === 'validationListQuery') return [task.offsets, task.textBytes, task.queryBytes]
+  if (task.kind === 'checkboxCells') return [task.ranges, task.merges, task.positions, task.actions]
   if (task.kind === 'slicerMembers') return [task.values, task.states, task.textIds, task.availability, task.textOffsets, task.textBytes, task.textRanks]
   if (task.kind === 'chartStatistics') return [task.values, task.states, task.categoryIds]
   if (task.kind === 'sort') return [task.values, task.states, task.directions]
@@ -13,6 +17,14 @@ export function taskViews(task: ComputeTask): Array<Float64Array | Uint8Array | 
 }
 
 export function estimateTaskMemory(task: ComputeTask): { inputBytes: number; estimatedPeakBytes: number } {
+  if (task.kind === 'validationListQuery') {
+    const { inputBytes, estimatedPeakBytes } = estimateValidationListQueryMemory(task.params)
+    return { inputBytes, estimatedPeakBytes }
+  }
+  if (task.kind === 'checkboxCells') {
+    const { inputBytes, estimatedPeakBytes } = estimateCheckboxCellsMemory(task.params)
+    return { inputBytes, estimatedPeakBytes }
+  }
   if (task.kind === 'slicerMembers') {
     const { inputBytes, estimatedPeakBytes } = estimateSlicerMembersMemory(task.params)
     return { inputBytes, estimatedPeakBytes }
@@ -30,6 +42,32 @@ export function estimateTaskMemory(task: ComputeTask): { inputBytes: number; est
 }
 
 export function validateTask(task: unknown, memoryBudgetBytes: number = COMPUTE_LIMITS.defaultMemoryBudget): asserts task is ComputeTask {
+  if (isRecord(task) && task.kind === 'validationListQuery') {
+    validateValidationListQueryTask(task)
+    for (const view of taskViews(task)) {
+      if (!(view.buffer instanceof ArrayBuffer)) throw new ComputeError('COMPUTE_INVALID_INPUT', '列表查询输入必须使用独立的 ArrayBuffer')
+      try { new Uint8Array(view.buffer) } catch { throw new ComputeError('COMPUTE_INVALID_INPUT', '列表查询输入缓冲区已被转移') }
+    }
+    const memory = estimateValidationListQueryMemory(task.params)
+    if (!Number.isSafeInteger(memoryBudgetBytes) || memoryBudgetBytes <= 0 || memoryBudgetBytes > 0xffff_ffff
+      || !Number.isSafeInteger(memory.estimatedPeakBytes) || memory.estimatedPeakBytes > memoryBudgetBytes) {
+      throw new ComputeError('COMPUTE_MEMORY_LIMIT', '列表查询预计内存超过配置预算')
+    }
+    return
+  }
+  if (isRecord(task) && task.kind === 'checkboxCells') {
+    validateCheckboxCellsTask(task)
+    for (const view of taskViews(task)) {
+      if (!(view.buffer instanceof ArrayBuffer)) throw new ComputeError('COMPUTE_INVALID_INPUT', '复选框输入必须使用独立的 ArrayBuffer')
+      try { new Uint8Array(view.buffer) } catch { throw new ComputeError('COMPUTE_INVALID_INPUT', '复选框输入缓冲区已被转移') }
+    }
+    const memory = estimateCheckboxCellsMemory(task.params)
+    if (!Number.isSafeInteger(memoryBudgetBytes) || memoryBudgetBytes <= 0 || memoryBudgetBytes > 0xffff_ffff
+      || !Number.isSafeInteger(memory.estimatedPeakBytes) || memory.estimatedPeakBytes > memoryBudgetBytes) {
+      throw new ComputeError('COMPUTE_MEMORY_LIMIT', '复选框批量计划预计内存超过配置预算')
+    }
+    return
+  }
   if (!isRecord(task) || (task.kind !== 'aggregate' && task.kind !== 'sort' && task.kind !== 'filter' && task.kind !== 'chartStatistics' && task.kind !== 'slicerMembers')
     || !(task.values instanceof Float64Array) || !(task.states instanceof Uint8Array)) {
     throw new ComputeError('COMPUTE_INVALID_INPUT', '计算任务必须提供数值及状态 TypedArray')
@@ -92,6 +130,10 @@ export function validateTask(task: unknown, memoryBudgetBytes: number = COMPUTE_
 }
 
 export function cloneTask(task: ComputeTask): ComputeTask {
+  if (task.kind === 'validationListQuery') return { kind: 'validationListQuery', offsets: task.offsets.slice(),
+    textBytes: task.textBytes.slice(), queryBytes: task.queryBytes.slice(), params: { ...task.params } }
+  if (task.kind === 'checkboxCells') return { kind: 'checkboxCells', ranges: task.ranges.slice(), merges: task.merges.slice(),
+    positions: task.positions.slice(), actions: task.actions.slice(), params: { ...task.params } }
   const common = { values: task.values.slice(), states: task.states.slice() }
   if (task.kind === 'slicerMembers') return { kind: 'slicerMembers', ...common, textIds: task.textIds.slice(),
     availability: task.availability.slice(), textOffsets: task.textOffsets.slice(), textBytes: task.textBytes.slice(),

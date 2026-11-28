@@ -1,7 +1,8 @@
 import type { FormulaNode, FormulaRangeReference, FormulaReference } from './formula-types.ts'
-import { readFormulaReferenceArea } from './formula-reference-areas.ts'
+import { readFormulaReferenceArea, readFormulaSheetQualifier } from './formula-reference-areas.ts'
+import { readFormulaStructuredSpecifier } from './formula-structured-references.ts'
 
-type TokenKind = 'number' | 'string' | 'reference' | 'range' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'separator' | 'colon' | 'bang' | 'percent' | 'error' | 'eof'
+type TokenKind = 'number' | 'string' | 'reference' | 'range' | 'identifier' | 'structured' | 'operator' | 'leftParen' | 'rightParen' | 'separator' | 'colon' | 'percent' | 'error' | 'eof'
 interface Token { kind: TokenKind; text: string; reference?: FormulaReference; range?: FormulaRangeReference; sheetName?: string }
 
 export class FormulaSyntaxError extends Error {
@@ -14,9 +15,6 @@ export class FormulaSyntaxError extends Error {
     this.position = position
   }
 }
-
-const MAX_COLUMN = 16_383
-const MAX_ROW = 1_048_575
 
 export function parseFormula(formula: string): FormulaNode {
   if (typeof formula !== 'string' || !formula.trim()) throw new FormulaSyntaxError('FORMULA_EMPTY', 'Formula cannot be empty', 0)
@@ -38,7 +36,7 @@ function tokenize(source: string): PositionedToken[] {
     if (/\s/.test(character)) { index += 1; continue }
     const start = index
     const axisSpan = readFormulaReferenceArea(source, start)
-    if (axisSpan?.area.kind === 'wholeRow' || axisSpan?.area.kind === 'wholeColumn') {
+    if (axisSpan) {
       const area = axisSpan.area
       if (area.external || area.threeDimensional) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'This workbook has no resolved external or three-dimensional formula source', start)
       if (area.sheetName && area.endSheetName && area.sheetName.toLocaleLowerCase() !== area.endSheetName.toLocaleLowerCase()) {
@@ -53,8 +51,26 @@ function tokenize(source: string): PositionedToken[] {
           absoluteRow: area.kind === 'wholeColumn' || area.absoluteEndRow, absoluteColumn: area.kind === 'wholeRow' || area.absoluteEndColumn },
       }
       index = axisSpan.end
-      push('range', source.slice(start, index), start, { range })
+      if (area.kind === 'cell') push('reference', source.slice(start, index), start, { reference: range.start, sheetName })
+      else push('range', source.slice(start, index), start, { range })
       continue
+    }
+    const qualifier = readFormulaSheetQualifier(source, start)
+    if (qualifier) {
+      if (qualifier.external || qualifier.threeDimensional) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Unresolved external or three-dimensional name scope', start)
+      index = qualifier.end
+      const error = /^#(?:DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|CIRCULAR!)/i.exec(source.slice(index))
+      if (error) { index += error[0].length; push('error', error[0].toUpperCase(), start); continue }
+      const name = /^[\p{L}_\\][\p{L}\p{M}\p{N}_.\\]*/u.exec(source.slice(index))?.[0]
+      if (!name) throw new FormulaSyntaxError('FORMULA_NAME', 'Expected a name after sheet qualifier', index)
+      index += name.length
+      push('identifier', name, start, { sheetName: qualifier.sheetName })
+      continue
+    }
+    if (character === '[') {
+      const parsed = readFormulaStructuredSpecifier(source, index)
+      if (!parsed) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Unclosed structured reference', index)
+      index = parsed.end; push('structured', parsed.specifier, start); continue
     }
     if (character === '"') {
       index += 1
@@ -71,38 +87,11 @@ function tokenize(source: string): PositionedToken[] {
       push('string', value, start)
       continue
     }
-    if (character === "'") {
-      index += 1
-      let sheetName = ''
-      let closed = false
-      while (index < source.length) {
-        const next = source[index++]!
-        if (next === "'") {
-          if (source[index] === "'") { sheetName += "'"; index += 1 }
-          else { closed = true; break }
-        } else sheetName += next
-      }
-      if (!closed || source[index] !== '!') throw new FormulaSyntaxError('FORMULA_SYNTAX', 'Quoted sheet names must be followed by !', start)
-      index += 1
-      const errorReference = /^#(?:DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|CIRCULAR!)/i.exec(source.slice(index))
-      if (errorReference) { index += errorReference[0].length; push('error', errorReference[0].toUpperCase(), start); continue }
-      const parsed = readReference(source, index)
-      if (!parsed) throw new FormulaSyntaxError('FORMULA_SYNTAX', 'Expected a cell reference after sheet name', index)
-      index = parsed.end
-      push('reference', source.slice(start, index), start, { reference: parsed.reference, sheetName })
-      continue
-    }
     if (character === '#') {
       const error = /^#(?:DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|CIRCULAR!)/i.exec(source.slice(index))
       if (!error) throw new FormulaSyntaxError('FORMULA_SYNTAX', 'Unknown formula error token', start)
       index += error[0].length
       push('error', error[0].toUpperCase(), start)
-      continue
-    }
-    const reference = readReference(source, index)
-    if (reference) {
-      index = reference.end
-      push('reference', source.slice(start, index), start, { reference: reference.reference })
       continue
     }
     const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?/.exec(source.slice(index))
@@ -113,7 +102,7 @@ function tokenize(source: string): PositionedToken[] {
       push('number', number[0], start)
       continue
     }
-    const identifier = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(source.slice(index))
+    const identifier = /^[\p{L}_\\][\p{L}\p{M}\p{N}_.\\]*/u.exec(source.slice(index))
     if (identifier) {
       index += identifier[0].length
       push('identifier', identifier[0], start)
@@ -130,33 +119,11 @@ function tokenize(source: string): PositionedToken[] {
     if (character === ')') { index += 1; push('rightParen', character, start); continue }
     if (character === ',' || character === ';') { index += 1; push('separator', character, start); continue }
     if (character === ':') { index += 1; push('colon', character, start); continue }
-    if (character === '!') { index += 1; push('bang', character, start); continue }
     if (character === '%') { index += 1; push('percent', character, start); continue }
     throw new FormulaSyntaxError('FORMULA_TOKEN', `Unexpected character ${character}`, start)
   }
   tokens.push({ kind: 'eof', text: '', position: source.length })
   return tokens
-}
-
-function readReference(source: string, start: number): { reference: FormulaReference; end: number } | undefined {
-  let index = start
-  const absoluteColumn = source[index] === '$'
-  if (absoluteColumn) index += 1
-  const lettersStart = index
-  while (/[A-Za-z]/.test(source[index] ?? '')) index += 1
-  const letters = source.slice(lettersStart, index)
-  if (!letters || letters.length > 3) return undefined
-  const absoluteRow = source[index] === '$'
-  if (absoluteRow) index += 1
-  const digitsStart = index
-  while (/\d/.test(source[index] ?? '')) index += 1
-  const digits = source.slice(digitsStart, index)
-  if (!digits || /^0+$/.test(digits)) return undefined
-  const column = letters.toUpperCase().split('').reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1
-  const row = Number(digits) - 1
-  if (column < 0 || column > MAX_COLUMN || row < 0 || row > MAX_ROW) return undefined
-  if (/[A-Za-z0-9_.]/.test(source[index] ?? '') || /^\s*\(/.test(source.slice(index))) return undefined
-  return { reference: { kind: 'cell', row, column, absoluteRow, absoluteColumn }, end: index }
 }
 
 class Parser {
@@ -227,7 +194,7 @@ class Parser {
         if (firstSheet && lastSheet && firstSheet.toLocaleLowerCase() !== lastSheet.toLocaleLowerCase()) throw new FormulaSyntaxError('FORMULA_RANGE', 'A range cannot span different sheets', this.peek().position)
         const reference: FormulaRangeReference = { kind: 'range', sheetName: firstSheet ?? lastSheet, start: node.reference, end: end.reference }
         node = { kind: 'range', reference }
-      } else if ((node.kind === 'reference' || node.kind === 'range' || node.kind === 'function') && (end.kind === 'reference' || end.kind === 'range' || end.kind === 'function')) {
+      } else if (['reference', 'range', 'function', 'name', 'structured'].includes(node.kind) && ['reference', 'range', 'function', 'name', 'structured'].includes(end.kind)) {
         node = { kind: 'binary', operator: ':', left: node, right: end }
       } else throw new FormulaSyntaxError('FORMULA_RANGE', 'Range endpoints must return references', this.peek().position)
     }
@@ -242,6 +209,7 @@ class Parser {
       if (!token.range) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Invalid whole-axis reference', token.position)
       return { kind: 'range', reference: token.range }
     }
+    if (token.kind === 'structured') return { kind: 'structured', specifier: token.text }
     if (token.kind === 'reference') {
       if (!token.reference) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Invalid cell reference', token.position)
       return { kind: 'reference', reference: { ...token.reference, sheetName: token.sheetName } }
@@ -252,12 +220,7 @@ class Parser {
       return node
     }
     if (token.kind === 'identifier') {
-      if (this.accept('bang')) {
-        const cell = this.take()
-        if (cell.kind === 'error') return { kind: 'error', code: cell.text }
-        if (cell.kind !== 'reference' || !cell.reference) throw new FormulaSyntaxError('FORMULA_REFERENCE', 'Expected a cell reference after sheet name', cell.position)
-        return { kind: 'reference', reference: { ...cell.reference, sheetName: token.text } }
-      }
+      if (this.peek().kind === 'structured') return { kind: 'structured', tableName: token.text, sheetName: token.sheetName, specifier: this.take().text }
       if (this.accept('leftParen')) {
         const args: FormulaNode[] = []
         if (!this.accept('rightParen')) {
@@ -267,9 +230,9 @@ class Parser {
         return { kind: 'function', name: token.text.toLocaleUpperCase(), arguments: args }
       }
       const upper = token.text.toLocaleUpperCase()
-      if (upper === 'TRUE') return { kind: 'literal', value: true }
-      if (upper === 'FALSE') return { kind: 'literal', value: false }
-      throw new FormulaSyntaxError('FORMULA_NAME', `Unknown name ${token.text}`, token.position)
+      if (!token.sheetName && upper === 'TRUE') return { kind: 'literal', value: true }
+      if (!token.sheetName && upper === 'FALSE') return { kind: 'literal', value: false }
+      return { kind: 'name', name: token.text, sheetName: token.sheetName }
     }
     throw new FormulaSyntaxError('FORMULA_SYNTAX', `Unexpected token ${token.text || 'end of formula'}`, token.position)
   }

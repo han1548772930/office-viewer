@@ -33,7 +33,7 @@ fn rewrite(bytes: &[u8], name: &str, replacement: Option<&[u8]>, append: Option<
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..archive.len() {
         let mut source = archive.by_index(index).unwrap();
-        let source_name = source.name().to_owned();
+        let source_name = source.name().unwrap().into_owned();
         if source_name == name && replacement.is_none() { continue; }
         let mut data = Vec::new();
         if source_name == name { data.extend_from_slice(replacement.unwrap()); }

@@ -16,7 +16,8 @@ impl PackageNames {
             if entry.is_dir() { continue; }
             // ZIP producers use both literal names and URI-escaped names. A
             // reference is ambiguous if either spelling aliases two entries.
-            let keys = [contract::part_name_from_zip(entry.name()), contract::canonical_part_name(entry.name())]
+            let name = entry.name().map_err(|error| error.to_string())?;
+            let keys = [contract::part_name_from_zip(&name), contract::canonical_part_name(&name)]
                 .into_iter().filter_map(Result::ok).map(|name| name.to_ascii_lowercase()).collect::<BTreeSet<_>>();
             for key in keys {
                 let previous = entries.entry(key).or_insert(Some(index));

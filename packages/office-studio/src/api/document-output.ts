@@ -12,6 +12,7 @@ import { writePublicDocumentNotes } from './document-output-notes'
 import { assertOfficeDocumentSnapshotCommentAnchors } from './document-snapshot-source'
 import type { UniverDocumentData } from './document-snapshot-types'
 import { readDocumentPluginResources, refreshDocumentLatexPluginWrapper, writeDocumentPluginResources } from './document-plugin-resources'
+import { documentEffectiveZoomRatio } from '../features/document/services/document-zoom'
 
 /** Detached v1.6.0 snapshot. It is built from the current command model, not
  * the unchanged input stream retained for Office/source preservation. */
@@ -44,6 +45,7 @@ export function documentToPublicSnapshot(model: DocumentModel, revision = 0): Un
   for (const key of ['univerDocumentSource', 'univerBodySource', 'univerBodyFirstSectionSource', 'documentEditingBlockHost',
     'documentEditingBlockSourceId', 'documentEditingSectionId', 'documentEditingSectionIds']) delete metadata[key]
   const snapshot: UniverDocumentData = { ...source, ...data, id: model.id, title: model.name, rev: sourceRevision + revision, documentStyle: style,
+    settings: { ...bodyRecord(source.settings), zoomRatio: documentEffectiveZoomRatio(model) },
     styles: model.metadata?.documentStyles ? cloneModel(bodyRecord(model.metadata.documentStyles)) as UniverDocumentData['styles'] : undefined,
     tableSource: data.tableSource, drawings: data.drawings, drawingsOrder: data.drawingsOrder, lists: data.lists,
     callouts: undefined, codes: undefined, latexFormulas: undefined,

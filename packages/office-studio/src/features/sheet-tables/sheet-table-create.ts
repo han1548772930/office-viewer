@@ -31,15 +31,16 @@ export interface SheetTableSelectorRequest {
   expectedUserId: string
 }
 
-export function assertSheetTableCommandContext(input: SheetTableCommandContext & { unitId?: string; sheetId?: string; subUnitId?: string }): void {
+export function assertSheetTableCommandContext(input: unknown): asserts input is SheetTableCommandContext & { unitId?: string; sheetId?: string; subUnitId?: string } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('表格命令参数无效。')
-  for (const id of [input.unitId, input.sheetId, input.subUnitId, input.expectedUserId]) {
+  for (const key of ['unitId', 'sheetId', 'subUnitId', 'expectedUserId'] as const) {
+    const id = key in input ? input[key] : undefined
     if (id !== undefined && (typeof id !== 'string' || !id.trim())) throw new TypeError('表格命令身份无效。')
   }
-  if (input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('表格目标工作表不一致。')
-  if (input.expectedRevision !== undefined && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)) throw new TypeError('表格工作簿版本无效。')
-  if (input.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(input.expectedHistoryGeneration) || input.expectedHistoryGeneration <= 0)) throw new TypeError('表格历史版本无效。')
-  if (input.host !== undefined && input.host !== 'workbench') throw new TypeError('表格工作台宿主无效。')
+  if ('sheetId' in input && 'subUnitId' in input && input.sheetId !== undefined && input.subUnitId !== undefined && input.sheetId !== input.subUnitId) throw new TypeError('表格目标工作表不一致。')
+  if ('expectedRevision' in input && input.expectedRevision !== undefined && (typeof input.expectedRevision !== 'number' || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)) throw new TypeError('表格工作簿版本无效。')
+  if ('expectedHistoryGeneration' in input && input.expectedHistoryGeneration !== undefined && (typeof input.expectedHistoryGeneration !== 'number' || !Number.isSafeInteger(input.expectedHistoryGeneration) || input.expectedHistoryGeneration <= 0)) throw new TypeError('表格历史版本无效。')
+  if ('host' in input && input.host !== undefined && input.host !== 'workbench') throw new TypeError('表格工作台宿主无效。')
 }
 
 export function sheetTableSelectorRange(sheet: SpreadsheetSheet, range?: CellRange): CellRange {
@@ -57,7 +58,8 @@ export function sheetTableCreationRange(sheet: SpreadsheetSheet, range: SheetCom
 
 export function createSheetTableCommandCandidate(workbook: WorkbookModel, sheetId: string, input: AddSheetTableCommandInput,
   labels: { tablePrefix: string; columnPrefix: string }): WorkbookModel {
-  const sheet = workbook.sheets.find(item => item.id === sheetId)!
+  const sheet = workbook.sheets.find(item => item.id === sheetId)
+  if (!sheet) throw new RangeError('找不到表格的目标工作表。')
   if (input.id !== undefined && (typeof input.id !== 'string' || !input.id.trim())) throw new TypeError('表格 ID 无效。')
   if (input.name !== undefined && typeof input.name !== 'string') throw new TypeError('表格名称无效。')
   if (input.id !== undefined && workbook.tables?.some(table => table.id === input.id)) throw new RangeError('表格 ID 已存在。')

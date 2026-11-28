@@ -2,6 +2,7 @@ import type { PivotTableModel, SpreadsheetSheet, WorkbookModel } from '../../dom
 import { cloneModel } from '../../domain/serialization.ts'
 import { mapConditionalFormatFormulas } from '../conditional-formatting/conditional-format-formulas.ts'
 import { mapFormulaReferenceAreas } from '../formula/formula-reference-areas.ts'
+import { composeFormulaImportAliases, readFormulaImportAliases, readFormulaImportSource, rewriteFormulaImportCell, rewriteFormulaImportSheetAliases } from '../formula/formula-import-context.ts'
 import { canViewProtectedRanges, canViewWorksheetProtection } from '../sheet-protection/range-protection.ts'
 import { remapSheetClipboardTableFormula } from './sheet-clipboard-workbook-resources.ts'
 import { moveSheetClipboardHyperlink } from './sheet-clipboard-references.ts'
@@ -85,7 +86,7 @@ function copyLocalNames(metadata: Record<string, unknown> | undefined, source: S
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
       const record = entry as Record<string, unknown>
       const owns = record.sheetId === source.id || record.subUnitId === source.id || record.sheet === source.name
-        || record.localSheetId === sourceIndex || !workbookScope && record.sheetId === undefined && record.sheet === undefined
+        || record.localSheetId === sourceIndex || record.localSheetId === source.id || !workbookScope && record.sheetId === undefined && record.sheet === undefined
           && record.localSheetId === undefined && record.subUnitId === undefined
       if (owns) {
         const copied = { ...record,
@@ -93,8 +94,9 @@ function copyLocalNames(metadata: Record<string, unknown> | undefined, source: S
           ...(record.sheetId === undefined ? {} : { sheetId: target.id }),
           ...(record.subUnitId === undefined ? {} : { subUnitId: target.id }),
           ...(record.sheet === undefined ? {} : { sheet: target.name }),
-          ...(record.localSheetId === undefined ? {} : { localSheetId: sourceIndex + 1 }),
+          ...(record.localSheetId === undefined ? {} : { localSheetId: typeof record.localSheetId === 'string' ? target.id : sourceIndex + 1 }),
           ...(typeof record.refersTo === 'string' ? { refersTo: remap(record.refersTo) } : {}),
+          ...(typeof record.formulaOrRefString === 'string' ? { formulaOrRefString: remap(record.formulaOrRefString) } : {}),
         }
         if (!workbookScope) return copied
         copies.push(copied)
@@ -216,7 +218,11 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
     // Cell IDs are sheet-local coordinates; only workbook-level resource identities are regenerated.
     cell.id = `${cell.row}:${cell.col}`
     if (cell.image) cell.image = copySheetCellImage(cell.image)
-    if (cell.formula) cell.formula = remap(cell.formula)
+    if (cell.formula) {
+      rewriteFormulaImportCell(cell, remap(cell.formula))
+      const marker = readFormulaImportSource(cell)
+      if (marker?.aliasSheetId === source.id) cell.metadata = { ...cell.metadata, chartDependencyFormulaSource: { ...marker, aliasSheetId: target.id } }
+    }
     if (cell.sparkline) cell.sparkline.sourceRange = remap(cell.sparkline.sourceRange)
     if (cell.hyperlink) cell.hyperlink = moveSheetClipboardHyperlink(cell.hyperlink, original, move)
     if (cell.richText) cell.richText = cell.richText.map(run => typeof run.hyperlink === 'string'
@@ -237,6 +243,10 @@ export function planWorksheetCopy(original: WorkbookModel, sourceSheetId: string
   if (target.worksheetProtection) target.worksheetProtection = { ...target.worksheetProtection,
     id: newId('worksheet-protection'), permissionId: newId('permission'), ownerUserId: options.userId }
   target.metadata = copyLocalNames(target.metadata, source, target, sourceIndex, remap, false)
+  rewriteFormulaImportSheetAliases(target, source.name, target.name)
+  const aliases = readFormulaImportAliases(target), provenance = target.metadata?.chartDependencyImport
+  if (aliases && provenance && typeof provenance === 'object' && !Array.isArray(provenance)) target.metadata = { ...target.metadata,
+    chartDependencyImport: { ...provenance, formulaAliases: composeFormulaImportAliases({ sheets: {}, names: {}, tables: Object.fromEntries(tableNames) }, aliases) } }
   workbook.metadata = copyLocalNames(workbook.metadata, source, target, sourceIndex, remap, true)
   if (drawingIds.size || source.drawingState) {
     const state = cloneModel(source.drawingState ?? createSheetDrawingScene(original, source.id).state)

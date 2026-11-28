@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 
-use quick_xml::{Reader, XmlVersion, encoding::Decoder, events::{BytesStart, Event}};
+use quick_xml::{Reader, XmlVersion, events::{BytesStart, Event}};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -252,15 +252,15 @@ impl NativeOutlineSource {
     }
 }
 
-fn attributes(element: &BytesStart<'_>, decoder: Decoder, namespaces: &XmlNamespaces) -> Result<BTreeMap<String, String>, String> {
+fn attributes(element: &BytesStart<'_>, namespaces: &XmlNamespaces) -> Result<BTreeMap<String, String>, String> {
     let mut result = BTreeMap::new();
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;
         if attribute.key.as_namespace_binding().is_some() { continue; }
-        let name = std::str::from_utf8(attribute.key.local_name().as_ref()).map_err(|error| error.to_string())?.to_owned();
+        let name = std::str::from_utf8(attribute.key.local_name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
         let namespace = namespaces.namespace(attribute.key, true)?.unwrap_or("");
         let key = if namespace.is_empty() { name } else { format!("{{{namespace}}}{name}") };
-        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, decoder, 1, quick_xml::escape::resolve_xml_entity)
+        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity)
             .map_err(|error| error.to_string())?.into_owned();
         if !value.chars().all(xml_character) || result.insert(key, value).is_some() { return Err("invalid or duplicate expanded outline attribute".into()); }
     }
@@ -319,19 +319,19 @@ fn native_run(mut attrs: BTreeMap<String, String>, bindings: &BTreeMap<String, S
     Ok(Some(NativeOutlineRun { start, end, level, collapsed, hidden, attributes: attrs, namespaces }))
 }
 
-fn source_node(tag: &BytesStart<'_>, decoder: Decoder, namespaces: &XmlNamespaces, bindings: &BTreeMap<String, String>) -> Result<Element, String> {
+fn source_node(tag: &BytesStart<'_>, namespaces: &XmlNamespaces, bindings: &BTreeMap<String, String>) -> Result<Element, String> {
     let namespace = namespaces.namespace(tag.name(), false)?.unwrap_or("");
-    let name = std::str::from_utf8(tag.local_name().as_ref()).map_err(|error| error.to_string())?.to_owned();
+    let name = std::str::from_utf8(tag.local_name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
     let mut node = Element::new(namespace, &name);
-    node.qualified_name = std::str::from_utf8(tag.name().as_ref()).map_err(|error| error.to_string())?.to_owned();
+    node.qualified_name = std::str::from_utf8(tag.name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
     for (prefix, namespace) in bindings {
         node.set_attr(&if prefix.is_empty() { "xmlns".into() } else { format!("xmlns:{prefix}") }, namespace);
     }
     for attribute in tag.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;
         if attribute.key.as_namespace_binding().is_some() { continue; }
-        let key = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?;
-        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, decoder, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
+        let key = std::str::from_utf8(attribute.key.as_ref().as_bytes()).map_err(|error| error.to_string())?;
+        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?;
         node.set_attr_ns(namespaces.namespace(attribute.key, true)?.unwrap_or(""), key, value.into_owned());
     }
     Ok(node)
@@ -386,21 +386,21 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
             Event::Start(ref tag) | Event::Empty(ref tag) => {
                 let empty = matches!(&event, Event::Empty(_));
                 if path.len() >= 128 { return Err("outline worksheet nesting exceeds 128".into()); }
-                namespaces.push(tag, reader.decoder())?;
+                namespaces.push(tag)?;
                 let mut scope = Vec::new();
                 for attribute in tag.attributes() {
                     let attribute = attribute.map_err(|error| error.to_string())?;
-                    let key = std::str::from_utf8(attribute.key.as_ref()).map_err(|error| error.to_string())?;
+                    let key = std::str::from_utf8(attribute.key.as_ref().as_bytes()).map_err(|error| error.to_string())?;
                     let prefix = if key == "xmlns" { Some("") } else { key.strip_prefix("xmlns:") };
                     if let Some(prefix) = prefix {
-                        let value = attribute.decoded_and_normalized_value_with(XmlVersion::Implicit1_0, reader.decoder(), 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
+                        let value = attribute.normalized_value_with(XmlVersion::Implicit1_0, 1, quick_xml::escape::resolve_xml_entity).map_err(|error| error.to_string())?.into_owned();
                         scope.push((prefix.to_owned(), bindings.insert(prefix.to_owned(), value)));
                     }
                 }
                 let namespace = namespaces.namespace(tag.name(), false)?.unwrap_or("").to_owned();
-                let name = std::str::from_utf8(tag.local_name().as_ref()).map_err(|error| error.to_string())?.to_owned();
+                let name = std::str::from_utf8(tag.local_name().as_ref().as_bytes()).map_err(|error| error.to_string())?.to_owned();
                 let main = matches!(namespace.as_str(), MAIN_NAMESPACE | STRICT_MAIN_NAMESPACE);
-                let attrs = attributes(tag, reader.decoder(), &namespaces)?;
+                let attrs = attributes(tag, &namespaces)?;
                 if path.is_empty() {
                     if root_seen || !main || name != "worksheet" { return Err("invalid or duplicate outline worksheet root".into()); }
                     root_seen = true;
@@ -414,14 +414,14 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
                     if outline_pr_count > 1 { return Err("duplicate standard outlinePr".into()); }
                     source.summary_above = !flag(attrs.get("summaryBelow"), true)?;
                     source.summary_left = !flag(attrs.get("summaryRight"), true)?;
-                    let node = source_node(tag, reader.decoder(), &namespaces, &bindings)?;
+                    let node = source_node(tag, &namespaces, &bindings)?;
                     tree_bytes += tag.len();
                     tree_nodes += 1;
                     if empty { source.outline_pr_xml = Some(node.render()); } else { tree.push(node); }
                 } else if !tree.is_empty() {
                     tree_bytes = tree_bytes.saturating_add(tag.len());
                     tree_nodes += 1;
-                    let node = source_node(tag, reader.decoder(), &namespaces, &bindings)?;
+                    let node = source_node(tag, &namespaces, &bindings)?;
                     if empty { tree.last_mut().unwrap().push(node); } else { tree.push(node); }
                 }
                 if main && name == "row" && standard_parent(&["worksheet", "sheetData"]) {
@@ -467,24 +467,24 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
                 restore_bindings(&mut bindings, binding_scopes.pop().ok_or_else(|| "unmatched outline namespace scope".to_owned())?);
                 namespaces.pop();
             }
-            Event::Text(text) => { let value = text.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
+            Event::Text(text) => { let value = text.xml_content(XmlVersion::Implicit1_0);
                 if path.is_empty() && !value.trim().is_empty() { return Err("text outside the outline worksheet root".into()); }
                 append_text(&mut capture, &mut tree, &value, &mut tree_bytes)?; }
-            Event::CData(text) => { let value = text.xml_content(XmlVersion::Implicit1_0).map_err(|error| error.to_string())?;
+            Event::CData(text) => { let value = text.xml_content(XmlVersion::Implicit1_0);
                 if path.is_empty() { return Err("CDATA outside the outline worksheet root".into()); }
                 append_text(&mut capture, &mut tree, &value, &mut tree_bytes)?; }
             Event::GeneralRef(reference) => {
                 let value = if let Some(character) = reference.resolve_char_ref().map_err(|error| error.to_string())? { character.to_string() }
-                    else { let name = reference.decode().map_err(|error| error.to_string())?;
+                    else { let name = reference.as_ref();
                         quick_xml::escape::resolve_xml_entity(&name).ok_or_else(|| "unknown outline XML entity".to_owned())?.to_owned() };
                 append_text(&mut capture, &mut tree, &value, &mut tree_bytes)?;
             }
             Event::Comment(comment) => {
-                if let Some(node) = tree.last_mut() { let value = comment.decode().map_err(|error| error.to_string())?.into_owned();
+                if let Some(node) = tree.last_mut() { let value = comment.as_ref().to_owned();
                     tree_bytes += value.len(); node.content.push(Content::Comment(value)); }
             }
             Event::PI(instruction) => { if let Some(node) = tree.last_mut() {
-                let value = std::str::from_utf8(instruction.as_ref()).map_err(|error| error.to_string())?.to_owned();
+                let value = instruction.as_ref().to_owned();
                 tree_bytes += value.len(); node.content.push(Content::Instruction(value));
             } }
             Event::Decl(declaration) => { if root_seen { return Err("misplaced outline XML declaration".into()); } validate_declaration(declaration.as_ref())?; }

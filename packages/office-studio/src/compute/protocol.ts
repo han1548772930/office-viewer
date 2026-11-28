@@ -2,6 +2,10 @@ import { WASM_PROTOCOL_VERSION } from '../platform/wasm/task-protocol.ts'
 import type { BoundaryCopyStats, WasmTaskControl, WorkerTransportStats } from '../platform/wasm/task-protocol.ts'
 import type { ChartStatisticsOutput, ChartStatisticsTask } from './chart-protocol.ts'
 import type { SlicerMembersOutput, SlicerMembersTask } from './slicer-member-protocol.ts'
+import type { CheckboxCellsOutput, CheckboxCellsTask } from './checkbox-cell-protocol.ts'
+import type { ValidationListQueryOutput, ValidationListQueryTask } from './validation-list-query-protocol.ts'
+export type { ValidationListQueryOutput, ValidationListQueryParams, ValidationListQueryTask } from './validation-list-query-protocol.ts'
+export type { CheckboxCellsOutput, CheckboxCellsParams, CheckboxCellsTask } from './checkbox-cell-protocol.ts'
 export type { SlicerMembersOutput, SlicerMembersParams, SlicerMembersTask } from './slicer-member-protocol.ts'
 export type { ChartStatisticsFit, ChartStatisticsJob, ChartStatisticsOutput, ChartStatisticsParams,
   ChartStatisticsSegment, ChartStatisticsSeries, ChartStatisticsTask } from './chart-protocol.ts'
@@ -31,7 +35,7 @@ export interface FilterTask extends NumericColumn {
   kind: 'filter'; rowCount: number; operators: Uint8Array
   lower: Float64Array; upper: Float64Array; match: 'all' | 'any'
 }
-export type ComputeTask = AggregateTask | SortTask | FilterTask | ChartStatisticsTask | SlicerMembersTask
+export type ComputeTask = AggregateTask | SortTask | FilterTask | ChartStatisticsTask | SlicerMembersTask | CheckboxCellsTask | ValidationListQueryTask
 export type ComputeErrorCode =
   | 'COMPUTE_INVALID_INPUT' | 'COMPUTE_MEMORY_LIMIT' | 'COMPUTE_UNSUPPORTED_TYPE'
   | 'COMPUTE_WASM_LOAD_FAILED' | 'COMPUTE_WASM_API_MISSING' | 'COMPUTE_PROTOCOL_MISMATCH'
@@ -44,7 +48,7 @@ export interface ComputeContext { requestId: string; documentId: string; modelRe
 export interface ComputeProgress extends ComputeContext {
   type: 'progress'; phase: 'initializing' | 'computing' | 'completed'
   ratio: number; processed: number; total: number
-  unit: 'values' | 'rows' | 'merge-writes' | 'jobs'
+  unit: 'values' | 'rows' | 'merge-writes' | 'jobs' | 'cells'
 }
 export type ComputeWorkerProgress = Omit<ComputeProgress, keyof ComputeContext> & { context: WasmTaskControl }
 export interface NumericStatistics {
@@ -56,7 +60,7 @@ export interface NumericStatistics {
 }
 export interface AggregateOutput { kind: 'aggregate'; statistics: NumericStatistics }
 export interface IndexOutput { kind: 'sort' | 'filter'; indices: Uint32Array }
-export type ComputeOutput = AggregateOutput | IndexOutput | ChartStatisticsOutput | SlicerMembersOutput
+export type ComputeOutput = AggregateOutput | IndexOutput | ChartStatisticsOutput | SlicerMembersOutput | CheckboxCellsOutput | ValidationListQueryOutput
 export interface ComputeMetrics {
   elapsedMs: number; inputBytes: number; estimatedPeakBytes: number
   boundary: BoundaryCopyStats; transport: WorkerTransportStats

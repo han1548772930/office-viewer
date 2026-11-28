@@ -102,7 +102,7 @@ export function useSheetCellShift(context: SheetCellShiftUiContext) {
     const sheet = model.sheets.find(item => item.id === sheetId)
     if (!sheet || !canViewWorksheetProtection(sheet, context.userId())) throw new Error('找不到可访问的移位工作表。')
     if (commandId === SHEET_CELL_SHIFT_CONFIRM_COMMANDS[direction]) assertSheetCellShiftConfirmationAllowed(model, sheetId, sheetCellShiftEdit(range, direction))
-    const plan = planWorkbookCellShiftCommand(model, sheetId, range, direction, context.userId(), input.dismantlePartialMerges, ranges)
+    const plan = planWorkbookCellShiftCommand(model, sheetId, range, direction, context.userId(), input.dismantlePartialMerges, ranges, context.region())
     if (!sameHost() || !host.sourceCurrent() || JSON.stringify(context.workbook()) !== signature) return false
     if (plan.requiresConfirmation) {
       pending.value = { request: { requestId: crypto.randomUUID(), workbookId: view.id ?? '', sheetId, commandId, baseRevision: 0,

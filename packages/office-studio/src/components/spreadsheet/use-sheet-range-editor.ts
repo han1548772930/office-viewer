@@ -127,7 +127,8 @@ export function useSheetRangeEditor(context: SheetRangeEditorContext) {
       const target = candidate.sheets.find(item => item.id === sheet.value!.id)!
       changed = applySheetViewClearCommand(target, context.ranges(), mode, context.userId())
       if (changed) {
-        if (mode !== 'format') assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === target.id)!, applyExcelWorkbookView(before, candidate, context.region()), target.id)
+        if (mode !== 'format') assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === target.id)!,
+          applyExcelWorkbookView(before, candidate, context.region()), target.id, { userId: context.userId(), region: context.region() })
         context.applyView(candidate)
       }
     }
@@ -156,7 +157,8 @@ export function useSheetRangeEditor(context: SheetRangeEditorContext) {
     }
     if (!result.changed) return false
     const before = applyExcelWorkbookView(createBlankWorkbook(), current, context.region())
-    if (action.kind === 'merge') assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === targetId)!, applyExcelWorkbookView(before, candidate, context.region()), targetId)
+    if (action.kind === 'merge') assertSheetRangeChangedValuesValid(before.sheets.find(item => item.id === targetId)!,
+      applyExcelWorkbookView(before, candidate, context.region()), targetId, { userId: context.userId(), region: context.region() })
     context.applyView(candidate)
     if (action.kind === 'unmerge') context.resetPrimary()
     context.changed(action.kind === 'merge')
