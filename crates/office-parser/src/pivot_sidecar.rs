@@ -362,11 +362,11 @@ fn parse_xml(source: &str) -> Result<Node, String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
-                let node = node_from(&reader, &element)?;
+                let node = node_from(&element)?;
                 stack.push(node);
             }
             Ok(Event::Empty(element)) => {
-                let node = node_from(&reader, &element)?;
+                let node = node_from(&element)?;
                 stack.last_mut().unwrap().children.push(node);
             }
             Ok(Event::Text(text)) => {
@@ -405,7 +405,6 @@ fn parse_xml(source: &str) -> Result<Node, String> {
 }
 
 fn node_from(
-    reader: &Reader<&[u8]>,
     element: &quick_xml::events::BytesStart<'_>,
 ) -> Result<Node, String> {
     let name = local_name(element.name().as_ref().as_bytes());

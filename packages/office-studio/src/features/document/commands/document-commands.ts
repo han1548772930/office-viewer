@@ -17,7 +17,7 @@ import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFoo
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, prepareDocumentPageSetup, type DocumentPageSetupRequest, type DocumentSectionSetupPatch } from '../services/document-settings'
 import { applyDocumentTocMutation, applyDocumentTocPageNumberUpdate, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
 import { prepareDocumentTocAction, prepareDocumentTocInsertion, type DocumentTocInsertionRequest } from '../toc/document-toc-command'
-import { setDocumentHeadingCollapsed } from '../headings/heading-collapse'
+import { documentHeadingExpansionForEdit, setDocumentHeadingCollapsed } from '../headings/heading-collapse'
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, resolveDocumentPermission, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { cloneModel } from '../../../domain/serialization'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
@@ -376,6 +376,17 @@ export function executeDocumentCommand(
   permissionContext?: DocumentPermissionContext,
   sourceModel: DocumentModel = model,
 ): DocumentSelection {
+  const expandsHeading = documentHeadingExpansionForEdit(model, selection, command)
+  if (expandsHeading) {
+    const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }
+    const candidate = cloneModel(model)
+    const expandedSelection = setDocumentHeadingCollapsed(candidate, selection, expandsHeading, false, context)
+    const next = command.id === 'doc.command.insert-text'
+      ? executeDocumentCommand(candidate, expandedSelection, command, context, sourceModel) : expandedSelection
+    assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+    Object.assign(model, candidate)
+    return next
+  }
   if (command.id === 'docs.command.page-setup') {
     if (command.host) throw new RangeError('页面设置作用于完整文档。')
     const context = permissionContext ?? { documentId: model.id ?? '', userId: 'local-user' }

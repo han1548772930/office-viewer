@@ -146,6 +146,92 @@ fn explicit_null_conditions_reopen_without_becoming_missing_operands() {
 }
 
 #[test]
+fn compound_conditions_reopen_with_exact_join_operands_and_independent_hide_reasons() {
+    for join in ["and", "or"] {
+        let criterion = json!({ "kind": "compound", "join": join, "conditions": [
+            { "kind": "condition", "operator": "greaterThan", "value": 2, "caseSensitive": false },
+            { "kind": "condition", "operator": "doesNotEqual", "value": 3, "caseSensitive": false }
+        ] });
+        let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = criterion.clone();
+        let reopened = parsed(&export(sheet));
+        let sheet = &reopened["payload"]["data"]["sheets"][0];
+        assert_eq!(sheet["autoFilter"]["columns"]["1"], criterion);
+        assert_eq!(sheet["hiddenRows"], json!([3]));
+        assert_eq!(sheet["autoFilter"]["filteredRows"], json!([2, 3, 5]));
+        let native = &sheet["sourceAutoFilter"]["children"][0]["children"][0];
+        assert_eq!(native["name"], "customFilters");
+        assert_eq!(native["attributes"]["and"], if join == "and" { "1" } else { "0" });
+        assert_eq!(native["children"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn externally_changed_compound_join_invalidates_the_saved_predicate_and_projects_both_native_terms() {
+    let mut sheet = source(); sheet["cells"]["4:1"]["value"] = json!(4);
+    sheet["autoFilter"]["columns"]["1"] = json!({ "kind": "compound", "join": "and", "conditions": [
+        { "kind": "condition", "operator": "greaterThan", "value": 2 },
+        { "kind": "condition", "operator": "doesNotEqual", "value": 3 }
+    ] });
+    let edited = rewrite(&export(sheet), |xml| xml.replace("<customFilters and=\"1\">", "<customFilters and=\"0\">"));
+    let reopened = parsed(&edited); let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["autoFilter"]["columns"]["1"], json!({ "kind": "compound", "join": "or", "conditions": [
+        { "kind": "condition", "operator": "greaterThan", "value": 2.0 },
+        { "kind": "condition", "operator": "doesNotEqual", "value": 3.0 }
+    ] }));
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAutoFilterExtension"]["restored"], false);
+}
+
+#[test]
+fn native_two_predicate_limit_reports_a_snapshot_without_losing_the_complete_compound_expression() {
+    let criterion = json!({ "kind": "compound", "join": "or", "conditions": [
+        { "kind": "condition", "operator": "between", "value": 1, "secondValue": 2, "caseSensitive": false },
+        { "kind": "condition", "operator": "between", "value": 4, "secondValue": 8, "caseSensitive": false }
+    ] });
+    let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = criterion.clone();
+    let model = json!({ "kind": "workbook", "sheets": [sheet] });
+    let (bytes, warnings) = office_writer::export_xlsx_bytes(&model.to_string()).unwrap();
+    assert!(warnings.iter().any(|warning| warning.code == "AUTOFILTER_COMPOUND_SNAPSHOT"));
+    let reopened = parsed(&bytes);
+    assert_eq!(reopened["payload"]["data"]["sheets"][0]["autoFilter"]["columns"]["1"], criterion);
+}
+
+#[test]
+fn compound_writer_rejects_empty_nested_unknown_join_and_missing_interval_operands() {
+    for criterion in [
+        json!({ "kind": "compound", "join": "and", "conditions": [] }),
+        json!({ "kind": "compound", "join": "xor", "conditions": [{ "kind": "condition", "operator": "isBlank" }] }),
+        json!({ "kind": "compound", "join": "and", "conditions": [{ "kind": "compound", "join": "or", "conditions": [] }] }),
+        json!({ "kind": "compound", "join": "or", "conditions": [{ "kind": "condition", "operator": "between", "value": 1 }] }),
+    ] {
+        let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = criterion;
+        assert!(office_writer::export_xlsx_bytes(&json!({ "kind": "workbook", "sheets": [sheet] }).to_string()).is_err());
+    }
+}
+
+#[test]
+fn fixed_text_wildcards_retain_star_question_and_literal_tilde_in_native_custom_filters() {
+    let mut sheet = source();
+    sheet["autoFilter"]["columns"]["1"] = json!({ "kind": "condition", "operator": "equals", "value": "A*B?~", "caseSensitive": false });
+    let bytes = export(sheet); let reopened = parsed(&bytes);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["sourceAutoFilter"]["children"][0]["children"][0]["children"][0]["attributes"]["val"], "A*B?~~");
+    let edited = rewrite(&bytes, |xml| xml.replace("val=\"A*B?~~\"", "val=\"C*D?~~\""));
+    let reopened = parsed(&edited);
+    assert_eq!(reopened["payload"]["data"]["sheets"][0]["autoFilter"]["columns"]["1"]["value"], "C*D?~");
+}
+
+#[test]
+fn native_escaped_literal_wildcards_keep_source_and_visibility_without_becoming_a_match_all_predicate() {
+    let mut sheet = source();
+    sheet["autoFilter"]["columns"]["1"] = json!({ "kind": "condition", "operator": "equals", "value": "A*B", "caseSensitive": false });
+    let edited = rewrite(&export(sheet), |xml| xml.replace("val=\"A*B\"", "val=\"A~*B\""));
+    let reopened = parsed(&edited); let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert!(sheet.get("autoFilter").is_none());
+    assert_eq!(sheet["sourceAutoFilter"]["children"][0]["children"][0]["children"][0]["attributes"]["val"], "A~*B");
+    assert_eq!(sheet["hiddenRows"], json!([2, 3, 5]));
+}
+
+#[test]
 fn independent_filter_fingerprint_keeps_typed_criteria_after_external_row_resize() {
     let bytes = export(source());
     let resized = rewrite(&bytes, |xml| xml.replace("ht=\"24.375\"", "ht=\"30\""));

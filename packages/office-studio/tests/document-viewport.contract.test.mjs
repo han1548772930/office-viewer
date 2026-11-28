@@ -29,6 +29,20 @@ test('a hidden viewport reports no visible paragraph or active page', () => {
   assert.equal(location.firstVisibleBlockId, undefined)
 })
 
+test('a visible table paragraph reports its root and real paragraph IDs without changing root-line DTOs', () => {
+  const nested = { ...layout, lines: [
+    { y: 100, height: 22, target: { blockId: 'table', row: 0, col: 1, cellBlockId: 'cell-heading' } },
+    { y: 122, height: 22, target: { blockId: 'next-heading' } },
+  ] }
+  assert.deepEqual(documentViewportLocation(nested, viewport), {
+    pageIndex: 0, firstVisibleBlockId: 'table', firstVisibleParagraphId: 'cell-heading', top: 0, bottom: 600, left: -75, right: 925,
+  })
+  const root = documentViewportLocation(nested, { ...viewport, scrollTop: 122 })
+  assert.equal(root.firstVisibleBlockId, 'next-heading')
+  assert.equal(Object.hasOwn(root, 'firstVisibleParagraphId'), false)
+  assert.equal(documentViewportLocation(nested, { ...viewport, height: 0 }).firstVisibleParagraphId, undefined)
+})
+
 test('visible line bounds are strict at page edges and do not confuse paragraph start with visibility', () => {
   assert.equal(documentViewportLocation(layout, { ...viewport, scrollTop: 110, height: 20 }).firstVisibleBlockId, 'heading-1')
   assert.equal(documentViewportLocation(layout, { ...viewport, scrollTop: 122, height: 20 }).firstVisibleBlockId, 'paragraph-1')

@@ -331,10 +331,6 @@ fn native_xml_contract(numbering_xml: &str, id: u32) -> Option<String> {
     Some(format!("<nativeContract>{}{number}</nativeContract>", &numbering_xml[start..end]))
 }
 
-pub(crate) fn prepare_sequences(blocks: &[Value], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str, preserved: &PreservedMarkerPlan) -> Result<SequencePlan, ExportError> {
-    prepare_sequence_groups(&[blocks], lookup, instances, numbering_xml, preserved)
-}
-
 pub(crate) fn prepare_sequence_groups(block_groups: &[&[Value]], lookup: &HashMap<usize, u32>, instances: &[NumberingInstance], numbering_xml: &str, preserved: &PreservedMarkerPlan) -> Result<SequencePlan, ExportError> {
     let mut plan = SequencePlan { next_bookmark: preserved.next_bookmark, sequence_prefix: preserved.sequence_prefix.clone(), bookmark_names: preserved.bookmark_names.clone(), ..Default::default() };
     let by_id = instances.iter().map(|instance| (instance.id, instance)).collect::<HashMap<_, _>>();

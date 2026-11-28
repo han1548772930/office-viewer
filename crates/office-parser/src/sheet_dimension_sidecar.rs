@@ -202,7 +202,7 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                 let filter_root = fingerprint.path_is(&[b"worksheet"]) && name.as_ref() == "autoFilter" && is_sheet;
                 filter_projection.start(&reader, element, filter_root, matches!(&event, Event::Empty(_)))?;
                 if fingerprint.path_is(&[b"worksheet", b"extLst"]) && name.as_ref() == "ext" && is_sheet {
-                    match attributes(&reader, element) {
+                    match attributes(element) {
                         Ok(attributes) if attributes.get("uri").is_some_and(|uri| uri == SHEET_AXIS_EXTENSION_URI) && matches!(&event, Event::Start(_)) => {
                             extension_depth = Some(fingerprint.depth() + 1);
                         }
@@ -218,7 +218,7 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
                         warnings.push("empty pixel-dimension extension; using standard worksheet data".into());
                     } else {
                         let expected = (|| -> Result<String, String> {
-                            let attributes = attributes(&reader, element)?;
+                            let attributes = attributes(element)?;
                             if attributes.get("version").map(String::as_str) != Some("1") { return Err("unsupported pixel-dimension extension version".into()); }
                             attributes.get("fingerprint").filter(|value| value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
                                 .map(|value| value.to_ascii_lowercase()).ok_or_else(|| "invalid pixel-dimension projection fingerprint".to_owned())
@@ -280,7 +280,7 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
     Ok(WorksheetSidecar { state: candidate.map(|(_, state)| state), axis_matched, filter_fingerprint, filter_projection: filter_projection.take_root(), warnings })
 }
 
-fn attributes<R: BufRead>(reader: &NsReader<R>, element: &BytesStart<'_>) -> Result<BTreeMap<String, String>, String> {
+fn attributes(element: &BytesStart<'_>) -> Result<BTreeMap<String, String>, String> {
     let mut result = BTreeMap::new();
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| error.to_string())?;

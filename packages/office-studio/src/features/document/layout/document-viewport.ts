@@ -5,6 +5,8 @@ export interface DocumentViewportLocation {
   reason?: 'scroll' | 'layout' | 'resize' | 'zoom' | 'selection'
   pageIndex: number | undefined
   firstVisibleBlockId?: string
+  /** Present when the visible paragraph is nested inside a table cell. */
+  firstVisibleParagraphId?: string
   top: number
   bottom: number
   left: number
@@ -45,7 +47,8 @@ export function documentViewportLocation(layout: ViewportLayout, viewport: Docum
   const line = viewport.height > 0
     ? layout.lines.find((candidate) => candidate.y < bottom && candidate.y + candidate.height > top)
     : undefined
-  return { pageIndex: page?.index, firstVisibleBlockId: line?.target.blockId, top, bottom, left, right }
+  return { pageIndex: page?.index, firstVisibleBlockId: line?.target.blockId,
+    ...(line?.target.cellBlockId ? { firstVisibleParagraphId: line.target.cellBlockId } : {}), top, bottom, left, right }
 }
 
 /** Keep the reading position under the same CSS-pixel anchor when the editor zoom changes. */

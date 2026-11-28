@@ -8,10 +8,11 @@ interface DocumentSnapshotPair { before: DocumentModel; after: DocumentModel }
 const documentSnapshots = new WeakMap<() => void, DocumentSnapshotPair>()
 
 /** Callbacks retain one pair of snapshots; removing an entry releases the pair. */
-export function createDocumentSnapshotHistory(before: DocumentModel, after: DocumentModel, publish: (model: DocumentModel) => void): Pick<HistoryEntry, 'undo' | 'redo'> {
+export function createDocumentSnapshotHistory(before: DocumentModel, after: DocumentModel, publish: (model: DocumentModel) => void,
+  afterPublish?: (direction: 'undo' | 'redo') => void): Pick<HistoryEntry, 'undo' | 'redo'> {
   const snapshots = { before, after }
-  const undo = () => publish(snapshots.before)
-  const redo = () => publish(snapshots.after)
+  const undo = () => { publish(snapshots.before); afterPublish?.('undo') }
+  const redo = () => { publish(snapshots.after); afterPublish?.('redo') }
   documentSnapshots.set(undo, snapshots)
   documentSnapshots.set(redo, snapshots)
   return { undo, redo }

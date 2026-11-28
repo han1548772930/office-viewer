@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{opc::Package, xml, ExportError, ExportWarning};
 
@@ -41,9 +41,7 @@ use numbering::{assign_list_groups, numbering_left, numbering_level, prepare_seq
 mod numbering_marker;
 use numbering_marker::{prepare_preserved_marker_groups, PreservedMarkerPlan, PreservedParagraph};
 #[cfg(test)]
-use numbering::{assign_lists, build_numbering_xml, prepare_sequences};
-#[cfg(test)]
-use numbering_marker::prepare_preserved_markers;
+use numbering::build_numbering_xml;
 
 const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -1018,13 +1016,6 @@ fn collect_notes(model: &Value, blocks: &[Value]) -> Result<NoteBundle, ExportEr
     Ok(bundle)
 }
 
-fn collect_content_controls(
-    model: &Value,
-    blocks: &[Value],
-) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
-    collect_content_controls_for_groups(model, &[blocks])
-}
-
 fn collect_content_controls_for_groups(model: &Value, groups: &[&[Value]]) -> Result<HashMap<String, Vec<ContentControl>>, ExportError> {
     let Some(items) = field(model, "contentControls") else {
         return Ok(HashMap::new());
@@ -1738,6 +1729,7 @@ fn styles_xml() -> String {
     )
 }
 
+#[cfg(test)]
 fn document_xml(body: &str, page: PageGeometry) -> String {
     document_xml_with_headers(body, page, None)
 }
@@ -1962,10 +1954,12 @@ fn run_properties_xml(run: &Value) -> String {
     properties
 }
 
+#[cfg(test)]
 fn run_xml(run: &Value, text: &str) -> String {
     run_xml_with_defaults(run, text, RunDefaultEffects::default())
 }
 
+#[cfg(test)]
 fn run_xml_with_defaults(run: &Value, text: &str, defaults: RunDefaultEffects) -> String {
     let properties = format!("<w:rPr>{}</w:rPr>", run_properties_xml_with_defaults(run, defaults));
     text.replace("\r\n", "\n")

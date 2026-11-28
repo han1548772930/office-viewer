@@ -41,7 +41,7 @@ pub(crate) fn restore(bytes: &[u8], workbook: &mut WorkbookPayload) -> Result<Ve
     let renamed_tables = saved.tables.iter().map(|table| (table.name.to_lowercase(), table_indices.get(&u64::from(table.office_table_id))
         .and_then(|index| workbook.tables[*index].get("name").and_then(Value::as_str)).unwrap_or("#REF!").to_owned())).collect::<Identities>();
     let helper_names = saved.helpers.iter().enumerate().map(|(index, helper)| (helper.name.as_str(), index)).collect::<BTreeMap<_, _>>();
-    let coordinates = workbook.sheets.iter().map(|sheet| sheet.cells.iter().enumerate().map(|(index, cell)| ((cell.row, cell.col), index)).collect::<Coordinates>())
+    let coordinates = workbook.sheets.iter().map(|sheet| sheet.cells.iter().enumerate().map(|(index, cell)| ((cell.row, u32::from(cell.col)), index)).collect::<Coordinates>())
         .collect::<Vec<_>>();
     let mut fresh = Vec::new();
     for helper in &saved.helpers {
@@ -177,9 +177,9 @@ fn helper_fingerprint(sheet: &SheetPayload, workbook: &WorkbookPayload, saved: &
     let mut fingerprint = CalculationFingerprint::default();
     for cell in &sheet.cells {
         if cell.formula.is_none() && cell.value.is_null() { continue; }
-        fingerprint.cell(cell.row, cell.col, cell.formula.as_deref(), &cell.value, sheets, tables)?;
+        fingerprint.cell(cell.row, u32::from(cell.col), cell.formula.as_deref(), &cell.value, sheets, tables)?;
     }
-    for range in &sheet.merged_ranges { fingerprint.merged_range((range.first_row, range.first_col, range.last_row, range.last_col))?; }
+    for range in &sheet.merged_ranges { fingerprint.merged_range((range.first_row, u32::from(range.first_col), range.last_row, u32::from(range.last_col)))?; }
     for name in workbook.local_defined_names.iter().filter(|name| name.sheet.to_lowercase() == sheet.name.to_lowercase()) {
         fingerprint.defined_name(&name.name, &name.refers_to, sheets, tables)?;
     }

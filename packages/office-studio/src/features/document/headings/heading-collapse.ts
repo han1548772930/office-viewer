@@ -1,5 +1,5 @@
 import type { DocumentBlock, DocumentModel } from '../../../domain/model'
-import { collapsedSelection, runText, sameTarget, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../model/document-model'
+import { blockAtPoint, collapsedSelection, runText, sameTarget, selectionCollapsed, tableForBlock, textTargets, type DocumentPoint, type DocumentSelection, type TextTarget } from '../model/document-model'
 import { documentBlockChildContainers } from '../model/document-structural-blocks'
 import { assertDocumentPermission, permissionTargetsForSelection, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { assertDocumentTextSelectionEditable } from '../services/document-text-formatting'
@@ -130,7 +130,9 @@ function assertHeading(model: DocumentModel, paragraphId: string, collapsed: boo
   visibility: DocumentHeadingVisibility): DocumentHeadingSection {
   if (typeof paragraphId !== 'string' || !paragraphId.trim() || typeof collapsed !== 'boolean') throw new TypeError('标题折叠参数无效。')
   if (!supportsDocumentHeadingCollapse(model)) throw new RangeError('标题折叠适用于现代文档。')
-  if (model.metadata?.disabled === true) throw new RangeError('文档当前不可编辑。')
+  const source = model.metadata?.univerDocumentSource
+  const snapshot = source && typeof source === 'object' && !Array.isArray(source) ? Reflect.get(source, 'snapshot') : undefined
+  if (model.metadata?.disabled === true || snapshot && typeof snapshot === 'object' && Reflect.get(snapshot, 'disabled') === true) throw new RangeError('文档当前不可编辑。')
   const section = visibility.sectionById.get(paragraphId)
   if (visibility.identityCounts.get(paragraphId) !== 1 || !section) throw new RangeError('标题不存在或段落标识不唯一。')
   if (visibility.hiddenOwners.has(paragraphId)) throw new RangeError('请先展开上层标题。')
@@ -163,4 +165,22 @@ export function setDocumentHeadingCollapsed(model: DocumentModel, selection: Doc
     }
   }
   return normalizeDocumentHeadingSelection(model, selection)
+}
+
+/** Enter opens the edited heading before splitting. Boundary Backspace/Delete
+ * opens hidden content instead of deleting an invisible neighboring paragraph. */
+export function documentHeadingExpansionForEdit(model: DocumentModel, selection: DocumentSelection,
+  command: { id: string; text?: string; direction?: number; host?: unknown }): string | undefined {
+  if (command.id !== 'doc.command.delete' && (command.id !== 'doc.command.insert-text' || !/[\r\n]/.test(command.text ?? ''))) return undefined
+  if (command.host || !selectionCollapsed(selection) || !supportsDocumentHeadingCollapse(model)) return undefined
+  const visibility = documentHeadingVisibility(model), block = blockAtPoint(model, selection.focus)
+  if (!block) return undefined
+  const heading = visibility.sectionById.get(block.id)
+  if (heading?.collapsed && (command.id === 'doc.command.insert-text' && /[\r\n]/.test(command.text ?? '')
+    || command.id === 'doc.command.delete' && command.direction === 1 && selection.focus.offset === runText(block.runs).length)) return heading.paragraphId
+  if (command.id === 'doc.command.delete' && command.direction === -1 && selection.focus.offset === 0) {
+    const targets = textTargets(model), index = targets.findIndex(target => sameTarget(target, selection.focus)), previous = targets[index - 1]
+    if (previous) return visibility.hiddenOwners.get(previous.cellBlockId ?? previous.blockId) ?? visibility.hiddenOwners.get(previous.blockId)
+  }
+  return undefined
 }

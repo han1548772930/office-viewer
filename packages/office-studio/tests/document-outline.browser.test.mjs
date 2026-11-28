@@ -8,13 +8,14 @@ const fixturePath = '/__document-outline-test__'
 const fixture = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Document outline interaction fixture</title></head><body>
 <div id="app"></div><script type="module">
 import { createApp, h, reactive } from 'vue'
+import { Button, ConfigProvider, theme } from 'antdv-next'
 import DocumentOutline from '/packages/office-studio/src/components/document/DocumentOutline.vue'
 const state = reactive({
   model: { kind: 'document', name: '大纲交互文档', blocks: Array.from({ length: 24 }, (_, index) => ({
     id: 'heading-' + (index + 1), type: 'heading', level: index % 3 + 1,
     runs: [{ id: 'run-' + index, text: '标题 ' + (index + 1) }], style: {}, metadata: {},
   })), page: {}, modified: false, wordCount: 0 },
-  activeId: 'heading-1', mode: 'side-bar', width: 256,
+  activeId: 'heading-1', mode: 'side-bar', width: 256, dark: false, disabled: false,
 })
 const navigations = []
 window.outlineFixture = {
@@ -24,13 +25,18 @@ window.outlineFixture = {
   rename: (id, text) => { state.model.blocks.find((block) => block.id === id).runs[0].text = text },
   remove: (id) => { state.model.blocks = state.model.blocks.filter((block) => block.id !== id) },
   width: (value) => { state.width = value },
+  appearance: (value) => { state.dark = value },
+  disabled: (value) => { state.disabled = value },
+  title: () => { state.model.blocks.unshift({ id: 'real-title', type: 'paragraph', level: 0,
+    runs: [{ id: 'title-run', text: '作者文档标题' }], style: {}, metadata: { namedStyleType: 'title' } }) },
 }
-createApp({ render: () => h('main', { style: { position: 'relative', display: 'flex', width: '960px', height: '280px' } }, [
-  h(DocumentOutline, { model: state.model, activeId: state.activeId, mode: state.mode, maxHeight: 240, maxWidth: state.width,
+createApp({ render: () => h(ConfigProvider, { theme: { algorithm: state.dark ? theme.darkAlgorithm : theme.defaultAlgorithm } }, { default: () =>
+ h('main', { style: { position: 'relative', display: 'flex', width: '960px', height: '280px' } }, [
+  h(DocumentOutline, { model: state.model, activeId: state.activeId, mode: state.mode, maxHeight: 240, maxWidth: state.width, disabled: state.disabled,
     onNavigate: (item) => { navigations.push(item.id); state.activeId = item.id },
   }),
-  h('button', { id: 'outside', style: { position: 'absolute', left: '600px', top: '30px' } }, '外部按钮'),
-]) }).mount('#app')
+  h(Button, { id: 'outside', style: { position: 'absolute', left: '600px', top: '30px' } }, { default: () => '外部按钮' }),
+]) }) }).mount('#app')
 </script></body></html>`
 
 let server
@@ -141,4 +147,34 @@ test('active headings scroll into view without stealing focus and update by stab
   await page.evaluate(() => { window.outlineFixture.activate('heading-1'); window.outlineFixture.width(160) })
   await expect.poll(() => page.locator('.document-outline').evaluate((element) => element.getBoundingClientRect().width)).toBe(160)
   await expect(outside).toBeFocused()
+})
+
+test('authored Title is navigable and replaces the virtual title after a live model update', async () => {
+  await page.evaluate(() => window.outlineFixture.title())
+  const title = page.locator('[data-outline-item="real-title"]')
+  await expect(title).toHaveText('作者文档标题')
+  await expect(page.locator('.document-outline__item.is-title')).toHaveCount(1)
+  await title.click()
+  await expect(title).toHaveAttribute('aria-current', 'location')
+  assert.deepEqual((await page.evaluate(() => window.outlineFixture.snapshot())).navigations, ['real-title'])
+})
+
+test('the real Ant controls follow ConfigProvider themes and disabled navigation cannot emit a new target', async () => {
+  const panel = page.locator('.document-outline'), first = page.locator('[data-outline-item="heading-1"]')
+  const before = await panel.evaluate(element => getComputedStyle(element).backgroundColor)
+  await page.evaluate(() => window.outlineFixture.appearance(true))
+  await expect.poll(() => panel.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(before)
+  await expect(first).toHaveClass(/ant-btn/)
+  await first.focus()
+  await page.evaluate(() => window.outlineFixture.disabled(true))
+  await expect(first).toBeDisabled()
+  const color = await first.evaluate(element => getComputedStyle(element).color)
+  await first.hover({ force: true })
+  assert.equal(await first.evaluate(element => getComputedStyle(element).color), color)
+  await first.dispatchEvent('click')
+  assert.deepEqual((await page.evaluate(() => window.outlineFixture.snapshot())).navigations, [])
+  await page.evaluate(() => { window.outlineFixture.disabled(false); window.outlineFixture.appearance(false) })
+  await expect.poll(() => panel.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(before)
+  await first.focus(); await first.press('Enter')
+  assert.deepEqual((await page.evaluate(() => window.outlineFixture.snapshot())).navigations, ['heading-1'])
 })

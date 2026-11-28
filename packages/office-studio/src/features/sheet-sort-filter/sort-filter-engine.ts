@@ -1,4 +1,4 @@
-import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator, WorkbookModel,
+import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator, SheetConditionFilter, WorkbookModel,
   SheetSortCriterion } from '../../domain/model'
 import { sheetRowHeight, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
 import { compilePivotRecordSelection, normalizePivotRecordSelection } from '../pivot/services/pivot-filter-predicate.ts'
@@ -6,6 +6,7 @@ import { sheetCellRecordValue } from '../sheet-workbench/sheet-record-value.ts'
 import { getSheetOutlineHiddenSpans } from '../sheet-outline/sheet-outline.ts'
 import { canonicalSheetFilterColor, createSheetFilterColorReader } from './sheet-filter-colors.ts'
 import { sheetFilterColumnEntries } from './sheet-filter-column.ts'
+import { matchesSheetFilterWildcard } from './sheet-filter-wildcard.ts'
 export { canonicalSheetFilterColor } from './sheet-filter-colors.ts'
 export type { SheetSortDirection, SheetSortCriterion, SheetFilterConditionOperator, SheetValueFilter, SheetConditionFilter,
   SheetFilterCriteria, SheetAutoFilter } from '../../domain/model.ts'
@@ -234,6 +235,8 @@ export function readCellValue(cell: SpreadsheetCell | undefined): CellScalar | {
 function matchesCriteria(value: CellScalar | { error: string } | null, criteria: SheetFilterCriteria): boolean {
   if (criteria.kind === 'values') return criteria.selectedItems.some((item) => sameFilterValue(value, item)) !== (criteria.selectionMode === 'exclude')
   if (criteria.kind === 'color') throw new TypeError('Color filtering requires a cell style context')
+  if (criteria.kind === 'compound') return criteria.join === 'and' ? criteria.conditions.every(condition => matchesCondition(value, condition))
+    : criteria.conditions.some(condition => matchesCondition(value, condition))
   return matchesCondition(value, criteria)
 }
 
@@ -247,23 +250,31 @@ function matchesCondition(value: CellScalar | { error: string } | null, criteria
   const collator = new Intl.Collator('zh-CN', { sensitivity: criteria.caseSensitive ? 'variant' : 'base', numeric: true })
   const compare = compareValues(value, expected, collator)
   switch (operator) {
-    case 'equals': return criteria.caseSensitive ? leftText === rightText : compare === 0
-    case 'doesNotEqual': return criteria.caseSensitive ? leftText !== rightText : compare !== 0
+    case 'equals': return typeof expected === 'string' ? matchesSheetFilterWildcard(leftText, rightText, criteria.caseSensitive)
+      : criteria.caseSensitive ? leftText === rightText : compare === 0
+    case 'doesNotEqual': return typeof expected === 'string' ? !matchesSheetFilterWildcard(leftText, rightText, criteria.caseSensitive)
+      : criteria.caseSensitive ? leftText !== rightText : compare !== 0
     case 'greaterThan': return compare > 0
     case 'greaterThanOrEqual': return compare >= 0
     case 'lessThan': return compare < 0
     case 'lessThanOrEqual': return compare <= 0
     case 'between': return secondValue !== undefined && compare >= 0 && compareValues(value, secondValue, collator) <= 0
     case 'notBetween': return secondValue !== undefined && (compare < 0 || compareValues(value, secondValue, collator) > 0)
-    case 'contains': return includes(leftText, rightText, criteria.caseSensitive)
-    case 'doesNotContain': return !includes(leftText, rightText, criteria.caseSensitive)
-    case 'beginsWith': return criteria.caseSensitive ? leftText.startsWith(rightText) : leftText.toLocaleLowerCase().startsWith(rightText.toLocaleLowerCase())
-    case 'endsWith': return criteria.caseSensitive ? leftText.endsWith(rightText) : leftText.toLocaleLowerCase().endsWith(rightText.toLocaleLowerCase())
+    case 'contains': return matchesSheetFilterWildcard(leftText, `*${rightText}*`, criteria.caseSensitive)
+    case 'doesNotContain': return !matchesSheetFilterWildcard(leftText, `*${rightText}*`, criteria.caseSensitive)
+    case 'beginsWith': return matchesSheetFilterWildcard(leftText, `${rightText}*`, criteria.caseSensitive)
+    case 'endsWith': return matchesSheetFilterWildcard(leftText, `*${rightText}`, criteria.caseSensitive)
   }
 }
 
 function normalizeCriteria(criteria: SheetFilterCriteria): SheetFilterCriteria {
-  if (!criteria || (criteria.kind !== 'values' && criteria.kind !== 'condition' && criteria.kind !== 'color')) throw new TypeError('Invalid filter criteria')
+  if (!criteria || (criteria.kind !== 'values' && criteria.kind !== 'condition' && criteria.kind !== 'color' && criteria.kind !== 'compound')) throw new TypeError('Invalid filter criteria')
+  if (criteria.kind === 'compound') {
+    if (criteria.join !== 'and' && criteria.join !== 'or' || !Array.isArray(criteria.conditions)
+      || criteria.conditions.length < 1 || criteria.conditions.length > 2) throw new TypeError('Compound filters require one or two conditions and an AND/OR join')
+    const first = normalizeCondition(criteria.conditions[0]!)
+    return { kind: 'compound', join: criteria.join, conditions: criteria.conditions.length === 1 ? [first] : [first, normalizeCondition(criteria.conditions[1]!)] }
+  }
   if (criteria.kind === 'color') {
     if (criteria.cellFillColors === undefined && criteria.cellTextColors === undefined) throw new TypeError('Color filter needs fill or text colors')
     for (const key of ['cellFillColors', 'cellTextColors'] as const) {
@@ -276,16 +287,25 @@ function normalizeCriteria(criteria: SheetFilterCriteria): SheetFilterCriteria {
   }
   if (criteria.kind === 'values') {
     if (!Array.isArray(criteria.selectedItems)) throw new TypeError('Value filter needs a selectedItems array')
+    for (const value of criteria.selectedItems) if (value !== null && typeof value !== 'string' && typeof value !== 'boolean'
+      && !(typeof value === 'number' && Number.isFinite(value))) throw new TypeError('Value filter items must be null or finite scalar values')
     if (criteria.selectionMode !== undefined && criteria.selectionMode !== 'include' && criteria.selectionMode !== 'exclude') throw new TypeError('Invalid value filter selection mode')
     if (criteria.recordDate1904 !== undefined && typeof criteria.recordDate1904 !== 'boolean') throw new TypeError('Invalid record calendar context')
     return { kind: 'values', selectedItems: [...criteria.selectedItems], ...(criteria.selectionMode === 'exclude' ? { selectionMode: 'exclude' as const } : {}),
       ...(criteria.recordSelection ? { recordSelection: normalizePivotRecordSelection(criteria.recordSelection) } : {}),
       ...(criteria.recordDate1904 !== undefined ? { recordDate1904: criteria.recordDate1904 } : {}) }
   }
+  return normalizeCondition(criteria)
+}
+function normalizeCondition(criteria: SheetConditionFilter): SheetConditionFilter {
+  if (!criteria || criteria.kind !== 'condition') throw new TypeError('Compound filter conditions cannot be nested or contain value/color criteria')
   const operators: SheetFilterConditionOperator[] = ['equals', 'doesNotEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual', 'between', 'notBetween', 'contains', 'doesNotContain', 'beginsWith', 'endsWith', 'isBlank', 'isNotBlank', 'isError']
   if (!operators.includes(criteria.operator)) throw new TypeError(`Unsupported filter operator: ${criteria.operator}`)
   if (!['isBlank', 'isNotBlank', 'isError'].includes(criteria.operator) && criteria.value === undefined) throw new TypeError('Filter condition requires a comparison value')
   if ((criteria.operator === 'between' || criteria.operator === 'notBetween') && criteria.secondValue === undefined) throw new TypeError('Between filters require two comparison values')
+  if (criteria.caseSensitive !== undefined && typeof criteria.caseSensitive !== 'boolean') throw new TypeError('Filter case sensitivity must be boolean')
+  for (const value of [criteria.value, criteria.secondValue]) if (value !== undefined && value !== null && typeof value !== 'string'
+    && typeof value !== 'boolean' && !(typeof value === 'number' && Number.isFinite(value))) throw new TypeError('Filter comparison values must be finite scalar values')
   return { ...criteria }
 }
 
@@ -314,7 +334,6 @@ function rank(value: CellScalar | { error: string } | null): number {
   if (isError(value)) return 3
   return 4
 }
-function includes(text: string, search: string, caseSensitive = false): boolean { return caseSensitive ? text.includes(search) : text.toLocaleLowerCase().includes(search.toLocaleLowerCase()) }
 function isError(value: unknown): value is { error: string } { return Boolean(value && typeof value === 'object' && 'error' in value) }
 function validateRange(range: CellRange): void {
   if (!range || ![range.startRow, range.startCol, range.endRow, range.endCol].every((value) => Number.isSafeInteger(value) && value >= 0) || range.endRow < range.startRow || range.endCol < range.startCol) throw new RangeError('Invalid worksheet range')

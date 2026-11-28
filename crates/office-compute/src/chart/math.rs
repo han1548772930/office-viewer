@@ -42,7 +42,6 @@ pub(super) struct Moments {
     pub scale: f64,
     pub normalized_mean: f64,
     pub normalized_variance: f64,
-    pub count: usize,
 }
 
 /// Iterator clones rescan borrowed input; no full-sized sample Vec is cloned.
@@ -55,7 +54,7 @@ pub(super) fn moments<I: Iterator<Item = f64> + Clone>(samples: I) -> Result<Mom
     }
     if count == 0 || scale == 0.0 {
         return Ok(Moments { mean: 0.0, scale: 1.0, normalized_mean: 0.0,
-            normalized_variance: 0.0, count });
+            normalized_variance: 0.0 });
     }
     let mut total = CompensatedSum::default();
     for value in samples.clone() { total.add(value / scale); }
@@ -63,7 +62,7 @@ pub(super) fn moments<I: Iterator<Item = f64> + Clone>(samples: I) -> Result<Mom
     total = CompensatedSum::default();
     for value in samples { total.add((value / scale - normalized_mean).powi(2)); }
     Ok(Moments { mean: finite(normalized_mean * scale, "Chart mean")?, scale,
-        normalized_mean, normalized_variance: (total.value() / count as f64).clamp(0.0, 1.0), count })
+        normalized_mean, normalized_variance: (total.value() / count as f64).clamp(0.0, 1.0) })
 }
 
 /// Combine factors in binary mantissa/exponent form. A finite final product is

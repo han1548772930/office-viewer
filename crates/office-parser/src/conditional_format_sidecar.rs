@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 
 use office_io_common::conditional_format_color::{color_value, uses_theme, validate_theme_references};
 use office_io_common::conditional_format_source::{CONDITIONAL_MODEL_BYTE_LIMIT, SOURCE_RESOURCE_BYTE_LIMIT, SOURCE_RESOURCE_ELEMENT_LIMIT, ConditionalFormatModelBudget, OfficeSource, ProjectionHashes, icon_index, known_snapshot, local_icon_type, read_projection, restore_projection, strip_projection, valid_known_fields, valid_saved_model};
@@ -10,6 +10,7 @@ use zip::ZipArchive;
 const REL_NAMESPACE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const STRICT_REL_NAMESPACE: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";
 const REVISION_NAMESPACE: &str = "http://schemas.microsoft.com/office/spreadsheetml/2014/revision";
+#[cfg(test)]
 const MC_NAMESPACE: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const PACKAGE_REL_NAMESPACE: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const STRICT_PACKAGE_REL_NAMESPACE: &str = "http://purl.oclc.org/ooxml/package/relationships";
@@ -427,7 +428,7 @@ fn parse_visual_config(rule: &Node, theme: Option<&Node>) -> Option<Value> {
         if let Some(value) = values.get(1) { config["max"] = threshold(value); }
         for (xml_name, field) in [("color", "positiveColor"), ("fillColor", "positiveColor"), ("negativeFillColor", "nativeColor"),
             ("borderColor", "borderColor"), ("negativeBorderColor", "negativeBorderColor"), ("axisColor", "axisColor")] {
-            if let Some(color) = node.children.iter().find(|child| (child.is_main(xml_name) || child.is(X14_NAMESPACE, xml_name))).and_then(|child| color_value(child, theme)) { config[field] = json!(color); }
+            if let Some(color) = node.children.iter().find(|child| child.is_main(xml_name) || child.is(X14_NAMESPACE, xml_name)).and_then(|child| color_value(child, theme)) { config[field] = json!(color); }
         }
         for key in ["minLength", "maxLength"] { if let Some(value) = node.attrs.get(key).and_then(|value| value.parse::<u32>().ok()) { config[key] = json!(value); } }
         for key in ["direction", "axisPosition"] { if let Some(value) = node.attrs.get(key) { config[key] = json!(value); } }

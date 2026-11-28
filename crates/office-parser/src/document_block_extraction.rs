@@ -85,6 +85,7 @@ fn remove_anchors(blocks: &mut [DocumentBlock], names: &HashSet<String>) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn extract(source: &mut DocModel) -> StructuredDocument {
     extract_with_resources(source, None, &duke_pages::parse::ParsedStyleSheet::empty())
 }

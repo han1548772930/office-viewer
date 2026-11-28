@@ -128,7 +128,9 @@ pub(crate) struct PivotParts {
     pub(crate) cache_definition: String,
     pub(crate) cache_records: String,
     pub(crate) table_definition: String,
+    #[cfg(test)]
     pub(crate) output_reference: String,
+    #[cfg(test)]
     pub(crate) source_reference: String,
 }
 
@@ -419,7 +421,9 @@ pub(crate) fn build_parts(
         cache_definition: definition,
         cache_records: records,
         table_definition: table,
+        #[cfg(test)]
         output_reference: range_ref(output_bounds),
+        #[cfg(test)]
         source_reference: range_ref(source_bounds),
     })
 }

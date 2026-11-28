@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "xlsx_filter_color.rs"]
 mod color;
+#[path = "xlsx_filter_compound.rs"]
+mod compound;
 
 pub(super) use color::color_signature;
 
@@ -25,7 +27,14 @@ pub(super) fn filter_snapshot_value(filter: &AutoFilterInput) -> Result<Value, E
     let (start_row, start_col, end_row, end_col) = range_bounds(&filter.range).ok_or_else(|| ExportError::invalid("invalid typed AutoFilter snapshot range"))?;
     let mut columns = serde_json::Map::new();
     for (column, criterion) in &filter.columns {
-        let value = match criterion {
+        columns.insert(column.to_string(), criterion_snapshot(criterion));
+    }
+    let filtered_rows = filter.filtered_rows.iter().copied().collect::<BTreeSet<_>>();
+    Ok(serde_json::json!({ "range": { "startRow": start_row, "startCol": start_col, "endRow": end_row, "endCol": end_col }, "columns": columns, "filteredRows": filtered_rows }))
+}
+
+fn criterion_snapshot(criterion: &Criterion) -> Value {
+    match criterion {
             Criterion::Values { selected_items } => serde_json::json!({ "kind": "values", "selectedItems": selected_items }),
             Criterion::Color { cell_fill_colors, cell_text_colors } => {
                 let mut value = serde_json::Map::new(); value.insert("kind".into(), Value::String("color".into()));
@@ -42,11 +51,9 @@ pub(super) fn filter_snapshot_value(filter: &AutoFilterInput) -> Result<Value, E
                 criterion.insert("caseSensitive".into(), Value::Bool(*case_sensitive));
                 Value::Object(criterion)
             }
-        };
-        columns.insert(column.to_string(), value);
+            Criterion::Compound { join, conditions } => serde_json::json!({ "kind": "compound", "join": join,
+                "conditions": conditions.iter().map(criterion_snapshot).collect::<Vec<_>>() }),
     }
-    let filtered_rows = filter.filtered_rows.iter().copied().collect::<BTreeSet<_>>();
-    Ok(serde_json::json!({ "range": { "startRow": start_row, "startCol": start_col, "endRow": end_row, "endCol": end_col }, "columns": columns, "filteredRows": filtered_rows }))
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -81,6 +88,7 @@ pub(super) enum Criterion {
         #[serde(default, rename = "caseSensitive")]
         case_sensitive: bool,
     },
+    Compound { join: String, conditions: Vec<Criterion> },
 }
 
 // Preserve an explicit null separately from a missing comparison operand.
@@ -137,42 +145,23 @@ pub(super) fn validate_filter(filter: &AutoFilterInput, row_count: Option<u32>, 
                     ));
                 }
             }
-            Criterion::Condition {
-                operator,
-                value,
-                second_value,
-                ..
-            } => {
-                let no_value = matches!(operator.as_str(), "isBlank" | "isNotBlank" | "isError");
-                let supported = no_value
-                    || matches!(
-                        operator.as_str(),
-                        "equals"
-                            | "doesNotEqual"
-                            | "greaterThan"
-                            | "greaterThanOrEqual"
-                            | "lessThan"
-                            | "lessThanOrEqual"
-                            | "between"
-                            | "notBetween"
-                            | "contains"
-                            | "doesNotContain"
-                            | "beginsWith"
-                            | "endsWith"
-                    );
-                if !supported
-                    || (!no_value && value.is_none())
-                    || (matches!(operator.as_str(), "between" | "notBetween")
-                        && second_value.is_none())
-                    || value.as_ref().is_some_and(|value| !scalar(value))
-                    || second_value.as_ref().is_some_and(|value| !scalar(value))
-                {
-                    return Err(ExportError::invalid(
-                        "autoFilter condition has an unsupported operator or invalid operands",
-                    ));
-                }
+            Criterion::Condition { .. } => validate_condition(criterion)?,
+            Criterion::Compound { join, conditions } => {
+                if !matches!(join.as_str(), "and" | "or") || !(1..=2).contains(&conditions.len()) { return Err(ExportError::invalid("autoFilter compound must join one or two conditions with and/or")); }
+                for condition in conditions { validate_condition(condition)?; }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_condition(criterion: &Criterion) -> Result<(), ExportError> {
+    let Criterion::Condition { operator, value, second_value, .. } = criterion else { return Err(ExportError::invalid("autoFilter compound members must be non-nested conditions")); };
+    let no_value = matches!(operator.as_str(), "isBlank" | "isNotBlank" | "isError");
+    let supported = no_value || matches!(operator.as_str(), "equals" | "doesNotEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween" | "contains" | "doesNotContain" | "beginsWith" | "endsWith");
+    if !supported || (!no_value && value.is_none()) || (matches!(operator.as_str(), "between" | "notBetween") && second_value.is_none())
+        || value.as_ref().is_some_and(|value| !scalar(value)) || second_value.as_ref().is_some_and(|value| !scalar(value)) {
+        return Err(ExportError::invalid("autoFilter condition has an unsupported operator or invalid operands"));
     }
     Ok(())
 }
@@ -257,6 +246,10 @@ fn wildcard_literal(value: &str) -> String {
     result
 }
 
+// Fixed Univer custom text filters treat * and ? as wildcards and ~ literally.
+// Office uses ~ as its escape, so only authored tildes need doubling here.
+fn wildcard_pattern(value: &str) -> String { value.replace('~', "~~") }
+
 fn operand(value: Option<&Value>) -> String {
     match value {
         Some(Value::Null) | None => String::new(),
@@ -296,13 +289,28 @@ fn column_values(sheet: &SheetInput, filter: &AutoFilterInput, column: u32) -> V
         .collect()
 }
 
-fn condition_xml(
+enum ConditionProjection {
+    Custom { and: Option<bool>, conditions: String, count: usize },
+    Members(String),
+}
+
+impl ConditionProjection {
+    fn xml(self) -> String {
+        match self {
+            Self::Custom { and, conditions, .. } => format!("<customFilters{}>{conditions}</customFilters>",
+                and.map(|value| format!(" and=\"{}\"", u8::from(value))).unwrap_or_default()),
+            Self::Members(xml) => xml,
+        }
+    }
+}
+
+fn condition_projection(
     sheet: &SheetInput,
     column: u32,
     filter: &AutoFilterInput,
     criterion: &Criterion,
     warnings: &mut Vec<ExportWarning>,
-) -> Result<String, ExportError> {
+) -> Result<ConditionProjection, ExportError> {
     let Criterion::Condition {
         operator,
         value,
@@ -322,13 +330,10 @@ fn condition_xml(
         );
     }
     if operator == "isBlank" {
-        return Ok("<filters blank=\"1\"/>".into());
+        return Ok(ConditionProjection::Members("<filters blank=\"1\"/>".into()));
     }
     if operator == "isNotBlank" {
-        return Ok(format!(
-            "<customFilters>{}</customFilters>",
-            custom("notEqual", " ")
-        ));
+        return Ok(ConditionProjection::Custom { and: None, conditions: custom("notEqual", " "), count: 1 });
     }
     if operator == "isError" {
         let (first_row, _, last_row, _) = range_bounds(&filter.range)
@@ -365,13 +370,15 @@ fn condition_xml(
             column,
             "isError was exported as the current error-code member list; standard AutoFilter has no dynamic error-type predicate, so reapplying after errors change may differ",
         );
-        return Ok(values_xml(
+        return Ok(ConditionProjection::Members(values_xml(
             &errors.into_iter().map(Value::String).collect::<Vec<_>>(),
-        ));
+        )));
     }
     let first = operand(value.as_ref());
     let second = operand(second_value.as_ref());
-    let first_literal = wildcard_literal(&first);
+    let first_literal = if matches!(operator.as_str(), "equals" | "doesNotEqual" | "contains" | "doesNotContain" | "beginsWith" | "endsWith") {
+        wildcard_pattern(&first)
+    } else { wildcard_literal(&first) };
     let second_literal = wildcard_literal(&second);
     if value.as_ref().is_some_and(|expected| {
         !expected.is_null()
@@ -458,11 +465,7 @@ fn condition_xml(
             "Office text ordering depends on its locale and may differ from the application numeric zh-CN collation",
         );
     }
-    Ok(format!(
-        "<customFilters{}>{conditions}</customFilters>",
-        and.map(|value| format!(" and=\"{}\"", u8::from(value)))
-            .unwrap_or_default()
-    ))
+    Ok(ConditionProjection::Custom { and, conditions, count: if matches!(operator.as_str(), "between" | "notBetween") { 2 } else { 1 } })
 }
 
 pub(super) fn write_xml(
@@ -526,8 +529,9 @@ pub(super) fn write_filter_xml(sheet: &SheetInput, filter: &AutoFilterInput, reg
                 out.push_str(&values_xml(selected_items));
             }
             Criterion::Condition { .. } => {
-                out.push_str(&condition_xml(sheet, *column, filter, criterion, warnings)?)
+                out.push_str(&condition_projection(sheet, *column, filter, criterion, warnings)?.xml())
             }
+            Criterion::Compound { join, conditions } => out.push_str(&compound::write_xml(sheet, *column, filter, join, conditions, warnings)?),
         }
         out.push_str("</filterColumn>");
     }

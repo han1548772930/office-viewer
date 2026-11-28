@@ -6,6 +6,8 @@
 
 2026-11-22 起的续作仅做实现、静态调用链审阅和编写用例，按用户安排尚未运行统一验证。2026-11-25–26 新增富文本/默认来源/范围主题、稀疏复制填充、共享局部移位/确认、图表标题/绘图区/对象上下文及面板路由、Docs Canvas/词法/段落分页、LaTeX，以及 Sheets/Docs 图片和共享绘图工作台证据，所有功能仍未验收。第 5 节保留既有共享 Ribbon 检查的历史结果，不代表当前在途改动已通过。
 
+2026-11-29续批在既有筛选面板补[日期候选树、双条件AND/OR和通配符](feature-evidence/SHEET-11-date-tree-compound-2026-11-29.md)，并接[共享Office边界](feature-evidence/SHEET-11-29-compound-filter-office-2026-11-29.md)；Docs增加[现代标题折叠的真实Canvas/Ant覆盖层](feature-evidence/DOC-04-heading-collapse-2026-11-29.md)。常规Ribbon根、插件扩展根、溢出根与上下文Ribbon根增量均0，动态日期节点/标题按钮不计入根数量；既有Sheets72/Docs54分类口径不变。用户报告后提前执行的WASM打包和Vite报错定向修复见[COMMON-11例外记录](feature-evidence/COMMON-11-wasm-build-and-vite-import-2026-11-29.md)，不替代统一功能验证。
+
 源码核对覆盖 Tab → Group → Item → 命令/服务，而非仅比较分类名称。上游 ID 与本项目独立实现的 ID 可不同；表中记录可观察行为的对应关系。Pro 在固定开源检出中没有菜单实现时，明确记为“公开菜单 ID 未核实”，不编造闭源 ID，也不把未知行为排除出最终范围。
 
 ## 1. 当前装配与证据边界

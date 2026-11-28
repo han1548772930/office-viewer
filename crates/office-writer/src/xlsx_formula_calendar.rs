@@ -136,7 +136,7 @@ impl Projection<'_> {
         self.names.iter().find(|item| item.scope == Some(owner) && item.name.to_lowercase() == name.to_lowercase())
             .or_else(|| self.names.iter().find(|item| item.scope.is_none() && item.name.to_lowercase() == name.to_lowercase()))
     }
-    fn emitted_name(&self, name: &Name, frame: bool) -> &str {
+    fn emitted_name<'a>(&'a self, name: &'a Name, frame: bool) -> &'a str {
         if name.scope.is_some() { &name.name } else { &self.global_names[&(frame, name.name.to_lowercase())] }
     }
     fn qualified_name(&self, text: &str, start: usize, owner: usize, frame: bool) -> Option<(String, usize)> {

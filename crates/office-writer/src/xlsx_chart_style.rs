@@ -121,11 +121,6 @@ pub(super) fn title(title: Option<&str>, subtitle: Option<&str>, title_font: Opt
     Ok(format!("<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/>{rich}</c:rich></c:tx><c:layout/><c:overlay val=\"0\"/></c:title>"))
 }
 
-pub(super) fn marker(value: Option<&Marker>, fallback_color: Option<&str>) -> Result<String, ExportError> {
-    let fallback = fallback_color.map(ChartColor::from);
-    painted_marker(value, fallback.as_ref(), None, None)
-}
-
 pub(super) fn painted_marker(value: Option<&Marker>, fallback_color: Option<&ChartColor>, opacity: Option<f64>, pattern: Option<&FillPattern>) -> Result<String, ExportError> {
     let Some(value) = value else { return Ok(String::new()); };
     let symbol = match value.shape.as_deref().unwrap_or("circle") {

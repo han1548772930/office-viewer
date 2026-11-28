@@ -10,7 +10,7 @@ use crate::xml;
 
 #[path = "docx_numbering_sequence.rs"]
 mod sequence;
-pub(super) use sequence::{prepare_sequences, prepare_sequence_groups, SequencePlan};
+pub(super) use sequence::{prepare_sequence_groups, SequencePlan};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ListKind {
@@ -90,10 +90,6 @@ fn merged_level(definition: &Value, level: &Value) -> Value {
         for (key, value) in fields { merged[key] = value.clone(); }
     }
     merged
-}
-
-pub(super) fn assign_lists(blocks: &[Value]) -> Result<(HashMap<usize, u32>, Vec<NumberingInstance>), ExportError> {
-    assign_list_groups(&[blocks])
 }
 
 /// IDs are package-wide; named list counters belong to each independent story.

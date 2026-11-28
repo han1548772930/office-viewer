@@ -49,6 +49,7 @@ pub enum FilterCriterion {
         #[serde(default, rename = "caseSensitive", skip_serializing_if = "Option::is_none")]
         case_sensitive: Option<bool>,
     },
+    Compound { join: String, conditions: Vec<FilterCriterion> },
 }
 
 fn present_value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
@@ -77,16 +78,24 @@ pub(crate) fn validate(state: &AutoFilterState) -> Result<(), String> {
                 }
             }
             FilterCriterion::Values { selected_items } if selected_items.iter().all(scalar) => {}
-            FilterCriterion::Condition { operator, value, second_value, .. } => {
-                let no_operand = matches!(operator.as_str(), "isBlank" | "isNotBlank" | "isError");
-                let supported = no_operand || matches!(operator.as_str(), "equals" | "doesNotEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween" | "contains" | "doesNotContain" | "beginsWith" | "endsWith");
-                if !supported || (!no_operand && value.is_none()) || (matches!(operator.as_str(), "between" | "notBetween") && second_value.is_none())
-                    || value.as_ref().is_some_and(|value| !scalar(value)) || second_value.as_ref().is_some_and(|value| !scalar(value)) {
-                    return Err("invalid typed AutoFilter predicate".into());
-                }
+            FilterCriterion::Condition { .. } => validate_condition(criterion)?,
+            FilterCriterion::Compound { join, conditions } => {
+                if !matches!(join.as_str(), "and" | "or") || !(1..=2).contains(&conditions.len()) { return Err("invalid typed AutoFilter compound join or condition count".into()); }
+                for condition in conditions { validate_condition(condition)?; }
             }
             _ => return Err("typed AutoFilter members must be scalar values".into()),
         }
+    }
+    Ok(())
+}
+
+fn validate_condition(criterion: &FilterCriterion) -> Result<(), String> {
+    let FilterCriterion::Condition { operator, value, second_value, .. } = criterion else { return Err("typed AutoFilter compound members must be non-nested conditions".into()); };
+    let no_operand = matches!(operator.as_str(), "isBlank" | "isNotBlank" | "isError");
+    let supported = no_operand || matches!(operator.as_str(), "equals" | "doesNotEqual" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "between" | "notBetween" | "contains" | "doesNotContain" | "beginsWith" | "endsWith");
+    if !supported || (!no_operand && value.is_none()) || (matches!(operator.as_str(), "between" | "notBetween") && second_value.is_none())
+        || value.as_ref().is_some_and(|value| !scalar(value)) || second_value.as_ref().is_some_and(|value| !scalar(value)) {
+        return Err("invalid typed AutoFilter predicate".into());
     }
     Ok(())
 }
@@ -156,19 +165,24 @@ fn members(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFilterRan
     Ok(FilterCriterion::Values { selected_items })
 }
 
-fn unescape_pattern(value: &str) -> Result<(String, Vec<usize>), String> {
+fn unescape_pattern(value: &str) -> Result<(String, Vec<usize>, bool), String> {
     let mut result = String::new();
     let mut stars = Vec::new();
+    let mut question = false;
     let mut characters = value.chars();
     while let Some(character) = characters.next() {
         match character {
-            '~' => result.push(characters.next().ok_or_else(|| "incomplete AutoFilter wildcard escape".to_owned())?),
+            '~' => match characters.next() {
+                Some('~') => result.push('~'),
+                Some('*' | '?') => return Err("escaped literal AutoFilter wildcard requires a literal-pattern adapter; fixed custom text criteria use unescaped wildcards".into()),
+                _ => return Err("unsupported or incomplete AutoFilter wildcard escape".into()),
+            },
             '*' => { stars.push(result.len()); result.push('*'); }
-            '?' => return Err("arbitrary AutoFilter wildcard patterns require a separate predicate adapter".into()),
+            '?' => { question = true; result.push('?'); },
             value => result.push(value),
         }
     }
-    Ok((result, stars))
+    Ok((result, stars, question))
 }
 
 fn single_custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFilterRange, column: u32) -> Result<FilterCriterion, String> {
@@ -182,7 +196,8 @@ fn single_custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFil
     if value == " " && matches!(operation, "equal" | "notEqual") {
         return Ok(FilterCriterion::Condition { operator: if operation == "equal" { "isBlank" } else { "isNotBlank" }.into(), value: None, second_value: None, case_sensitive: None });
     }
-    let (literal, stars) = unescape_pattern(value)?;
+    let (literal, stars, question) = unescape_pattern(value)?;
+    if (!stars.is_empty() || question) && !matches!(operation, "equal" | "notEqual") { return Err("AutoFilter ordering predicate contains a wildcard".into()); }
     let literal = if stars.is_empty() { literal } else if matches!(operation, "equal" | "notEqual") {
         if stars.len() == 2 && stars[0] == 0 && stars[1] + 1 == literal.len() {
             operator = if operation == "equal" { "contains" } else { "doesNotContain" };
@@ -191,7 +206,7 @@ fn single_custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFil
             operator = "endsWith"; literal[1..].into()
         } else if stars.len() == 1 && operation == "equal" && stars[0] + 1 == literal.len() {
             operator = "beginsWith"; literal[..literal.len() - 1].into()
-        } else { return Err("arbitrary AutoFilter wildcard patterns require a separate predicate adapter".into()); }
+        } else { literal }
     } else { return Err("AutoFilter ordering predicate contains a wildcard".into()); };
     Ok(FilterCriterion::Condition { operator: operator.into(), value: Some(operand(&literal, cells, range, column)), second_value: None, case_sensitive: None })
 }
@@ -202,7 +217,7 @@ fn custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFilterRang
     let and = flag(node, "and", false)?;
     let first = single_custom(&node.children[0], cells, range, column)?;
     let second = single_custom(&node.children[1], cells, range, column)?;
-    let (FilterCriterion::Condition { operator: first_op, value: first_value, .. }, FilterCriterion::Condition { operator: second_op, value: second_value, .. }) = (first, second) else {
+    let (FilterCriterion::Condition { operator: first_op, value: first_value, .. }, FilterCriterion::Condition { operator: second_op, value: second_value, .. }) = (&first, &second) else {
         return Err("compound AutoFilter predicate requires a separate predicate adapter".into());
     };
     if and && ((first_op == "isBlank" && second_op == "isNotBlank") || (first_op == "isNotBlank" && second_op == "isBlank")) {
@@ -212,12 +227,8 @@ fn custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFilterRang
         else if and && second_op == "greaterThanOrEqual" && first_op == "lessThanOrEqual" { ("between", second_value, first_value) }
         else if !and && first_op == "lessThan" && second_op == "greaterThan" { ("notBetween", first_value, second_value) }
         else if !and && second_op == "lessThan" && first_op == "greaterThan" { ("notBetween", second_value, first_value) }
-        else { return Err("compound AutoFilter predicate requires a separate predicate adapter".into()); };
-    Ok(FilterCriterion::Condition { operator: operator.into(), value: lower, second_value: upper, case_sensitive: None })
-}
-
-pub(crate) fn standard_filter(node: &OfficeFilterNode, cells: &[CellPayload], hidden_rows: &[u32]) -> Result<AutoFilterState, String> {
-    standard_filter_with_colors(node, cells, hidden_rows, &crate::sheet_filter_color::FilterColors::default())
+        else { return Ok(FilterCriterion::Compound { join: if and { "and" } else { "or" }.into(), conditions: vec![first, second] }); };
+    Ok(FilterCriterion::Condition { operator: operator.into(), value: lower.clone(), second_value: upper.clone(), case_sensitive: None })
 }
 
 pub(crate) fn standard_filter_with_colors(node: &OfficeFilterNode, cells: &[CellPayload], hidden_rows: &[u32], colors: &crate::sheet_filter_color::FilterColors) -> Result<AutoFilterState, String> {

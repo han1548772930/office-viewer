@@ -357,14 +357,6 @@ impl ParseFailure {
             Some(error.into()),
         )
     }
-
-    pub fn serialization(error: impl Into<String>) -> Self {
-        Self::new(
-            ParseErrorCode::SerializationFailure,
-            "Could not serialize parser result",
-            Some(error.into()),
-        )
-    }
 }
 
 #[derive(Debug, Serialize)]

@@ -65,3 +65,26 @@ test('standard filter imports infer failing rows without turning them into perma
   assert.deepEqual(sheet.hiddenRows, [3])
   assert.deepEqual(sheet.autoFilter.filteredRows, [])
 })
+
+test('external color-filter hide reasons are reconciled only after cross-sheet conditional references exist', () => {
+  const filterRange = { startRow: 0, endRow: 2, startCol: 0, endCol: 0 }
+  const model = normalizeWorkbook({ fileName: 'conditional-filter.xlsx', format: 'xlsx', parserVersion: 'draft', payload: { data: {
+    sheets: [{ name: 'Data', hiddenRows: [1, 2], sourceAutoFilter: { name: 'autoFilter' },
+      autoFilter: { range: filterRange, columns: { 0: { kind: 'color', cellFillColors: ['#ff0000'] } }, filteredRows: [1] },
+      cells: [{ row: 0, col: 0, value: 'Header' }, { row: 1, col: 0, value: 1 }, { row: 2, col: 0, value: 2 }],
+      conditionalFormats: [{ id: 'linked-color', type: 'expression', operator: 'equal', formula1: '=A1>Limit!$A$1', ranges: [filterRange],
+        style: { fill: '#ff0000' }, priority: 1, stopIfTrue: false }] },
+    { name: 'Limit', cells: [{ row: 0, col: 0, value: 1 }] }],
+  } } })
+  const sheet = model.sheets[0]
+  assert.deepEqual(sheet.autoFilter.filteredRows, [1])
+  assert.deepEqual(sheet.hiddenRows, [2])
+  clearFilter(sheet, undefined, model)
+  assert.deepEqual(sheet.autoFilter.filteredRows, []); assert.deepEqual(sheet.hiddenRows, [2])
+})
+
+test('parser cache accepts a complete merged group past ref.endRow while retaining title, duplicate and absolute bounds checks', () => {
+  const input = { range: { startRow: 0, endRow: 2, startCol: 0, endCol: 0 }, columns: {}, filteredRows: [1, 2, 3, 4] }
+  assert.deepEqual(normalizeWorkbookAutoFilter(input).filteredRows, [1, 2, 3, 4])
+  for (const filteredRows of [[0], [2, 2], [1_048_576]]) assert.throws(() => normalizeWorkbookAutoFilter({ ...input, filteredRows }))
+})

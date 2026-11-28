@@ -59,6 +59,8 @@ import { permissionTargetsForImage } from '../../features/document/permissions/d
 import { captureDocumentImageCanvasTarget, documentImageCanvasTargetCurrent, documentImageCanvasCommandMatchesTarget, documentImageAtPoint, documentImageResizeCorner, documentImageAtRotationHandle, documentImageGestureResult, documentImageBatchGestureResult,
   type DocumentImageCanvasTarget, type DocumentImageCanvasCommandRequest, type DocumentImageCanvasOperationRequest, type DocumentImageGesture, type DocumentImageGestureResult, type DocumentImageBatchGesture, type DocumentImageBatchGestureResult } from '../../features/document/controllers/document-image-canvas'
 import DocumentImageOverlay from './DocumentImageOverlay.vue'
+import DocumentHeadingCollapseOverlay from './DocumentHeadingCollapseOverlay.vue'
+import { normalizeDocumentHeadingSelection, visibleDocumentTextTargets } from '../../features/document/headings/heading-collapse'
 
 const props = defineProps<{ model: DocumentModel; selection: DocumentSelection; zoom: number; selectedImageId?: string; selectedImageIds?: readonly string[]; host?: DocumentAuxiliaryBlockHost; inspectionHost?: DocumentAuxiliaryBlockHost; activeContentControlId?: string; activeContentControlPopupMode?: DocumentContentControlPopupMode; permissionContext?: DocumentPermissionContext; tableFloatingToolbar?: boolean; storiesEnabled?: boolean; story?: StoryLocation; storyValue?: string; storySelection?: { start: number; end: number }; storyReadonly?: boolean; typingMarks?: RunPatch; captureInputSession?: (sourceModel?: DocumentModel) => DocumentInputSession | undefined; searchMatches?: Array<{ target: TextTarget; start: number; end: number }> }>()
 const emit = defineEmits<{
@@ -775,6 +777,7 @@ function pointFromEvent(event: Pick<MouseEvent, 'clientX' | 'clientY'>): Documen
 }
 
 function select(selection: DocumentSelection) {
+  if (!props.host && !legacyStoryActive.value) selection = normalizeDocumentHeadingSelection(editingModel.value, selection)
   emit('update:selection', selection)
   if (!legacyStoryActive.value) {
     const control = selectedDocumentContentControlForSelection(editingModel.value, selection)
@@ -1373,7 +1376,7 @@ function move(direction: 'left' | 'right' | 'up' | 'down' | 'home' | 'end', exte
   if (!extend && !selectionCollapsed(props.selection) && (direction === 'left' || direction === 'right')) point = { ...(direction === 'left' ? ordered.start : ordered.end) }
   else if (direction === 'home' || direction === 'end') {
     if (byWord) {
-      const targets = textTargets(model)
+      const targets = visibleDocumentTextTargets(model)
       const target = direction === 'home' ? targets[0] : targets.at(-1)
       if (target) point = { ...target, offset: direction === 'home' ? 0 : runText(runsForTarget(model, target)).length }
     } else {
@@ -1385,7 +1388,7 @@ function move(direction: 'left' | 'right' | 'up' | 'down' | 'home' | 'end', exte
     const offset = direction === 'left' ? offsets.filter((value) => value < point.offset).at(-1) : offsets.find((value) => value > point.offset)
     if (offset != null) point.offset = offset
     else {
-      const targets = textTargets(model)
+      const targets = visibleDocumentTextTargets(model)
       const index = targets.findIndex((target) => sameTarget(target, point))
       const target = targets[index + (direction === 'left' ? -1 : 1)]
       if (target) point = { ...target, offset: direction === 'left' ? runText(runsForTarget(model, target)).length : 0 }
@@ -1474,7 +1477,7 @@ function keydown(event: KeyboardEvent) {
   } else if (command && key === 'a') {
     event.preventDefault()
     imageSelectionRequest++; cancelImageGesture(); emit('image-selection', undefined); imageContextPoint.value = undefined
-    const targets = textTargets(editingModel.value)
+    const targets = visibleDocumentTextTargets(editingModel.value)
     const first = targets[0]
     const last = targets.at(-1)
     if (first && last) select({ anchor: { ...first, offset: 0 }, focus: { ...last, offset: runText(runsForTarget(editingModel.value, last)).length } })
@@ -1565,6 +1568,9 @@ defineExpose({ focus, focusStory, revealStory, storyRange, cancelInput, cancelCo
       @arrange="arrangeCanvasImages" @align="alignCanvasImages" />
     <DocumentTableOverlay ref="tableOverlay" :model="displayEditingModel" :layout="editingLayout" :selection="displaySelection" :viewport="viewport" :permission="permissionContext" :hover="hoverTable"
       :floating-toolbar="tableFloatingToolbar" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)" :story-active="legacyStoryActive" @selection="select" @command="command => dispatchCommand(command)" @operation="(id, params) => emit('operation', id, params)" @preview="value => tablePreview = value" @drag-pointer="overlayDragPointer" @focus="focus" @notify="value => emit('notify', value)" />
+    <DocumentHeadingCollapseOverlay v-if="!host && !inspectionActive && !legacyStoryActive" :model="model" :layout="layout" :viewport="viewport"
+      :permission="permissionContext" :capture-input-session="captureInputSession" :disabled="!contentControlActive || composing || storyComposing"
+      @command="dispatchCommand" />
     <DocumentStructuredOverlay ref="structuredOverlay" :source="model" :model="displayEditingModel" :layout="editingLayout" :source-layout="sourceEditingLayout" :selection="displaySelection" :viewport="viewport"
       :host="host" :permission="permissionContext" :capture-input-session="captureInputSession" :code-scroll-offsets="codeScrollOffsets"
       :inactive="legacyStoryActive || !contentControlActive" :disabled="composing || storyComposing || (host?.kind === 'story' && storyReadonly)"

@@ -29,7 +29,6 @@ import { DOCUMENT_TOC_DIALOG_OPERATION, registerDocumentTocDialogOperation, disp
 import { SET_DOCUMENT_HEADING_COLLAPSED_COMMAND, registerDocumentHeadingCollapseCommand } from './document-heading-commands'
 import { disposeDocumentTocLayouts } from './document-toc-layout'
 import { cancelDocumentTocPagination } from './document-toc-pagination'
-import type { HistorySavepoint } from '../platform/history/history-types'
 import { registerDocumentHeaderFooterCommands } from './document-header-footer-commands'
 import { captureDocumentHeaderFooterEditorTarget, documentHeaderFooterEditorTargetCurrent, disposeDocumentHeaderFooterEditors } from './document-header-footer-editors'
 import { isDocumentHeaderFooterCommand, resolveDocumentHeaderFooterRequest } from '../features/document/controllers/document-header-footer-editor'
@@ -1002,7 +1001,8 @@ export class OfficeStudio {
     }, true)
   }
 
-  private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean, amendment?: HistorySavepoint): boolean {
+  private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean,
+    amendment?: HistorySavepoint, restoreHistorySelection?: (direction: 'undo' | 'redo') => void): boolean {
     this.assertAlive()
     this.assertContentUnitIdentity('document', id)
     const current = this.getDocumentModel(id)
@@ -1032,7 +1032,7 @@ export class OfficeStudio {
       const callbacks = prepareDocumentSnapshotHistoryAmend(entry, after, publish)
       if (!this.editor.history.amendWithReceipt(id, amendment, entry.label, callbacks.redo)) throw new Error('目录插入历史已变化，不能合并重排。')
     } else {
-      const callbacks = createDocumentSnapshotHistory(before, after, publish)
+      const callbacks = createDocumentSnapshotHistory(before, after, publish, restoreHistorySelection)
       this.editor.history.execute(id, label, callbacks.redo, callbacks.undo)
     }
     return true
@@ -1593,6 +1593,18 @@ export class OfficeStudio {
     // Read-only/unsupported/no-selection refreshes succeed without entering a content mutation.
     if (fieldRefreshPlan) selection = fieldRefreshPlan.selection ?? sourceSelection
     const cachePublication = fieldRequest?.onOpen ? this.publishDocumentFieldCaches(request.unitId, fieldRequest, fieldRefreshPlan) : undefined
+    let initialHeadingPublication = true
+    const restoreHeadingSelection = request.command.id === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND && session?.valid && tracksSelection
+      ? (direction: 'undo' | 'redo') => {
+        if (initialHeadingPublication) { initialHeadingPublication = false; return }
+        const model = this.getDocumentModel(request.unitId)
+        if (!model) return
+        const original = cloneDocumentInputSession(session).location
+        const location = direction === 'undo' || original.kind === 'story' || original.host
+          ? original : documentInputLocation(cloneDocumentSelection(selection))
+        this.documentInput.select(request.unitId, location, this.getDocumentRevision(request.unitId))
+        this.publishDocumentInputState(request.unitId)
+      } : undefined
     const changed = cachePublication ? cachePublication.changed
       : (!fieldRefresh || fieldRefreshPlan !== undefined) && this.commitDocumentTransaction(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
       if (fieldRefreshPlan) {
@@ -1608,7 +1620,7 @@ export class OfficeStudio {
         storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
           request.command.input, session, revision, context)
       }
-    }, false, amendment)
+    }, false, amendment, restoreHeadingSelection)
     let expectedGeneration = generation
     let fieldInputPreserved = true
     const modelRevision = revision + (changed ? 1 : 0)

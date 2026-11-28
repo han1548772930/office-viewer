@@ -11,6 +11,7 @@ import type { DocumentBlock, DocumentContentControl, DocumentContentControlType,
 import type { FDocument } from '../api/facade'
 import type { DocumentTocLayoutHandle, DocumentTocLayoutSnapshot } from '../api/document-toc-layout'
 import type { DocumentTocDialogEditorHandle } from '../api/document-toc-dialog-editors'
+import { normalizeDocumentHeadingSelection, SET_DOCUMENT_HEADING_COLLAPSED_COMMAND } from '../features/document/headings/heading-collapse'
 import type { DocumentTocLayoutPublication } from '../features/document/toc/document-toc-pagination'
 import type { ApiEventMap } from '../api/events'
 import { applyDocumentEditorCommand } from '../api/document-editor-commands'
@@ -56,7 +57,7 @@ import WorkbenchRibbon from '../platform/ribbon/WorkbenchRibbon.vue'
 import type { RibbonGroup, RibbonItem, RibbonVariant } from '../platform/ribbon/ribbon-schema'
 import { useWorkbenchDisplay, workbenchVisibility } from '../platform/workbench-display'
 import { WORKBENCH_CONTROL_THEME } from '../platform/workbench-theme'
-import { activeOutlineIdForBlock, buildDocumentOutline, documentOutlineEnabled, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
+import { activeOutlineIdForBlock, activeOutlineIdInViewport, buildDocumentOutline, documentOutlineEnabled, documentOutlineParagraphBounds, documentOutlinePlacement, type DocumentOutlineItem } from '../features/document/services/document-outline'
 import { createDocumentRibbon, documentCommandFromRibbon, documentRibbonSelectionHasCode, documentTableContextMenuItems, documentTocContextMenuItems, type DocumentTocContextActionStates } from './document/document-ribbon'
 import { clampDocumentZoom, documentCharacterCount, documentSelectionCharacterCount, documentStoryToolbarState, documentToolbarState, type DocumentToolbarState } from './document/document-toolbar-state'
 import { documentParagraphSettingsStyle, type DocumentParagraphLineMetrics } from './document/document-paragraph-settings-state'
@@ -222,7 +223,8 @@ const visibleBlockId = ref<string>()
 const outlineNavigationTarget = ref<string>()
 const outlineMode = computed(() => documentOutlinePlacement({ availableWidth: workbenchWidth.value, pageWidth: model.value.page.width, zoom: zoom.value }))
 const outlineItems = computed(() => buildDocumentOutline(model.value))
-const activeOutlineId = computed(() => activeOutlineIdForBlock(outlineItems.value, model.value, visibleBlockId.value ?? selection.value.focus.blockId))
+const activeOutlineId = computed(() => activeOutlineIdForBlock(outlineItems.value, model.value, visibleBlockId.value ?? selection.value.focus.cellBlockId ?? selection.value.focus.blockId))
+const outlineParagraphBounds = computed(() => layoutSource.value === model.value ? documentOutlineParagraphBounds(model.value, layout.value.lines) : [])
 const showFind = ref(false)
 const searchText = ref('')
 const replaceText = ref('')
@@ -983,7 +985,8 @@ watch(() => props.modelValue, (value) => {
     try { resolveDocumentBlockHost(model.value, editingHost.value) }
     catch (error) { if (error instanceof RangeError) closeStory(false); else throw error }
   }
-  selection.value = sanitizeDocumentInputSelection(editingModel.value, sameDocument ? selection.value : { anchor: selection.value.anchor, focus: selection.value.focus })
+  const normalizedSelection = sanitizeDocumentInputSelection(editingModel.value, sameDocument ? selection.value : { anchor: selection.value.anchor, focus: selection.value.focus })
+  selection.value = editingHost.value ? normalizedSelection : normalizeDocumentHeadingSelection(model.value, normalizedSelection)
   if (returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
   if (!sameDocument) { commentDraftSelection.value = undefined; commentDraftHost.value = undefined; commentDraftReference.value = ''; searchScopeSelection.value = undefined; searchInSelection.value = false }
   paperSize.value = documentPaperSize(next.page)
@@ -1053,7 +1056,7 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
         if (!host) returnBodySelection.value = undefined
       }
       selection.value = cloneDocumentSelection(range)
-      visibleBlockId.value = range.focus.blockId
+      visibleBlockId.value = range.focus.cellBlockId ?? range.focus.blockId
       void nextTick(() => { if (restoreFocus && current() && sameDocumentBlockHost(host, editingHost.value)) canvasRef.value?.focus() })
       return
     }
@@ -1199,6 +1202,7 @@ function refreshStandaloneDocumentFieldCaches(locale: string, timestamp: number,
   return true
 }
 function execute(command: DocumentCommand, restoreFocus = true, feedback?: { selectionCurrent: boolean; modelRevision?: number; error?: string }, sourceCommandId?: 'doc.command.insert-special-character') {
+  if (command.id === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND && (!inputStateActive || documentInputComposing.value || editingHost.value || legacyStoryActive.value)) return false
   if ((editingHost.value || legacyStoryActive.value)
     && (command.id === 'doc.command.insert-page-break'
       || command.id === 'doc.command.insert-column-break'
@@ -1299,7 +1303,7 @@ function execute(command: DocumentCommand, restoreFocus = true, feedback?: { sel
       }
     }
     if (!documentApi && command.id !== 'doc.command.insert-text' && command.id !== 'docs.command.page-setup' && !collapsedFormat && !fieldRefresh) standalonePendingMarks.value = {}
-    if (outlineNavigationTarget.value !== selection.value.focus.blockId) outlineNavigationTarget.value = undefined
+    if (outlineNavigationTarget.value !== (selection.value.focus.cellBlockId ?? selection.value.focus.blockId)) outlineNavigationTarget.value = undefined
     colorMemory.value = rememberDocumentColors(colorMemory.value, command)
     if (command.id === 'doc.command.table-set-background' && typeof command.color === 'string') tableColors.value = { ...tableColors.value, background: command.color }
     if (command.id === 'doc.command.table-set-border-color' && typeof command.color === 'string') tableColors.value = { ...tableColors.value, border: command.color }
@@ -1702,12 +1706,13 @@ function leaveCodeBlock(blockId: string) {
   execute({ id: 'doc.command.exit-structured-block', blockId })
 }
 function onSelection(value: DocumentSelection) {
+  if (!editingHost.value && !legacyStoryActive.value) value = normalizeDocumentHeadingSelection(model.value, value)
   activeContentControlId.value = undefined
   activeContentControlPopupMode.value = 'value'
   standalonePendingMarks.value = {}
   selection.value = value
-  visibleBlockId.value = value.focus.blockId
-  if (outlineNavigationTarget.value !== value.focus.blockId) outlineNavigationTarget.value = undefined
+  visibleBlockId.value = value.focus.cellBlockId ?? value.focus.blockId
+  if (outlineNavigationTarget.value !== (value.focus.cellBlockId ?? value.focus.blockId)) outlineNavigationTarget.value = undefined
   props.documentApi?.setInputSelection(value, undefined, editingHost.value)
 }
 function contentControlRequestCurrent(request: DocumentContentControlSelectionRequest, requireSession = false): boolean {
@@ -2050,7 +2055,20 @@ function setActivePage(index: number) {
   if (blockHostInspection.value) { closeStory(false); scheduleInputFocus(() => canvasRef.value?.scrollToPage(index)) }
   else canvasRef.value?.scrollToPage(index)
 }
-function jumpToHeading(id: string) { closeStory(false); const point = { blockId: id, offset: 0 }; outlineNavigationTarget.value = id; onSelection(collapsedSelection(point)); canvasRef.value?.scrollToBlock(id); canvasRef.value?.focus() }
+function jumpToHeading(id: string) {
+  if (!inputStateActive || documentInputComposing.value) return
+  const source = model.value, api = props.documentApi
+  const target = outlineItems.value.find(item => item.id === id)?.target ?? textTargets(source).find(target => (target.cellBlockId ?? target.blockId) === id)
+  if (!target) return
+  const next = normalizeDocumentHeadingSelection(model.value, collapsedSelection({ ...target, offset: 0 }))
+  if (!resolveDocumentPermission(source.permissionRules ?? [], permissionContext.value, 'view', permissionTargetsForSelection(source, next)).allowed) return
+  if ((storyLocation.value || editingHost.value || blockHostInspection.value) && !closeStory(false)) return
+  if (model.value !== source || props.documentApi !== api) return
+  const paragraphId = next.focus.cellBlockId ?? next.focus.blockId
+  outlineNavigationTarget.value = paragraphId; onSelection(next)
+  if (model.value !== source || props.documentApi !== api) return
+  scheduleInputFocus(() => { canvasRef.value?.scrollToBlock(paragraphId); canvasRef.value?.focus() })
+}
 function onDocumentLayout(value: DocumentLayout, source: DocumentModel) {
   if (value.inspectionHost) {
     if (blockHostInspection.value?.documentId === source.id && sameDocumentBlockHost(value.inspectionHost, blockHostInspection.value.host)) {
@@ -2099,16 +2117,21 @@ function onViewportChange(location: DocumentViewportLocation) {
   if (blockHostInspection.value) return
   const target = outlineNavigationTarget.value
   if (target) {
-    const heading = layout.value.headings.find((candidate) => candidate.id === target)
+    const heading = outlineParagraphBounds.value.find(candidate => candidate.blockId === target)
     // A short page may not scroll at all; keep the explicitly selected heading
     // while it is visible, including the programmatic scroll emitted by navigation.
-    if (heading && heading.y >= location.top && heading.y < location.bottom) { visibleBlockId.value = target; return }
+    if (heading && heading.top < location.bottom && heading.bottom > location.top) { visibleBlockId.value = target; return }
     if (location.reason !== 'scroll') return
     outlineNavigationTarget.value = undefined
   }
-  visibleBlockId.value = location.firstVisibleBlockId
+  const outlineId = activeOutlineIdInViewport(outlineItems.value, outlineParagraphBounds.value, location.top, location.bottom)
+  visibleBlockId.value = outlineItems.value.find(item => item.id === outlineId)?.blockId ?? location.firstVisibleParagraphId ?? location.firstVisibleBlockId
 }
-function navigateOutline(item: DocumentOutlineItem) { if (item.blockId) jumpToHeading(item.blockId); else setActivePage(0) }
+function navigateOutline(item: DocumentOutlineItem) {
+  if (!inputStateActive || documentInputComposing.value || !outlineItems.value.some(current => current.id === item.id)) return
+  if (item.blockId) jumpToHeading(item.blockId)
+  else if (resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'view').allowed) setActivePage(0)
+}
 function captureDocumentContextTarget(story = currentStoryRange.value): DocumentContextTarget {
   return {
     ...(!story ? { structuredTarget: captureDocumentStructuredCanvasTarget(model.value, selection.value, editingHost.value, props.documentApi ? captureInputSession(model.value) : undefined) } : {}),
@@ -3518,7 +3541,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       <Button size="small" :disabled="documentInputComposing" @click="returnFromNote">{{ createRibbonTranslator(officeLocale, 'doc')('doc.notes.finish-editing', '返回引用') }}</Button>
     </div>
     <main class="editor-workspace">
-      <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode && !blockHostInspection && editingHost?.kind !== 'note'" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" @navigate="navigateOutline" />
+      <DocumentOutline v-if="chrome.leftSidebar && showOutline && !isFocusMode && !blockHostInspection && editingHost?.kind !== 'note'" :model="model" :active-id="activeOutlineId" :mode="outlineMode" :max-width="256" :disabled="!inputStateActive || documentInputComposing" @navigate="navigateOutline" />
       <Splitter class="document-editor-splitter" :styles="documentSplitterStyles" :destroy-on-hidden="false" @resize="resizeDocumentDock">
         <SplitterPanel class="document-canvas-panel" :min="160" :resizable="documentDockOpen">
           <DocumentCanvasViewport ref="canvasRef" :model="model" :host="editingHost" :inspection-host="blockHostInspection?.host" :selection="selection" :zoom="zoom" :search-matches="searchMatches"

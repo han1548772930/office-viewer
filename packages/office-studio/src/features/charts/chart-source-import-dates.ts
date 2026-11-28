@@ -1,4 +1,4 @@
-import type { CellScalar, ChartModel, PivotFieldModel, PivotRecordValue, PivotTableModel, SheetFilterCriteria, SpreadsheetCell } from '../../domain/model'
+import type { CellScalar, ChartModel, PivotFieldModel, PivotRecordValue, PivotTableModel, SheetConditionFilter, SheetFilterCriteria, SpreadsheetCell } from '../../domain/model'
 import { classifySheetNumberFormat, formatSheetValue } from '../sheet-workbench/sheet-number-format'
 import { formulaCalendarDelta, formulaCalendarSerial, readFormulaCalendarValue } from '../formula/formula-import-context'
 
@@ -45,8 +45,13 @@ export function remapChartSourceDateFilter(criteria: SheetFilterCriteria, delta:
         values: criteria.recordSelection.values.map(value => remapRecordDate(value, delta, dateColumn)) } } : {}),
     }
   }
-  return dateColumn ? { ...criteria, ...(criteria.value === undefined ? {} : { value: remapChartSourceDateValue(criteria.value, delta, true) }),
-    ...(criteria.secondValue === undefined ? {} : { secondValue: remapChartSourceDateValue(criteria.secondValue, delta, true) }) } : criteria
+  if (!dateColumn || criteria.kind === 'color') return criteria
+  const remap = (condition: SheetConditionFilter): SheetConditionFilter => ({ ...condition,
+    ...(condition.value === undefined ? {} : { value: remapChartSourceDateValue(condition.value, delta, true) }),
+    ...(condition.secondValue === undefined ? {} : { secondValue: remapChartSourceDateValue(condition.secondValue, delta, true) }) })
+  if (criteria.kind === 'compound') return { ...criteria, conditions: criteria.conditions.length === 1
+    ? [remap(criteria.conditions[0])] : [remap(criteria.conditions[0]), remap(criteria.conditions[1])] }
+  return remap(criteria)
 }
 export function pivotFieldUsesDates(field: PivotFieldModel): boolean {
   return !!field.dateGroupType || !!field.dateFilter || !!field.timelineDateRange || !!field.timelineDateCondition

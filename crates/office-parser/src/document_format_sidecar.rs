@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io::{Cursor, Read}};
 
-use duke_pages::{BlockDetails, DocModel, DocNode, DocumentBlock, NumberingDefinitionSet, NumberingLevelDefinition, ParagraphNode, StructuredDocument, TableCellContentNode, TableNode};
+use duke_pages::{BlockDetails, DocModel, DocumentBlock, NumberingDefinitionSet, NumberingLevelDefinition, ParagraphNode, StructuredDocument};
 use quick_xml::{Reader, XmlVersion, events::Event};
 use serde_json::{Value, json};
 use zip::ZipArchive;

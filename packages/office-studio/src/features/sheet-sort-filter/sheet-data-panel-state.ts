@@ -4,8 +4,13 @@ import { parseSheetAddress } from '../sheet-workbench/sheet-workbench'
 import { assertSheetCommandRanges, sheetRangeContainsCell } from '../sheet-workbench/sheet-range-command.ts'
 import { expandSheetDataRange } from './sheet-data-range.ts'
 import { createSheetFilterColorReader } from './sheet-filter-colors.ts'
-import { clearFilter, readCellValue, refreshAutoFilter, setAutoFilter, setFilterCriteria, sheetFilterColumnHiddenRows } from './sort-filter-engine'
+import { clearFilter, compileSheetCellFilterCriteria, readCellValue, refreshAutoFilter, setAutoFilter, setFilterCriteria, sheetFilterColumnHiddenRows } from './sort-filter-engine'
 import { sheetFilterColumnEntries } from './sheet-filter-column.ts'
+import type { SheetFilterValueCandidate } from './sheet-filter-value-tree.ts'
+import { classifySheetNumberFormat, formatSheetValue } from '../sheet-workbench/sheet-number-format.ts'
+import { resolveSheetCellStyle } from '../sheet-workbench/sheet-style-inheritance.ts'
+import { excelSerialToDateTimeParts } from '../sheet-workbench/number-format-engine/serial-date.ts'
+import { DateSystem } from '../sheet-workbench/number-format-engine/date-system.ts'
 
 export const CONFIGURE_SHEET_FILTER_COMMAND = 'sheet.command.configure-filter'
 export interface ConfigureSheetFilterInput {
@@ -16,7 +21,7 @@ export interface ConfigureSheetFilterInput {
   expectedRevision?: number
 }
 export interface DataPanelField { column: number; label: string }
-export interface DataPanelValue { key: string; label: string; value: CellScalar }
+export type DataPanelValue = SheetFilterValueCandidate
 export interface DataPanelColor { key: string; label: string; value: string | null }
 export interface PanelSortKey { column: number; direction: 'ascending' | 'descending' }
 export type PanelSortRangeChoice = 'keep' | 'extend'
@@ -74,16 +79,24 @@ export function readDataPanelValues(sheet: SpreadsheetSheet, range: CellRange, c
   if (!Number.isInteger(column) || column < range.startCol || column > range.endCol) throw new RangeError('筛选字段必须位于数据区域内。')
   const values = new Map<string, DataPanelValue>()
   const rowAllowed = dataPanelOtherColumnPredicate(sheet, range, column, workbook)
-  const add = (value: CellScalar) => {
+  const add = (value: CellScalar, count: number, calendar?: SheetFilterValueCandidate['calendar'], dateLabel?: string) => {
     const key = dataPanelValueKey(value)
-    if (!values.has(key)) values.set(key, { key, value, label: value === null ? '（空白）' : value === '' ? '（空文本）' : typeof value === 'number' ? `${value}（数值）` : typeof value === 'boolean' ? (value ? 'TRUE（逻辑值）' : 'FALSE（逻辑值）') : value })
+    const existing = values.get(key)
+    if (existing) { existing.count += count; if (calendar) { existing.calendar = calendar; if (dateLabel) existing.label = dateLabel } return }
+    values.set(key, { key, value, count, ...(calendar ? { calendar } : {}), label: dateLabel ?? (value === null ? '（空白）' : value === '' ? '（空文本）' : typeof value === 'number' ? `${value}（数值）` : typeof value === 'boolean' ? (value ? 'TRUE（逻辑值）' : 'FALSE（逻辑值）') : value) })
   }
   for (const entry of sheetFilterColumnEntries(sheet, range, column)) {
-    let allowed = false
-    for (let offset = 0; offset < entry.rowSpan; offset++) if (rowAllowed(entry.row + offset)) { allowed = true; break }
-    if (!allowed) continue
+    let count = 0
+    for (let offset = 0; offset < entry.rowSpan; offset++) if (rowAllowed(entry.row + offset)) count++
+    if (!count) continue
     const value = readCellValue(entry.cell)
-    if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) add(value)
+    if (value !== null && typeof value !== 'string' && typeof value !== 'boolean' && !(typeof value === 'number' && Number.isFinite(value))) continue
+    const style = resolveSheetCellStyle(sheet, entry.row, entry.column, entry.cell, workbook)
+    const format = classifySheetNumberFormat(style.numberFormat)
+    const calendar = typeof value === 'number' && !entry.cell?.richText?.length && entry.cell?.metadata?.publicBody === undefined && (format === 'date' || format === 'datetime')
+      ? excelSerialToDateTimeParts(value, { dateSystem: workbook?.date1904 ? DateSystem.Date1904 : DateSystem.Date1900 }) : null
+    const day = calendar && calendar.day > 0 ? { year: calendar.year, month: calendar.month, day: calendar.day } : undefined
+    add(value, count, day, day ? formatSheetValue(value, style.numberFormat, workbook?.date1904) : undefined)
   }
   return [...values.values()]
 }
@@ -96,6 +109,17 @@ export function parseDataPanelScalar(value: string, type: 'text' | 'number' | 'b
   }
   if (!value.trim() || !Number.isFinite(Number(value))) throw new TypeError('请输入有效数值。日期条件请使用工作簿的日期序号。')
   return Number(value)
+}
+export function readDataPanelSelectedValueKeys(sheet: SpreadsheetSheet, range: CellRange, column: number,
+  values: readonly DataPanelValue[], criteria: SheetFilterCriteria | undefined, workbook?: WorkbookModel): string[] {
+  if (criteria?.kind !== 'values') return values.map(item => item.key)
+  const matches = compileSheetCellFilterCriteria(criteria, { sheet, workbook }), selected = new Set<string>()
+  for (const entry of sheetFilterColumnEntries(sheet, range, column)) {
+    if (!matches(entry.cell, entry.row, entry.column)) continue
+    const value = readCellValue(entry.cell)
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') selected.add(dataPanelValueKey(value))
+  }
+  return values.filter(item => selected.has(item.key)).map(item => item.key)
 }
 export function readDataPanelColors(workbook: WorkbookModel, sheet: SpreadsheetSheet, range: CellRange, column: number, target: 'fill' | 'text'): DataPanelColor[] {
   if (!Number.isInteger(column) || column < range.startCol || column > range.endCol) throw new RangeError('颜色筛选字段必须位于数据区域内。')

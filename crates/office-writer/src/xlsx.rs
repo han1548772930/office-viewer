@@ -390,8 +390,8 @@ struct StyleInput {
     indent: Option<i32>,
     #[serde(default)]
     shrink_to_fit: bool,
-    #[serde(default)]
-    metadata: Option<Value>,
+    #[serde(default, rename = "metadata")]
+    _metadata: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1356,62 +1356,6 @@ fn chart_range_formula(
     )
 }
 
-fn chart_cell_value(sheet: &SheetInput, row: u32, col: u32) -> Option<Value> {
-    let key = format!("{row}:{col}");
-    if let Some(value) = sheet.cells.get(&key) {
-        let cell = cell_from_entry(&key, value)?;
-        return cell
-            .value
-            .or_else(|| (!cell.display.is_empty()).then(|| Value::String(cell.display)));
-    }
-    let key = cell_ref(row, col);
-    let value = sheet.cells.get(&key)?;
-    let cell = cell_from_entry(&key, value)?;
-    cell.value
-        .or_else(|| (!cell.display.is_empty()).then(|| Value::String(cell.display)))
-}
-
-fn chart_value_text(value: Option<Value>, display: bool) -> String {
-    match value {
-        Some(Value::Number(number)) => number.to_string(),
-        Some(Value::Bool(value)) => {
-            if value {
-                "1".to_owned()
-            } else {
-                "0".to_owned()
-            }
-        }
-        Some(Value::String(value)) => value,
-        Some(Value::Object(map)) if display => map
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned(),
-        _ => String::new(),
-    }
-}
-
-fn chart_number_text(value: Option<Value>) -> String {
-    let Some(value) = value else {
-        return String::new();
-    };
-    match value {
-        Value::Number(number) => number
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .map(|number| number.to_string())
-            .unwrap_or_default(),
-        Value::String(text) => text
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|number| number.is_finite())
-            .map(|number| number.to_string())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
 fn emu(value: f64) -> Result<u32, ExportError> {
     if !value.is_finite() || value < 0.0 || value > u32::MAX as f64 / 9525.0 {
         return Err(ExportError::invalid(
@@ -2176,7 +2120,7 @@ mod tests {
             rotation_vertical: false,
             indent: None,
             shrink_to_fit: false,
-            metadata: None,
+            _metadata: None,
         };
         assert_eq!(
             registry.register(Some(&style)),

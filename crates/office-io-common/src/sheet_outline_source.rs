@@ -379,7 +379,7 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
     let mut extension_count = 0usize;
     let mut capture: Option<JsonCapture> = None;
     let mut candidate = None;
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     loop {
         let event = reader.read_event_into(&mut buffer).map_err(|error| error.to_string())?;
         match event {
@@ -490,7 +490,6 @@ pub fn read_worksheet_outline<R: BufRead>(input: R, allow_prefix: bool) -> Resul
             Event::Decl(declaration) => { if root_seen { return Err("misplaced outline XML declaration".into()); } validate_declaration(declaration.as_ref())?; }
             Event::DocType(_) => return Err("outline worksheet DTDs are unsupported".into()),
             Event::Eof => break,
-            _ => {}
         }
         if reader.buffer_position() > MAX_WORKSHEET_BYTES || tree_bytes > 16 * 1024 * 1024 || tree_nodes > 262_144 { return Err("outline worksheet or fragment exceeds the parser budget".into()); }
         buffer.clear();

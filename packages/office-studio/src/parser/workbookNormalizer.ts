@@ -404,6 +404,5 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   applyWorkbookFormulaCalendarSource(workbook, data.sheets, data.tables, formulaCalendarSource)
   normalizeSlicerCaches(workbook)
   for (const reconcile of reconcileFilters) reconcile(workbook)
-  for (const sheet of workbook.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet, workbook)
   return workbook
 }

@@ -41,7 +41,13 @@ pub(super) fn can_reclaim(archive: &mut ZipArchive<Cursor<&[u8]>>, parts: &Workb
             if rel.external || rel.kind != "table" || target.as_deref().is_none_or(|target| !table_paths.contains(target)) { return Ok(false); }
         }
     }
-    let xml_paths = archive.file_names().filter(|path| path.ends_with(".xml")).map(str::to_owned).collect::<Vec<_>>();
+    // ZIP 9 names are fallible and may borrow the archive. Own them before any
+    // by_name read; an undecodable part cannot prove helper ownership absent.
+    let names = archive.file_names().map(|path| path.map(|path| path.into_owned())).collect::<Result<Vec<_>, _>>();
+    let xml_paths = match names {
+        Ok(names) => names.into_iter().filter(|path| path.ends_with(".xml")).collect::<Vec<_>>(),
+        Err(error) => { warnings.push(format!("XLSX_FORMULA_CALENDAR_HELPERS_RETAINED: reference scan could not enumerate package parts: {error}")); return Ok(false); }
+    };
     let mut bytes = 0usize;
     for path in xml_paths {
         if path == source_part || paths.contains(path.as_str()) || table_paths.contains(path.as_str())

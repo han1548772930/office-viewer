@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import { activeOutlineIdForBlock, activeOutlineIdInViewport, buildDocumentOutline, documentOutlineEnabled, documentOutlineOverlapsTable, documentOutlinePlacement, nextOutlineFocusId } from '../src/features/document/services/document-outline.ts'
+import { activeOutlineIdForBlock, activeOutlineIdInViewport, buildDocumentOutline, documentOutlineEnabled, documentOutlineOverlapsTable, documentOutlineParagraphBounds, documentOutlinePlacement, nextOutlineFocusId } from '../src/features/document/services/document-outline.ts'
+import { createTable } from '../src/features/document/model/document-model.ts'
 
 function block(id, text, type = 'heading', level = 1) {
   return { id, type, level, runs: [{ id: `${id}-run`, text }], style: {}, metadata: {} }
@@ -41,6 +42,83 @@ test('rebuild follows edits, removal and reordering instead of stale source styl
   source.blocks[1].runs[0].text = '改名后的第二章'
   source.blocks.splice(2, 1)
   assert.deepEqual(buildDocumentOutline(source, { includeDocumentTitle: false }).map(({ id, text }) => ({ id, text })), [{ id: 'two', text: '改名后的第二章' }])
+})
+
+test('an authored Title replaces the virtual document name while Subtitle and stale source styles remain excluded', () => {
+  const title = block('title', '真实文档标题', 'paragraph'), subtitle = block('subtitle', '副标题', 'paragraph')
+  title.metadata.namedStyleType = 'title'; subtitle.metadata.namedStyleType = 'subtitle'
+  const source = model([title, subtitle, block('chapter', '第一章')])
+  const before = structuredClone(source), items = buildDocumentOutline(source)
+  assert.deepEqual(items.map(({ id, text, isTitle }) => ({ id, text, isTitle })), [
+    { id: 'title', text: '真实文档标题', isTitle: true }, { id: 'chapter', text: '第一章', isTitle: false },
+  ])
+  assert.deepEqual(items[0].target, { blockId: 'title' })
+  assert.equal(items[0].level, 1)
+  assert.equal(buildDocumentOutline(source, { includeDocumentTitle: false })[0].id, 'title')
+  assert.deepEqual(source, before)
+  title.metadata = { source: { paragraphStyle: { namedStyleType: 'TITLE' } } }
+  assert.equal(buildDocumentOutline(source)[0].blockId, undefined)
+  assert.deepEqual(buildDocumentOutline(source, { includeDocumentTitle: false }).map(item => item.id), ['chapter'])
+})
+
+test('table, continuation and column headings retain canonical addresses and full paragraph order', () => {
+  const table = createTable(2, 2), cell = table.rows[0].cells[0]
+  cell.blocks = [block('cell-heading', '单元格标题'), block('cell-body', '单元格正文', 'paragraph')]
+  cell.rowSpan = 2
+  cell.style.nativeContinuationContent = { 1: { version: 1, ownerCellId: cell.id, rowId: table.rows[1].id, colSpan: 1, blocks: [block('continuation-heading', '续格标题')] } }
+  table.rows[0].cells[1].blocks = [block('other-cell', '另一单元格', 'paragraph')]
+  table.rows[1].cells = [table.rows[1].cells[1]]
+  table.rows[1].cells[0].blocks = [block('last-cell', '末单元格', 'paragraph')]
+  const columns = { ...block('columns', '', 'columns'), runs: [], columns: { version: 1, layout: 'fixed', responsive: 'shrink', gap: 20,
+    columns: [{ id: 'left', widthRatio: 1, blocks: [block('left-heading', '左栏标题', 'heading', 2), block('left-body', '左栏正文', 'paragraph')] },
+      { id: 'right', widthRatio: 1, blocks: [block('right-heading', '右栏标题', 'heading', 3)] }] } }
+  const source = model([block('root', '正文标题'), { ...block('table', '', 'table'), runs: [], metadata: { table } }, columns, block('end', '结束', 'paragraph')])
+  const before = structuredClone(source), items = buildDocumentOutline(source, { includeDocumentTitle: false })
+  assert.deepEqual(items.map(({ id, blockIndex, sourceOrder, target }) => ({ id, blockIndex, sourceOrder, target })), [
+    { id: 'root', blockIndex: 0, sourceOrder: 0, target: { blockId: 'root' } },
+    { id: 'cell-heading', blockIndex: 1, sourceOrder: 1, target: { blockId: 'table', row: 0, col: 0, cellBlockId: 'cell-heading' } },
+    { id: 'continuation-heading', blockIndex: 1, sourceOrder: 3, target: { blockId: 'table', row: 0, col: 0, cellBlockId: 'continuation-heading' } },
+    { id: 'left-heading', blockIndex: 2, sourceOrder: 6, target: { blockId: 'left-heading' } },
+    { id: 'right-heading', blockIndex: 2, sourceOrder: 8, target: { blockId: 'right-heading' } },
+  ])
+  assert.equal(activeOutlineIdForBlock(items, source, 'cell-body'), 'cell-heading')
+  assert.equal(activeOutlineIdForBlock(items, source, 'other-cell'), 'continuation-heading')
+  assert.equal(activeOutlineIdForBlock(items, source, 'left-body'), 'left-heading')
+  assert.equal(activeOutlineIdForBlock(items, source, 'end'), 'right-heading')
+  assert.deepEqual(source, before)
+})
+
+test('a virtual title never collides with nested paragraph IDs and does not rewrite the source identity', () => {
+  const table = createTable(1, 1)
+  table.rows[0].cells[0].blocks = [block('__document_outline_title__', '单元格标题')]
+  const source = model([{ ...block('table', '', 'table'), metadata: { table } }])
+  const items = buildDocumentOutline(source)
+  assert.equal(items[0].id, '__document_outline_title___')
+  assert.equal(items[1].id, '__document_outline_title__')
+  assert.equal(table.rows[0].cells[0].blocks[0].id, '__document_outline_title__')
+})
+
+test('viewport headings use real paragraph bounds through wrapping, cells, column geometry and hidden content', () => {
+  const table = createTable(1, 1)
+  table.rows[0].cells[0].blocks = [block('cell-heading', '表内标题'), block('cell-body', '表内正文', 'paragraph')]
+  const title = block('title', '正文Title', 'paragraph'); title.metadata.namedStyleType = 'title'
+  const source = model([title, block('intro', '导语', 'paragraph'), { ...block('table', '', 'table'), metadata: { table } }, block('hidden', '隐藏标题')])
+  const lines = [
+    { target: { blockId: 'title' }, y: 20, height: 20 },
+    { target: { blockId: 'intro' }, y: 60, height: 20 },
+    { target: { blockId: 'table', row: 0, col: 0, cellBlockId: 'cell-heading' }, y: 160, height: 20 },
+    { target: { blockId: 'table', row: 0, col: 0, cellBlockId: 'cell-heading' }, y: 180, height: 20 },
+    { target: { blockId: 'table', row: 0, col: 0, cellBlockId: 'cell-body' }, y: 210, height: 20 },
+    { target: { blockId: 'hidden' }, y: 240, height: 0 },
+    { target: { blockId: 'unknown' }, y: 300, height: 20 },
+  ]
+  const before = structuredClone(lines), bounds = documentOutlineParagraphBounds(source, [...lines].reverse()), items = buildDocumentOutline(source)
+  assert.deepEqual(bounds.map(bound => bound.blockId), ['title', 'intro', 'cell-heading', 'cell-body'])
+  assert.deepEqual(bounds[2], { blockId: 'cell-heading', top: 160, bottom: 200 })
+  assert.equal(activeOutlineIdInViewport(items, bounds, 60, 180), 'cell-heading')
+  assert.equal(activeOutlineIdInViewport(items, bounds, 200, 230), 'cell-heading')
+  assert.equal(activeOutlineIdInViewport(items, bounds, 240, 300), undefined)
+  assert.deepEqual(lines, before)
 })
 
 test('normalizes malformed levels locally, skips invalid/repeated IDs and avoids a title ID collision', () => {

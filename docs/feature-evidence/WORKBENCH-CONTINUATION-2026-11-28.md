@@ -33,19 +33,27 @@
 | SHEET-11/12 / COMMON-06 | 实际筛选首行各列Ant按钮、冻结/缩放/裁剪及16px文字避让；颜色条件、其他列后的候选、整组合并派生；6个API入口的旧/新范围与merge尾部权限及版本/用户/参数守卫 | [前端筛选证据](SHEET-11-filter-header-color-2026-11-28.md)。子任务新增20个声明，主线另有5个API权限草稿，均未运行；日期树、复合条件、表格专属控件及大计算仍缺 |
 | SHEET-11/18/29 | 真实colorFilter/dxf读写、工作表/结构化表完整项目快照、当前表格过滤行写出、主题/调色板依赖指纹、外部颜色修改使旧快照失效、缺资源时保留来源及实际隐藏行；跨ref合并缓存边界同步 | [Office颜色边界](SHEET-11-29-color-filter-office-2026-11-28.md)。Rust草稿未运行；多颜色的标准Office reapply、图案/渐变与未知资源重导出不宣称已验收 |
 | DOC-04 / COMMON-03/05/11 | Canvas真实布局/字体版本发布、owner/provider及取消；插入后最多三次更新并amend同一历史；手动全文/仅页码、删除及固定公开对话框operation，独立story输入与typing marks保留 | [Docs目录证据](DOC-04-toc-layout-history-2026-11-28.md)。typed/flat/API/UI与模型历史草稿均未运行；复杂原生目录/页码、标题折叠和Worker排版仍按后续实现推进 |
-| COMMON-11 构建入口 | 新增 `build:wasm:all` 串行构建四个cdylib模块，根 `dev` 等全部成功再启动workbench，README同步四个产物目录 | [package.json](../../package.json)、[README](../../README.md)。已读取JSON及脚本依赖并做限定diff检查；没有实际打包或启动 |
+| COMMON-11 构建入口 | 新增 `build:wasm:all` 串行构建四个cdylib模块，根 `dev` 等全部成功再启动workbench，README同步四个产物目录 | [package.json](../../package.json)、[README](../../README.md)。入口修改批只做静态检查；用户报告错误后已实际完成四模块打包，见下方2026-11-29例外 |
 
 当前只读静态快照（在后续标题折叠改动之前）：累计工作树114文件、77段脚本（包含HTML夹具）、6份Vue模板、6份样式、1589处本地静态/类型/动态import与export引用，以及15份Markdown的723个本地链接，错误0。catalog AST重新读取为唯一215项/8类，各分类与上表原基线相同；主线函数模型/API和筛选权限草稿分别10/10/5个test声明。先前compiler-sfc从根直接require不可用，改用已安装Vue的 `vue/compiler-sfc` 完成检查，没有新增依赖。
 
-上述是累计静态范围，包含前轮改动，不能当作本轮新增文件数；不覆盖快照之后的改动。没有运行测试、类型、前端构建、Rust/WASM、dev、浏览器、Office或基准。所有65组均未验收，继续推进后续入口；当前原生多颜色映射诊断及Docs主线程布局等差异均保持明确记录。
+上述是累计静态范围，包含前轮改动，不能当作本轮新增文件数；不覆盖快照之后的改动。该快照形成时尚未运行测试、类型、前端构建、Rust/WASM、dev、浏览器、Office或基准；后续用户构建报错的定向验证另见下文。所有65组均未验收，继续推进后续入口；当前原生多颜色映射诊断及Docs主线程布局等差异均保持明确记录。
 
-用户随后实际执行dev时报告 `wasm-pack` 不可识别。环境只读检查确认Rust和`wasm32-unknown-unknown`目标已存在，而PATH及Cargo bin没有wasm-pack。已在根package.json固定开发依赖`wasm-pack: 0.15.1`，在pnpm-workspace.yaml为该依赖启用必要的安装脚本，并执行`pnpm.cmd install --no-frozen-lockfile`，由pnpm生成锁文件，安装成功。`pnpm.cmd exec wasm-pack --version`实际输出`wasm-pack 0.15.1`，四份构建配置文件的限定diff检查通过。没有全局安装工具、实际打包WASM或启动dev；工具版本确认不作为Rust/WASM产品编译验证。README同步项目内工具的安装方式。
+用户随后实际执行dev时报告 `wasm-pack` 不可识别。环境只读检查确认Rust和`wasm32-unknown-unknown`目标已存在，而PATH及Cargo bin没有wasm-pack。已在根package.json固定开发依赖`wasm-pack: 0.15.1`，在pnpm-workspace.yaml为该依赖启用必要的安装脚本，并执行`pnpm.cmd install --no-frozen-lockfile`，由pnpm生成锁文件，安装成功。`pnpm.cmd exec wasm-pack --version`实际输出`wasm-pack 0.15.1`，四份构建配置文件的限定diff检查通过。该工具安装批没有全局安装、打包WASM或启动dev；后续真实打包验证见下文。README同步项目内工具的安装方式。
+
+### 2026-11-29 续批与用户报错例外
+
+本次恢复原 Sheets/Docs 两个子任务，主线继续共享模型与Office边界，没有重置工作区。日期树和一至两个条件的AND/OR已接原面板、谓词及统一命令，见[日期树/复合条件前端证据](SHEET-11-date-tree-compound-2026-11-29.md)；共享解析、结构化表格剪贴板、跨日期系统导入、worksheet/table快照与原生customFilters已同步，文本`*`/`?`与字面`~`按固定语义接通。来源、6个Rust和4个共享TS未运行草稿、原生表达限制及剩余适配见[复合条件Office证据](SHEET-11-29-compound-filter-office-2026-11-29.md)。
+
+Docs现代标题折叠接实际Canvas/Ant覆盖层、独立流可见投影、公开命令、历史和选区归一，见[标题折叠证据](DOC-04-heading-collapse-2026-11-29.md)。项目JSON/快照保留标志与DOCX原生保存分别记录，未宣称新flag已有原生写出。
+
+用户明确要求修复实际WASM错误/警告后，提前执行对应release打包，修复ZIP9名称迭代、坐标类型、借用生命周期并清理实际Rust警告；四模块聚合已完整通过，退出码0、Rust错误0/警告0。用户后贴Vite日志后移除HistorySavepoint重复导入，真实OXC转换warnings为空，1142份前端源文件import绑定扫描重复0，现有dev的该模块HTTP200。没有新启dev，也没有运行测试、类型、前端完整构建、浏览器、Office或性能；详见[构建与Vite修复证据](COMMON-11-wasm-build-and-vite-import-2026-11-29.md)。全部65组仍未验收。
 
 旧记录中的字符选择器、页面设置、表格 selector 和页眉页脚 editor 方案已经有生产实现；仍须按入口追踪权限、命令、模型、历史与重开，不将“已有代码”改成“已验收”。完整函数/数组、复杂 Docs 排版、Pro 深层行为、协作/服务、Office 和性能目标继续推进。
 
 ## 检查记录
 
-运行验证继续后置。新增模型/命令/IO 契约和浏览器测试均为未运行草稿；没有执行测试、类型检查、前端构建、Rust/WASM 检查、dev、浏览器、Office 文件验收或性能基准。以下记录只读语法、引用、源码路径、计数、文档链接与 diff 的实际范围，不以这些静态检查提升验收状态。
+默认运行验证继续后置。新增模型/命令/IO契约和浏览器测试均为未运行草稿；用户实际构建报错的WASM/OXC定向例外已在2026-11-29续批单列。以下旧快照仅记录只读语法、引用、源码路径、计数、文档链接与diff的实际范围，不以静态检查或构建成功提升功能验收状态。
 
 本次已读取固定版 [Rectangle.equals](../../../univer/packages/core/src/shared/rectangle.ts) 对省略 `rangeType` 与 `RANGE_TYPE.NORMAL` 的等价处理；本地 [sheet-fill-gesture.ts](../../packages/office-studio/src/features/sheet-workbench/sheet-fill-gesture.ts) 按同一语义修复提交后误取消。捕获生命周期同时区分子元素冒泡的释放与画布宿主实际失效；仅指针结束/宿主失活对应的 DOM 异常视为正常取消，其他异常继续传播。
 

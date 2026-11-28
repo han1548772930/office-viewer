@@ -1,4 +1,4 @@
-import type { CellRange, CellScalar, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator } from '../domain/model.ts'
+import type { CellRange, CellScalar, SheetAutoFilter, SheetConditionFilter, SheetFilterCriteria, SheetFilterConditionOperator } from '../domain/model.ts'
 import { normalizePivotRecordSelection } from '../features/pivot/services/pivot-filter-predicate.ts'
 import type { PivotRecordSelection } from '../domain/model.ts'
 
@@ -22,8 +22,29 @@ function scalar(value: unknown): CellScalar {
   throw new TypeError('筛选条件值必须是有限数字、文本、布尔值或空值。')
 }
 
+function condition(value: unknown): SheetConditionFilter {
+  const raw = object(value, '筛选子条件')
+  if (raw.kind !== 'condition' || typeof raw.operator !== 'string' || !operators.has(raw.operator as SheetFilterConditionOperator)) throw new TypeError('筛选条件运算符无效。')
+  const operator = raw.operator as SheetFilterConditionOperator
+  const noOperand = operator === 'isBlank' || operator === 'isNotBlank' || operator === 'isError'
+  if (!noOperand && !Object.hasOwn(raw, 'value')) throw new TypeError('筛选条件缺少比较值。')
+  if ((operator === 'between' || operator === 'notBetween') && !Object.hasOwn(raw, 'secondValue')) throw new TypeError('区间筛选缺少第二个比较值。')
+  if (raw.caseSensitive !== undefined && typeof raw.caseSensitive !== 'boolean') throw new TypeError('筛选大小写标志无效。')
+  return {
+    kind: 'condition', operator,
+    ...(Object.hasOwn(raw, 'value') ? { value: scalar(raw.value) } : {}),
+    ...(Object.hasOwn(raw, 'secondValue') ? { secondValue: scalar(raw.secondValue) } : {}),
+    ...(typeof raw.caseSensitive === 'boolean' ? { caseSensitive: raw.caseSensitive } : {}),
+  }
+}
+
 function criterion(value: unknown): SheetFilterCriteria {
   const raw = object(value, '筛选条件')
+  if (raw.kind === 'compound') {
+    if ((raw.join !== 'and' && raw.join !== 'or') || !Array.isArray(raw.conditions) || raw.conditions.length < 1 || raw.conditions.length > 2) throw new TypeError('复合筛选必须以 AND 或 OR 连接一至两个条件。')
+    const first = condition(raw.conditions[0])
+    return { kind: 'compound', join: raw.join, conditions: raw.conditions.length === 1 ? [first] : [first, condition(raw.conditions[1])] }
+  }
   if (raw.kind === 'color') {
     if (raw.cellFillColors === undefined && raw.cellTextColors === undefined) throw new TypeError('颜色筛选缺少填充或文字颜色。')
     const colors = (value: unknown, allowNull: boolean): Array<string | null> => {
@@ -46,18 +67,7 @@ function criterion(value: unknown): SheetFilterCriteria {
       ...(raw.recordSelection !== undefined ? { recordSelection: normalizePivotRecordSelection(raw.recordSelection as PivotRecordSelection) } : {}),
       ...(raw.recordDate1904 !== undefined ? { recordDate1904: raw.recordDate1904 } : {}) }
   }
-  if (raw.kind !== 'condition' || typeof raw.operator !== 'string' || !operators.has(raw.operator as SheetFilterConditionOperator)) throw new TypeError('筛选条件运算符无效。')
-  const operator = raw.operator as SheetFilterConditionOperator
-  const noOperand = operator === 'isBlank' || operator === 'isNotBlank' || operator === 'isError'
-  if (!noOperand && !Object.hasOwn(raw, 'value')) throw new TypeError('筛选条件缺少比较值。')
-  if ((operator === 'between' || operator === 'notBetween') && !Object.hasOwn(raw, 'secondValue')) throw new TypeError('区间筛选缺少第二个比较值。')
-  if (raw.caseSensitive !== undefined && typeof raw.caseSensitive !== 'boolean') throw new TypeError('筛选大小写标志无效。')
-  return {
-    kind: 'condition', operator,
-    ...(Object.hasOwn(raw, 'value') ? { value: scalar(raw.value) } : {}),
-    ...(Object.hasOwn(raw, 'secondValue') ? { secondValue: scalar(raw.secondValue) } : {}),
-    ...(typeof raw.caseSensitive === 'boolean' ? { caseSensitive: raw.caseSensitive } : {}),
-  }
+  return condition(raw)
 }
 
 /** Decode the parser boundary without losing scalar types or explicit null. */

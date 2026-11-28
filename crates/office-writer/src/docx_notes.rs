@@ -7,7 +7,7 @@ use office_io_common::document_note_source::{self, DocumentNoteKind, DocumentNot
 use serde_json::{Value, json};
 
 use super::{CONTENT_NAMESPACES, NoteBundle, NoteEntry, NoteKind, WriteContext, block_hosts, control_writer, get,
-    note_text, source_xml::{self, Attribute, Content, Element}, xml, xml_text};
+    note_text, source_xml::{self, Attribute, Content, Element}, xml};
 use crate::ExportError;
 
 const DECORATIONS: [&str; 3] = ["separator", "continuationSeparator", "continuationNotice"];

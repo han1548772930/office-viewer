@@ -28,7 +28,7 @@ const entries = computed(() => {
   return visibility.value.sections.flatMap(section => {
     if (section.endIndex <= section.index + 1 || visibility.value.hiddenOwners.has(section.paragraphId)) return []
     const line = firstLines.get(section.paragraphId)
-    if (!line) return []
+    if (!line || line.clip && (line.y >= line.clip.y + line.clip.height || line.y + line.height <= line.clip.y)) return []
     const left = offset.x + (line.x - 24) * k, top = offset.y + (line.y + line.height / 2 - 14) * k
     if (left + 24 * k <= 0 || left >= props.viewport.width || top + 28 * k <= 0 || top >= props.viewport.height) return []
     const state = documentHeadingCollapseState(props.model, section.paragraphId, !section.collapsed, context.value, visibility.value)

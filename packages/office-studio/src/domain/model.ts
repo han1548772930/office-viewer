@@ -186,6 +186,12 @@ export interface SheetConditionFilter {
   secondValue?: CellScalar
   caseSensitive?: boolean
 }
+/** A native custom-filter column joins one or two non-nested conditions. */
+export interface SheetCompoundFilter {
+  kind: 'compound'
+  join: 'and' | 'or'
+  conditions: [SheetConditionFilter] | [SheetConditionFilter, SheetConditionFilter]
+}
 export interface SheetColorFilter {
   kind: 'color'
   /** null matches the default/no authored fill. Empty arrays match no rows. */
@@ -193,7 +199,7 @@ export interface SheetColorFilter {
   /** The default text color is black. As upstream, fill takes precedence when both arrays exist. */
   cellTextColors?: string[]
 }
-export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter | SheetColorFilter
+export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter | SheetColorFilter | SheetCompoundFilter
 export interface SheetAutoFilter {
   range: CellRange
   columns: Record<number, SheetFilterCriteria>

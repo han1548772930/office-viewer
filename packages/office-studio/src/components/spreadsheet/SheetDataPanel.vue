@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { Button, Checkbox, Form, FormItem, Input, Modal, Radio, RadioGroup, Segmented, Select, Switch, theme } from 'antdv-next'
+import { Button, Checkbox, Form, FormItem, Input, Modal, Radio, RadioGroup, Segmented, Select, Switch, Tree, theme, type TreeEmits } from 'antdv-next'
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { FOffice } from '../../api/facade'
 import type { OfficeStudio } from '../../api/office-studio'
 import { bindWorkbookCommandGuard } from '../../api/workbook-command-guards.ts'
 import type { CellRange, SheetFilterConditionOperator, SheetFilterCriteria } from '../../domain/model'
 import {
-  CONFIGURE_SHEET_FILTER_COMMAND, dataPanelAddress, dataPanelValueKey, parseDataPanelRange, parseDataPanelScalar,
+  CONFIGURE_SHEET_FILTER_COMMAND, dataPanelAddress, parseDataPanelRange, parseDataPanelScalar,
   parseDataPanelSourceRange, prepareDataPanelSort, prepareDataPanelSortRange, readDataPanelFields, readDataPanelValues,
-  readDataPanelColors, type DataPanelColor, type DataPanelField, type DataPanelValue, type PanelSortKey, type PanelSortRangeChoice, type PanelSortRangeSelection,
+  readDataPanelColors, readDataPanelSelectedValueKeys, type DataPanelColor, type DataPanelField, type DataPanelValue, type PanelSortKey, type PanelSortRangeChoice, type PanelSortRangeSelection,
 } from '../../features/sheet-sort-filter/sheet-data-panel-state'
 import { prepareSmartSheetFilterRange } from '../../features/sheet-sort-filter/sheet-data-range.ts'
 import { canonicalSheetFilterColor } from '../../features/sheet-sort-filter/sheet-filter-colors.ts'
+import { buildSheetFilterValueTree, searchSheetFilterValueTree, sheetFilterValueTreeSelection, toggleSheetFilterValueTreeNode,
+  type SheetFilterValueTreeNode } from '../../features/sheet-sort-filter/sheet-filter-value-tree.ts'
+import { sheetCompoundFilterFromDrafts, sheetFilterConditionDraft } from '../../features/sheet-sort-filter/sheet-filter-condition-draft.ts'
+import SheetFilterConditionFields from './SheetFilterConditionFields.vue'
+import { sheetFilterColumnHiddenRows } from '../../features/sheet-sort-filter/sort-filter-engine.ts'
 
 const props = withDefaults(defineProps<{
   open: boolean; studio: OfficeStudio; workbookId: string; sheetId: string; sourceRange: string; initialMode?: 'filter' | 'sort'
@@ -25,7 +30,8 @@ const mode = ref<'filter' | 'sort'>('filter')
 const address = ref(''), error = ref(''), status = ref(''), busy = ref(false)
 const range = ref<CellRange>(), fields = ref<DataPanelField[]>([]), values = ref<DataPanelValue[]>([])
 const revision = ref(0), columns = ref<Record<number, SheetFilterCriteria>>({}), column = ref(0)
-const kind = ref<'values' | 'condition' | 'color'>('values'), selectedKeys = ref<string[]>([]), search = ref(''), page = ref(0)
+const kind = ref<'values' | 'condition' | 'color' | 'compound'>('values'), selectedKeys = ref<string[]>([]), search = ref(''), page = ref(0)
+const compoundJoin = ref<'and' | 'or'>('or'), firstCondition = ref(sheetFilterConditionDraft()), secondCondition = ref(sheetFilterConditionDraft())
 const fillColors = ref<DataPanelColor[]>([]), textColors = ref<DataPanelColor[]>([])
 const selectedFillColors = ref<Array<string | null>>([]), selectedTextColors = ref<string[]>([])
 const operator = ref<SheetFilterConditionOperator>('equals'), valueType = ref<'text' | 'number' | 'boolean'>('text')
@@ -42,7 +48,15 @@ const sheet = computed(() => {
   return props.studio.getWorkbookModel(props.workbookId)?.sheets.find(item => item.id === props.sheetId)
 })
 const fieldOptions = computed(() => fields.value.map(field => ({ label: field.label, value: field.column })))
-const matched = computed(() => values.value.filter(item => item.label.toLocaleLowerCase().includes(search.value.toLocaleLowerCase())))
+const valueTree = computed(() => buildSheetFilterValueTree(values.value, props.studio.regionalSettings.region.value))
+const filteredValueTree = computed(() => searchSheetFilterValueTree(valueTree.value, search.value, values.value))
+const hasDateGroups = computed(() => values.value.some(item => item.calendar !== undefined))
+const valueTreeChecked = computed(() => sheetFilterValueTreeSelection(filteredValueTree.value, selectedKeys.value))
+const expandedTreeKeys = ref<Array<string | number>>([])
+const matched = computed(() => {
+  const keys = new Set(filteredValueTree.value.flatMap(item => item.valueKeys))
+  return values.value.filter(item => keys.has(item.key))
+})
 const pageCount = computed(() => Math.max(1, Math.ceil(matched.value.length / 20)))
 const visibleValues = computed(() => matched.value.slice(page.value * 20, (page.value + 1) * 20))
 const needsValue = computed(() => !['isBlank', 'isNotBlank', 'isError'].includes(operator.value))
@@ -107,7 +121,10 @@ function loadColumn(): void {
   textColors.value = readDataPanelColors(workbook, sheet.value, range.value, column.value, 'text')
   const criterion = columns.value[column.value]
   kind.value = criterion?.kind ?? 'values'
-  selectedKeys.value = criterion?.kind === 'values' ? criterion.selectedItems.map(dataPanelValueKey) : values.value.map(item => item.key)
+  selectedKeys.value = readDataPanelSelectedValueKeys(sheet.value, range.value, column.value, values.value, criterion, workbook)
+  compoundJoin.value = criterion?.kind === 'compound' ? criterion.join : 'or'
+  firstCondition.value = sheetFilterConditionDraft(criterion?.kind === 'compound' ? criterion.conditions[0] : criterion?.kind === 'condition' ? criterion : undefined)
+  secondCondition.value = sheetFilterConditionDraft(criterion?.kind === 'compound' ? criterion.conditions[1] : undefined)
   operator.value = criterion?.kind === 'condition' ? criterion.operator : 'equals'
   const raw = criterion?.kind === 'condition' ? criterion.value : ''
   valueType.value = typeof raw === 'number' ? 'number' : typeof raw === 'boolean' ? 'boolean' : 'text'
@@ -139,7 +156,21 @@ function loadFields(): void {
   } catch (failure) { fields.value = []; values.value = []; range.value = undefined; error.value = failure instanceof Error ? failure.message : String(failure) }
 }
 watch(column, loadColumn)
+watch(kind, (next, previous) => {
+  if (next !== 'values' || previous === 'values' || !sheet.value || !range.value) return
+  const criterion = columns.value[column.value]
+  if (criterion && criterion.kind !== 'values' && sheetFilterColumnHiddenRows(sheet.value, range.value, column.value, criterion,
+    props.studio.getWorkbookModel(props.workbookId)).size) selectedKeys.value = []
+})
 watch(search, () => { page.value = 0 })
+watch([filteredValueTree, search], ([nodes, query]) => {
+  const parents = (items: readonly SheetFilterValueTreeNode[]): string[] => items.flatMap(item => item.children
+    ? [item.key, ...(query ? parents(item.children) : [])] : [])
+  expandedTreeKeys.value = parents(nodes)
+}, { immediate: true })
+const checkValueTree: TreeEmits['check'] = (_checked, info) => {
+  if (!controlsDisabled.value && typeof info.node.key === 'string') selectedKeys.value = toggleSheetFilterValueTreeNode(filteredValueTree.value, selectedKeys.value, info.node.key)
+}
 watch(hasHeader, () => { if (sheet.value && range.value) fields.value = readDataPanelFields(sheet.value, range.value, hasHeader.value) })
 watch(mode, value => { if (value === 'sort' && props.open && !sortRangeReady.value) beginSortRange() })
 watch([() => props.open, () => props.studio, () => props.workbookId, () => props.sheetId, () => props.initialMode, () => props.initialColumn], () => {
@@ -187,6 +218,7 @@ function runFilter(action: 'apply' | 'clear-column' | 'clear-all' | 'remove'): v
       let criterion: SheetFilterCriteria | undefined
       if (kind.value === 'values') criterion = { kind: 'values', selectedItems: matched.value.filter(item => selectedKeys.value.includes(item.key)).map(item => item.value) }
       else if (kind.value === 'condition') criterion = { kind: 'condition', operator: operator.value, ...(needsValue.value ? { value: parseDataPanelScalar(expected.value, valueType.value) } : {}), ...(needsSecond.value ? { secondValue: parseDataPanelScalar(second.value, valueType.value) } : {}), caseSensitive: caseSensitive.value }
+      else if (kind.value === 'compound') criterion = sheetCompoundFilterFromDrafts(compoundJoin.value, [firstCondition.value, secondCondition.value])
       else if (selectedFillColors.value.length) criterion = { kind: 'color', cellFillColors: [...selectedFillColors.value] }
       else if (selectedTextColors.value.length) criterion = { kind: 'color', cellTextColors: [...selectedTextColors.value] }
       if (criterion) next[column.value] = criterion
@@ -262,18 +294,34 @@ async function applySort(): Promise<void> {
       <Button :disabled="controlsDisabled" @click="loadFields">读取字段</Button>
       <template v-if="fields.length && mode === 'filter'">
         <FormItem label="筛选字段"><Select v-model:value="column" aria-label="筛选字段" :options="fieldOptions" :disabled="controlsDisabled" /></FormItem>
-        <FormItem label="筛选方式"><Select v-model:value="kind" aria-label="筛选方式" :disabled="controlsDisabled" :options="[{ label: '按值选择', value: 'values' }, { label: '按条件筛选', value: 'condition' }, { label: '按颜色筛选', value: 'color' }]" /></FormItem>
+        <FormItem label="筛选方式"><Select v-model:value="kind" aria-label="筛选方式" :disabled="controlsDisabled" :options="[{ label: '按值选择', value: 'values' }, { label: '按条件筛选', value: 'condition' }, { label: '自定义复合条件', value: 'compound' }, { label: '按颜色筛选', value: 'color' }]" /></FormItem>
         <template v-if="kind === 'values'">
           <FormItem label="搜索筛选值"><Input v-model:value="search" aria-label="搜索筛选值" placeholder="搜索字段值" /></FormItem>
           <div class="data-actions"><Button size="small" :disabled="controlsDisabled" @click="selectedKeys = matched.map(item => item.key)">全选</Button><Button size="small" :disabled="controlsDisabled" @click="selectedKeys = []">全不选</Button><span>{{ matched.filter(item => selectedKeys.includes(item.key)).length }} / {{ matched.length }} 个值</span></div>
-          <div class="data-values"><Checkbox v-for="item in visibleValues" :key="item.key" :checked="selectedKeys.includes(item.key)" :disabled="controlsDisabled" @change="toggle(item.key)">{{ item.label }}</Checkbox></div>
-          <div class="data-actions"><Button size="small" :disabled="controlsDisabled || page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pageCount }}</span><Button size="small" :disabled="controlsDisabled || page + 1 >= pageCount" @click="page++">下一页</Button></div>
+          <FormItem v-if="hasDateGroups" label="筛选值分组">
+            <Tree v-model:expanded-keys="expandedTreeKeys" class="data-value-tree" checkable check-strictly :selectable="false"
+              :checked-keys="valueTreeChecked" :tree-data="filteredValueTree" :height="240" :disabled="controlsDisabled" aria-label="筛选值分组" @check="checkValueTree">
+              <template #titleRender="{ title, count }"><span>{{ title }}<span class="data-value-count">（{{ count }}）</span></span></template>
+            </Tree>
+          </FormItem>
+          <template v-else>
+            <div class="data-values"><Checkbox v-for="item in visibleValues" :key="item.key" :checked="selectedKeys.includes(item.key)" :disabled="controlsDisabled" @change="toggle(item.key)">{{ item.label }}</Checkbox></div>
+            <div class="data-actions"><Button size="small" :disabled="controlsDisabled || page === 0" @click="page--">上一页</Button><span>{{ page + 1 }} / {{ pageCount }}</span><Button size="small" :disabled="controlsDisabled || page + 1 >= pageCount" @click="page++">下一页</Button></div>
+          </template>
         </template>
         <template v-else-if="kind === 'condition'">
           <FormItem label="条件"><Select v-model:value="operator" aria-label="筛选条件" :disabled="controlsDisabled" :options="operators" /></FormItem>
           <FormItem v-if="needsValue" label="比较值类型"><Select v-model:value="valueType" aria-label="比较值类型" :disabled="controlsDisabled" :options="[{ label: '文本', value: 'text' }, { label: '数值或日期序号', value: 'number' }, { label: '逻辑值', value: 'boolean' }]" /></FormItem>
           <FormItem v-if="needsValue" label="比较值"><Input v-model:value="expected" aria-label="筛选比较值" /></FormItem><FormItem v-if="needsSecond" label="第二个比较值"><Input v-model:value="second" aria-label="筛选第二个比较值" /></FormItem>
           <FormItem :label="null"><Checkbox v-model:checked="caseSensitive" :disabled="controlsDisabled">区分大小写</Checkbox></FormItem>
+        </template>
+        <template v-else-if="kind === 'compound'">
+          <SheetFilterConditionFields v-model:draft="firstCondition" :index="1" :disabled="formDisabled" :blocked="composing" />
+          <FormItem label="条件连接"><RadioGroup v-model:value="compoundJoin" aria-label="自定义条件连接" :disabled="controlsDisabled">
+            <Radio value="and">并且</Radio><Radio value="or">或者</Radio>
+          </RadioGroup></FormItem>
+          <SheetFilterConditionFields v-model:draft="secondCondition" :index="2" :disabled="formDisabled" :blocked="composing" />
+          <p>文本条件中，? 匹配一个字符，* 匹配任意数量的字符。</p>
         </template>
         <template v-else>
           <FormItem label="填充颜色">
@@ -314,6 +362,8 @@ async function applySort(): Promise<void> {
 .data-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .data-values { display: grid; gap: 6px; max-height: 220px; padding: 10px; overflow: auto; border: 1px solid var(--data-border); border-radius: 4px; }
 .data-color-swatch { display: inline-block; box-sizing: border-box; width: 14px; height: 14px; margin-inline-end: 6px; vertical-align: -2px; border: 1px solid var(--data-border); }
+.data-value-tree { width: 100%; min-width: 0; border: 1px solid var(--data-border); border-radius: 4px; }
+.data-value-count { color: v-bind('token.colorTextSecondary'); }
 .data-sort-key { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 8px; }
 .data-sort-item :deep(.ant-form-item-label) { position: absolute; width: 1px; height: 1px; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
 .data-error { margin: 0; color: var(--data-error); }

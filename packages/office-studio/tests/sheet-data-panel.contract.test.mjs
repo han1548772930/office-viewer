@@ -4,12 +4,13 @@ import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 let server, api, panel
-let dataRange
+let dataRange, valueTree
 beforeAll(async () => {
   server = await createServer({ configFile: resolve('vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-data-panel-state.ts')
   dataRange = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-data-range.ts')
+  valueTree = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-filter-value-tree.ts')
 })
 afterAll(async () => { await server?.close() })
 function setup() {
@@ -94,6 +95,72 @@ test('configuring multiple filter columns is one undoable command and retains so
     const reopened = new api.OfficeStudio({ workbook: saved })
     assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [1, 2, 4])
     reopened.dispose()
+  } finally { studio.dispose() }
+})
+
+test('compound panel filters are one content transaction and retain both rules and their join through undo, redo and reopen', () => {
+  const { studio, workbook, sheet, range, target } = setup()
+  try {
+    const before = structuredClone(studio.getWorkbookModel(workbook.getId()).sheets[0].cells)
+    const history = studio.editor.history.units[workbook.getId()].undo.length
+    const compound = { kind: 'compound', join: 'or', conditions: [
+      { kind: 'condition', operator: 'lessThan', value: 15 }, { kind: 'condition', operator: 'greaterThan', value: 35 },
+    ] }
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: { 1: compound },
+      expectedRevision: studio.getWorkbookRevision(workbook.getId()) })
+    assert.deepEqual(sheet.getFilteredRows(), [2, 3])
+    assert.equal(studio.editor.history.units[workbook.getId()].undo.length, history + 1)
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].cells, before)
+    workbook.undo(); assert.equal(sheet.getAutoFilter(), null)
+    workbook.redo(); assert.deepEqual(sheet.getAutoFilter().columns[1], compound)
+    const reopened = new api.OfficeStudio({ workbook: JSON.parse(JSON.stringify(workbook.save())) })
+    try { assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [2, 3]) }
+    finally { reopened.dispose() }
+  } finally { studio.dispose() }
+})
+
+test('public value-filter writes reject non-scalar and non-finite members without changing the current filter or undo/redo history', () => {
+  const { studio, workbook, sheet, range, target } = setup()
+  try {
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: { 0: { kind: 'values', selectedItems: ['东'] } } })
+    sheet.getRange('E1').setValue('temporary'); workbook.undo()
+    const originalFilter = structuredClone(sheet.getAutoFilter()), model = JSON.stringify(studio.getWorkbookModel(workbook.getId()))
+    const history = JSON.stringify(studio.editor.history.units[workbook.getId()])
+    for (const selectedItems of [[{}], [Number.NaN], [Number.POSITIVE_INFINITY], [Number.NEGATIVE_INFINITY], [undefined], [[]], new Array(1)]) {
+      assert.throws(() => sheet.setFilterCriteria(0, { kind: 'values', selectedItems }), /finite scalar/)
+      assert.deepEqual(sheet.getAutoFilter(), originalFilter)
+      assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), model)
+      assert.equal(JSON.stringify(studio.editor.history.units[workbook.getId()]), history)
+    }
+    sheet.setFilterCriteria(0, { kind: 'values', selectedItems: [null, '东', false, 0], selectionMode: 'exclude' })
+    assert.deepEqual(sheet.getAutoFilter().columns[0], { kind: 'values', selectedItems: [null, '东', false, 0], selectionMode: 'exclude' })
+  } finally { studio.dispose() }
+})
+
+test('a selected calendar day expands to original timestamps and reconstructs the date tree after native snapshot reopening', () => {
+  const { studio, workbook, sheet, range, target } = setup()
+  try {
+    sheet.getRange('B2:B5').setValues([[45292], [45292.5], [45293], [45323]])
+    sheet.getRange('B2:B5').setNumberFormat('yyyy-mm-dd hh:mm')
+    const model = studio.getWorkbookModel(workbook.getId()), source = structuredClone(model.sheets[0].cells)
+    const values = panel.readDataPanelValues(model.sheets[0], range, 1, model), tree = valueTree.buildSheetFilterValueTree(values)
+    const keys = valueTree.toggleSheetFilterValueTreeNode(tree, [], 'date:2024-1-1')
+    const selectedItems = values.filter(item => keys.includes(item.key)).map(item => item.value)
+    assert.deepEqual(selectedItems, [45292, 45292.5])
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range,
+      columns: { 1: { kind: 'values', selectedItems } }, expectedRevision: studio.getWorkbookRevision(workbook.getId()) })
+    assert.deepEqual(sheet.getFilteredRows(), [3, 4])
+    const saved = JSON.parse(JSON.stringify(workbook.save())), reopened = new api.OfficeStudio({ workbook: saved })
+    try {
+      const book = api.FOffice.newAPI(reopened).getActiveWorkbook(), reopenedSheet = book.getActiveSheet()
+      assert.deepEqual(reopenedSheet.getFilteredRows(), [3, 4])
+      assert.deepEqual(reopened.getWorkbookModel(book.getId()).sheets[0].cells, source)
+      assert.deepEqual(reopenedSheet.getAutoFilter().columns[1].selectedItems, [45292, 45292.5])
+      const current = reopened.getWorkbookModel(book.getId()), grouped = valueTree.buildSheetFilterValueTree(panel.readDataPanelValues(current.sheets[0], range, 1, current))
+      assert.equal(grouped[0].children[0].children[0].valueKeys.length, 2)
+    } finally { reopened.dispose() }
+    workbook.undo(); assert.equal(sheet.getAutoFilter(), null)
+    workbook.redo(); assert.deepEqual(sheet.getFilteredRows(), [3, 4])
   } finally { studio.dispose() }
 })
 

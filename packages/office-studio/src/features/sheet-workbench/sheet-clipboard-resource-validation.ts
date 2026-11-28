@@ -164,19 +164,41 @@ function assertSourceResources(resources: SheetClipboardWorkbookResources, conte
 
 function assertFilterCriterion(criterion: SheetFilterCriteria): void {
   if (!record(criterion)) throw new TypeError('剪贴板筛选条件无效。')
+  if (criterion.kind === 'compound') {
+    if ((criterion.join !== 'and' && criterion.join !== 'or') || !Array.isArray(criterion.conditions)
+      || criterion.conditions.length < 1 || criterion.conditions.length > 2) throw new TypeError('剪贴板复合筛选条件无效。')
+    for (const condition of criterion.conditions) {
+      if (!record(condition) || condition.kind !== 'condition') throw new TypeError('剪贴板复合筛选只支持非嵌套条件。')
+      assertFilterCriterion(condition)
+    }
+    return
+  }
+  if (criterion.kind === 'color') {
+    const validColors = (colors: unknown, allowNull: boolean): boolean => Array.isArray(colors) && colors.length <= 4096
+      && colors.every(color => allowNull && color === null || typeof color === 'string' && !!color.trim() && color.length <= 256)
+    if (criterion.cellFillColors === undefined && criterion.cellTextColors === undefined
+      || criterion.cellFillColors !== undefined && !validColors(criterion.cellFillColors, true)
+      || criterion.cellTextColors !== undefined && !validColors(criterion.cellTextColors, false)) throw new TypeError('剪贴板颜色筛选条件无效。')
+    return
+  }
   if (criterion.kind === 'values') {
     if (!Array.isArray(criterion.selectedItems) || !criterion.selectedItems.every(scalar)) throw new TypeError('剪贴板筛选值无效。')
   } else if (criterion.kind !== 'condition' || !['equals', 'doesNotEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual',
     'between', 'notBetween', 'contains', 'doesNotContain', 'beginsWith', 'endsWith', 'isBlank', 'isNotBlank', 'isError'].includes(criterion.operator)
     || criterion.value !== undefined && !scalar(criterion.value) || criterion.secondValue !== undefined && !scalar(criterion.secondValue)
-    || criterion.caseSensitive !== undefined && typeof criterion.caseSensitive !== 'boolean') throw new TypeError('剪贴板筛选条件无效。')
+    || criterion.caseSensitive !== undefined && typeof criterion.caseSensitive !== 'boolean'
+    || !['isBlank', 'isNotBlank', 'isError'].includes(criterion.operator) && !Object.hasOwn(criterion, 'value')
+    || ['between', 'notBetween'].includes(criterion.operator) && !Object.hasOwn(criterion, 'secondValue')) throw new TypeError('剪贴板筛选条件无效。')
 }
 
 function assertTableFilter(filter: SheetAutoFilter, table: SheetTableModel): void {
   if (!record(filter)) throw new TypeError('剪贴板表格筛选无效。')
   assertSheetCommandRanges([filter.range])
   if (!contains(table.range, filter.range) || !record(filter.columns) || !Array.isArray(filter.filteredRows)
-    || filter.filteredRows.some(row => !index(row, 1_048_576) || row <= filter.range.startRow || row > filter.range.endRow)) {
+    // The derived cache includes the complete merged row group, which can end
+    // below the native filter reference. Keep the same absolute bound as IO.
+    || filter.filteredRows.some(row => !index(row, 1_048_576) || row <= filter.range.startRow)
+    || new Set(filter.filteredRows).size !== filter.filteredRows.length) {
     throw new TypeError('剪贴板表格筛选范围无效。')
   }
   for (const [column, criterion] of Object.entries(filter.columns)) {
