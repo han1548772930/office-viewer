@@ -75,14 +75,18 @@ pub(super) fn validate(sheet: &SheetInput) -> Result<(), ExportError> {
     let Some(filter) = &sheet.auto_filter else {
         return Ok(());
     };
+    validate_filter(filter, sheet.row_count, sheet.column_count, true)
+}
+
+pub(super) fn validate_filter(filter: &AutoFilterInput, row_count: Option<u32>, column_count: Option<u32>, require_data: bool) -> Result<(), ExportError> {
     let (first_row, first_col, last_row, last_col) = range_bounds(&filter.range)
         .ok_or_else(|| ExportError::invalid("autoFilter must have a complete worksheet range"))?;
-    if last_row <= first_row
+    if last_row < first_row || require_data && last_row == first_row
         || last_col < first_col
         || last_row > MAX_ROW_INDEX
         || last_col > MAX_COLUMN_INDEX
-        || sheet.row_count.is_some_and(|count| last_row >= count)
-        || sheet.column_count.is_some_and(|count| last_col >= count)
+        || row_count.is_some_and(|count| last_row >= count)
+        || column_count.is_some_and(|count| last_col >= count)
     {
         return Err(ExportError::invalid(
             "autoFilter range must include a header and data within worksheet bounds",
@@ -445,6 +449,10 @@ pub(super) fn write_xml(
     let Some(filter) = &sheet.auto_filter else {
         return Ok(String::new());
     };
+    write_filter_xml(sheet, filter, warnings)
+}
+
+pub(super) fn write_filter_xml(sheet: &SheetInput, filter: &AutoFilterInput, warnings: &mut Vec<ExportWarning>) -> Result<String, ExportError> {
     let reference =
         range_ref(&filter.range).ok_or_else(|| ExportError::invalid("invalid AutoFilter range"))?;
     let (_, first_col, _, _) = range_bounds(&filter.range)

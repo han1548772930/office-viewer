@@ -431,7 +431,7 @@ export function setSheetViewCellStyleProperties(sheet: ExcelSheetView, row: numb
 }
 
 function cloneSheetTable(table: SheetTableModel): SheetTableModel {
-  return { ...table, range: { ...table.range }, columns: table.columns.map(column => ({ ...column })), autoFilter: table.autoFilter ? structuredClone(table.autoFilter) : undefined }
+  return { ...table, range: { ...table.range }, columns: table.columns.map(column => ({ ...column })), autoFilter: table.autoFilter === null ? null : table.autoFilter ? structuredClone(table.autoFilter) : undefined }
 }
 
 function cloneChartModel(chart: ChartModel): ChartModel {

@@ -65,6 +65,7 @@ import { applySheetViewLayoutFormatCommand, getSheetViewLayoutFormatState, layou
 import { clearModeForCommand, SHEET_CLEAR_COMMAND_IDS, SHEET_CLEAR_COMMANDS } from '../features/sheet-workbench/sheet-clear-command.ts'
 import { SHEET_MERGE_COMMAND_IDS } from '../features/sheet-workbench/sheet-merge-command.ts'
 import { useSheetRangeEditor } from './spreadsheet/use-sheet-range-editor.ts'
+import { useSheetSortFilterWorkbench } from './spreadsheet/use-sheet-sort-filter.ts'
 import SheetMergeConfirmationDialog from './spreadsheet/SheetMergeConfirmationDialog.vue'
 import { SHEET_AXIS_DIMENSION_COMMAND_IDS, SHEET_AXIS_DIMENSION_COMMANDS, refreshWorkbookViewAutoRowHeights, sheetAxisDimensionActionForCommand, sheetAxisDimensionCommandInput } from '../features/sheet-workbench/sheet-axis-dimensions.ts'
 import { sheetColumnWidth, sheetRowHeight } from '../domain/sheet-axis.ts'
@@ -118,6 +119,7 @@ import { useSheetFormatPainter } from './spreadsheet/use-sheet-format-painter.ts
 import { applySheetConditionalFormatsCommand } from '../features/conditional-formatting/conditional-format-command.ts'
 import { useSheetConditionalFormattingWorkbench } from './spreadsheet/use-sheet-conditional-formatting-workbench.ts'
 import { useSheetValidationCell } from './spreadsheet/use-sheet-validation-cell.ts'
+import type { SheetValidationDropdownUiOptions } from '../features/sheet-validation/validation-dropdown-ui.ts'
 import { useSheetValidationCheckbox } from './spreadsheet/use-sheet-validation-checkbox.ts'
 import { useSheetValidationFeedback } from './spreadsheet/use-sheet-validation-feedback.ts'
 import { useSheetDataValidationWorkbench } from './spreadsheet/use-sheet-data-validation-workbench.ts'
@@ -166,7 +168,7 @@ export type ExcelSheet = SpreadsheetRenderSheet
 export type ExcelWorkbook = Omit<DomainExcelWorkbookView, 'sheets'> & { sheets: ExcelSheet[]; charts?: ChartModel[] }
 
 const props = withDefaults(defineProps<{ modelValue?: ExcelWorkbook; model?: ExcelWorkbook; canUndo?: boolean; canRedo?: boolean; showHeader?: boolean; studio?: OfficeStudio; ribbonVariant?: RibbonVariant;
-  hidePasteOptions?: boolean; clipboardPermission?: SheetClipboardPermissionEvaluator;
+  hidePasteOptions?: boolean; clipboardPermission?: SheetClipboardPermissionEvaluator; validationDropdownUi?: SheetValidationDropdownUiOptions;
   clipboardContext?: Pick<SheetClipboardCapabilitiesInput, 'exclusiveRange' | 'shapeTextEditing'> }>(), {
   modelValue: undefined,
   model: undefined,
@@ -331,6 +333,7 @@ const selectedSlicerId = ref('')
 const dataPanelOpen = ref(false)
 const dataPanelMode = ref<'filter' | 'sort'>('filter')
 const dataPanelRange = ref('A1')
+const dataPanelPrimary = ref<{ row: number; column: number }>()
 const functionPanelOpen = ref(false)
 const functionCategory = ref<string | null>(null)
 const functionName = ref('SUM')
@@ -365,7 +368,6 @@ const functionOptions = computed(() => functionEntries.value
   .map(entry => ({ label: `${entry.name} · ${entry.label}`, value: entry.name })))
 const sortBusy = ref(false)
 const sortProgress = ref('')
-let sortController: AbortController | undefined
 const chartWorkbook = computed(() => workbook.value as ExcelWorkbookChartView)
 const sheetCharts = computed(() => (workbook.value.charts ?? []).filter(chart => chart.sheetId === activeSheetId.value))
 const focusedChart = computed(() => sheetCharts.value.find(chart => chart.id === focusedChartId.value) ?? null)
@@ -986,6 +988,29 @@ const { apply: submitQuickDataValidation, busy: quickDataValidationBusy, progres
   refresh: refreshValidationView, openRule: ruleId => openDataValidationPanel(undefined, ruleId),
   notify: message => emit('notify', { type: 'error', message }),
 })
+const dataPanelHostBlocked = computed(() => !canQuickFormatSelection.value || !!mergeRequest.value || !!painterRequest.value
+  || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
+  || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value || tableSelectorOpen.value || functionPanelOpen.value
+  || hyperlinkDialogOpen.value || !!renameSheetId.value || customNumberFormatOpen.value || validationPanelOpen.value
+  || conditionalFormattingOpen.value || validationCellOpen.value || protectionPanelOpen.value || !!worksheetProtectionSheetId.value
+  || sparklinePanelOpen.value || pivotPanelOpen.value || pivotChartPanelOpen.value || slicerPanelOpen.value || outlineUiOpen.value)
+const { canUseDataRange, canSort: canSortDataRange, panelEditable: dataPanelEditable, openDataPanel,
+  selectDataPanelSortRange, assertDataPanelCurrent, receiveDataPanelChange, sortSelection, runAutoFilterCommand, cancelSort } = useSheetSortFilterWorkbench({
+  state: () => {
+    const primary = parseCellKey(selectedKey.value)
+    return { studio: props.studio, unitId: workbook.value.id, sheetId: activeSheetId.value, userId: userId.value,
+      active: workbenchActive.value, blocked: dataPanelHostBlocked.value, ranges: selectedModelRanges(),
+      primary: primary ? { row: primary.row, column: primary.col } : undefined }
+  },
+  open: dataPanelOpen, mode: dataPanelMode, sourceRange: dataPanelRange, sourcePrimary: dataPanelPrimary,
+  busy: sortBusy, progress: sortProgress,
+  refresh: (studio, unitId, current) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (model && current()) applyExternalWorkbook(toExcelWorkbookView(model))
+    if (current()) commitHistory({ prepared: true, syncSelection: false, current })
+  },
+  focus: () => spreadsheetCanvas.value?.focus(), notify: (type, message) => emit('notify', { type, message }),
+})
 const slicerRibbonControl = computed<SlicerRibbonControlState | undefined>(() => {
   const refs = selectedDrawingRefs.value, studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value
   const ref = refs.length === 1 ? refs[0] : undefined
@@ -1064,10 +1089,11 @@ const ribbonTabs = computed(() => createSheetRibbon({
   quickConditionalWorksheetEditable: canQuickFormatWorksheet.value,
   shortcutPanelOpen: shortcutPanelOpen.value,
   hyperlinkAvailable: canOpenHyperlinkDialog(),
-  canSort: Boolean(!sortBusy.value && props.studio && workbook.value.id && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow),
+  canSort: canSortDataRange.value,
+  dataRangeEditable: canUseDataRange.value,
   filterEnabled: Boolean(activeSheet.value?.autoFilter),
   filterHasCriteria: Object.keys(activeSheet.value?.autoFilter?.columns ?? {}).length > 0,
-  filterCanToggle: Boolean(props.studio && workbook.value.id && (activeSheet.value?.autoFilter || (!sortBusy.value && selectedRanges.value.length === 1 && selectedRanges.value[0] && selectedRanges.value[0].endRow > selectedRanges.value[0].startRow))),
+  filterCanToggle: canUseDataRange.value,
   frozen: isFrozen.value, zoom: zoom.value, fullscreen: isFullscreen.value,
   crosshairEnabled: crosshairEnabled.value, crosshairColor: crosshairColor.value,
   calculationMode: workbook.value.calculationMode ?? 'automatic',
@@ -1112,7 +1138,7 @@ function applyExternalWorkbook(value: ExcelWorkbook) {
   const requested = viewableSheets.find(sheet => sheet.id === value.activeSheetId && sheet.visible !== false)
   const nextSheetId = requested?.id ?? viewableSheets.find(sheet => sheet.id === previousSheetId && sheet.visible !== false)?.id ?? viewableSheets.find(sheet => sheet.visible !== false)?.id ?? ''
   if (sameDocument) saveViewSession()
-  else { viewSessions.clear(); sortController?.abort(); cancelEdit(); closeNumberFormatPanel() }
+  else { viewSessions.clear(); cancelSort(); cancelEdit(); closeNumberFormatPanel() }
   const session = sameDocument ? viewSessions.get(nextSheetId) : undefined
   workbook.value = cloneWorkbook(value)
   autoHeightBaseline = value
@@ -2659,12 +2685,6 @@ function openPivotChartFieldSettings(chartId: string, fieldId: string): boolean 
   return openPivotChartPanel({ pivotChartId: chartId, fieldId })
 }
 
-function openDataPanel(mode: 'filter' | 'sort'): void {
-  const bounds = selectionBounds(selectedRanges.value)
-  dataPanelMode.value = mode
-  dataPanelRange.value = bounds ? rangeNotation(bounds) : selectedKey.value
-  dataPanelOpen.value = true
-}
 function openDataValidationPanel(initialType?: 'checkbox' | 'list' | 'date' | 'time', ruleId?: string): void {
   if (!finishEdit()) return
   closeNumberFormatPanel()
@@ -2824,55 +2844,6 @@ function insertFunction(): void {
   } catch (error) { functionError.value = error instanceof Error ? error.message : '无法插入函数。' }
 }
 
-async function sortSelection(ascending: boolean, _extendSelection = false) {
-  const bounds = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
-  const worksheet = getChartWorksheet(activeSheet.value?.id ?? '')
-  if (sortBusy.value || !bounds || bounds.endRow <= bounds.startRow || !worksheet) return
-  sortController = new AbortController()
-  sortBusy.value = true
-  sortProgress.value = '正在排序…'
-  try {
-    await worksheet.sortRange(rangeNotation(bounds), [{ column: parseCellKey(selectedKey.value)!.col, direction: ascending ? 'ascending' : 'descending' }], {
-      signal: sortController.signal,
-      onProgress: progress => { sortProgress.value = progress.phase === 'initializing' ? '正在准备排序…' : `排序：${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}` },
-    })
-  } catch (error) {
-    if (!sortController.signal.aborted) throw error
-  } finally {
-    sortBusy.value = false
-    sortController = undefined
-  }
-}
-
-function runAutoFilterCommand(commandId: 'sheet.command.toggle-auto-filter' | 'sheet.command.clear-filter' | 'sheet.command.reapply-filter'): void {
-  const sheet = activeSheet.value
-  const unitId = workbook.value.id
-  if (!props.studio || !unitId || !sheet) return
-  const bounds = selectedRanges.value.length === 1 ? selectedRanges.value[0] : undefined
-  const range = sheet.autoFilter?.range ?? (bounds && bounds.endRow > bounds.startRow ? {
-    startRow: bounds.startRow,
-    endRow: bounds.endRow,
-    startCol: bounds.startColumn,
-    endCol: bounds.endColumn,
-  } : undefined)
-  if (commandId === 'sheet.command.toggle-auto-filter' && !range) {
-    emit('notify', { type: 'info', message: '请选择包含标题行和数据行的区域后再启用筛选。' })
-    return
-  }
-  try {
-    props.studio.executeCommandSync(commandId, {
-      unitId,
-      sheetId: sheet.id,
-      ...(commandId === 'sheet.command.toggle-auto-filter' ? { range } : {}),
-    })
-    const model = props.studio.getWorkbookModel(unitId)
-    if (model) workbook.value = toExcelWorkbookView(model)
-    commitHistory()
-  } catch (error) {
-    emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法更新工作表筛选。' })
-  }
-}
-
 async function executeRibbon(commandId: string, params?: unknown) {
   const crosshairOperation = commandId === 'sheet.operation.toggle-crosshair-highlight' || commandId === 'sheet.operation.set-crosshair-highlight-color'
   const newRangeProtectionRequested = commandId === 'sheet.operation.open-range-protection'
@@ -2893,6 +2864,8 @@ async function executeRibbon(commandId: string, params?: unknown) {
     && !canQuickFormatSelection.value) return
   if (SHEET_BORDER_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
   if (SHEET_LAYOUT_FORMAT_COMMAND_IDS.includes(commandId) && !canQuickFormatSelection.value) return
+  if (['sheet.command.sort-ascending', 'sheet.command.sort-descending', 'sheet.command.toggle-auto-filter',
+    'sheet.command.clear-filter', 'sheet.command.reapply-filter', 'sheet.operation.open-data-panel'].includes(commandId) && !canUseDataRange.value) return
   if (commandId !== 'sheet.command.undo' && commandId !== 'sheet.command.redo'
     && !SHEET_FORMAT_PAINTER_COMMAND_IDS.includes(commandId) && !crosshairOperation && !finishEdit()) return
   if ((SHEET_OUTLINE_COMMAND_IDS as readonly string[]).includes(commandId)) {
@@ -3143,7 +3116,7 @@ onUnmounted(() => {
   workbenchActive.value = false
   cancelMerge()
   clearPainterSession()
-  sortController?.abort()
+  cancelSort()
   document.removeEventListener('fullscreenchange', syncFullscreen)
   window.removeEventListener('mouseup', stopSelecting)
   window.removeEventListener('keydown', handlePainterEscape, true)
@@ -3155,7 +3128,7 @@ onDeactivated(() => {
   clearPainterSession()
   validationPanelOpen.value = false
   closeNumberFormatPanel()
-  sortController?.abort()
+  cancelSort()
   if (document.fullscreenElement === workbenchRef.value) {
     void document.exitFullscreen().catch((error: unknown) => emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法退出全屏' }))
   }
@@ -3186,7 +3159,7 @@ onActivated(() => { workbenchActive.value = true })
       :feature-search-scope="workbenchRef" :feature-search-context="() => spreadsheetCanvas?.featureSearchContext() ?? []" :ui-host="workbenchUiHost" :shortcuts="ribbonShortcuts"
       @context-command="(_key, commandId, params) => executeSheetContextCommand(commandId, params)" @shortcut-panel="value => { shortcutPanelOpen = value }" @execute="executeRibbon" />
     <SheetFormulaBar v-if="chrome.header" ref="formulaInput" :address="selectedAddress" :value="formulaValue" :editing="Boolean(editingKey)" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :composing="editComposing" :error="nameError" @input-event="handleCellNativeInput" @format-command="executeRibbon" @format-keydown="handleInlineFormatHistoryKey" @begin="beginFormulaEdit" @confirm="finishFormulaEdit" @cancel="cancelFormulaEdit" @navigate="navigateToAddress" @focus-grid="nameError = ''; spreadsheetCanvas?.focus()" />
-    <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="sortController?.abort()">取消</Button></div>
+    <div v-if="sortBusy" class="sheet-find-panel" role="status"><span>{{ sortProgress }}</span><Button size="small" aria-label="取消排序" @click="cancelSort">取消</Button></div>
     <Form v-if="searchOpen" layout="inline" class="sheet-find-panel" role="search" @submit.prevent @keydown.stop @keydown.esc.prevent="closeSearch">
       <div class="find-input-row">
         <Search :size="15" />
@@ -3234,7 +3207,7 @@ onActivated(() => { workbenchActive.value = true })
       :can-format="canFormatSelection" :format-painter="formatPainterCanvas" :search-text="searchText" :number-format-preview="numberFormatPreview" :conditional-format-preview="conditionalFormattingPreview"
       :copy-range="clipboardCopyRange" :paste-options="clipboardPasteOptions" :fill-options="sheetFillOptions" :clipboard-capabilities="clipboardCapabilities"
       :paste-options-capabilities="clipboardPasteOptionsCapabilities"
-      :validation-options="validationOptions" :validation-cell-entry="validationCellEntry" :validation-cell-popup="validationCellPopup"
+      :validation-options="validationOptions" :validation-cell-entry="validationCellEntry" :validation-cell-popup="validationCellPopup" :validation-dropdown-ui="validationDropdownUi"
       :validation-checkbox-at="validationCheckboxAt" :validation-checkbox-error="validationCheckboxError" @clear-checkbox-error="clearValidationCheckboxError"
       :validation-feedback="validationFeedback" :validation-tag-options="validationTagOptions" :validation-input-owner="ribbonEditorOwner"
       :validation-current-year="new Date().getFullYear()" :overlay-commands="chartCommands" :slicers="slicerControls" :selected-slicer-id="selectedSlicerId"
@@ -3319,7 +3292,7 @@ onActivated(() => { workbenchActive.value = true })
       :chart-id="pivotChartContext.chartId" :pivot-table-id="pivotChartContext.pivotTableId" :source-kind="pivotChartContext.sourceKind" :source-sheet-id="pivotChartContext.sourceSheetId" :source-range="pivotChartContext.sourceRange" :initial-field-id="pivotChartContext.initialFieldId"
       @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @owner-change="pivotChartContext.ownerChanged" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
-    <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :initial-mode="dataPanelMode" />
+    <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :source-primary="dataPanelPrimary" :initial-mode="dataPanelMode" :editable="dataPanelEditable" :request-sort-range="selectDataPanelSortRange" :assert-current="assertDataPanelCurrent" @changed="receiveDataPanelChange" />
     <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" :key="conditionalFormattingContext.key" :open="conditionalFormattingOpen"
       :rules="conditionalFormattingContext.rules" :default-range="conditionalFormattingContext.defaultRange" :selection-range="selectedModelRanges().at(-1)"
       :initial-type="conditionalFormattingContext.initialType" :submit="conditionalFormattingContext.submit" :disabled="conditionalFormattingDisabled"

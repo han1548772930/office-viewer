@@ -68,3 +68,5 @@ prompt 的固定上游依据目前只核实了模型/侧栏字段，没有找到
 - 首屏/滚动/编辑/zoom、传输次数与字节、内存和取消的同数据集大样本实测。前段未新增 Worker/WASM buffer/lease 协议，后续联合规则/cells 事务已新增并复用共享 bridge，详见 [联合事务专项](SHEET-13-checkbox-rule-cells-worker-2026-11-28.md)；尚未实测，不声称优化或达标。
 
 SHEET-13 及 Sheets/Docs/Pro 全量范围均保持未验收；这一批实现不能代替完整交付。
+
+2026-11-28 续接原在途配置，已补[下拉搜索/编辑配置与焦点、Canvas 输入宿主释放](SHEET-13-dropdown-ui-focus-2026-11-28.md)：默认 true、IME 期间保留搜索桥、异步/虚拟列表初次焦点与 Enter、`detach()` 只退役 UI owner。新增 3 契约声明及 4 浏览器声明（8 计划），运行 0；没有新增常驻/扩展/溢出/上下文根、持久模型或 Worker 协议。标签尺寸/旋转/缩进已经由[尺寸专项](SHEET-13-validation-tag-dimensions-2026-11-28.md)续作，前述“仍需”属于历史时点，实际两后端、IME、Office 和性能仍未验收。

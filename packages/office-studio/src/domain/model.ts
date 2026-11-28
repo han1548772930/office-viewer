@@ -130,6 +130,13 @@ export interface SheetTableColumn {
   name: string
   /** Native OOXML identity stays separate from the domain column ID. */
   officeColumnId?: number
+  /** null explicitly removes the corresponding native column property. */
+  formula?: string | null
+  formulaIsArray?: boolean
+  totalsRowLabel?: string | null
+  totalsRowFunction?: string | null
+  totalsRowFormula?: string | null
+  showFilterButton?: boolean
 }
 
 export interface SheetTableModel {
@@ -141,7 +148,12 @@ export interface SheetTableModel {
   showHeaderRow: boolean
   showTotalsRow: boolean
   styleName: string
-  autoFilter?: SheetAutoFilter
+  showFirstColumn?: boolean
+  showLastColumn?: boolean
+  showRowStripes?: boolean
+  showColumnStripes?: boolean
+  /** Absent retains unprojected native criteria; null explicitly clears them. */
+  autoFilter?: SheetAutoFilter | null
   officeTableId?: number
   officeSheetId?: number
   /** Complete native table XML, including fields not projected by the editor. */

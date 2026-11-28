@@ -33,6 +33,7 @@ export interface SheetValidationCellPopup {
   chooseList(values: readonly string[]): SheetCellInputCommandResult
   setOpen(open: boolean): void; afterOpenChange(open: boolean): void; editRule(): void
   setComposing(value: boolean): void
+  detach(): void
 }
 interface ValidationCellState {
   studio?: OfficeStudio; model: ExcelWorkbookView; sheetId: string; key: string; userId: string
@@ -294,6 +295,10 @@ export function useSheetValidationCell(options: ValidationCellOptions) {
       chooseList: values => submit(owner, COMMIT_SHEET_VALIDATION_LIST_INPUT_COMMAND, { values }),
       setOpen: value => requestClose(owner, value), afterOpenChange: value => afterOpenChange(owner, value),
       setComposing: value => { if (context.value === owner && hostCurrent(owner)) owner.composing = value },
+      // The input bridge has disappeared (scroll clipping, Canvas replacement
+      // or unmount). Retire its lease even during IME; an ordinary hide request
+      // still preserves composition. No content or cell-input session commits.
+      detach: () => { if (context.value === owner) { invalidate(); owner.visible = false; owner.composing = false } },
       editRule: () => { if (context.value === owner && ownerCurrent(owner) && !owner.composing && owner.canEditRule) { invalidate(); options.openRule(owner.ruleId) } },
     })
     // A failed reveal or a changed host keeps the previous popup and its draft. Publish the owner only after every preflight succeeds.

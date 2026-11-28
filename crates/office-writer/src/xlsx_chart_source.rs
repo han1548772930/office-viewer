@@ -20,7 +20,7 @@ pub(super) fn read(workbook: &WorkbookInput, chart: &ChartInput, source: &Contex
     let axis = super::super::dimensions::prepare(source.sheet)?;
     let mut hidden_rows = super::super::auto_filter::hidden_rows(source.sheet);
     for table in workbook.tables.iter().filter(|table| table.sheet_id == source.sheet.id) {
-        for row in table.auto_filter.iter().flat_map(|filter| &filter.filtered_rows) { hidden_rows.insert(*row); }
+        for row in table.auto_filter.iter().flatten().flat_map(|filter| &filter.filtered_rows) { hidden_rows.insert(*row); }
     }
     let collapsed = source.sheet.outline.iter().flat_map(|outline| &outline.groups).filter(|group| group.collapsed).collect::<Vec<_>>();
     let row_visible = |row: u32| !hidden_rows.contains(&row) && !axis.manual_row_hidden(row) && axis.row_size(row).height > 0.0

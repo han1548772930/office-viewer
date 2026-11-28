@@ -120,10 +120,14 @@ pub(crate) fn restore(bytes: &[u8], workbook: &mut WorkbookPayload) -> Result<Ve
         let Some(owner_name) = workbook.tables[*index].get("sheetName").and_then(Value::as_str) else { continue; };
         let Some(owner_id) = observed_sheets.get(&owner_name.to_lowercase()) else { continue; };
         if !restored_sheets.iter().any(|sheet| &sheet.sheet_id == owner_id) && !helpers.iter().any(|(helper, _)| &helper.sheet_id == owner_id) { continue; }
-        table.name = name.to_owned(); table.sheet_id = owner_id.clone(); retained_tables.push(table);
+        table.name = name.to_owned(); table.sheet_id = owner_id.clone();
+        let native_columns = workbook.tables[*index].get("columns").and_then(Value::as_array)
+            .into_iter().flatten().filter_map(|column| column.get("officeColumnId").and_then(Value::as_u64)).collect::<BTreeSet<_>>();
+        table.columns.retain(|column| native_columns.contains(&u64::from(column.office_column_id)));
+        retained_tables.push(table);
     }
     let mut warnings = Vec::new();
-    let can_reclaim = if family_fresh {
+    let can_reclaim = if family_fresh && !helpers.is_empty() {
         reference_scan::can_reclaim(&mut archive, &parts, &part_name, workbook, &helpers, &retained_tables, &approved, &mut warnings)?
     } else { false };
     for (helper, is_fresh) in &mut helpers { helper.reclaim = can_reclaim && *is_fresh; }

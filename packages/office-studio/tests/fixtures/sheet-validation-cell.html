@@ -46,7 +46,7 @@ sheet.dataValidations = Array.from({ length: 6 }, (_, row) => ({ id: `date-${row
 ])
 const other = createBlankSheet('Other'); other.id = 'other'; other.rowCount = 160; other.columnCount = 30; model.sheets.push(other)
 const studio = new OfficeStudio({ workbook: model, currentUserId: 'local-user' }), api = FOffice.newAPI(studio)
-const dark = ref(false), variant = ref('classic'), view = ref(toExcelWorkbookView(studio.editor.workbook.model)), notices = [], canceled = new Set(), bulkProgress = []
+const dark = ref(false), variant = ref('classic'), view = ref(toExcelWorkbookView(studio.editor.workbook.model)), dropdownUi = ref(), notices = [], canceled = new Set(), bulkProgress = []
 const active = () => api.getActiveWorkbook(), current = () => studio.getWorkbookModel(studio.activeWorkbookId)
 // Observe the real production client/Worker path; no replacement matcher or
 // protocol fallback is installed. These browser drafts require the new WASM build.
@@ -76,6 +76,7 @@ window.validationCellFixture = {
   columnWidth: column => sheetColumnWidth(current().sheets.find(sheet => sheet.id === 'data'), column),
   history: () => { const unit = studio.editor.history.units[studio.activeWorkbookId]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
   notifications: () => copy(notices), appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  setDropdownUi: value => { dropdownUi.value = value === undefined ? undefined : copy(value) },
   cancelCommand: (id, value) => { if (value) canceled.add(id); else canceled.delete(id) },
   command: (id, input) => studio.executeCommandSync(id, input),
   commandAsync: (id, input, cancelAtPhase) => {
@@ -133,7 +134,7 @@ window.validationCellFixture = {
   }) },
 }
 createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
-  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value, validationDropdownUi: dropdownUi.value,
     canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
     'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'zh-CN'),
     onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: value => notices.push(copy(value)),

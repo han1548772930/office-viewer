@@ -91,6 +91,9 @@ import { documentLatexCanvasRequestCurrent, type DocumentLatexCanvasEditRequest 
 import { documentLatexContextItems, documentLatexMountedMenuItem, documentLatexCommandFromMenu } from './document/document-latex-menu'
 import { DOCUMENT_LATEX_POPUP_OPERATIONS, assertDocumentLatexPopupRequest, type DocumentLatexPopupTarget } from '../features/document/controllers/document-latex-popup'
 import type { DocumentLatexPopupEditorHandle } from '../api/document-latex-popup-editors'
+import type { DocumentHeaderFooterEditorHandle } from '../api/document-header-footer-editors'
+import { DOCUMENT_HEADER_FOOTER_COMMANDS, documentHeaderFooterStoryViewState, isDocumentHeaderFooterCommand,
+  resolveDocumentHeaderFooterRequest, type DocumentHeaderFooterEditorTarget, type DocumentHeaderFooterRequest } from '../features/document/controllers/document-header-footer-editor'
 import { DOCUMENT_LATEX_RIBBON_TAB } from './document/document-latex-ribbon'
 import { DOCUMENT_LATEX_TEMPLATE_LOCAL_OPERATION, DOCUMENT_LATEX_TEMPLATE_OPERATION, getDocumentLatexTemplate } from '../features/document/latex/latex-templates'
 import { documentSupportsNotes } from '../features/document/notes/document-note-editing'
@@ -239,6 +242,7 @@ const storyActionVersion = ref(0)
 let applyingInputState = false
 let applyingOpenFieldCache = false
 let applyingPageSetup = false
+let applyingHeaderFooterOperation = false
 const pendingMarks = computed<RunPatch>(() => props.documentApi
   ? props.documentApi.id === model.value.id ? props.documentApi.getInputMarks(selection.value, currentStoryRange.value, editingHost.value) : {}
   : standalonePendingMarks.value)
@@ -280,6 +284,8 @@ const pageSettingsError = ref('')
 const pageSettingsTarget = shallowRef<{ unitId: string | undefined; api?: FDocument; adapter?: DocumentFieldCacheAdapter; historyGeneration?: number }>()
 let pageSettingsClosingFocus: (() => void) | undefined
 const headerFooterPanelOpen = ref(false)
+const headerFooterRibbonVisible = ref(false)
+const headerFooterEditorOwner = shallowRef<DocumentHeaderFooterEditorHandle>()
 const storyLocation = ref<StoryLocation>()
 const legacyStoryActive = computed(() => !!storyLocation.value && !editingHost.value)
 const storySelection = shallowRef({ start: 0, end: 0 })
@@ -732,6 +738,8 @@ const ribbonTabs = computed(() => {
     editingDisabled: !inputStateActive || documentInputComposing.value || (legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value),
     selectionHasCode: selectionHasCode.value,
     pageSettingsDisabled: pageSettingsDisabled.value,
+    headerFooterOpenDisabled: !headerFooterNavigationAvailable.value || !headerFooterDefaultLocation.value
+      || !canViewHeaderFooterStory(headerFooterDefaultLocation.value),
     textFormattingDisabled: !inputStateActive || !textFormattingState.value.available,
     namedStyleDisabled: !inputStateActive || documentInputComposing.value || !namedStyleState.value.available
       || (legacyStoryActive.value ? !canEditStory.value || storyLinkedToPrevious.value : !canEditContextSelection.value),
@@ -739,8 +747,13 @@ const ribbonTabs = computed(() => {
     editingHeaderFooter: !!storyLocation.value,
     editingAuxiliaryContent: !!storyLocation.value || !!editingHost.value,
     headerFooter: storyLocation.value && {
-      visible: true, area: storyLocation.value.area, disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value,
-      refreshDisabled: storyComposing.value || !canRefreshFields.value,
+      visible: headerFooterRibbonVisible.value, area: storyLocation.value.area,
+      disabled: !headerFooterNavigationAvailable.value || !canEditStory.value,
+      navigationDisabled: !headerFooterNavigationAvailable.value,
+      headerDisabled: !canViewHeaderFooterStory({ page: storyLocation.value.page, area: 'header' }),
+      footerDisabled: !canViewHeaderFooterStory({ page: storyLocation.value.page, area: 'footer' }),
+      sectionDisabled: !headerFooterNavigationAvailable.value || !canEditHeaderFooterSection.value,
+      refreshDisabled: !headerFooterNavigationAvailable.value || storyComposing.value || !canRefreshFields.value,
       requestScope: storyActionVersion.value,
       locale: officeLocale.value.replaceAll('_', '-'),
       insertDateTime: action => {
@@ -875,6 +888,12 @@ watch(() => props.documentApi, (api, _previous, onCleanup) => {
   latexPopupOwner.value = handle
   onCleanup(() => { if (latexPopupOwner.value === handle) latexPopupOwner.value = undefined; handle.dispose() })
 }, { immediate: true, flush: 'sync' })
+watch([() => props.documentApi, () => props.documentApi?.getHistoryGeneration()], ([api], _previous, onCleanup) => {
+  if (!api?.getInputState()?.valid) return
+  const handle = api.bindHeaderFooterEditor({ execute: target => acceptHeaderFooterEditorTarget(api, target), release: releaseHeaderFooterEditorView })
+  headerFooterEditorOwner.value = handle
+  onCleanup(() => { handle.dispose(); if (headerFooterEditorOwner.value === handle) headerFooterEditorOwner.value = undefined })
+}, { immediate: true, flush: 'sync' })
 watch(() => toolbarState.value.table?.blockId, (id, previous) => {
   if (id && id !== previous) { if (activeTab.value !== 'table') previousTabBeforeTable.value = activeTab.value; activeTab.value = 'table' }
   else if (!id && activeTab.value === 'table') activeTab.value = previousTabBeforeTable.value === 'table' ? 'home' : previousTabBeforeTable.value
@@ -969,7 +988,7 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
   const epoch = ++inputStateEpoch
   if (api === props.documentApi) inputStateVersion.value++
   const state = event.state
-  const restoreFocus = !applyingOpenFieldCache && !applyingPageSetup && !pageSettingsOpen.value
+  const restoreFocus = !applyingOpenFieldCache && !applyingPageSetup && !applyingHeaderFooterOperation && !pageSettingsOpen.value
   const current = () => {
     if (!inputStateActive || api !== props.documentApi || api.id !== model.value.id || event.unitId !== api.id || !state?.valid) return false
     const latest = api.getInputState()
@@ -996,10 +1015,11 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
       if (host?.kind === 'story') {
         const area = host.story.toLowerCase().includes('header') ? 'header' : 'footer'
         const page = findDocumentStoryPage(layout.value, { area, sectionId: host.sectionId, story: host.story, preferredPage: storyLocation.value?.page })
-        if (!storyLocation.value) previousStoryTab.value = activeTab.value
+        if (!storyLocation.value) { previousStoryTab.value = activeTab.value; headerFooterRibbonVisible.value = true }
         if (page !== undefined) storyLocation.value = { page, area }
       } else {
         storyLocation.value = undefined
+        headerFooterRibbonVisible.value = false
         if (activeTab.value === 'header-footer') activeTab.value = previousStoryTab.value
         if (!host) returnBodySelection.value = undefined
       }
@@ -1020,14 +1040,14 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
     if (!previous || previous.sectionId !== range.sectionId || previous.story !== range.story || previous.start !== range.start || previous.end !== range.end) canvasRef.value?.cancelInput(false)
     applyingInputState = true
     try {
-      if (!storyLocation.value) previousStoryTab.value = activeTab.value
+      if (!storyLocation.value) { previousStoryTab.value = activeTab.value; headerFooterRibbonVisible.value = true }
       if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
       editingHost.value = undefined
       blockHostInspection.value = undefined
       selection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
       storyLocation.value = { page, area }
       storySelection.value = { start: range.start, end: range.end }
-      activeTab.value = 'header-footer'
+      if (headerFooterRibbonVisible.value) activeTab.value = 'header-footer'
     } finally { applyingInputState = false }
     void nextTick(() => { if (restoreFocus && current()) canvasRef.value?.focusStory(range.start, range.end) })
   })
@@ -2686,9 +2706,87 @@ const editableHeaderFooterStories = computed(() => DOCUMENT_STORY_KEYS.filter(st
   { scope: 'section', id: headerFooterSectionId.value }, { scope: 'entity', id: `${headerFooterSectionId.value}:${story}` },
   { scope: 'entity', id: `${headerFooterSectionId.value}:${story.toLowerCase().includes('header') ? 'header' : 'footer'}` },
 ]).allowed))
-function openStory(location: StoryLocation, point?: DocumentPoint) {
+const headerFooterNavigationAvailable = computed(() => {
+  void storyActionVersion.value; void inputStateVersion.value
+  return inputStateActive && !documentInputComposing.value && !imageOverlayActive.value
+    && !modalOpen.value && !pageSettingsOpen.value && !tableInsertOpen.value && !tableProperties.value?.open
+    && !headerFooterPanelOpen.value && !latexPanelOpen.value && !codeBlockPanelOpen.value && !structureDialog.value?.open
+})
+const headerFooterDefaultLocation = computed<StoryLocation | undefined>(() => {
+  const preferred = storyLocation.value?.page ?? lineForPoint(editingLayout.value, selection.value.focus)?.page ?? activePageIndex.value
+  const preferredPage = preferred >= 0 && preferred < layout.value.pages.length ? preferred : 0
+  const page = findDocumentStoryPage(layout.value, { area: 'header', preferredPage })
+  return page === undefined ? undefined : { page, area: 'header' }
+})
+function canViewHeaderFooterStory(location: StoryLocation): boolean {
+  const page = layout.value.pageHeaderFooters[location.page], key = location.area === 'header' ? page?.headerStory : page?.footerStory
+  return pageMode.value === 'traditional' && !!page && !page.isParityBlank && !!key && documentSectionIds(model.value).includes(page.sectionId)
+    && documentHeaderFooterStoryViewState(model.value, page.sectionId, key, permissionContext.value).available
+}
+function validTabAfterHeaderFooter() {
+  const tabs = ribbonTabs.value.filter(tab => tab.id !== 'header-footer')
+  activeTab.value = tabs.some(tab => tab.id === previousStoryTab.value) ? previousStoryTab.value : tabs[0]?.id ?? 'home'
+}
+/** Owner replacement clears only this view; it cannot write the new owner's input session. */
+function releaseHeaderFooterEditorView() {
+  inputStateEpoch++; storyActionVersion.value++
+  headerFooterRibbonVisible.value = false
+  if (!storyLocation.value && editingHost.value?.kind !== 'story') return
+  const restore = returnBodySelection.value
+  canvasRef.value?.cancelInput(false)
+  storyLocation.value = undefined; editingHost.value = undefined; blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined
+  returnBodySelection.value = undefined
+  selection.value = sanitizeDocumentInputSelection(model.value, restore ?? selection.value)
+  tableProperties.value = undefined; documentContextMenu.value = undefined
+  if (activeTab.value === 'header-footer') validTabAfterHeaderFooter()
+}
+function runHeaderFooterRequest(request: DocumentHeaderFooterRequest): boolean {
+  if (!headerFooterNavigationAvailable.value || pageMode.value !== 'traditional') return false
+  if (request.action === 'open') {
+    const current = headerFooterDefaultLocation.value
+    if (!current) return false
+    return openStory({ page: current.page, area: request.editArea === 'FOOTER' ? 'footer' : 'header' })
+  }
+  const location = storyLocation.value
+  if (!location || !canViewHeaderFooterStory(location)) return false
+  if (request.action === 'close') {
+    const restored = sanitizeDocumentInputSelection(model.value, returnBodySelection.value ?? selection.value)
+    if (!resolveDocumentPermission(model.value.permissionRules ?? [], permissionContext.value, 'view', permissionTargetsForSelection(model.value, restored)).allowed) return false
+    return closeStory()
+  }
+  headerFooterRibbonVisible.value = request.visible
+  storyActionVersion.value++
+  if (request.visible) activeTab.value = 'header-footer'
+  else if (activeTab.value === 'header-footer') validTabAfterHeaderFooter()
+  return true
+}
+function acceptHeaderFooterEditorTarget(api: FDocument, target: DocumentHeaderFooterEditorTarget): boolean {
+  if (api !== props.documentApi || api.id !== model.value.id || target.unitId !== api.id
+    || !headerFooterEditorOwner.value?.isCurrent() || target.source !== api.getModel()
+    || target.revision !== api.getModelRevision() || target.historyGeneration !== api.getHistoryGeneration()) return false
+  const input = api.getInputState()
+  if (input && (!input.valid || input.modelRevision !== target.revision)
+    || target.inputGeneration !== undefined && input?.generation !== target.inputGeneration) return false
+  applyingHeaderFooterOperation = true
+  try { return runHeaderFooterRequest(target) } finally { applyingHeaderFooterOperation = false }
+}
+function requestHeaderFooterOperation(commandId: string, params?: unknown): boolean {
+  try {
+    if (props.documentApi) return headerFooterEditorOwner.value?.execute(commandId, params) ?? false
+    const request = resolveDocumentHeaderFooterRequest(commandId, params)
+    if (request.unitId !== undefined && request.unitId !== model.value.id) return false
+    return runHeaderFooterRequest(request)
+  } catch (error) { notify(error instanceof Error ? error.message : '页眉页脚操作未执行。'); return false }
+}
+function closeActiveStory(): boolean {
+  return storyLocation.value ? requestHeaderFooterOperation(DOCUMENT_HEADER_FOOTER_COMMANDS.close) : closeStory()
+}
+function openStory(location: StoryLocation, point?: DocumentPoint): boolean {
   const page = layout.value.pageHeaderFooters[location.page]
-  if (pageMode.value !== 'traditional' || !page || page.isParityBlank) return
+  if (!headerFooterNavigationAvailable.value || !page || !canViewHeaderFooterStory(location)) return false
+  const api = props.documentApi, documentId = model.value.id, source = api?.getModel(), revision = api?.getModelRevision(), historyGeneration = api?.getHistoryGeneration()
+  const current = () => inputStateActive && api === props.documentApi && documentId === model.value.id
+    && (!api || api.id === documentId && api.getModel() === source && api.getModelRevision() === revision && api.getHistoryGeneration() === historyGeneration)
   painter.value = undefined
   clipboardRequest++
   abortPictureImageRead()
@@ -2696,21 +2794,25 @@ function openStory(location: StoryLocation, point?: DocumentPoint) {
   if (!returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, selection.value)
   if (storyLocation.value?.page !== location.page || storyLocation.value?.area !== location.area) storySelection.value = { start: 0, end: 0 }
   clearInputMarks()
+  if (!current()) return false
   blockHostInspection.value = undefined
   editingHost.value = undefined
   selection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
   storyLocation.value = location
+  headerFooterRibbonVisible.value = true
   activeTab.value = 'header-footer'
   const key = location.area === 'header' ? page.headerStory : page.footerStory
   if (key && resolveSectionHeaderFooter(model.value, page.sectionId).storyContent?.[key]?.blocks) {
     activateStoryBlockEditing(point ? collapsedSelection(point) : undefined)
-  } else props.documentApi?.setInputSelection(selection.value, currentStoryRange.value)
+  } else if (api && !api.setInputSelection(selection.value, currentStoryRange.value)) { syncCurrentInput(api); return false }
+  if (!current() || storyLocation.value?.page !== location.page || storyLocation.value?.area !== location.area) return false
   scheduleInputFocus(() => {
     if (storyLocation.value?.page === location.page && storyLocation.value.area === location.area) canvasRef.value?.revealStory(location)
   })
+  return true
 }
-function closeStory(refocus = true) {
-  if (!storyLocation.value && !editingHost.value && !blockHostInspection.value) return
+function closeStory(refocus = true): boolean {
+  if (!storyLocation.value && !editingHost.value && !blockHostInspection.value) return false
   const restore = returnBodySelection.value
   const inspection = blockHostInspection.value
   const api = props.documentApi, documentId = model.value.id, previousSession = api?.getInputState()
@@ -2720,9 +2822,10 @@ function closeStory(refocus = true) {
   const afterMarks = api?.getInputState()
   if (inputStateActive && api && (api !== props.documentApi || documentId !== model.value.id
     || previousSession?.valid && (!afterMarks?.valid || api.getModelRevision() !== revision
-      || !sameDocumentInputLocation(previousSession.location, afterMarks.location)))) return
+      || !sameDocumentInputLocation(previousSession.location, afterMarks.location)))) return false
   blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined
   storyLocation.value = undefined
+  headerFooterRibbonVisible.value = false
   editingHost.value = undefined
   returnBodySelection.value = undefined
   selection.value = sanitizeDocumentInputSelection(model.value, restore ?? selection.value)
@@ -2730,9 +2833,9 @@ function closeStory(refocus = true) {
   documentContextMenu.value = undefined
   clipboardRequest++; abortPictureImageRead()
   searchScopeSelection.value = undefined; searchInSelection.value = false
-  if (activeTab.value === 'header-footer' || activeTab.value === 'table' || activeTab.value === 'content-control') activeTab.value = previousStoryTab.value
+  if (activeTab.value === 'header-footer' || activeTab.value === 'table' || activeTab.value === 'content-control') validTabAfterHeaderFooter()
   const restoredSelection = cloneDocumentSelection(selection.value)
-  if (inputStateActive && api?.getInputState() && !api.setInputSelection(restoredSelection)) { syncCurrentInput(api); return }
+  if (inputStateActive && api?.getInputState() && !api.setInputSelection(restoredSelection)) { syncCurrentInput(api); return false }
   const session = api?.getInputState()
   if (refocus) scheduleInputFocus(() => {
     if (storyLocation.value || editingHost.value || documentInputComposing.value || documentId !== model.value.id || api !== props.documentApi
@@ -2747,6 +2850,7 @@ function closeStory(refocus = true) {
       canvasRef.value?.restoreScrollOffset({ left: inspection.scroll.left * ratio, top: inspection.scroll.top * ratio })
     }
   })
+  return true
 }
 function restoreStoryAfterOptions(location: StoryLocation, sectionId: string, range: { start: number; end: number }, modelRevision?: number) {
   const epoch = ++inputStateEpoch, documentId = model.value.id, source = model.value, api = props.documentApi
@@ -2917,7 +3021,7 @@ function handleStoryAction(raw: unknown, feedback?: { accepted: boolean }) {
     else scheduleInputFocus(() => { if (storyLocation.value) canvasRef.value?.focusStory(currentStorySelection.value.start, currentStorySelection.value.end) })
   }
   if (!targetCurrent()) return
-  if (action.action === 'navigate') { openStory({ page: location.page, area: action.area }); return }
+  if (action.action === 'navigate') { requestHeaderFooterOperation(DOCUMENT_HEADER_FOOTER_COMMANDS.open, { editArea: action.area === 'header' ? 'HEADER' : 'FOOTER' }); return }
   if (headerFooterActionDisabled({ disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value, contentDisabled: storyLinkedToPrevious.value,
     refreshDisabled: storyComposing.value || !canRefreshFields.value }, action)) return
   if (action.action === 'refresh-fields') {
@@ -2980,7 +3084,7 @@ function handleStoryAction(raw: unknown, feedback?: { accepted: boolean }) {
 }
 function handleBlockStoryAction(action: NonNullable<ReturnType<typeof parseHeaderFooterAction>>, location: StoryLocation, key: DocumentStoryKey, feedback?: { accepted: boolean }) {
   if (action.action === 'navigate') {
-    openStory({ page: location.page, area: action.area })
+    requestHeaderFooterOperation(DOCUMENT_HEADER_FOOTER_COMMANDS.open, { editArea: action.area === 'header' ? 'HEADER' : 'FOOTER' })
     return
   }
   if (headerFooterActionDisabled({ disabled: !canEditStory.value, sectionDisabled: !canEditHeaderFooterSection.value, contentDisabled: storyLinkedToPrevious.value,
@@ -3044,6 +3148,7 @@ function applyPainter(format?: DocumentPainterFormat) {
   if (execute({ id: 'doc.command.apply-format-painter', format }) && !painter.value?.continuous) painter.value = undefined
 }
 function onRibbonExecute(id: string, params?: unknown) {
+  if (isDocumentHeaderFooterCommand(id)) { requestHeaderFooterOperation(id, params); return }
   if (id === DOCUMENT_LATEX_POPUP_OPERATIONS.open || id === DOCUMENT_LATEX_POPUP_OPERATIONS.localOpen) { requestLatexPopup(params); return }
   if (id === DOCUMENT_LATEX_POPUP_OPERATIONS.close || id === DOCUMENT_LATEX_POPUP_OPERATIONS.localClose) { closeLatexPanel(false); return }
   if (id === DOCUMENT_LATEX_TEMPLATE_OPERATION || id === DOCUMENT_LATEX_TEMPLATE_LOCAL_OPERATION) { requestLatexTemplate(params); return }
@@ -3057,7 +3162,6 @@ function onRibbonExecute(id: string, params?: unknown) {
   }
   if (id === 'ui.operation.activate-format-painter' || id === 'ui.operation.continuous-format-painter') { activatePainter(id === 'ui.operation.continuous-format-painter'); return }
   if (id === 'doc.operation.header-footer-control') { handleStoryAction(params); return }
-  if (id === 'doc.operation.close-header-footer') { closeStory(); return }
   if (id === 'core.command.undo') { if (props.canUndo) undo(); return }
   if (id === 'core.command.redo') { if (props.canRedo) redo(); return }
   const command = documentCommandFromRibbon(id, params)
@@ -3271,12 +3375,6 @@ function onRibbonExecute(id: string, params?: unknown) {
     case 'doc.operation.open-page-settings':
       setPageSettingsOpen(true)
       break
-    case 'doc.operation.open-header-footer': {
-      const preferredPage = layout.value.lines.find(line => line.target.blockId === selection.value.focus.blockId && line.start <= selection.value.focus.offset && line.end >= selection.value.focus.offset)?.page ?? activePageIndex.value
-      const page = findDocumentStoryPage(layout.value, { area: 'header', preferredPage })
-      if (page !== undefined) openStory({ page, area: 'header' })
-      break
-    }
     case 'sidebar.operation.doc-paragraph-setting-panel': setParagraphSettingsPanelOpen(true); break
     case 'sidebar.operation.doc-section-setting-panel': sectionSettingsPanelOpen.value = true; break
     case 'doc.command.set-paper-size':
@@ -3336,7 +3434,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
     </WorkbenchRibbon>
     <div v-if="blockHostInspection" class="document-note-editing" data-document-content-inspection :data-document-inspection-host="documentBlockHostId(blockHostInspection.host)">
       <span>独立内容检查 · {{ inspectionCaption }}；正文分页将在返回后更新。</span>
-      <Button size="small" :disabled="documentInputComposing" @click="closeStory()">返回正文</Button>
+      <Button size="small" :disabled="documentInputComposing" @click="closeActiveStory()">返回正文</Button>
     </div>
     <div v-else-if="editingHost?.kind === 'note'" class="document-note-editing" data-document-note-canvas>
       <span>{{ createRibbonTranslator(officeLocale, 'doc')(editingHost.noteKind === 'footnote' ? 'doc.notes.footnote-content' : 'doc.notes.endnote-content', editingHost.noteKind === 'footnote' ? '脚注内容' : '尾注内容') }}</span>
@@ -3355,7 +3453,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
             @clipboard-copy="(transfer, cut) => copySelection(cut, transfer)" @clipboard-paste="pasteFromCanvas"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
-            @open-story="openStory" @close-story="closeStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="onDocumentLayout" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+            @open-story="openStory" @close-story="closeActiveStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="onDocumentLayout" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
         </SplitterPanel>
         <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
           <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">

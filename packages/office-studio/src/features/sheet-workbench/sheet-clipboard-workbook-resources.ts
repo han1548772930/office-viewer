@@ -98,8 +98,8 @@ function projectedCellKey(key: string, snapshot: SheetClipboardSnapshot, geometr
   if (targetRow === undefined || targetCol === undefined) throw new RangeError('透视输出不能被截断。')
   return `${targetRow}:${targetCol}`
 }
-function projectedFilter(filter: SheetAutoFilter | undefined, snapshot: SheetClipboardSnapshot, geometry: SheetClipboardTargetGeometry, rowTile: number, colTile: number): SheetAutoFilter | undefined {
-  if (!filter) return undefined
+function projectedFilter(filter: SheetAutoFilter | null | undefined, snapshot: SheetClipboardSnapshot, geometry: SheetClipboardTargetGeometry, rowTile: number, colTile: number): SheetAutoFilter | null | undefined {
+  if (!filter) return filter
   const columns: SheetAutoFilter['columns'] = {}
   for (const [column, criterion] of Object.entries(filter.columns)) {
     const index = lowerBound(snapshot.columns, Number(column)), destination = geometry.columns[colTile + index]
@@ -110,8 +110,8 @@ function projectedFilter(filter: SheetAutoFilter | undefined, snapshot: SheetCli
     return snapshot.rows[index] === row && destination !== undefined ? [destination] : []
   }) }
 }
-function movedFilter(filter: SheetAutoFilter | undefined, move: SheetClipboardMove): SheetAutoFilter | undefined {
-  if (!filter) return undefined
+function movedFilter(filter: SheetAutoFilter | null | undefined, move: SheetClipboardMove): SheetAutoFilter | null | undefined {
+  if (!filter) return filter
   const row = move.targetRange.startRow - move.sourceRange.startRow, col = move.targetRange.startCol - move.sourceRange.startCol
   return { range: movedRange(filter.range, move), columns: Object.fromEntries(Object.entries(filter.columns).map(([column, criterion]) => [Number(column) + col, cloneModel(criterion)])),
     filteredRows: filter.filteredRows.map(index => index + row) }

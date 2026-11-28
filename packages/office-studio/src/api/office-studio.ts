@@ -23,6 +23,10 @@ import { clampPoint, createParagraph, runText, runsForTarget, textTargets, type 
 import { documentEffectiveZoomRatio, equivalentDocumentContent, preserveDocumentZoomRatio } from '../features/document/services/document-zoom'
 import { DOCUMENT_ZOOM_COMMANDS, registerDocumentZoomCommands, resolveDocumentZoomCommand, type DocumentZoomOperationParams } from './document-zoom-commands'
 import { DOCUMENT_PAGE_SETUP_COMMAND, registerDocumentPageSetupCommand } from './document-page-setup-commands'
+import { registerDocumentHeaderFooterCommands } from './document-header-footer-commands'
+import { captureDocumentHeaderFooterEditorTarget, documentHeaderFooterEditorTargetCurrent, disposeDocumentHeaderFooterEditors } from './document-header-footer-editors'
+import { isDocumentHeaderFooterCommand, resolveDocumentHeaderFooterRequest } from '../features/document/controllers/document-header-footer-editor'
+import { workbookCommandGuard } from './workbook-command-guards'
 import { cloneDocumentSelection } from '../features/document/model/document-table-selection.ts'
 import type { DocumentStoryRange } from '../features/document/model/document-story.ts'
 import { sameDocumentBlockHost, type DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host.ts'
@@ -186,6 +190,8 @@ export interface WorkbookCommitOptions {
   preserveStyleInheritance?: boolean
   expectedRevision?: number
   expectedHistoryGeneration?: number
+  /** Runtime owner/cancellation context; excluded from history snapshots. */
+  assertCurrent?: () => void
   /** Recent paste options or a continuous drawing move retain the first undo and publish the newest snapshot. */
   amend?: HistorySavepoint
   /** Receives the committed entry even if a settled listener immediately makes another edit. */
@@ -850,6 +856,7 @@ export class OfficeStudio {
     if (!current) throw new Error(`Workbook not found: ${id}`)
     const baseRevision = this.getWorkbookRevision(id), baseSavepoint = this.editor.history.captureSavepoint(id)
     if (typeof options !== 'boolean') {
+      options.assertCurrent?.()
       if (options.expectedRevision !== undefined && (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0)) throw new TypeError('工作簿版本无效。')
       if (options.expectedHistoryGeneration !== undefined && (!Number.isSafeInteger(options.expectedHistoryGeneration) || options.expectedHistoryGeneration <= 0)) throw new TypeError('工作簿历史版本无效。')
       if (options.expectedRevision !== undefined && options.expectedRevision !== baseRevision
@@ -926,6 +933,7 @@ export class OfficeStudio {
     if (typeof options !== 'boolean' && options.prepareView) options.prepareView(cloneModel(recalculated))
     const assertCurrent = (): void => {
       this.assertAlive()
+      if (typeof options !== 'boolean') options.assertCurrent?.()
       const latest = this.getWorkbookModel(id)
       const latestSavepoint = this.editor.history.captureSavepoint(id)
       if (!latest || !equivalentModelData(before, latest, ['modified', 'activeSheetId']) || this.getWorkbookRevision(id) !== baseRevision
@@ -940,6 +948,7 @@ export class OfficeStudio {
       let initial = true
       const redo = (): void => {
         if (initial) {
+          assertCurrent()
           const latest = this.getWorkbookModel(id)
           if (!latest) throw new Error(`Workbook not found: ${id}`)
           this.assertChartHostChanges(latest, recalculated)
@@ -1053,6 +1062,7 @@ export class OfficeStudio {
     // Undo/Redo events, excluding these commands from generic command events.
     if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P, R>)(params)
     const commandTarget = this.captureDocumentTransientCommandTarget(id, params) ?? this.captureChartPasteCommandTarget(id, params)
+      ?? this.captureWorkbookCommandTarget(id, params)
     const event: ApiEventMap['BeforeCommandExecute'] = {
       id,
       params,
@@ -1074,6 +1084,7 @@ export class OfficeStudio {
       if (!handler) throw new Error(`Unknown command: ${id}`)
       if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P | undefined, R | Promise<R>>)(params)
       const commandTarget = this.captureDocumentTransientCommandTarget(id, params) ?? this.captureChartPasteCommandTarget(id, params)
+        ?? this.captureWorkbookCommandTarget(id, params)
       const event: ApiEventMap['BeforeCommandExecute'] = { id, params, unitId: commandTarget?.unitId ?? commandUnitId(params), kind: this.commandKind(id, params) }
       this.events.emit('BeforeCommandExecute', event)
       if (event.cancel) throw new Error(`Command was canceled: ${id}`)
@@ -1287,6 +1298,7 @@ export class OfficeStudio {
       disposeDocumentImageEditors(this, id)
       disposeDocumentLatexTemplateEditors(this, id)
       disposeDocumentLatexPopupEditors(this, id)
+      disposeDocumentHeaderFooterEditors(this, id)
       this.documentFieldCacheAdapters.delete(id)
       this.documentInput.removeUnit(id)
       this.pendingDocumentInputPublications.delete(id)
@@ -1306,6 +1318,7 @@ export class OfficeStudio {
   dispose(): void {
     if (this.disposed) return
     disposeDocumentImageEditors(this)
+    disposeDocumentHeaderFooterEditors(this)
     this.disposed = true
     for (const controller of this.workbookCreationTasks) controller.abort()
     this.workbookCreationTasks.clear()
@@ -1891,10 +1904,15 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
       setAutoFilter(requireSheet(model, sheetId), range)
     }))
-    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange }, boolean>('sheet.command.toggle-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Toggle auto-filter', (model) => {
-      const sheet = requireSheet(model, sheetId)
-      setAutoFilter(sheet, sheet.autoFilter ? null : range)
-    }))
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; expectedRevision?: number }, boolean>('sheet.command.toggle-auto-filter', request => {
+      const { unitId, sheetId, range, expectedRevision } = request
+      const assertCurrent = workbookCommandGuard(request)
+      assertCurrent?.()
+      return this.commitWorkbook(unitId, 'Toggle auto-filter', model => {
+        const sheet = requireSheet(model, sheetId)
+        setAutoFilter(sheet, sheet.autoFilter ? null : range)
+      }, { expectedRevision, assertCurrent })
+    })
     this.registerCommand<{ unitId: string; sheetId: string; column: number; criteria: SheetFilterCriteria | null }, boolean>('sheet.command.set-filter-criteria', ({ unitId, sheetId, column, criteria }) => this.commitWorkbook(unitId, 'Filter worksheet rows', (model) => {
       setFilterCriteria(requireSheet(model, sheetId), column, criteria)
     }))
@@ -1904,10 +1922,14 @@ export class OfficeStudio {
     this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', ({ unitId, sheetId }) => this.applyWorkbookOperation(unitId, (model) => {
       refreshAutoFilter(requireSheet(model, sheetId))
     }))
-    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', ({ unitId, sheetId, range, criteria, options, order, expectedRevision }) => {
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', request => {
+      const { unitId, sheetId, range, criteria, options, order, expectedRevision } = request
+      const assertCurrent = workbookCommandGuard(request)
+      assertCurrent?.()
       if (expectedRevision !== undefined && this.getWorkbookRevision(unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
       this.assertCanEditRange(unitId, sheetId, range)
-      return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences))
+      return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences),
+        { expectedRevision, assertCurrent })
     })
     this.registerCommand<{ unitId: string; sheetId: string; rule: SheetRangeProtectionRule }, boolean>('sheet.command.set-range-protection', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Set range protection', (model) => {
       const sheet = requireSheet(model, sheetId)
@@ -2293,6 +2315,7 @@ export class OfficeStudio {
     }
     registerDocumentPageSetupCommand(this, request => this.commitDocumentEditorCommand(DOCUMENT_PAGE_SETUP_COMMAND, request))
     registerDocumentZoomCommands(this, params => this.publishDocumentZoomRatio(params))
+    registerDocumentHeaderFooterCommands(this)
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
     registerDocumentContentControlCommands(this)
     registerDocumentCustomXmlCommands(this)
@@ -2488,17 +2511,40 @@ export class OfficeStudio {
    * model owner and history generation before dispatching view/page operations. */
   private captureDocumentTransientCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
     const zoom = commandId === DOCUMENT_ZOOM_COMMANDS.SetRatio || commandId === DOCUMENT_ZOOM_COMMANDS.SetRatioCommand
-    if (!zoom && commandId !== DOCUMENT_PAGE_SETUP_COMMAND) return undefined
+    const headerFooter = isDocumentHeaderFooterCommand(commandId)
+    if (!zoom && !headerFooter && commandId !== DOCUMENT_PAGE_SETUP_COMMAND) return undefined
+    const headerFooterTarget = headerFooter ? captureDocumentHeaderFooterEditorTarget(this,
+      resolveDocumentHeaderFooterRequest(commandId, params)) : undefined
     const resolveUnitId = () => zoom ? resolveDocumentZoomCommand(commandId, params, this._activeDocumentId).unitId
+      : headerFooter ? resolveDocumentHeaderFooterRequest(commandId, params).unitId ?? this._activeDocumentId
       : commandUnitId(params) ?? this._activeDocumentId
     const unitId = resolveUnitId(), source = this.getDocumentModel(unitId), history = this.editor.history.units[unitId]
     const generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
     return { unitId, assertCurrent: () => {
       if (resolveUnitId() !== unitId || this.getDocumentModel(unitId) !== source || this.editor.history.units[unitId] !== history
-        || source && this.editor.history.captureSavepoint(unitId).generation !== generation) {
+        || source && this.editor.history.captureSavepoint(unitId).generation !== generation
+        || headerFooterTarget && !documentHeaderFooterEditorTargetCurrent(this, headerFooterTarget)) {
         throw new Error('命令执行前文档或打开代数已更改，请重新执行。')
       }
     } }
+  }
+
+  private captureWorkbookCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
+    const guard = workbookCommandGuard(params)
+    if (!guard && commandId !== 'sheet.command.sort-range' && commandId !== 'sheet.command.toggle-auto-filter') return undefined
+    const unitId = commandUnitId(params) ?? this._activeWorkbookId
+    const source = this.getWorkbookModel(unitId), revision = this.getWorkbookRevision(unitId), userId = this.currentUserId
+    const history = this.editor.history.units[unitId], generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
+    const assertCurrent = (): void => {
+      guard?.()
+      if ((commandUnitId(params) ?? this._activeWorkbookId) !== unitId || this.currentUserId !== userId
+        || this.getWorkbookModel(unitId) !== source || this.getWorkbookRevision(unitId) !== revision || this.editor.history.units[unitId] !== history
+        || source && this.editor.history.captureSavepoint(unitId).generation !== generation) {
+        throw new Error('命令执行前工作簿、用户或打开代数已更改，请重新执行。')
+      }
+    }
+    assertCurrent()
+    return { unitId, assertCurrent }
   }
 
   /** Capture both units and the clipboard before extension hooks run. A hook

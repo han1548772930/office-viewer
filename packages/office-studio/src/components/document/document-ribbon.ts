@@ -39,6 +39,7 @@ import { createDocumentStructureRibbon, type DocumentStructureRibbonContext } fr
 import { createDocumentLatexRibbon, type DocumentLatexRibbonContext } from './document-latex-ribbon'
 import type { DocumentHyperlinkSelectionState } from '../../features/document/services/document-hyperlinks'
 import { DOCUMENT_ZOOM_SHORTCUTS } from '../../features/document/services/document-zoom'
+import { DOCUMENT_HEADER_FOOTER_COMMANDS } from '../../features/document/controllers/document-header-footer-editor'
 
 export interface DocumentTocContextActionStates { update: DocumentTocActionState; delete: DocumentTocActionState }
 
@@ -78,6 +79,7 @@ export interface DocumentRibbonContext {
   selectionHasCode?: boolean
   characterPreferences?: DocumentCharacterPreferencesStore
   pageSettingsDisabled?: boolean
+  headerFooterOpenDisabled?: boolean
   namedStyleDisabled?: boolean
   namedStyleDisabledReason?: string
   /** Character formatting can target an active story independently of body-only tools. */
@@ -208,7 +210,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         listControl('numbered', ListOrdered, '有序列表', 2, 1),
         listControl('bullet', List, '无序列表', 1, 2),
         action('doc-checklist', '清单', ListTodo, 'doc.command.set-block-type', { type: 'checklist' }, { disabled: context.editingDisabled, activated: state.blockStyle === 'checklist', gridLayout: { row: 2, column: 2 } }),
-        action('doc-header-footer', '页眉和页脚', PanelTop, 'doc.operation.open-header-footer', undefined, { hidden: context.mode === 'modern', showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
+        action('doc-header-footer', '页眉和页脚', PanelTop, DOCUMENT_HEADER_FOOTER_COMMANDS.open, undefined, { hidden: context.mode === 'modern', disabled: context.headerFooterOpenDisabled, showLabel: true, gridLayout: { row: 1, column: 3, rowSpan: 2, showLabel: true } }),
       ] },
       { id: 'doc-others', title: '其他', order: 3, items: [
         action('doc-permissions', '文档权限', ShieldCheck, 'doc.operation.open-permissions', undefined, { order: 0, gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true } }),
@@ -347,8 +349,9 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
           headerFooterControl('options', '选项', FileCog, 2),
           headerFooterControl('position', '位置', IndentIncrease, 3),
         ].map(item => ({ id: item.id, title: item.title, order: item.order, items: [item] })),
-        { id: 'header-footer-close', title: '关闭', order: 5, items: [action('doc-header-footer-close', '关闭页眉和页脚', X, 'doc.operation.close-header-footer', undefined, {
+        { id: 'header-footer-close', title: '关闭', order: 5, items: [action('doc-header-footer-close', '关闭页眉和页脚', X, DOCUMENT_HEADER_FOOTER_COMMANDS.close, undefined, {
             order: 5,
+            disabled: headerFooter.navigationDisabled,
             showLabel: true,
             gridLayout: { row: 1, column: 1, rowSpan: 2, showLabel: true },
           })] },

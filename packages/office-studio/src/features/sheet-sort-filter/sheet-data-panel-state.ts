@@ -1,6 +1,8 @@
 import type { CellRange, CellScalar, SheetFilterCriteria, SheetSortCriterion, SpreadsheetSheet, WorkbookModel } from '../../domain/model'
 import { cloneModel } from '../../domain/serialization'
 import { parseSheetAddress } from '../sheet-workbench/sheet-workbench'
+import { assertSheetCommandRanges, sheetRangeContainsCell } from '../sheet-workbench/sheet-range-command.ts'
+import { expandSheetDataRange } from './sheet-data-range.ts'
 import { clearFilter, readCellValue, setAutoFilter, setFilterCriteria } from './sort-filter-engine'
 
 export const CONFIGURE_SHEET_FILTER_COMMAND = 'sheet.command.configure-filter'
@@ -14,6 +16,15 @@ export interface ConfigureSheetFilterInput {
 export interface DataPanelField { column: number; label: string }
 export interface DataPanelValue { key: string; label: string; value: CellScalar }
 export interface PanelSortKey { column: number; direction: 'ascending' | 'descending' }
+export type PanelSortRangeChoice = 'keep' | 'extend'
+export interface PanelSortRangeSelection {
+  unitId: string
+  sheetId: string
+  expectedRevision: number
+  sourceRange: CellRange
+  range: CellRange
+  primary: { row: number; column: number }
+}
 
 function columnName(column: number): string {
   let value = column + 1, result = ''
@@ -23,11 +34,28 @@ function columnName(column: number): string {
 export function dataPanelAddress(range: CellRange): string {
   return `${columnName(range.startCol)}${range.startRow + 1}:${columnName(range.endCol)}${range.endRow + 1}`
 }
-export function parseDataPanelRange(sheet: SpreadsheetSheet, address: string): CellRange {
+export function parseDataPanelSourceRange(sheet: SpreadsheetSheet, address: string): CellRange {
   if (!/^\$?[A-Z]+\$?[1-9]\d*(?::\$?[A-Z]+\$?[1-9]\d*)?$/i.test(address.trim())) throw new RangeError('请输入当前工作表的数据区域，例如 A1:C20。')
   const parsed = parseSheetAddress(address, { rowCount: sheet.rowCount ?? 1_048_576, columnCount: sheet.columnCount ?? 16_384 })
-  if (!parsed || parsed.range.endRow <= parsed.range.startRow) throw new RangeError('请选择至少两行的数据区域，筛选区域需包含标题行。')
+  if (!parsed) throw new RangeError('数据区域超出当前工作表范围。')
   return { startRow: parsed.range.startRow, endRow: parsed.range.endRow, startCol: parsed.range.startColumn, endCol: parsed.range.endColumn }
+}
+export function parseDataPanelRange(sheet: SpreadsheetSheet, address: string): CellRange {
+  const range = parseDataPanelSourceRange(sheet, address)
+  if (range.endRow <= range.startRow) throw new RangeError('请选择至少两行的数据区域，筛选区域需包含标题行。')
+  return range
+}
+/** The confirmation is view state; choosing or cancelling never writes cells or content history. */
+export function prepareDataPanelSortRange(
+  sheet: SpreadsheetSheet, source: CellRange, choice: PanelSortRangeChoice, primary: { row: number; column: number },
+): CellRange {
+  if (choice !== 'keep' && choice !== 'extend') throw new TypeError('请选择保持或扩展排序区域。')
+  assertSheetCommandRanges([source])
+  if (!Number.isSafeInteger(primary.row) || !Number.isSafeInteger(primary.column)
+    || !sheetRangeContainsCell(source, primary.row, primary.column)) throw new RangeError('排序的活动单元格必须位于原选区内。')
+  const range = choice === 'extend' ? expandSheetDataRange(sheet, source) : { ...source }
+  if (range.endRow <= range.startRow) throw new RangeError('请选择至少两行的数据区域后再排序，或扩展到相邻连续区域。')
+  return range
 }
 export function readDataPanelFields(sheet: SpreadsheetSheet, range: CellRange, hasHeader = true): DataPanelField[] {
   return Array.from({ length: range.endCol - range.startCol + 1 }, (_, offset) => {

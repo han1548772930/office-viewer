@@ -9,10 +9,13 @@ import type { SheetValidationListOption } from '../../features/sheet-validation/
 import { useSheetValidationListQuery } from './use-sheet-validation-list-query.ts'
 import { createSheetValidationListNavigation, sheetValidationListNavigationIndex } from './sheet-validation-list-navigation.ts'
 import { sheetValidationListHighlightRange } from '../../features/sheet-validation/validation-list-highlight.ts'
+import { resolveSheetValidationDropdownUi, type SheetValidationDropdownUiOptions } from '../../features/sheet-validation/validation-dropdown-ui.ts'
 
-const props = defineProps<{ entry: SheetValidationCellEntry; popup?: SheetValidationCellPopup; position: CSSProperties; region: string; currentYear: number }>()
+const props = defineProps<{ entry: SheetValidationCellEntry; popup?: SheetValidationCellPopup; position: CSSProperties; region: string; currentYear: number; dropdownUi?: SheetValidationDropdownUiOptions }>()
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback), { token } = theme.useToken()
 const query = ref(''), stableQuery = ref(''), composing = ref(false), activeIndex = ref(0)
+const dropdownUi = computed(() => resolveSheetValidationDropdownUi(props.dropdownUi))
+const showSearch = computed(() => dropdownUi.value.showSearchOnDropdown || composing.value)
 const list = ref<HTMLElement>(), listControl = ref<ListyRef>(), popupRoot = ref<HTMLElement>()
 const owner = computed(() => props.popup?.hostKey === props.entry.hostKey ? props.popup : undefined)
 const emptyOptions: readonly SheetValidationListOption[] = Object.freeze([])
@@ -29,8 +32,10 @@ const queryProgressLabel = computed(() => queryProgress.value?.phase === 'queryi
 const queryErrorLabel = computed(() => queryErrorCode.value === 'COMPUTE_MEMORY_LIMIT'
   ? t('sheet.validation.list.query.memory', '列表查询超过当前内存预算。') : t('sheet.validation.list.query.failed', '列表查询未能完成，请重试。'))
 const listHeight = computed(() => Math.min(240, Math.max(1, items.value.length) * (token.value.fontHeight + token.value.paddingSM * 2)))
-const frames = new Map<number, () => void>()
+const frames = new Set<{ window: Window; id: number; resolve(): void }>()
 let activeComponent = true
+let focusGeneration = 0
+let focusRequest: { owner: SheetValidationCellPopup; search: boolean } | undefined
 const navigation = createSheetValidationListNavigation({
   state: () => {
     const popup = owner.value, context = popup?.queryContext()
@@ -48,9 +53,12 @@ const navigation = createSheetValidationListNavigation({
   nextFrame: async () => {
     await nextTick()
     if (!activeComponent) return
+    const window = popupRoot.value?.ownerDocument.defaultView
+    if (!window) return
     await new Promise<void>(resolve => {
-      const id = requestAnimationFrame(() => { frames.delete(id); resolve() })
-      frames.set(id, resolve)
+      const frame = { window, id: 0, resolve }
+      frame.id = window.requestAnimationFrame(() => { frames.delete(frame); resolve() })
+      frames.add(frame)
     })
   },
 })
@@ -68,10 +76,17 @@ const callbacks = computed(() => {
       composing.value = false; popup?.setComposing(false); stableQuery.value = query.value
     },
     retry: () => { if (owner.value === popup && popup?.current() && !composing.value) void retryQuery() },
+    editRule: () => {
+      if (owner.value === popup && !composing.value && popup?.current()
+        && (popup.kind !== 'list' || dropdownUi.value.showEditOnDropdown)) popup.editRule()
+    },
     keydown: (event: KeyboardEvent) => { if (owner.value === popup) keydown(event) },
   }
 })
 watch(query, value => { if (!composing.value) stableQuery.value = value }, { flush: 'sync' })
+watch(() => [dropdownUi.value.showSearchOnDropdown, composing.value] as const, ([show, composition]) => {
+  if (!show && !composition) { query.value = ''; stableQuery.value = '' }
+}, { immediate: true, flush: 'sync' })
 watch(() => owner.value?.ownerKey, () => { query.value = ''; stableQuery.value = ''; composing.value = false }, { flush: 'sync' })
 watch(() => [owner.value, items.value, stableQuery.value, query.value, composing.value, queryBusy.value, owner.value?.visible,
   owner.value?.queryContext()?.baseRevision] as const, (values, previous) => {
@@ -83,18 +98,49 @@ watch(() => [owner.value, items.value, stableQuery.value, query.value, composing
     if (popup?.visible && popup.current() && owner.value === popup && generation === navigation.generation) listControl.value?.scrollTo(0)
   })
 }, { flush: 'sync' })
-watch(() => [owner.value?.ownerKey, owner.value?.visible] as const, async () => {
+watch(() => [owner.value?.ownerKey, owner.value?.visible, showSearch.value] as const, () => {
   const popup = owner.value
-  if (!popup?.visible) return
+  navigation.invalidate()
+  focusGeneration++
+  focusRequest = popup?.visible ? { owner: popup, search: popup.kind !== 'list' || showSearch.value } : undefined
+  void focusPopup()
+}, { immediate: true, flush: 'sync' })
+watch(() => [queryBusy.value, queryError.value, items.value, composing.value, owner.value?.disabled] as const,
+  () => { if (focusRequest) void focusPopup() }, { flush: 'post' })
+async function focusPopup(): Promise<void> {
+  const request = focusRequest, generation = ++focusGeneration
+  if (!request) return
+  const popup = request.owner
+  const current = () => {
+    const valid = activeComponent && generation === focusGeneration && focusRequest === request && owner.value === popup
+      && popup.visible && !composing.value && popup.current()
+    return valid && activeComponent && generation === focusGeneration && focusRequest === request && owner.value === popup
+      && popup.visible && !composing.value
+  }
   await nextTick()
-  if (activeComponent && popup.current() && owner.value === popup && popup.visible && !composing.value) popupRoot.value?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus()
-}, { immediate: true })
+  if (!current()) return
+  if (!request.search && queryBusy.value) return
+  if (!request.search && !queryError.value && items.value.length && !popup.disabled) {
+    if (await navigation.focus(Math.min(activeIndex.value, items.value.length - 1)) && current()) {
+      focusRequest = undefined
+      return
+    }
+    if (!current()) return
+  }
+  // With search hidden, an empty/failed query still has a keyboard-reachable
+  // close/retry action. A later owner, query or IME event expires this request.
+  const target = popupRoot.value?.querySelector<HTMLElement>(request.search ? 'input:not(:disabled)' : 'button:not(:disabled)')
+  if (!target || !current()) return
+  target.focus()
+  if (current() && target.ownerDocument.activeElement === target) focusRequest = undefined
+}
 onBeforeUnmount(() => {
   activeComponent = false
+  focusGeneration++; focusRequest = undefined
   navigation.dispose()
-  for (const [id, resolve] of frames) { cancelAnimationFrame(id); resolve() }
+  for (const frame of frames) { frame.window.cancelAnimationFrame(frame.id); frame.resolve() }
   frames.clear()
-  const popup = owner.value; if (popup?.visible) { popup.setOpen(false); popup.afterOpenChange(false) }
+  owner.value?.detach()
 })
 const title = computed(() => t(props.entry.kind === 'date' ? 'sheet.validation.date.open' : 'sheet.validation.list.open', props.entry.kind === 'date' ? '选择日期或时间' : '选择列表项'))
 function rowKey(item: SheetValidationListOption): string { return item.value }
@@ -134,6 +180,11 @@ function keydown(event: KeyboardEvent): void {
   if (!checkbox && !['ArrowUp', 'ArrowDown'].includes(event.key)) return
   const row = event.target.closest<HTMLElement>('[data-validation-list-index]'), index = row ? Number(row.dataset.validationListIndex) : -1
   if (checkbox && (!Number.isSafeInteger(index) || !items.value[index])) return
+  if (checkbox && event.key === 'Enter') {
+    event.preventDefault(); event.stopPropagation()
+    if (!event.repeat && popup.current()) event.target.click()
+    return
+  }
   const next = sheetValidationListNavigationIndex(event.key, checkbox ? activeIndex.value : -1, items.value.length)
   if (next === undefined) return
   event.preventDefault(); event.stopPropagation()
@@ -160,7 +211,7 @@ function keydown(event: KeyboardEvent): void {
           :region="owner.region" :current-year="owner.currentYear" :submit="owner.submitDate" @cancel="callbacks.close" @composition="callbacks.composition" />
         <Form v-else layout="vertical" class="sheet-validation-list-form" @submit.prevent
           @compositionstart.capture="callbacks.compositionStart" @compositionend.capture="callbacks.compositionEnd">
-          <FormItem :label="t('sheet.validation.list.search', '搜索列表项')">
+          <FormItem v-if="showSearch" :label="t('sheet.validation.list.search', '搜索列表项')">
             <Input v-model:value="query" allow-clear :aria-label="t('sheet.validation.list.search', '搜索列表项')" />
           </FormItem>
           <div v-if="queryBusy" class="sheet-validation-query-progress" role="status" aria-live="polite">
@@ -182,7 +233,7 @@ function keydown(event: KeyboardEvent): void {
             <Button :disabled="composing" @click="callbacks.close">{{ t('common.close', '关闭') }}</Button>
           </div>
         </Form>
-        <Button v-if="owner.canEditRule" type="text" size="small" class="sheet-validation-edit-rule" :disabled="composing" @click="owner.editRule">
+        <Button v-if="owner.canEditRule && (owner.kind !== 'list' || dropdownUi.showEditOnDropdown)" type="text" size="small" class="sheet-validation-edit-rule" :disabled="composing" @click="callbacks.editRule">
           <Settings :size="13" aria-hidden="true" />{{ t('sheet.validation.edit-title', '编辑数据验证') }}
         </Button>
       </div>

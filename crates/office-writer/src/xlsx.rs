@@ -313,7 +313,7 @@ fn default_chart_legend_position() -> String {
 }
 
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct RangeInput {
     #[serde(default)]
@@ -1895,6 +1895,7 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
     let mut warnings = Vec::new();
     if renamed_sheets { warnings.push(ExportWarning::new("XLSX_SHEET_NAMES_NORMALIZED", "Worksheet names and their native references were normalized to valid unique XLSX names")); }
     chart::prepare_native_bindings(&mut workbook, &mut warnings)?;
+    table::prepare_identities(&mut workbook.tables, &[])?;
     let formula_calendar_source = formula_calendar::prepare(&mut workbook, &mut warnings)?;
     add_unsupported_warnings(&workbook, &mut warnings);
     let mut registry = StyleRegistry::new();
@@ -1952,7 +1953,8 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
             .ok_or_else(|| ExportError::invalid(format!("table {} references an unknown worksheet", table.id)))?;
         table::validate(&workbook.tables, table)?;
         let path = format!("xl/tables/table{}.xml", table_index + 1);
-        package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, table_index + 1)?)?;
+        let native_id = table.office_table_id.ok_or_else(|| ExportError::invalid("TABLE_SOURCE_INVALID: table has no prepared native ID"))?;
+        package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, native_id, &workbook.sheets[sheet_index], &mut warnings)?)?;
         table_exports.push((sheet_index, table_index, table.clone(), path));
     }
     let mut conditional_source_bytes = 0usize;

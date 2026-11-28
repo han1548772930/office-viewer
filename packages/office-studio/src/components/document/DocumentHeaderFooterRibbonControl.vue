@@ -16,6 +16,9 @@ export interface HeaderFooterRibbonState {
   sectionDisabled?: boolean
   contentDisabled?: boolean
   refreshDisabled?: boolean
+  navigationDisabled?: boolean
+  headerDisabled?: boolean
+  footerDisabled?: boolean
   canLinkToPrevious: boolean
   linkedToPrevious: boolean
   differentFirstPage: boolean
@@ -136,8 +139,8 @@ function checkboxValue(value: boolean | { target?: { checked?: boolean } }): boo
     </div>
 
     <template v-else-if="kind === 'navigation'">
-      <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="area === 'header'" @mousedown.prevent @click="run({ action: 'navigate', area: 'header' })">转到页眉</Button>
-      <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="area === 'footer'" @mousedown.prevent @click="run({ action: 'navigate', area: 'footer' })">转到页脚</Button>
+      <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="area === 'header' || state.navigationDisabled || state.headerDisabled" @mousedown.prevent @click="run({ action: 'navigate', area: 'header' })">转到页眉</Button>
+      <Button type="text" size="small" :styles="{ root: { border: 0 } }" :disabled="area === 'footer' || state.navigationDisabled || state.footerDisabled" @mousedown.prevent @click="run({ action: 'navigate', area: 'footer' })">转到页脚</Button>
       <Checkbox :checked="state.linkedToPrevious" :disabled="state.disabled || !state.canLinkToPrevious" @change="setOptions({ linkToPrevious: checkboxValue($event) })">链接到前一节</Checkbox>
     </template>
 

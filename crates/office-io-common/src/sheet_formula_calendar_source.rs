@@ -113,11 +113,19 @@ pub struct TableSource {
     pub table_id: String,
     pub office_table_id: u32,
     pub sheet_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<TableColumnSource>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableColumnSource {
+    pub column_id: String,
+    pub office_column_id: u32,
 }
 
 impl FormulaCalendarSource {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.sheets.len() > 1024 || self.helpers.len() > 2049 { return Err("FORMULA_CALENDAR_SOURCE_INVALID: version or sheet count is invalid".into()); }
+        if self.version != 1 || self.sheets.len() > 16_384 || self.helpers.len() > 2049 { return Err("FORMULA_CALENDAR_SOURCE_INVALID: version or sheet count is invalid".into()); }
         let mut names = BTreeSet::new(); let mut ids = BTreeSet::new(); let mut native_ids = BTreeSet::new(); let mut cells = 0usize;
         for sheet in &self.sheets {
             if sheet.name.is_empty() || sheet.name.chars().count() > 31 || sheet.sheet_id.is_empty() || sheet.sheet_id.len() > 512
@@ -183,10 +191,18 @@ impl FormulaCalendarSource {
         if self.tables.len() > 24_576 { return Err("FORMULA_CALENDAR_SOURCE_LIMIT: too many table identities".into()); }
         let mut table_names = BTreeSet::new(); let mut table_ids = BTreeSet::new(); let mut native_table_ids = BTreeSet::new();
         for table in &self.tables {
-            if table.name.is_empty() || table.name.len() > 255 || table.table_id.is_empty() || table.table_id.len() > 512
+            if table.name.is_empty() || table.name.encode_utf16().count() > 255 || table.table_id.is_empty() || table.table_id.len() > 512
                 || table.office_table_id == 0 || !native_table_ids.insert(table.office_table_id)
                 || !table_names.insert(table.name.to_lowercase()) || !table_ids.insert(table.table_id.as_str()) || !ids.contains(table.sheet_id.as_str()) {
                 return Err("FORMULA_CALENDAR_SOURCE_INVALID: invalid table identity".into());
+            }
+            if table.columns.len() > 16_384 { return Err("FORMULA_CALENDAR_SOURCE_LIMIT: too many table column identities".into()); }
+            let mut columns = BTreeSet::new(); let mut native_columns = BTreeSet::new();
+            for column in &table.columns {
+                if column.column_id.is_empty() || column.column_id.len() > 512 || column.office_column_id == 0
+                    || !columns.insert(column.column_id.as_str()) || !native_columns.insert(column.office_column_id) {
+                    return Err("FORMULA_CALENDAR_SOURCE_INVALID: duplicate or invalid table column identity".into());
+                }
             }
         }
         Ok(())

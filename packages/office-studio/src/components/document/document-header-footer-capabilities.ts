@@ -5,10 +5,13 @@ export interface HeaderFooterEditCapabilities {
   contentDisabled?: boolean
   sectionDisabled?: boolean
   refreshDisabled?: boolean
+  navigationDisabled?: boolean
+  headerDisabled?: boolean
+  footerDisabled?: boolean
 }
 
 export function headerFooterControlDisabled(kind: HeaderFooterRibbonKind, state: HeaderFooterEditCapabilities): boolean {
-  if (kind === 'navigation') return false
+  if (kind === 'navigation') return state.navigationDisabled === true || state.headerDisabled === true && state.footerDisabled === true
   if (kind === 'position') return state.sectionDisabled ?? state.disabled
   if (kind === 'insertion') {
     const localDisabled = state.disabled || state.contentDisabled === true
@@ -19,7 +22,7 @@ export function headerFooterControlDisabled(kind: HeaderFooterRibbonKind, state:
 
 /** Navigation reads a story; positions edit section geometry independently of story content. */
 export function headerFooterActionDisabled(state: HeaderFooterEditCapabilities, action: HeaderFooterAction): boolean {
-  if (action.action === 'navigate') return false
+  if (action.action === 'navigate') return state.navigationDisabled === true || (action.area === 'header' ? state.headerDisabled : state.footerDisabled) === true
   if (action.action === 'refresh-fields') return state.refreshDisabled ?? (state.disabled || state.contentDisabled === true)
   if (action.action !== 'set-options') return state.disabled || state.contentDisabled === true
   const patch = action.patch

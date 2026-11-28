@@ -89,6 +89,11 @@ export { DOCUMENT_IMAGE_ALIGN_TYPES, documentImageBatchMembers, documentImageBat
 export type { DocumentImageAlign, DocumentImageBatchTransform, DocumentImageBatchMember, DocumentImageBatchUpdate } from './features/document/images/document-image-batch'
 export type { DocumentImageGeometryReadOptions, DocumentImageLayoutRead } from './api/document-image-layout'
 export type { DocumentImageEditor, DocumentImageEditorHandle, DocumentImageEditorTarget } from './api/document-image-editors'
+export { DOCUMENT_HEADER_FOOTER_COMMANDS, DOCUMENT_HEADER_FOOTER_LOCAL_COMMANDS } from './features/document/controllers/document-header-footer-editor'
+export type { DocumentHeaderFooterEditArea, DocumentHeaderFooterRequestContext, DocumentOpenHeaderFooterRequest,
+  DocumentCloseHeaderFooterRequest, DocumentHeaderFooterRibbonRequest, DocumentHeaderFooterRequest } from './features/document/controllers/document-header-footer-editor'
+export type { DocumentHeaderFooterEditor, DocumentHeaderFooterEditorHandle, DocumentHeaderFooterEditorTarget } from './api/document-header-footer-editors'
+export { bindWorkbookCommandGuard } from './api/workbook-command-guards'
 export type { DocumentImagePosition, DocumentImageWrappingStyle, DocumentImagePatch, DocumentImageArrange, DocumentImageSourceRect } from './features/document/images/document-image-model'
 export { DOCUMENT_LATEX_PUBLIC_COMMANDS } from './api/document-latex-commands'
 export { DOCUMENT_LATEX_TEMPLATE_CATEGORIES, DOCUMENT_LATEX_CATEGORY_LABELS, DOCUMENT_LATEX_TEMPLATES,
@@ -239,6 +244,8 @@ export { evaluateFormula, evaluateFormulaReference, type FormulaEvaluationOption
 export { SET_SHEET_CONDITIONAL_FORMATS_COMMAND, type SetSheetConditionalFormatsInput,
   type SheetConditionalFormatSubmitResult } from './features/conditional-formatting/conditional-format-command.ts'
 export { registerSheetValidationInputCommands } from './api/sheet-validation-input-commands.ts'
+export { resolveSheetValidationDropdownUi } from './features/sheet-validation/validation-dropdown-ui.ts'
+export type { SheetValidationDropdownUiOptions, SheetValidationDropdownUiState } from './features/sheet-validation/validation-dropdown-ui.ts'
 export { registerSheetDataValidationCommands } from './api/sheet-data-validation-commands.ts'
 export { registerSheetValidationDropdownOperations, attachSheetValidationDropdownController, activeSheetValidationDropdown,
   type SheetValidationDropdownController } from './api/sheet-validation-dropdown-operations.ts'

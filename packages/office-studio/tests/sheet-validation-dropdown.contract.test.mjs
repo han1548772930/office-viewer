@@ -7,6 +7,7 @@ import { cloneModel } from '../src/domain/serialization.ts'
 import { toExcelWorkbookView } from '../src/services/excelViewAdapter.ts'
 import { createSheetCellEditSession } from '../src/features/sheet-workbench/sheet-cell-edit-session.ts'
 import { SHEET_VALIDATION_DROPDOWN_OPERATIONS as operations } from '../src/features/sheet-validation/validation-dropdown.ts'
+import { resolveSheetValidationDropdownUi } from '../src/features/sheet-validation/validation-dropdown-ui.ts'
 
 // One SSR graph owns the Studio, hooks and WeakMap coordinator. These implementation-phase drafts have not run.
 let vite, OfficeStudio, FOffice, useSheetValidationCell, activeSheetValidationDropdown, attachSheetValidationDropdownController, registerSheetValidationDropdownOperations
@@ -40,6 +41,46 @@ function host(configure = () => {}) {
     hide: input => studio.executeCommandSync(operations.hide, input), active: () => activeSheetValidationDropdown(studio),
     dispose: () => { scope.stop(); studio.dispose() } }
 }
+
+test('dropdown UI options preserve fixed true defaults and do not coerce invalid input to capability flags', () => {
+  assert.deepEqual(resolveSheetValidationDropdownUi(undefined), { showEditOnDropdown: true, showSearchOnDropdown: true })
+  assert.deepEqual(resolveSheetValidationDropdownUi({}), { showEditOnDropdown: true, showSearchOnDropdown: true })
+  assert.deepEqual(resolveSheetValidationDropdownUi({ showSearchOnDropdown: false }), { showEditOnDropdown: true, showSearchOnDropdown: false })
+  assert.deepEqual(resolveSheetValidationDropdownUi({ showEditOnDropdown: false }), { showEditOnDropdown: false, showSearchOnDropdown: true })
+  assert.deepEqual(resolveSheetValidationDropdownUi({ showEditOnDropdown: false, showSearchOnDropdown: false }),
+    { showEditOnDropdown: false, showSearchOnDropdown: false })
+  for (const input of [null, false, [], 'false', { showEditOnDropdown: 'false' }, { showSearchOnDropdown: 0 }]) {
+    assert.throws(() => resolveSheetValidationDropdownUi(input), TypeError)
+  }
+})
+
+test('detaching a composing popup retires only its UI lease, retaining the input session and document history', async () => {
+  const h = host()
+  try {
+    const session = createSheetCellEditSession({ documentId: 'dropdown', sheetId: 'data', key: 'A1', date1904: false,
+      cell: h.state.model.sheets[0].cells.A1 }, { region: 'en-US', currentYear: 2026 })
+    h.state.inputSession = session
+    h.show(); const owner = h.controller.popup.value, before = cloneModel(h.current())
+    owner.setComposing(true); assert.equal(h.hide({}), false)
+    owner.detach(); assert.equal(h.controller.popup.value, undefined); assert.equal(h.active(), undefined)
+    assert.equal(h.state.inputSession, session); assert.equal(owner.visible, false)
+    assert.equal(owner.submitDate({ kind: 'date', year: 1900, month: 3, day: 1 }).accepted, false)
+    owner.afterOpenChange(false); await nextTick(); assert.deepEqual(h.focused, [])
+    assert.deepEqual(h.current(), before); assert.equal(h.count(), 0)
+    assert.equal(h.show(), true); assert.notEqual(h.controller.popup.value, owner)
+  } finally { h.dispose() }
+})
+
+test('a late detach from the previous popup cannot close or replace the current target', async () => {
+  const h = host()
+  try {
+    h.show(); const old = h.controller.popup.value
+    h.show(0, 1); const owner = h.controller.popup.value
+    old.detach(); old.setOpen(false); old.afterOpenChange(false); await nextTick()
+    assert.equal(h.controller.popup.value, owner); assert.equal(owner.visible, true); assert.equal(h.active().column, 1)
+    assert.equal(h.count(), 0); assert.deepEqual(h.focused, [])
+  } finally { h.dispose() }
+})
 
 test('a public show at another cell reveals its popup without moving selection or writing content/history', () => {
   const h = host()

@@ -22,6 +22,7 @@ mod xml_namespaces;
 pub mod excel_date;
 pub mod formula_references;
 pub mod sheet_formula_calendar_source;
+pub mod sheet_table_source;
 pub mod document_table_source;
 pub mod document_numbering_source;
 pub mod document_note_source;

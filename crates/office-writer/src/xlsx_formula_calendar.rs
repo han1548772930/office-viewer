@@ -4,7 +4,7 @@
 
 use super::{WorkbookInput, SheetInput, table, cell_from_entry, column_name};
 use crate::{ExportError, ExportWarning};
-use office_io_common::sheet_formula_calendar_source::{CalculationFingerprint, CellSource, HelperSource, SheetSource, TableSource, FormulaCalendarSource};
+use office_io_common::sheet_formula_calendar_source::{CalculationFingerprint, CellSource, HelperSource, SheetSource, TableSource, TableColumnSource, FormulaCalendarSource};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -429,7 +429,15 @@ fn build(workbook: &mut WorkbookInput, warnings: &mut Vec<ExportWarning>) -> Res
         has_source |= !cells.is_empty() || import.is_some();
         saved_sheets.push(SheetSource { name: sheet.name.clone(), sheet_id: sheet.id.clone(), office_sheet_id: (owner + 1) as u32, import, cells });
     }
-    if !has_source { return Ok(None); }
+    if !has_source && workbook.tables.is_empty() { return Ok(None); }
+    // Table/column identities and exact dates need no calculation worksheets.
+    // Persist them through the same admitted native provenance part.
+    if calendars.is_empty() {
+        let source = FormulaCalendarSource { version: 1, date1904: workbook.date1904, sheets: saved_sheets,
+            helpers: Vec::new(), tables: workbook.tables.iter().map(table_identity_source).collect::<Result<Vec<_>, _>>()? };
+        source.to_xml().map_err(ExportError::invalid)?;
+        return Ok(Some(source));
+    }
     if workbook.sheets.len() > 1024 { return Err(ExportError::invalid("FORMULA_CALENDAR_PROJECTION_LIMIT: more than 1024 source worksheets")); }
     let mut used = workbook.sheets.iter().map(|sheet| sheet.name.to_lowercase()).collect::<BTreeSet<_>>();
     let mut frames = BTreeMap::new();
@@ -469,6 +477,7 @@ fn build(workbook: &mut WorkbookInput, warnings: &mut Vec<ExportWarning>) -> Res
             projection.tables.insert((*frame, table.name.to_lowercase()), name.clone());
             let mut table = table.clone(); table.id = format!("office-calendar:{name}"); table.name = name;
             table.sheet_id = projection.mirror(*frame, owner).id.clone();
+            table::clear_calculation_source(&mut table);
             projection.charge(serde_json::to_string(&json!({ "id": table.id, "name": table.name, "columns": table.columns.iter().map(|column| &column.name).collect::<Vec<_>>() })).map_err(|error| ExportError::invalid(error.to_string()))?.len() + 256)?;
             imported_tables.push(table);
         }
@@ -556,9 +565,9 @@ fn build(workbook: &mut WorkbookInput, warnings: &mut Vec<ExportWarning>) -> Res
             replacements.push((owner, key, cell.projected_formula.clone().unwrap()));
         }
     }
-    let source_tables = workbook.tables.iter().chain(&imported_tables).enumerate().map(|(index, table)| TableSource {
-        name: table.name.clone(), table_id: table.id.clone(), office_table_id: (index + 1) as u32, sheet_id: table.sheet_id.clone(),
-    }).collect::<Vec<_>>();
+    let reserved_ids = workbook.tables.iter().filter_map(|table| table.office_table_id).collect::<Vec<_>>();
+    table::prepare_identities(&mut imported_tables, &reserved_ids)?;
+    let source_tables = workbook.tables.iter().chain(&imported_tables).map(table_identity_source).collect::<Result<Vec<_>, _>>()?;
     let sheet_identities = saved_sheets.iter().map(|sheet| (sheet.name.to_lowercase(), sheet.sheet_id.clone()))
         .chain(helper_sources.iter().map(|sheet| (sheet.name.to_lowercase(), sheet.sheet_id.clone()))).collect::<BTreeMap<_, _>>();
     let table_identities = source_tables.iter().map(|table| (table.name.to_lowercase(), table.table_id.clone())).collect::<BTreeMap<_, _>>();
@@ -576,6 +585,14 @@ fn build(workbook: &mut WorkbookInput, warnings: &mut Vec<ExportWarning>) -> Res
     workbook.sheets.extend(helpers); workbook.tables.extend(imported_tables);
     if cell_count > 0 { warnings.push(ExportWarning::new("XLSX_FORMULA_CALENDAR_VIEWS", format!("Imported formulas use {cell_count} sparse calendar-view cells ({bytes} admitted Rust projection bytes); source formulas and exact serials are preserved in a custom XML part. LET support, external Office edits and calendar edge cases require interoperability verification."))); }
     Ok(Some(source))
+}
+
+fn table_identity_source(table: &table::TableInput) -> Result<TableSource, ExportError> {
+    Ok(TableSource { name: table.name.clone(), table_id: table.id.clone(), sheet_id: table.sheet_id.clone(),
+        office_table_id: table.office_table_id.ok_or_else(|| ExportError::invalid("TABLE_SOURCE_INVALID: table has no prepared native identity"))?,
+        columns: table.columns.iter().map(|column| Ok(TableColumnSource { column_id: column.id.clone(),
+            office_column_id: column.office_column_id.ok_or_else(|| ExportError::invalid("TABLE_SOURCE_INVALID: column has no prepared native identity"))? }))
+            .collect::<Result<Vec<_>, ExportError>>()? })
 }
 
 fn helper_fingerprint(sheet: &SheetInput, tables: &[table::TableInput], sheets: &BTreeMap<String, String>, table_names: &BTreeMap<String, String>) -> Result<String, ExportError> {

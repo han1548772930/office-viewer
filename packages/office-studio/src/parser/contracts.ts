@@ -93,6 +93,12 @@ export interface FormulaCalendarTableDto {
   tableId: string
   officeTableId: number
   sheetId: string
+  /** Older provenance parts omit columns; native IDs never depend on position. */
+  columns?: FormulaCalendarTableColumnDto[]
+}
+export interface FormulaCalendarTableColumnDto {
+  columnId: string
+  officeColumnId: number
 }
 
 /** Native parser addresses precede stable domain table/row ID normalization. */

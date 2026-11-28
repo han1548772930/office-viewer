@@ -643,7 +643,7 @@ fn parse_workbook(
     } else {
         PivotSidecar::default()
     };
-    let table_sidecar = if format == "xlsx" {
+    let mut table_sidecar = if format == "xlsx" {
         crate::table_sidecar::TableSidecar::read(bytes)
     } else {
         crate::table_sidecar::TableSidecar::default()
@@ -735,6 +735,7 @@ fn parse_workbook(
         }
     }
     validation_sidecar.warn_unmatched_rules();
+    table_sidecar.restore_filters(&sheets);
     let mut payload = WorkbookPayload {
         formula_calendar_source: None,
         sheets,

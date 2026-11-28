@@ -58,6 +58,25 @@ async function editDateRule() { await openDate('A1'); await datePopup().getByRol
 // Long-list scenarios require a generated protocol-2 artifact with
 // create_validation_list_query. A missing build is a failure, never a JS skip.
 for (const [variant, dark] of [['classic', false], ['grid', true]]) {
+  test(`${variant}/dark=${dark}: hidden-search Rust lists gain initial keyboard focus and Enter commits virtual choices in source order`, async () => {
+    await appearance(variant, dark)
+    await page.evaluate(() => window.validationCellFixture.setDropdownUi({ showSearchOnDropdown: false, showEditOnDropdown: false }))
+    const source = await page.evaluate(() => window.validationCellFixture.longList())
+    await openList('B1'); const popup = listPopup(), first = popup.getByRole('checkbox', { name: source.first, exact: true }), last = popup.getByRole('checkbox', { name: source.last, exact: true })
+    await expect(popup.getByRole('textbox', { name: '搜索列表项', exact: true })).toHaveCount(0)
+    await expect(popup.getByRole('button', { name: '编辑数据验证', exact: true })).toHaveCount(0)
+    await expect(first).toBeFocused(); assert.ok(await popup.getByRole('checkbox').count() < 80)
+    await first.press('End'); await expect(last).toBeFocused(); await last.press('Enter')
+    await expect(last).toBeChecked(); await expect(popup).toBeVisible(); assert.equal((await value(0, 1)).value, source.last)
+    await last.press('Home'); await expect(first).toBeFocused(); await first.press('Enter')
+    await expect(first).toBeChecked(); assert.equal((await value(0, 1)).value, `${source.first},${source.last}`); assert.equal((await history()).undo, 2)
+    await closeList('B1'); await expect(grid()).toBeFocused()
+    await page.evaluate(() => window.validationCellFixture.undo()); assert.equal((await value(0, 1)).value, source.last)
+    await page.evaluate(() => window.validationCellFixture.redo()); await page.evaluate(() => window.validationCellFixture.reopen())
+    await openList('B1'); await expect(first).toBeChecked(); await first.press('End'); await expect(last).toBeChecked()
+    assert.equal((await value(0, 1)).value, `${source.first},${source.last}`)
+  }, { timeout: 60_000 })
+
   test(`${variant}/dark=${dark}: real Rust query plus virtual End/Home selection preserves color, history and internal reopen`, async () => {
     await appearance(variant, dark)
     const source = await page.evaluate(() => window.validationCellFixture.longList())
@@ -114,6 +133,54 @@ test('a real Worker progress callback switching sheets cancels the old query wit
 }, { timeout: 60_000 })
 
 for (const variant of ['classic', 'grid']) {
+  test(`${variant}: live search/edit visibility keeps composition, resets the hidden query and returns focus to a legal Ant control`, async () => {
+    await appearance(variant); await openList('B1')
+    const popup = listPopup(), search = popup.getByRole('textbox', { name: '搜索列表项', exact: true })
+    await search.fill('Green'); await expect(popup.getByRole('checkbox', { name: 'Green, dark', exact: true })).toBeVisible()
+    const before = await snapshot(), oldHistory = await history()
+    await search.dispatchEvent('compositionstart', { data: '绿' })
+    await page.evaluate(() => window.validationCellFixture.setDropdownUi({ showSearchOnDropdown: false, showEditOnDropdown: false }))
+    await expect(search).toBeVisible(); await expect(search).toHaveValue('Green')
+    await expect(popup.getByRole('button', { name: '编辑数据验证', exact: true })).toHaveCount(0)
+    await search.press('Escape'); await expect(popup).toBeVisible()
+    await search.dispatchEvent('compositionend', { data: '绿' }); await expect(search).toHaveCount(0)
+    const red = popup.getByRole('checkbox', { name: 'Red', exact: true })
+    await expect(red).toBeFocused(); await expect(popup.getByRole('checkbox')).toHaveCount(5)
+    await page.evaluate(() => window.validationCellFixture.setDropdownUi({ showSearchOnDropdown: true, showEditOnDropdown: true }))
+    await expect(search).toBeFocused(); await expect(search).toHaveValue('')
+    await expect(popup.getByRole('button', { name: '编辑数据验证', exact: true })).toBeEnabled()
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), oldHistory)
+    await closeList('B1'); await expect(grid()).toBeFocused()
+  })
+
+  test(`${variant}: a hidden-search single-select checkbox commits Enter once and closes through the shared history and focus path`, async () => {
+    await appearance(variant)
+    await page.evaluate(() => window.validationCellFixture.setDropdownUi({ showSearchOnDropdown: false, showEditOnDropdown: false }))
+    await openList('B2'); const popup = listPopup('B2'), first = popup.getByRole('checkbox', { name: '1', exact: true }), last = popup.getByRole('checkbox', { name: 'Green, dark', exact: true })
+    await expect(first).toBeFocused(); await first.press('End'); await expect(last).toBeFocused(); await last.press('Enter')
+    await expect(popup).toBeHidden(); await expect(grid()).toBeFocused()
+    assert.equal((await value(1, 1)).value, 'Green, dark'); assert.equal((await history()).undo, 1)
+    await page.evaluate(() => window.validationCellFixture.undo()); assert.equal((await value(1, 1)).value, '1')
+    await page.evaluate(() => window.validationCellFixture.redo()); await page.evaluate(() => window.validationCellFixture.reopen())
+    await openList('B2'); await expect(last).toBeChecked(); assert.equal((await value(1, 1)).value, 'Green, dark')
+  })
+
+  test(`${variant}: clipping a composing popup retires its Canvas input lease and permits a fresh programmatic show without content changes`, async () => {
+    await appearance(variant); await openList('B1')
+    const popup = listPopup(), search = popup.getByRole('textbox', { name: '搜索列表项', exact: true }), oldInput = await search.elementHandle()
+    await search.fill('Green'); await search.dispatchEvent('compositionstart', { data: '绿' })
+    const before = await snapshot(), oldHistory = await history()
+    await grid().evaluate(element => { element.scrollTop = 900; element.dispatchEvent(new Event('scroll')) })
+    await expect(popup).toBeHidden(); assert.equal(await page.evaluate(() => window.validationCellFixture.activeDropdown()), null)
+    await oldInput.evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '绿' })))
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), oldHistory)
+    await grid().evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
+    assert.equal(await page.evaluate(() => window.validationCellFixture.showDropdown(0, 1)), true)
+    await expect(popup).toBeVisible(); await expect(search).toHaveValue(''); await expect(search).toBeFocused()
+    await expect(popup.getByRole('checkbox', { name: 'Red', exact: true })).toBeEnabled()
+    assert.deepEqual(await snapshot(), before); assert.deepEqual(await history(), oldHistory)
+  })
+
   test(`${variant}: calendar commits one serial plus format, preserves hidden time, and survives undo/redo and internal reopen`, async () => {
     await appearance(variant); await openDate('A1'); await expect(date()).toHaveValue('1900-02-28')
     await changePicker(date(), '1900-03-01'); await confirm('A1').click(); await expect(datePopup()).toBeHidden(); await expect(grid()).toBeFocused()

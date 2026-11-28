@@ -128,7 +128,8 @@ function tableForEdit(table: SheetTableModel, edit: SheetAxisEdit): SheetTableMo
     && table.range.startRow < edit.start + edit.count && table.range.endRow >= edit.start + edit.count) {
     throw new Error(`移动会将表格“${table.name}”的表头与数据拆开。请一起移动表格。`)
   }
-  const next = { ...table, range, columns: transformedTableColumns(table, range, edit), autoFilter: transformSheetAutoFilterForAxisEdit(table.autoFilter, edit) }
+  const next = { ...table, range, columns: transformedTableColumns(table, range, edit),
+    autoFilter: table.autoFilter === null ? null : transformSheetAutoFilterForAxisEdit(table.autoFilter, edit) }
   const interval = sheetRangeAxisInterval(table.range, edit.axis), copies = copiedRanges([table.range], edit)
   if (edit.kind !== 'copy' || interval.start < edit.start || interval.end >= edit.start + edit.count || !copies[0]) return [next]
   const copied = copies[0]

@@ -311,6 +311,16 @@ function normalizePivotTables(value: unknown, sheets: SpreadsheetSheet[], unitId
 function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTableModel[] {
   let sourceBytes = 0
   const positiveId = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff ? value : undefined
+  const optionalText = (raw: Record<string, unknown>, key: string): string | null | undefined => {
+    const value = raw[key]
+    if (value !== undefined && value !== null && typeof value !== 'string') throw new TypeError(`TABLE_SOURCE_INVALID: ${key} 必须是文本或空值。`)
+    return value
+  }
+  const optionalBoolean = (raw: Record<string, unknown>, key: string): boolean | undefined => {
+    const value = raw[key]
+    if (value !== undefined && typeof value !== 'boolean') throw new TypeError(`TABLE_SOURCE_INVALID: ${key} 必须是布尔值。`)
+    return value
+  }
   return array(value).flatMap((entry): SheetTableModel[] => {
     const raw = record(entry)
     const sheet = sheets[finite(raw.sheetIndex)] ?? sheets.find(candidate => candidate.name === text(raw.sheetName))
@@ -323,7 +333,14 @@ function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTable
       const item = record(column)
       const name = text(item.name)
       const officeColumnId = positiveId(item.officeColumnId)
-      return name ? [{ id: text(item.id) || `${text(raw.id)}-column-${index + 1}`, name, ...(officeColumnId ? { officeColumnId } : {}) }] : []
+      return name ? [{ id: text(item.id) || `${text(raw.id)}-column-${index + 1}`, name, ...(officeColumnId ? { officeColumnId } : {}),
+        ...(item.formula !== undefined ? { formula: optionalText(item, 'formula') } : {}),
+        ...(item.formulaIsArray !== undefined ? { formulaIsArray: optionalBoolean(item, 'formulaIsArray') } : {}),
+        ...(item.totalsRowFormula !== undefined ? { totalsRowFormula: optionalText(item, 'totalsRowFormula') } : {}),
+        ...(item.totalsRowFunction !== undefined ? { totalsRowFunction: optionalText(item, 'totalsRowFunction') } : {}),
+        ...(item.totalsRowLabel !== undefined ? { totalsRowLabel: optionalText(item, 'totalsRowLabel') } : {}),
+        ...(item.showFilterButton !== undefined ? { showFilterButton: optionalBoolean(item, 'showFilterButton') } : {}),
+      }] : []
     })
     if (!sheet || range.endCol < range.startCol || range.endRow < range.startRow || !text(raw.name) || !columns.length) return []
     const source = record(raw.officeSource)
@@ -340,6 +357,11 @@ function normalizeTables(value: unknown, sheets: SpreadsheetSheet[]): SheetTable
       id: text(raw.id) || text(raw.name), name: text(raw.name), sheetId: sheet.id, range, columns,
       showHeaderRow: raw.showHeaderRow !== false, showTotalsRow: raw.showTotalsRow === true,
       styleName: text(raw.styleName) || 'TableStyleMedium2',
+      ...(raw.showFirstColumn !== undefined ? { showFirstColumn: optionalBoolean(raw, 'showFirstColumn') } : {}),
+      ...(raw.showLastColumn !== undefined ? { showLastColumn: optionalBoolean(raw, 'showLastColumn') } : {}),
+      ...(raw.showRowStripes !== undefined ? { showRowStripes: optionalBoolean(raw, 'showRowStripes') } : {}),
+      ...(raw.showColumnStripes !== undefined ? { showColumnStripes: optionalBoolean(raw, 'showColumnStripes') } : {}),
+      ...(raw.autoFilter === null ? { autoFilter: null } : raw.autoFilter !== undefined ? { autoFilter: normalizeWorkbookAutoFilter(raw.autoFilter) } : {}),
       ...(officeTableId ? { officeTableId } : {}), ...(officeSheetId ? { officeSheetId } : {}), ...(officeSource ? { officeSource } : {}),
     }]
   })

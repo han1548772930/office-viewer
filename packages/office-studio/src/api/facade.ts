@@ -197,6 +197,8 @@ import { FDocumentLatex, documentLatexFormulaTargets, documentLatexRangeAt, find
 import { resolveDocumentSegmentHost } from './document-segments'
 import { registerDocumentLatexTemplateEditor, type DocumentLatexTemplateEditorHandle } from './document-latex-template-editors'
 import { registerDocumentLatexPopupEditor, type DocumentLatexPopupEditor, type DocumentLatexPopupEditorHandle } from './document-latex-popup-editors'
+import { registerDocumentHeaderFooterEditor, type DocumentHeaderFooterEditor, type DocumentHeaderFooterEditorHandle } from './document-header-footer-editors'
+import { bindWorkbookCommandGuard } from './workbook-command-guards'
 import { DOCUMENT_LATEX_POPUP_OPERATIONS, type DocumentLatexPopupOperationRequest } from '../features/document/controllers/document-latex-popup'
 import { DOCUMENT_LATEX_TEMPLATE_OPERATION } from '../features/document/latex/latex-templates'
 import { documentBlockHostId } from '../features/document/model/document-block-host'
@@ -363,7 +365,13 @@ export type PivotTableAnchorInfo = PivotTableAnchorInput
 export type ChartInfo = ChartConfig
 export type ChartPatch = Partial<Omit<ChartModel, 'id' | 'sheetId' | 'revision'>>
 export type SlicerInfo = Omit<SlicerCreateInput, 'id' | 'unitId' | 'hostSheetId'> & { id?: string }
-export interface SortRangeApiOptions extends SortRangeOptions { signal?: AbortSignal; timeoutMs?: number; onProgress?: (progress: import('../compute/protocol.ts').ComputeProgress) => void }
+export interface SortRangeApiOptions extends SortRangeOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  onProgress?: (progress: import('../compute/protocol.ts').ComputeProgress) => void
+  /** Local workbench owner/selection guard; never serialized in the command. */
+  assertCurrent?: () => void
+}
 export type DataValidationRuleInput = SheetDataValidationDraft
 export type DataValidationRule = SheetDataValidationRule
 export type DataValidationError = SheetValidationIssue
@@ -1011,9 +1019,22 @@ export class FWorksheet {
   }
   getFilteredRows(): number[] { return getFilteredRows(this.sheet()) }
   async sortRange(range: FRange | FRangeCoordinates | string, criteria: readonly SheetSortCriterion[], options: SortRangeApiOptions = {}): Promise<this> {
+    options.signal?.throwIfAborted()
+    options.assertCurrent?.()
     const normalized = this.ownedRange(range)
     const sheet = this.sheet()
     const expectedRevision = this.api.getWorkbookRevision(this.unitId)
+    const generation = this.api.editor.history.captureSavepoint(this.unitId).generation
+    const userId = this.api.currentUserId
+    const assertCurrent = (): void => {
+      options.signal?.throwIfAborted()
+      options.assertCurrent?.()
+      if (this.api.currentUserId !== userId || this.sheet() !== sheet || this.api.getWorkbookRevision(this.unitId) !== expectedRevision
+        || this.api.editor.history.captureSavepoint(this.unitId).generation !== generation) {
+        throw new Error('排序的工作簿、用户或内容版本已更改，请重新执行。')
+      }
+    }
+    assertCurrent()
     const numeric = getNumericSortColumns(sheet, normalized, criteria, options)
     let order: number[] | undefined
     if (numeric && numeric.rowCount > 0) {
@@ -1024,14 +1045,17 @@ export class FWorksheet {
         timeoutMs: options.timeoutMs,
         onProgress: options.onProgress,
       })
+      assertCurrent()
       if (result) {
         const dataRowCount = normalized.endRow - normalized.startRow + 1 - (options.hasHeader ? 1 : 0)
         order = expandVisibleSortOrder(dataRowCount, numeric.destinationOffsets, Array.from(result.indices))
       }
     }
-    if (this.sheet() !== sheet || this.api.getWorkbookRevision(this.unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
+    assertCurrent()
     order ??= getSortedRowOrder(sheet, normalized, criteria, options)
-    this.api.executeCommandSync('sheet.command.sort-range', { unitId: this.unitId, sheetId: this.id, range: normalized, criteria: [...criteria], options: { hasHeader: options.hasHeader, locale: options.locale }, order, expectedRevision })
+    assertCurrent()
+    this.api.executeCommandSync('sheet.command.sort-range', bindWorkbookCommandGuard({ unitId: this.unitId, sheetId: this.id, range: normalized,
+      criteria: [...criteria], options: { hasHeader: options.hasHeader, locale: options.locale }, order, expectedRevision }, assertCurrent))
     return this
   }
   getPivotTableByCell(row: number, col: number): FPivotTable | null {
@@ -3331,6 +3355,10 @@ export class FDocument {
     return registerDocumentLatexPopupEditor(this.api, this.id, editor)
   }
   bindImageEditor(editor: DocumentImageEditor): DocumentImageEditorHandle { return registerDocumentImageEditor(this.api, this.id, editor) }
+  /** Local UI owner for story navigation and the fixed desktop context ribbon. */
+  bindHeaderFooterEditor(editor: DocumentHeaderFooterEditor): DocumentHeaderFooterEditorHandle {
+    return registerDocumentHeaderFooterEditor(this.api, this.id, editor)
+  }
   insertImage(options: DocumentImageInsertOptions): Promise<FDocumentImage | null> { return insertDocumentImage(this, options) }
   getImage(imageId: string, segmentId = ''): FDocumentImage | null { return getDocumentImage(this, imageId, segmentId) }
   getImages(segmentId = ''): FDocumentImage[] { return getDocumentImages(this, segmentId) }

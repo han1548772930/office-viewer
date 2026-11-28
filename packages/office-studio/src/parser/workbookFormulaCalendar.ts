@@ -3,6 +3,7 @@ import { cloneModel } from '../domain/serialization.ts'
 import { conditionalFormatSerializedSize, conditionalFormatUtf8Size } from '../features/conditional-formatting/conditional-format-source-budget.ts'
 import { formulaCalendarSerial } from '../features/formula/formula-import-context.ts'
 import type { FormulaCalendarSourceDto } from './contracts.ts'
+import { restoreWorkbookTableIdentities } from './workbookTableIdentity.ts'
 
 const byteLimit = 16 * 1024 * 1024
 const cellLimit = 250_000
@@ -115,7 +116,7 @@ function validateSource(value: unknown): asserts value is FormulaCalendarSourceD
   fields(root, ['version', 'date1904', 'sheets', 'helpers', 'tables'])
   if (root.version !== 1) invalid('unsupported source version')
   const date1904 = boolean(root.date1904, 'missing workbook calendar')
-  const sheets = list(root.sheets, 1024, 'too many author worksheets')
+  const sheets = list(root.sheets, 16_384, 'too many author worksheets')
   const helpers = list(root.helpers, 2049, 'too many calculation worksheets')
   const tables = list(root.tables, 24_576, 'too many table identities')
   const names = new Set<string>(), ids = new Set<string>(), nativeIds = new Set<number>()
@@ -190,11 +191,23 @@ function validateSource(value: unknown): asserts value is FormulaCalendarSourceD
   const tableNames = new Set<string>(), tableIds = new Set<string>(), nativeTableIds = new Set<number>()
   for (const value of tables) {
     const table = plainObject(value, 'invalid table identity')
-    fields(table, ['name', 'tableId', 'officeTableId', 'sheetId'])
-    const name = string(table.name, 255, 'invalid table name'), id = string(table.tableId, 512, 'invalid table ID')
+    fields(table, ['name', 'tableId', 'officeTableId', 'sheetId', 'columns'])
+    const name = string(table.name, 1020, 'invalid table name'), id = string(table.tableId, 512, 'invalid table ID')
+    if (name.length > 255) invalid('table name exceeds 255 UTF-16 units')
     const nativeId = uint(table.officeTableId, 0xffff_ffff, 'invalid native table ID', 1)
     if (!ids.has(string(table.sheetId, 512, 'invalid table owner')) || tableNames.has(name.toLowerCase()) || tableIds.has(id) || nativeTableIds.has(nativeId)) invalid('duplicate or missing table identity')
     tableNames.add(name.toLowerCase()); tableIds.add(id); nativeTableIds.add(nativeId)
+    if (own(table, 'columns')) {
+      const ids = new Set<string>(), nativeIds = new Set<number>()
+      for (const value of list(table.columns, 16_384, 'too many table column identities')) {
+        const column = plainObject(value, 'invalid table column identity')
+        fields(column, ['columnId', 'officeColumnId'])
+        const id = string(column.columnId, 512, 'invalid table column ID')
+        const nativeId = uint(column.officeColumnId, 0xffff_ffff, 'invalid native table column ID', 1)
+        if (ids.has(id) || nativeIds.has(nativeId)) invalid('duplicate table column identity')
+        ids.add(id); nativeIds.add(nativeId)
+      }
+    }
   }
 }
 
@@ -289,18 +302,7 @@ export function applyWorkbookFormulaCalendarSource(workbook: WorkbookModel, rawS
       officeSheetId: helper.officeSheetId, fingerprint: helper.fingerprint,
       ...(helper.sourceSheetId ? { sourceSheetId: idMap.get(helper.sourceSheetId) } : {}) } }
   }
-  const nativeTables = Array.isArray(rawTables) ? rawTables : []
-  const tableSources = new Map(source.tables.map(table => [table.officeTableId, table]))
-  const tableIds = new Map<string, string>()
-  for (const [index, table] of (workbook.tables ?? []).entries()) {
-    const raw = nativeTables[index]
-    const nativeId = table.officeTableId ?? (object(raw) && typeof raw.officeTableId === 'number' ? raw.officeTableId : undefined)
-    const saved = nativeId !== undefined ? tableSources.get(nativeId) : undefined
-    if (!saved || saved.name.toLowerCase() !== table.name.toLowerCase() || idMap.get(saved.sheetId) !== table.sheetId) continue
-    tableIds.set(table.id, saved.tableId); table.id = saved.tableId
-  }
-  for (const slicer of workbook.slicers ?? []) if (slicer.tableId) slicer.tableId = tableIds.get(slicer.tableId) ?? slicer.tableId
-  for (const cache of workbook.slicerCaches ?? []) if (cache.source.kind === 'table') cache.source.tableId = tableIds.get(cache.source.tableId) ?? cache.source.tableId
+  restoreWorkbookTableIdentities(workbook, rawTables, source.tables, idMap)
   const before = workbook.sheets
   workbook.sheets = before.filter(sheet => !removable.has(sheet.id))
   workbook.tables = workbook.tables?.filter(table => !removable.has(table.sheetId))
