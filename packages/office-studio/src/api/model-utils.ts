@@ -4,6 +4,8 @@ import {
   createBlankWorkbook,
   createCell,
   defaultCellStyle,
+  DEFAULT_SHEET_ROW_COUNT,
+  DEFAULT_SHEET_COLUMN_COUNT,
   type CellScalar,
   type CellStyle,
   type SheetCellStylePatch,
@@ -58,6 +60,8 @@ export function ensureWorkbookId(model: WorkbookModel): WorkbookModel {
     sheet.id ||= randomId(`sheet-${index + 1}`)
     sheet.name ||= `Sheet${index + 1}`
     sheet.cells ||= {}
+    sheet.rowCount ??= DEFAULT_SHEET_ROW_COUNT
+    sheet.columnCount ??= DEFAULT_SHEET_COLUMN_COUNT
     sheet.mergedRanges ||= []
     sheet.columnWidths ||= {}
     sheet.rowHeights ||= {}
@@ -155,8 +159,8 @@ function normalizeSheet(input: Partial<SpreadsheetSheet> & Record<string, unknow
   if (input.worksheetProtection && typeof input.worksheetProtection === 'object') {
     setWorksheetProtectionRule(sheet, input.worksheetProtection)
   }
-  sheet.rowCount = numberOrUndefined(input.rowCount)
-  sheet.columnCount = numberOrUndefined(input.columnCount)
+  sheet.rowCount = numberOrUndefined(input.rowCount) ?? DEFAULT_SHEET_ROW_COUNT
+  sheet.columnCount = numberOrUndefined(input.columnCount) ?? DEFAULT_SHEET_COLUMN_COUNT
   sheet.visible = input.visible !== false
   sheet.showGridlines = input.showGridlines !== false
   if (input.defaultStyle !== undefined) sheet.defaultStyle = normalizeSheetStyleInput(input.defaultStyle)

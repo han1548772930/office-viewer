@@ -10,6 +10,7 @@
     "build:compute": "wasm-pack build crates/office-compute --target web --release --out-dir ../../public/compute --out-name office_compute",
     "build:writer": "wasm-pack build crates/office-writer --target web --release --out-dir ../../public/wasm-writer --out-name office_writer",
     "build:bridge": "wasm-pack build crates/office-wasm-bridge --target web --release --out-dir ../../public/wasm-bridge --out-name office_wasm_bridge",
+    "build:wasm:all": "pnpm run build:wasm && pnpm run build:compute && pnpm run build:writer && pnpm run build:bridge",
     "generate:document-characters": "node scripts/generate-document-emojis.mjs",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:components": "vitest run --config vitest.components.config.ts",
@@ -24,7 +25,7 @@
     "test:browser:charts": "playwright test --config tests/browser/chart-workbench.playwright.config.ts",
     "test:browser:compute": "playwright test --config tests/browser/playwright.config.ts",
     "test:browser:production": "playwright test --config tests/browser/production-office-io.playwright.config.ts",
-    "dev": "pnpm --filter @office-studio/workbench dev",
+    "dev": "pnpm run build:wasm:all && pnpm --filter @office-studio/workbench dev",
     "preview": "pnpm --filter @office-studio/workbench preview"
   },
   "dependencies": {
@@ -43,6 +44,7 @@
     "typescript": "~6.0.3",
     "vite": "^8.3.6",
     "vitest": "5.1.1",
-    "vue-tsc": "^3.3.14"
+    "vue-tsc": "^3.3.14",
+    "wasm-pack": "0.15.1"
   }
 }

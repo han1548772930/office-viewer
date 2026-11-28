@@ -4,10 +4,12 @@ import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 let server, api, panel
+let dataRange
 beforeAll(async () => {
   server = await createServer({ configFile: resolve('vite.config.ts'), root: process.cwd(), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' })
   api = await server.ssrLoadModule('/packages/office-studio/src/index.ts')
   panel = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-data-panel-state.ts')
+  dataRange = await server.ssrLoadModule('/packages/office-studio/src/features/sheet-sort-filter/sheet-data-range.ts')
 })
 afterAll(async () => { await server?.close() })
 function setup() {
@@ -16,6 +18,31 @@ function setup() {
   const range = { startRow: 0, startCol: 0, endRow: 4, endCol: 2 }
   return { studio, officeApi, workbook, sheet, range, target: { unitId: workbook.getId(), sheetId: sheet.getSheetId() } }
 }
+
+test('public empty cell bodies retain data-region presence across snapshot import, clear, API writes and reopen', () => {
+  const studio = new api.OfficeStudio(), officeApi = api.FOffice.newAPI(studio)
+  try {
+    const book = officeApi.createWorkbook({ id: 'public-body-region', sheetOrder: ['data'], sheets: { data: {
+      id: 'data', name: 'Data', rowCount: 30, columnCount: 10,
+      cellData: { 0: { 0: { v: 'head' } }, 1: { 0: { p: {} } }, 2: { 0: { p: { body: { dataStream: '\r\n' } } } },
+        3: { 0: { v: null, s: { bg: { rgb: '#ffeeaa' } } } } },
+    } } })
+    const source = { startRow: 0, endRow: 0, startCol: 0, endCol: 0 }, sheet = book.getActiveSheet()
+    const model = () => studio.getWorkbookModel(book.getId()).sheets[0]
+    assert.equal(dataRange.expandSheetDataRange(model(), source).endRow, 2)
+    assert.equal(dataRange.sheetCellHasData(model().cells['3:0']), false)
+    const publicSnapshot = book.getSnapshot(), reopened = officeApi.createWorkbook({ ...publicSnapshot, id: 'public-body-region-reopened' })
+    assert.equal(dataRange.expandSheetDataRange(studio.getWorkbookModel(reopened.getId()).sheets[0], source).endRow, 2)
+    sheet.activate(); sheet.getRange('A2').setValue({ p: null, v: null })
+    assert.equal(dataRange.expandSheetDataRange(model(), source).endRow, 0)
+    sheet.getRange('A2').setValue({ p: {} })
+    assert.equal(dataRange.expandSheetDataRange(model(), source).endRow, 2)
+    sheet.getRange('A2').clearContent()
+    assert.equal(dataRange.sheetCellHasData(model().cells['1:0']), false)
+    const nativeReopened = officeApi.createWorkbook({ ...book.save(), id: 'public-body-region-native-reopened' })
+    assert.equal(dataRange.expandSheetDataRange(studio.getWorkbookModel(nativeReopened.getId()).sheets[0], source).endRow, 0)
+  } finally { studio.dispose() }
+})
 
 test('panel ranges validate explicit worksheet bounds and preserve real header labels', () => {
   const { studio, workbook, sheet, range } = setup()
@@ -67,6 +94,47 @@ test('configuring multiple filter columns is one undoable command and retains so
     const reopened = new api.OfficeStudio({ workbook: saved })
     assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [1, 2, 4])
     reopened.dispose()
+  } finally { studio.dispose() }
+})
+
+test('color filtering retains source styles, content history, redo and native snapshot reopening', () => {
+  const { studio, workbook, sheet, range, target } = setup()
+  try {
+    sheet.getRange('B2').setBackground('#ff0000')
+    sheet.getRange('B4').setBackground('#ff0000')
+    const source = structuredClone(studio.getWorkbookModel(workbook.getId()).sheets[0].cells)
+    const depth = studio.editor.history.units[workbook.getId()].undo.length
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range,
+      columns: { 1: { kind: 'color', cellFillColors: ['rgb(255,0,0)'] } }, expectedRevision: studio.getWorkbookRevision(workbook.getId()) })
+    assert.deepEqual(sheet.getFilteredRows(), [2, 4])
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].cells, source)
+    assert.equal(studio.editor.history.units[workbook.getId()].undo.length, depth + 1)
+    workbook.undo(); assert.equal(sheet.getAutoFilter(), null)
+    workbook.redo(); assert.deepEqual(sheet.getFilteredRows(), [2, 4])
+    const reopened = new api.OfficeStudio({ workbook: JSON.parse(JSON.stringify(workbook.save())) })
+    try { assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [2, 4]) }
+    finally { reopened.dispose() }
+  } finally { studio.dispose() }
+})
+
+test('a rejected merged group crossing the filter end survives content history and native snapshot reopening', () => {
+  const { studio, workbook, sheet, target } = setup()
+  try {
+    sheet.getRange('A2:A5').merge({ isForceMerge: true })
+    const cells = structuredClone(studio.getWorkbookModel(workbook.getId()).sheets[0].cells)
+    const depth = studio.editor.history.units[workbook.getId()].undo.length
+    studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target,
+      range: { startRow: 0, endRow: 2, startCol: 0, endCol: 1 }, columns: { 0: { kind: 'values', selectedItems: [] } },
+      expectedRevision: studio.getWorkbookRevision(workbook.getId()) })
+    assert.deepEqual(sheet.getFilteredRows(), [1, 2, 3, 4])
+    assert.equal(sheet.getAutoFilter().range.endRow, 2)
+    assert.deepEqual(studio.getWorkbookModel(workbook.getId()).sheets[0].cells, cells)
+    assert.equal(studio.editor.history.units[workbook.getId()].undo.length, depth + 1)
+    workbook.undo(); assert.equal(sheet.getAutoFilter(), null)
+    workbook.redo(); assert.deepEqual(sheet.getFilteredRows(), [1, 2, 3, 4])
+    const reopened = new api.OfficeStudio({ workbook: JSON.parse(JSON.stringify(workbook.save())) })
+    try { assert.deepEqual(api.FOffice.newAPI(reopened).getActiveWorkbook().getActiveSheet().getFilteredRows(), [1, 2, 3, 4]) }
+    finally { reopened.dispose() }
   } finally { studio.dispose() }
 })
 
@@ -171,5 +239,51 @@ test('multi-key sort validates its fields, preserves stable payloads and uses on
     assert.deepEqual(sheet.getRange('A1:C5').getValues(), before)
     workbook.redo()
     assert.equal(sheet.getRange('C2').getValue(), 'c')
+  } finally { studio.dispose() }
+})
+
+test('a numeric computation that resolves after cancellation cannot fall back to synchronous sorting or create history', async () => {
+  const { studio, workbook, sheet } = setup()
+  try {
+    const before = JSON.stringify(studio.getWorkbookModel(workbook.getId())), depth = studio.editor.history.units[workbook.getId()].undo.length
+    const controller = new AbortController()
+    let release
+    studio.numericIndexService.sortRows = () => new Promise(resolve => { release = resolve })
+    const pending = sheet.sortRange('B2:B5', [{ column: 1, direction: 'descending' }], { signal: controller.signal })
+    assert.equal(typeof release, 'function'); controller.abort(); release(undefined)
+    await assert.rejects(pending, error => error?.name === 'AbortError')
+    assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), before)
+    assert.equal(studio.editor.history.units[workbook.getId()].undo.length, depth)
+  } finally { studio.dispose() }
+})
+
+test('sort host guards are checked again after numeric computation and inside before-command dispatch', async () => {
+  for (const stage of ['computed', 'before-command']) {
+    const { studio, workbook, sheet } = setup()
+    try {
+      const before = JSON.stringify(studio.getWorkbookModel(workbook.getId())), depth = studio.editor.history.units[workbook.getId()].undo.length
+      let current = true, release
+      studio.numericIndexService.sortRows = () => new Promise(resolve => { release = resolve })
+      const guard = () => { if (!current) throw new Error('host retired') }
+      const subscription = studio.events.addEvent('BeforeCommandExecute', event => { if (stage === 'before-command' && event.id === 'sheet.command.sort-range') current = false })
+      const pending = sheet.sortRange('B2:B5', [{ column: 1, direction: 'descending' }], { assertCurrent: guard })
+      if (stage === 'computed') current = false
+      release(undefined); await assert.rejects(pending, /host retired/); subscription.dispose()
+      assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), before)
+      assert.equal(studio.editor.history.units[workbook.getId()].undo.length, depth)
+    } finally { studio.dispose() }
+  }
+})
+
+test('filter configuration rejects a before-command switch to a different workbook without publishing a stale mutation', () => {
+  const { studio, officeApi, workbook, range, target } = setup()
+  try {
+    const other = officeApi.createWorkbook({ id: 'filter-neighbor' }, { makeCurrent: false })
+    const before = JSON.stringify(studio.getWorkbookModel(workbook.getId())), depth = studio.editor.history.units[workbook.getId()].undo.length
+    const subscription = studio.events.addEvent('BeforeCommandExecute', event => { if (event.id === panel.CONFIGURE_SHEET_FILTER_COMMAND) studio.activateWorkbook(other.getId()) })
+    assert.throws(() => studio.executeCommandSync(panel.CONFIGURE_SHEET_FILTER_COMMAND, { ...target, range, columns: {} }))
+    subscription.dispose()
+    assert.equal(JSON.stringify(studio.getWorkbookModel(workbook.getId())), before)
+    assert.equal(studio.editor.history.units[workbook.getId()].undo.length, depth)
   } finally { studio.dispose() }
 })

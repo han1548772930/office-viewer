@@ -6,18 +6,15 @@
 
 先按 [AGENTS.md](AGENTS.md) 顺序阅读项目标准、参考规则、功能清单与渲染计算标准。JavaScript 包管理只使用 pnpm。
 
-准备支持 `--experimental-strip-types` 的 Node.js、pnpm、Rust 工具链和 wasm-pack。首次运行需生成项目内的三个 WASM 模块：
+准备支持 `--experimental-strip-types` 的 Node.js、pnpm 与 Rust 工具链。`wasm-pack` 已固定为项目开发依赖，`pnpm install` 会安装对应工具，无需全局安装。`pnpm dev` 会先依次打包 parser、compute、writer 和 bridge 四个 WASM 模块，全部成功后再启动开发服务器：
 
 ```powershell
 pnpm install --frozen-lockfile
 rustup target add wasm32-unknown-unknown
-pnpm build:wasm
-pnpm build:compute
-pnpm build:writer
 pnpm dev
 ```
 
-PowerShell 若禁止执行 `pnpm.ps1`，使用 `pnpm.cmd` 执行相同命令。开发工作台位于 `examples/workbench`，默认端口 5174。WASM 输出分别放在 `public/wasm`、`public/compute` 和 `public/wasm-writer`；缺少这些构建产物时，真实文件导入、计算或导出不能完成。
+PowerShell 若禁止执行 `pnpm.ps1`，使用 `pnpm.cmd` 执行相同命令。开发工作台位于 `examples/workbench`，默认端口 5174。WASM 输出分别放在 `public/wasm`、`public/compute`、`public/wasm-writer` 和 `public/wasm-bridge`；任一模块构建失败都会中止启动。单独打包全部 WASM 可运行 `pnpm build:wasm:all`，各模块原有独立构建命令仍可使用。
 
 ## 代码位置
 
@@ -25,7 +22,7 @@ PowerShell 若禁止执行 `pnpm.ps1`，使用 `pnpm.cmd` 执行相同命令。�
 - `packages/office-studio/src/domain`、`parser`：领域模型、序列化及解析 DTO 归一化。
 - `packages/office-studio/src/features`：公式、筛选排序、图表、透视、切片器和文档业务逻辑。
 - `packages/office-studio/src/rendering`、`components`：绘制后端、视口、输入桥和工作台组件。
-- `crates/office-parser`、`office-compute`、`office-writer`：项目内的解析、计算与真实 Office 写出模块。
+- `crates/office-parser`、`office-compute`、`office-writer`、`office-wasm-bridge`：项目内的解析、计算、真实 Office 写出与浏览器平台模块；读写共享逻辑位于 `office-io-common`。
 - `examples/workbench`：可运行的工作台集成示例。
 
 ## 验证

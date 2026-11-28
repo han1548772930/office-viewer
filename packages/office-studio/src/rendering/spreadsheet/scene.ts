@@ -11,6 +11,7 @@ import { createSheetCellTextCommands } from './cell-text.ts'
 import { createSheetBorderLines as createBorderLines } from './borders.ts'
 import { sparklineCommandsForCell, type SparklineRenderContext } from '../../features/sparkline/sparkline-render.ts'
 import { conditionalFormatStyleAt } from '../../features/conditional-formatting/conditional-formatting.ts'
+import { SHEET_FILTER_ICON_SIZE } from '../../features/sheet-sort-filter/sheet-filter-header.ts'
 import { conditionalIconPreset } from '../../features/conditional-formatting/conditional-icon-presets.ts'
 import { evaluateFormula } from '../../features/formula/formula-engine.ts'
 import { conditionalFormatFormulaAt } from '../../features/conditional-formatting/conditional-format-formulas.ts'
@@ -194,20 +195,24 @@ export function createSpreadsheetScene(geometry: SpreadsheetGeometry, viewport: 
       sheetNumberFormatPreviewPatternAt(options.numberFormatPreview, row, column))
     const hideValue = Boolean(conditionalStyle.dataBar && !conditionalStyle.dataBar.showValue || conditionalStyle.icon && !conditionalStyle.icon.showValue)
     const text = hideValue ? '' : presentation.text
+    const filter = geometry.sheet.autoFilter
+    const filterSpace = filter && row === filter.range.startRow && column >= filter.range.startCol && column <= filter.range.endCol
+      ? SHEET_FILTER_ICON_SIZE * z : 0
+    const contentRect = filterSpace ? { ...rect, width: Math.max(0, rect.width - filterSpace) } : rect
     if (search && text.toLocaleLowerCase().includes(search) && !foregroundOnly) commands.push({ kind: 'rect', ...rect, fill: 'rgba(250,204,21,0.28)', clip })
     const validationTags = !hideValue && (!options.canViewCell || options.canViewCell(row, column))
       ? createSheetValidationTagCommands(validationRule, { ...cell, value: cell?.value ?? '', color: conditionalStyle.fontColor ?? cell?.color,
         bold: conditionalStyle.bold ?? cell?.bold, italic: conditionalStyle.italic ?? cell?.italic,
-        underline: conditionalStyle.underline ?? cell?.underline, strike: conditionalStyle.strike ?? cell?.strike }, rect, clip, z,
+        underline: conditionalStyle.underline ?? cell?.underline, strike: conditionalStyle.strike ?? cell?.strike }, contentRect, intersectRect(clip, contentRect), z,
         options.validationTagTheme ?? { fill: '#f0f2f5', text: '#1f2937' }, undefined, validationOptions) : undefined
     if (validationTags) foreground.push(...validationTags)
     else if (!options.checkboxRenderable?.(row, column) && (text || !hideValue && presentation.runs?.some(run => run.kind === 'fill' && run.character.trim()))) {
       const align = sheetCellTextAlignment(cell)
       const iconPadding = conditionalIcon ? 18 * z : 0
       const arrowSpace = sheetValidationCellArrowSpace(validationRule, z)
-      const textRect = arrowSpace ? { ...rect, width: Math.max(0, rect.width - arrowSpace) } : rect
+      const textRect = arrowSpace ? { ...contentRect, width: Math.max(0, contentRect.width - arrowSpace) } : contentRect
       let start = rect.x + 3 * z + iconPadding, end = textRect.x + textRect.width - 3 * z
-      if (!validationRule && canSheetCellTextOverflow(cell) && !merge) {
+      if (!validationRule && !filterSpace && canSheetCellTextOverflow(cell) && !merge) {
         const bounds = geometry.overflowColumnBounds(row, column)
         if (align !== 'left') start = geometry.cellRect(row, bounds.startColumn, viewport, false).x + 3 * z + iconPadding
         if (align !== 'right') {

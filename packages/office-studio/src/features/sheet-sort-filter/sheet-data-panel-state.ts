@@ -3,7 +3,9 @@ import { cloneModel } from '../../domain/serialization'
 import { parseSheetAddress } from '../sheet-workbench/sheet-workbench'
 import { assertSheetCommandRanges, sheetRangeContainsCell } from '../sheet-workbench/sheet-range-command.ts'
 import { expandSheetDataRange } from './sheet-data-range.ts'
-import { clearFilter, readCellValue, setAutoFilter, setFilterCriteria } from './sort-filter-engine'
+import { createSheetFilterColorReader } from './sheet-filter-colors.ts'
+import { clearFilter, readCellValue, refreshAutoFilter, setAutoFilter, setFilterCriteria, sheetFilterColumnHiddenRows } from './sort-filter-engine'
+import { sheetFilterColumnEntries } from './sheet-filter-column.ts'
 
 export const CONFIGURE_SHEET_FILTER_COMMAND = 'sheet.command.configure-filter'
 export interface ConfigureSheetFilterInput {
@@ -15,6 +17,7 @@ export interface ConfigureSheetFilterInput {
 }
 export interface DataPanelField { column: number; label: string }
 export interface DataPanelValue { key: string; label: string; value: CellScalar }
+export interface DataPanelColor { key: string; label: string; value: string | null }
 export interface PanelSortKey { column: number; direction: 'ascending' | 'descending' }
 export type PanelSortRangeChoice = 'keep' | 'extend'
 export interface PanelSortRangeSelection {
@@ -67,21 +70,21 @@ export function readDataPanelFields(sheet: SpreadsheetSheet, range: CellRange, h
 export function dataPanelValueKey(value: CellScalar): string { return JSON.stringify([typeof value, value]) }
 
 /** Read sparse cells without materializing the full rectangle or coercing typed values. */
-export function readDataPanelValues(sheet: SpreadsheetSheet, range: CellRange, column: number): DataPanelValue[] {
+export function readDataPanelValues(sheet: SpreadsheetSheet, range: CellRange, column: number, workbook?: WorkbookModel): DataPanelValue[] {
   if (!Number.isInteger(column) || column < range.startCol || column > range.endCol) throw new RangeError('筛选字段必须位于数据区域内。')
   const values = new Map<string, DataPanelValue>()
-  const rows = new Set<number>()
+  const rowAllowed = dataPanelOtherColumnPredicate(sheet, range, column, workbook)
   const add = (value: CellScalar) => {
     const key = dataPanelValueKey(value)
     if (!values.has(key)) values.set(key, { key, value, label: value === null ? '（空白）' : value === '' ? '（空文本）' : typeof value === 'number' ? `${value}（数值）` : typeof value === 'boolean' ? (value ? 'TRUE（逻辑值）' : 'FALSE（逻辑值）') : value })
   }
-  for (const cell of Object.values(sheet.cells)) {
-    if (cell.col !== column || cell.row <= range.startRow || cell.row > range.endRow) continue
-    rows.add(cell.row)
-    const value = readCellValue(cell)
+  for (const entry of sheetFilterColumnEntries(sheet, range, column)) {
+    let allowed = false
+    for (let offset = 0; offset < entry.rowSpan; offset++) if (rowAllowed(entry.row + offset)) { allowed = true; break }
+    if (!allowed) continue
+    const value = readCellValue(entry.cell)
     if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) add(value)
   }
-  if (rows.size < range.endRow - range.startRow) add(null)
   return [...values.values()]
 }
 export function parseDataPanelScalar(value: string, type: 'text' | 'number' | 'boolean'): CellScalar {
@@ -93,6 +96,28 @@ export function parseDataPanelScalar(value: string, type: 'text' | 'number' | 'b
   }
   if (!value.trim() || !Number.isFinite(Number(value))) throw new TypeError('请输入有效数值。日期条件请使用工作簿的日期序号。')
   return Number(value)
+}
+export function readDataPanelColors(workbook: WorkbookModel, sheet: SpreadsheetSheet, range: CellRange, column: number, target: 'fill' | 'text'): DataPanelColor[] {
+  if (!Number.isInteger(column) || column < range.startCol || column > range.endCol) throw new RangeError('颜色筛选字段必须位于数据区域内。')
+  const colors = new Map<string, DataPanelColor>()
+  const readColors = createSheetFilterColorReader(sheet, workbook), rowAllowed = dataPanelOtherColumnPredicate(sheet, range, column, workbook)
+  for (const entry of sheetFilterColumnEntries(sheet, range, column, true)) {
+    if (!rowAllowed(entry.row)) continue
+    const color = readColors(entry.row, entry.column, entry.cell), value = target === 'fill' ? color.fill : color.text
+    const key = value ?? 'default-fill'
+    if (!colors.has(key)) colors.set(key, { key, value, label: value === null ? '无填充颜色' : value })
+  }
+  return [...colors.values()]
+}
+function dataPanelOtherColumnPredicate(sheet: SpreadsheetSheet, range: CellRange, column: number, workbook?: WorkbookModel): (row: number) => boolean {
+  const filter = sheet.autoFilter
+  const hidden = new Set<number>()
+  if (filter && dataPanelAddress(filter.range) === dataPanelAddress(range)) {
+    for (const [key, criteria] of Object.entries(filter.columns)) if (Number(key) !== column) {
+      for (const row of sheetFilterColumnHiddenRows(sheet, range, Number(key), criteria, workbook)) hidden.add(row)
+    }
+  }
+  return row => !hidden.has(row)
 }
 export function prepareDataPanelSort(range: CellRange, keys: readonly PanelSortKey[]): SheetSortCriterion[] {
   if (!keys.length) throw new RangeError('请至少添加一个排序条件。')
@@ -111,10 +136,11 @@ export function configureFilterFromPanel(workbook: WorkbookModel, input: Configu
   const sheet = workbook.sheets.find((candidate) => candidate.id === input.sheetId)
   if (!sheet) throw new Error('筛选目标工作表已关闭。')
   const plan: SpreadsheetSheet = { ...sheet, autoFilter: sheet.autoFilter ? cloneModel(sheet.autoFilter) : undefined }
-  setAutoFilter(plan, input.range)
+  setAutoFilter(plan, input.range, workbook)
   if (input.range !== null) {
-    clearFilter(plan)
-    for (const [column, criteria] of Object.entries(input.columns)) setFilterCriteria(plan, Number(column), criteria)
+    clearFilter(plan, undefined, workbook)
+    for (const [column, criteria] of Object.entries(input.columns)) setFilterCriteria(plan, Number(column), criteria, workbook)
+    refreshAutoFilter(plan, workbook)
   }
   sheet.autoFilter = plan.autoFilter
 }

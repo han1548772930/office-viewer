@@ -1,4 +1,4 @@
-import { defaultCellStyle, type CellScalar, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../domain/model.ts'
+import { DEFAULT_SHEET_ROW_COUNT, DEFAULT_SHEET_COLUMN_COUNT, defaultCellStyle, type CellScalar, type PivotTableModel, type SheetTableModel, type SheetConditionalFormatRule, type SheetRangeProtectionRule, type SheetWorksheetProtectionRule, type SpreadsheetCell, type SpreadsheetSheet, type WorkbookModel } from '../domain/model.ts'
 import { normalizeWorkbookSparkline } from './workbookSparkline.ts'
 import { conditionalFormatRuleTypes, normalizeConditionalFormatOfficeSource } from '../features/conditional-formatting/conditional-format-office-source.ts'
 import { assertWorkbookConditionalFormatBudget } from '../features/conditional-formatting/conditional-format-workbook-budget.ts'
@@ -55,13 +55,13 @@ function normalizeCell(value: unknown): SpreadsheetCell {
   }
 }
 
-function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetSheet {
+function normalizeSheet(value: unknown, index: number, id: string, reconcileFilters: Array<(workbook: WorkbookModel) => void>): SpreadsheetSheet {
   const raw = record(value)
   const axis = normalizeWorkbookAxisDimensions(raw)
   const autoFilter = normalizeWorkbookAutoFilter(raw.autoFilter)
   const cells: Record<string, SpreadsheetCell> = {}
-  let rowCount = axis.rowCount ?? 100
-  let columnCount = axis.columnCount ?? 26
+  let rowCount = axis.rowCount ?? DEFAULT_SHEET_ROW_COUNT
+  let columnCount = axis.columnCount ?? DEFAULT_SHEET_COLUMN_COUNT
   for (const source of array(raw.cells)) {
     const cell = normalizeCell(source)
     cells[cell.id] = cell
@@ -243,9 +243,14 @@ function normalizeSheet(value: unknown, index: number, id: string): SpreadsheetS
   if (autoFilter && raw.sourceAutoFilter && filterExtension.restored !== true) {
     // Standard XLSX has one hidden bit for multiple causes. Criteria identify
     // failed rows; exact project geometry retains manual overlaps separately.
-    const filteredRows = new Set(refreshAutoFilter(normalized))
-    if (axesExtension.restored !== true && !(outlineImport.nativeSource && outlineImport.hiddenReasonsExact)) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
-    reconcileSheetOutlineImportedVisibility(normalized, outlineImport, [...filteredRows])
+    // Defer until all sheets, names and the date system exist. A color rule can
+    // depend on inherited styles or a conditional formula in another sheet.
+    reconcileFilters.push(workbook => {
+      if (!workbook.sheets.includes(normalized)) return
+      const filteredRows = new Set(refreshAutoFilter(normalized, workbook))
+      if (axesExtension.restored !== true && !(outlineImport.nativeSource && outlineImport.hiddenReasonsExact)) normalized.hiddenRows = normalized.hiddenRows?.filter(row => !filteredRows.has(row))
+      reconcileSheetOutlineImportedVisibility(normalized, outlineImport, [...filteredRows])
+    })
   }
   return normalized
 }
@@ -372,7 +377,8 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   assertWorkbookConditionalFormatBudget(data.sheets)
   const formulaCalendarSource = normalizeWorkbookFormulaCalendarSource(data.formulaCalendarSource)
   const id = crypto.randomUUID()
-  const sheets = array(data.sheets).map((sheet, index) => normalizeSheet(sheet, index, id))
+  const reconcileFilters: Array<(workbook: WorkbookModel) => void> = []
+  const sheets = array(data.sheets).map((sheet, index) => normalizeSheet(sheet, index, id, reconcileFilters))
   assertWorkbookConditionalFormatBudget(sheets)
   const pivotTables = normalizePivotTables(data.pivotTables, sheets, id)
   const chartImport = normalizeWorkbookCharts(data.sheets, sheets, pivotTables)
@@ -397,5 +403,7 @@ export function normalizeWorkbook(envelope: ParseEnvelope): WorkbookModel {
   if (styleImport.metadata) Object.assign(workbook.metadata!, styleImport.metadata)
   applyWorkbookFormulaCalendarSource(workbook, data.sheets, data.tables, formulaCalendarSource)
   normalizeSlicerCaches(workbook)
+  for (const reconcile of reconcileFilters) reconcile(workbook)
+  for (const sheet of workbook.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet, workbook)
   return workbook
 }

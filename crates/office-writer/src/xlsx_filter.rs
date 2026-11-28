@@ -4,20 +4,35 @@
 
 use super::{
     MAX_COLUMN_INDEX, MAX_ROW_INDEX, RangeInput, SheetInput, cell_from_entry, column_name, esc,
-    range_bounds, range_ref, value_text,
+    range_bounds, range_ref, value_text, StyleRegistry,
 };
 use crate::{ExportError, ExportWarning};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "xlsx_filter_color.rs"]
+mod color;
+
+pub(super) use color::color_signature;
+
 pub(super) fn snapshot_value(sheet: &SheetInput) -> Result<Value, ExportError> {
     let Some(filter) = &sheet.auto_filter else { return Ok(Value::Null); };
+    filter_snapshot_value(filter)
+}
+
+pub(super) fn filter_snapshot_value(filter: &AutoFilterInput) -> Result<Value, ExportError> {
     let (start_row, start_col, end_row, end_col) = range_bounds(&filter.range).ok_or_else(|| ExportError::invalid("invalid typed AutoFilter snapshot range"))?;
     let mut columns = serde_json::Map::new();
     for (column, criterion) in &filter.columns {
         let value = match criterion {
             Criterion::Values { selected_items } => serde_json::json!({ "kind": "values", "selectedItems": selected_items }),
+            Criterion::Color { cell_fill_colors, cell_text_colors } => {
+                let mut value = serde_json::Map::new(); value.insert("kind".into(), Value::String("color".into()));
+                if let Some(colors) = cell_fill_colors { value.insert("cellFillColors".into(), serde_json::json!(colors)); }
+                if let Some(colors) = cell_text_colors { value.insert("cellTextColors".into(), serde_json::json!(colors)); }
+                Value::Object(value)
+            }
             Criterion::Condition { operator, value, second_value, case_sensitive } => {
                 let mut criterion = serde_json::Map::new();
                 criterion.insert("kind".into(), Value::String("condition".into()));
@@ -50,6 +65,12 @@ pub(super) enum Criterion {
     Values {
         #[serde(rename = "selectedItems")]
         selected_items: Vec<Value>,
+    },
+    Color {
+        #[serde(default, rename = "cellFillColors")]
+        cell_fill_colors: Option<Vec<Option<String>>>,
+        #[serde(default, rename = "cellTextColors")]
+        cell_text_colors: Option<Vec<String>>,
     },
     Condition {
         operator: String,
@@ -95,10 +116,10 @@ pub(super) fn validate_filter(filter: &AutoFilterInput, row_count: Option<u32>, 
     if filter
         .filtered_rows
         .iter()
-        .any(|row| *row <= first_row || *row > last_row)
+        .any(|row| *row <= first_row || *row > MAX_ROW_INDEX || row_count.is_some_and(|count| *row >= count))
     {
         return Err(ExportError::invalid(
-            "autoFilter filteredRows must be data rows inside its range",
+            "autoFilter filteredRows must be data rows within worksheet bounds (merged groups may extend past the filter reference)",
         ));
     }
     for (column, criterion) in &filter.columns {
@@ -108,6 +129,7 @@ pub(super) fn validate_filter(filter: &AutoFilterInput, row_count: Option<u32>, 
             ));
         }
         match criterion {
+            Criterion::Color { cell_fill_colors, cell_text_colors } => color::validate(cell_fill_colors.as_deref(), cell_text_colors.as_deref())?,
             Criterion::Values { selected_items } => {
                 if selected_items.iter().any(|value| !scalar(value)) {
                     return Err(ExportError::invalid(
@@ -160,6 +182,7 @@ pub(super) fn hidden_rows(sheet: &SheetInput) -> BTreeSet<u32> {
         .hidden_rows
         .iter()
         .copied()
+        .chain(sheet.table_filtered_rows.iter().copied())
         .chain(
             sheet
                 .auto_filter
@@ -444,15 +467,16 @@ fn condition_xml(
 
 pub(super) fn write_xml(
     sheet: &SheetInput,
+    registry: &mut StyleRegistry,
     warnings: &mut Vec<ExportWarning>,
 ) -> Result<String, ExportError> {
     let Some(filter) = &sheet.auto_filter else {
         return Ok(String::new());
     };
-    write_filter_xml(sheet, filter, warnings)
+    write_filter_xml(sheet, filter, registry, warnings)
 }
 
-pub(super) fn write_filter_xml(sheet: &SheetInput, filter: &AutoFilterInput, warnings: &mut Vec<ExportWarning>) -> Result<String, ExportError> {
+pub(super) fn write_filter_xml(sheet: &SheetInput, filter: &AutoFilterInput, registry: &mut StyleRegistry, warnings: &mut Vec<ExportWarning>) -> Result<String, ExportError> {
     let reference =
         range_ref(&filter.range).ok_or_else(|| ExportError::invalid("invalid AutoFilter range"))?;
     let (_, first_col, _, _) = range_bounds(&filter.range)
@@ -461,6 +485,7 @@ pub(super) fn write_filter_xml(sheet: &SheetInput, filter: &AutoFilterInput, war
     for (column, criterion) in &filter.columns {
         out.push_str(&format!("<filterColumn colId=\"{}\">", column - first_col));
         match criterion {
+            Criterion::Color { cell_fill_colors, cell_text_colors } => out.push_str(&color::write_xml(sheet, *column, cell_fill_colors.as_deref(), cell_text_colors.as_deref(), registry, warnings)?),
             Criterion::Values { selected_items } => {
                 let null = selected_items.iter().any(Value::is_null);
                 let empty = selected_items

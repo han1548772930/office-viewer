@@ -75,8 +75,8 @@ export function slicerSourceRowHasData(workbook: WorkbookModel, slicer: SlicerMo
     const table = workbook.tables?.find(candidate => candidate.id === source.tableId)
     if (!table) throw new Error('切片器表格来源不存在。')
     const predicates = Object.entries(table.autoFilter?.columns ?? {}).filter(([key]) => Number(key) !== column)
-      .map(([key, criteria]) => ({ column: Number(key), matches: compileSheetCellFilterCriteria(criteria) }))
-    return row => predicates.every(({ column: sourceColumn, matches }) => matches(sheet.cells[`${row}:${sourceColumn}`]))
+      .map(([key, criteria]) => ({ column: Number(key), matches: compileSheetCellFilterCriteria(criteria, { sheet, workbook }) }))
+    return row => predicates.every(({ column: sourceColumn, matches }) => matches(sheet.cells[`${row}:${sourceColumn}`], row, sourceColumn))
   }
   const reports = getSlicerConnectionReports(workbook, slicer)
   if (!reports.length) return () => true
@@ -87,13 +87,14 @@ export function slicerSourceRowHasData(workbook: WorkbookModel, slicer: SlicerMo
 /** Compile the same native/retained predicate once; selected/partial caption
  * aggregation itself belongs to Rust and sees every source row, even hidden.
  */
-export function slicerSourceRowSelected(workbook: WorkbookModel, slicer: SlicerModel): (cell: SpreadsheetCell | undefined, value: RecordValue) => boolean {
+export function slicerSourceRowSelected(workbook: WorkbookModel, slicer: SlicerModel): (cell: SpreadsheetCell | undefined, value: RecordValue, row?: number) => boolean {
   const cache = getSlicerCache(workbook, slicer)
   if (cache.source.kind === 'table') {
     const filter = getSlicerTableNativeFilter(workbook, slicer)
     if (filter && filter.kind !== 'values') {
-      const matches = compileSheetCellFilterCriteria(filter)
-      return cell => matches(cell)
+      const { sheet, column } = getSlicerSourceCellRange(workbook, slicer)
+      const matches = compileSheetCellFilterCriteria(filter, { sheet, workbook })
+      return (cell, _value, row) => matches(cell, row ?? cell?.row, column)
     }
     const selection = filter ? slicerRecordSelectionFromNativeValues(filter) : undefined
     if (!selection) return () => true
@@ -194,7 +195,7 @@ export class SlicerMemberQueryService {
       const builder = new SlicerMemberInputBuilder(Math.max(0, endRow - startRow + 1), input, this.memoryBudgetBytes, execution.reserve)
       for (let row = startRow; row <= endRow; row++) {
         const cell = sheet.cells[`${row}:${column}`], value = sheetCellRecordValue(cell, workbook.date1904)
-        builder.append(value, hasData(row), selected ? { caption: String(cell?.value ?? ''), selected: selected(cell, value) } : undefined)
+        builder.append(value, hasData(row), selected ? { caption: String(cell?.value ?? ''), selected: selected(cell, value, row) } : undefined)
         if ((row - startRow + 1) % 2048 === 0) await queryYield(check)
       }
       const task = await builder.finish(() => queryYield(check)), sourcePreparationMs = performance.now() - execution.startedAt

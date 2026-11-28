@@ -343,7 +343,7 @@ test('formula categories expose populated dropdowns and dispatch the selected fu
   assert.equal(categories.find(item => item.title === '日期与时间').icon, CalendarDays)
   for (const [category, name] of [['文本', 'LEFT'], ['文本', 'MID'], ['文本', 'RIGHT'], ['文本', 'VALUE'], ['日期与时间', 'WEEKDAY']]) {
     const entry = categories.find(item => item.title === category).children.find(item => item.title === name)
-    assert.deepEqual(ribbonInvocation(entry), { commandId: 'sheet.operation.insert-function', params: name })
+    assert.deepEqual(ribbonInvocation(entry), { commandId: 'formula-ui.operation.insert-function', params: { value: name } })
   }
   for (const name of [
     'ACOS', 'ACOSH', 'ACOT', 'ACOTH', 'ASIN', 'ASINH', 'ATAN', 'ATANH', 'DEGREES', 'PI', 'RADIANS',
@@ -359,7 +359,7 @@ test('formula categories expose populated dropdowns and dispatch the selected fu
     'MDETERM',
   ]) {
     const entry = categories.find(item => item.title === '数学').children.find(item => item.title === name)
-    assert.deepEqual(ribbonInvocation(entry), { commandId: 'sheet.operation.insert-function', params: name })
+    assert.deepEqual(ribbonInvocation(entry), { commandId: 'formula-ui.operation.insert-function', params: { value: name } })
   }
   assert.equal(categories.at(-1).title, '信息')
   assert.equal(categories.at(-1).icon, Info)
@@ -375,18 +375,18 @@ test('formula categories expose populated dropdowns and dispatch the selected fu
     categories.find(item => item.title === '统计').children.some(item => item.title === name)))
   for (const name of ['AVEDEV', 'DEVSQ', 'GEOMEAN', 'HARMEAN', 'MODE.SNGL']) {
     const entry = categories.find(item => item.title === '统计').children.find(item => item.title === name)
-    assert.deepEqual(ribbonInvocation(entry), { commandId: 'sheet.operation.insert-function', params: name })
+    assert.deepEqual(ribbonInvocation(entry), { commandId: 'formula-ui.operation.insert-function', params: { value: name } })
   }
-  const functionItems = categories.flatMap(category => category.children.filter(item => item.commandId === 'sheet.operation.insert-function'))
+  const functionItems = categories.flatMap(category => category.children.filter(item => item.commandId === 'formula-ui.operation.insert-function'))
   assert.equal(functionItems.length, SHEET_FUNCTION_CATALOG.length + SHEET_COMMON_FUNCTION_CATALOG.length)
-  assert.equal(new Set(functionItems.map(item => item.params)).size, SHEET_FUNCTION_CATALOG.length)
+  assert.equal(new Set(functionItems.map(item => item.params.value)).size, SHEET_FUNCTION_CATALOG.length)
   for (const category of categories) {
     const functions = category === categories[0] ? SHEET_COMMON_FUNCTION_CATALOG
       : SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category.title)
     const entries = category === categories[0] ? category.children.slice(0, -1) : category.children
     assert.deepEqual(entries.map(item => item.title), functions.map(entry => entry.name))
     assert.deepEqual(entries.map(item => ribbonInvocation(item)), functions.map(entry =>
-      ({ commandId: 'sheet.operation.insert-function', params: entry.name })))
+      ({ commandId: 'formula-ui.operation.insert-function', params: { value: entry.name } })))
   }
   const unavailable = createSheetRibbon({ ...state, hasSheet: false }).find(tab => tab.id === 'formulas')
   assert.ok(unavailable.groups.flatMap(group => group.items).every(item => item.disabled

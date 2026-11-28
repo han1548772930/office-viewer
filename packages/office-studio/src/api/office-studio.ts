@@ -17,12 +17,19 @@ import { equivalentModelData } from '../platform/commands/model-equivalence'
 import { OPEN_FEATURE_SEARCH, TOGGLE_SHORTCUT_PANEL, type WorkbenchUiHost, type WorkbenchUiOperationHandler } from '../platform/ribbon/workbench-operations'
 import type { DocumentCommand } from '../features/document/commands/document-commands.ts'
 import { prepareDocumentStoryFieldRefresh, type DocumentStoryFieldRefreshPlan, type DocumentStoryFieldRefreshRequest } from '../features/document/services/document-story-fields.ts'
-import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../features/document/services/document-history-cache.ts'
+import { applyDocumentFieldRefreshPlan, createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase, prepareDocumentSnapshotHistoryAmend } from '../features/document/services/document-history-cache.ts'
 import type { DocumentFieldCacheAdapter, DocumentFieldCacheState } from '../features/document/services/document-field-open-refresh.ts'
 import { clampPoint, createParagraph, runText, runsForTarget, textTargets, type DocumentSelection, type RunPatch } from '../features/document/model/document-model.ts'
 import { documentEffectiveZoomRatio, equivalentDocumentContent, preserveDocumentZoomRatio } from '../features/document/services/document-zoom'
 import { DOCUMENT_ZOOM_COMMANDS, registerDocumentZoomCommands, resolveDocumentZoomCommand, type DocumentZoomOperationParams } from './document-zoom-commands'
 import { DOCUMENT_PAGE_SETUP_COMMAND, registerDocumentPageSetupCommand } from './document-page-setup-commands'
+import { DOCUMENT_TOC_INSERT_COMMAND, registerDocumentTocInsertCommand } from './document-toc-commands'
+import { DOCUMENT_TOC_UPDATE_COMMAND, DOCUMENT_TOC_DELETE_COMMAND, registerDocumentTocActionCommands } from './document-toc-action-commands'
+import { DOCUMENT_TOC_DIALOG_OPERATION, registerDocumentTocDialogOperation, disposeDocumentTocDialogEditors } from './document-toc-dialog-editors'
+import { SET_DOCUMENT_HEADING_COLLAPSED_COMMAND, registerDocumentHeadingCollapseCommand } from './document-heading-commands'
+import { disposeDocumentTocLayouts } from './document-toc-layout'
+import { cancelDocumentTocPagination } from './document-toc-pagination'
+import type { HistorySavepoint } from '../platform/history/history-types'
 import { registerDocumentHeaderFooterCommands } from './document-header-footer-commands'
 import { captureDocumentHeaderFooterEditorTarget, documentHeaderFooterEditorTargetCurrent, disposeDocumentHeaderFooterEditors } from './document-header-footer-editors'
 import { isDocumentHeaderFooterCommand, resolveDocumentHeaderFooterRequest } from '../features/document/controllers/document-header-footer-editor'
@@ -50,6 +57,9 @@ import { prepareWorkbookSheetImageInput, type SheetImageInputPreparationOptions 
 import { EventHub, type ApiEventMap, type ApiRange, type ApiSheetSelection, type Disposable } from './events'
 import { registerSheetRangeEditorCommands } from './sheet-range-editor-commands.ts'
 import { registerSheetCellInputCommands } from './sheet-cell-input-commands.ts'
+import { registerSheetFilterPanelCommands, disposeSheetFilterPanelEditors } from './sheet-filter-panel-commands.ts'
+import { registerSheetFunctionCommands, disposeSheetFunctionEditors } from './sheet-function-commands.ts'
+import { sheetFilterCommandContext } from './sheet-filter-command-context.ts'
 import { registerSheetCellInlineFormatCommands } from './sheet-cell-inline-format-commands.ts'
 import { registerSheetDefaultStyleCommands } from './sheet-default-style-commands.ts'
 import { registerSheetRangeThemeCommands } from './sheet-range-theme-commands.ts'
@@ -889,7 +899,7 @@ export class OfficeStudio {
     const recalculated = shouldRecalculate
       ? recalculateWorkbookFormulas(after, before, { numberFormatLocale: this.regionalSettings.region.value }).workbook
       : after
-    for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet)
+    for (const sheet of recalculated.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet, recalculated)
     refreshWorkbookAutoRowHeights(recalculated, before, { measure: this.sheetTextMeasure, region: this.regionalSettings.region.value })
     reconcileWorkbookDrawingStates(before, recalculated)
     recalculated.id = id
@@ -992,13 +1002,14 @@ export class OfficeStudio {
     }, true)
   }
 
-  private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean): boolean {
+  private commitDocumentTransaction(id: string, label: string, update: (draft: DocumentModel) => void, permissionAdminCommand: boolean, amendment?: HistorySavepoint): boolean {
     this.assertAlive()
     this.assertContentUnitIdentity('document', id)
     const current = this.getDocumentModel(id)
     if (!current) throw new Error(`Document not found: ${id}`)
     const revision = this.getDocumentRevision(id)
     const userId = this.currentUserId, savepoint = this.editor.history.captureSavepoint(id), historyUnit = this.editor.history.units[id]
+    if (amendment && !this.editor.history.canAmend(id, amendment)) throw new Error('目录插入历史已不在栈顶，不能合并重排。')
     const before = cloneModel(current)
     const after = cloneModel(current)
     update(after)
@@ -1015,8 +1026,15 @@ export class OfficeStudio {
     if (!latest || this.getDocumentRevision(id) !== revision || this.currentUserId !== userId || this.editor.history.units[id] !== historyUnit
       || latestSavepoint.generation !== savepoint.generation || latestSavepoint.revision !== savepoint.revision
       || !equivalentModelData(before, latest, ['modified'])) throw new Error('准备编辑期间文档内容、用户或历史已更改，请重新执行。')
-    const callbacks = createDocumentSnapshotHistory(before, after, model => this.replaceDocumentHistorySnapshot(id, model, permissionAdminCommand))
-    this.editor.history.execute(id, label, callbacks.redo, callbacks.undo)
+    const publish = (model: DocumentModel) => this.replaceDocumentHistorySnapshot(id, model, permissionAdminCommand)
+    if (amendment) {
+      const entry = this.editor.history.units[id]!.undo.at(-1)!
+      const callbacks = prepareDocumentSnapshotHistoryAmend(entry, after, publish)
+      if (!this.editor.history.amendWithReceipt(id, amendment, entry.label, callbacks.redo)) throw new Error('目录插入历史已变化，不能合并重排。')
+    } else {
+      const callbacks = createDocumentSnapshotHistory(before, after, publish)
+      this.editor.history.execute(id, label, callbacks.redo, callbacks.undo)
+    }
     return true
   }
 
@@ -1058,6 +1076,10 @@ export class OfficeStudio {
     const handler = this.commands.get(id)
     if (!handler) throw new Error(`Unknown command: ${id}`)
     if (this.asynchronousCommands.has(id)) throw new Error(`命令 ${id} 必须通过 executeCommand 异步执行。`)
+    if ([DOCUMENT_TOC_INSERT_COMMAND, DOCUMENT_TOC_UPDATE_COMMAND, DOCUMENT_TOC_DELETE_COMMAND].includes(id)
+      && (!params || typeof params !== 'object' || !('command' in params))) {
+      throw new Error('公开目录命令通过 executeCommand 异步执行；插入和更新会等待完整排版。')
+    }
     // Fixed Univer facade exposes history through its own BeforeUndo/Redo and
     // Undo/Redo events, excluding these commands from generic command events.
     if (contentHistoryCommandAction(id)) return (handler as OfficeCommandHandler<P, R>)(params)
@@ -1276,6 +1298,8 @@ export class OfficeStudio {
   disposeUnit(id: string): boolean {
     this.assertAlive()
     if (this.workbooks.has(id)) {
+      disposeSheetFilterPanelEditors(this, id)
+      disposeSheetFunctionEditors(this, id)
       this.sheetClipboard.clearUnit(id)
       chartObjectClipboardStore(this.pinia).clearUnit(id)
       this.sheetFill.clear(id)
@@ -1299,6 +1323,8 @@ export class OfficeStudio {
       disposeDocumentLatexTemplateEditors(this, id)
       disposeDocumentLatexPopupEditors(this, id)
       disposeDocumentHeaderFooterEditors(this, id)
+      cancelDocumentTocPagination(this, id); disposeDocumentTocLayouts(this, id)
+      disposeDocumentTocDialogEditors(this, id)
       this.documentFieldCacheAdapters.delete(id)
       this.documentInput.removeUnit(id)
       this.pendingDocumentInputPublications.delete(id)
@@ -1317,8 +1343,12 @@ export class OfficeStudio {
 
   dispose(): void {
     if (this.disposed) return
+    disposeSheetFilterPanelEditors(this)
+    disposeSheetFunctionEditors(this)
     disposeDocumentImageEditors(this)
     disposeDocumentHeaderFooterEditors(this)
+    cancelDocumentTocPagination(this); disposeDocumentTocLayouts(this)
+    disposeDocumentTocDialogEditors(this)
     this.disposed = true
     for (const controller of this.workbookCreationTasks) controller.abort()
     this.workbookCreationTasks.clear()
@@ -1474,7 +1504,7 @@ export class OfficeStudio {
         && (!this.getDocumentModel(unitId) ? revision === undefined : this.getDocumentRevision(unitId) === revision))
   }
 
-  private commitDocumentEditorCommand(commandId: string, request: DocumentEditorCommandRequest): DocumentEditorCommandResult {
+  private commitDocumentEditorCommand(commandId: string, request: DocumentEditorCommandRequest, amendment?: HistorySavepoint): DocumentEditorCommandResult {
     assertDocumentEditorCommandRequest(request, commandId)
     if (request.command.id === 'doc.command.set-document-permission-rules') throw new Error('Permission rules use their administrator command')
     const current = this.getDocumentModel(request.unitId)
@@ -1510,7 +1540,7 @@ export class OfficeStudio {
         ...(prepared.location.kind === 'body' && prepared.location.host ? { host: { ...prepared.location.host } } : {}) }
     }
     const globalCommand = request.command.id === 'doc.command.set-section-header-footer' || request.command.id === 'doc.command.set-section-setup'
-      || request.command.id === 'docs.command.page-setup' || !!fieldRefresh || tocRefresh
+      || request.command.id === 'docs.command.page-setup' || request.command.id === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND || !!fieldRefresh || tocRefresh
     // Global commands still operate on the full model. Their view selection
     // retains its independent block host instead of being resolved as body text.
     const selectionHost = request.selectionHost !== undefined ? request.selectionHost ?? undefined
@@ -1527,7 +1557,11 @@ export class OfficeStudio {
     const story = request.command.id === 'doc.command.set-section-header-footer' ? request.command.input?.range ?? sessionStory
       : request.command.id === 'doc.command.format-text' || request.command.id === 'doc.command.clear-formatting' ? request.command.story
       : sessionStory
-    const sourceLocation = documentInputLocation(sourceSelection, story, selectionHost)
+    const preserveTocAuxiliaryInput = (request.command.id === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND
+      || (request.command.id === DOCUMENT_TOC_UPDATE_COMMAND || request.command.id === DOCUMENT_TOC_DELETE_COMMAND)
+        && request.command.preserveInputSelection === true) && sourceCurrent && session?.valid === true
+      && (session.location.kind === 'story' || !!session.location.host)
+    const sourceLocation = preserveTocAuxiliaryInput ? cloneDocumentInputSession(session!).location : documentInputLocation(sourceSelection, story, selectionHost)
     const tracksSelection = sourceSelectionUsable && sourceCurrent && (!session?.valid || sameDocumentInputLocation(session.location, sourceLocation))
     let input: RunPatch | undefined
     let command = request.command
@@ -1535,6 +1569,7 @@ export class OfficeStudio {
       input = mergeDocumentInputMarks(sourceCurrent ? this.getDocumentInputMarks(request.unitId, sourceSelection, undefined, selectionHost) : {}, command.marks ?? {})
       command = { ...command, marks: input }
     }
+    if (command.id === DOCUMENT_TOC_INSERT_COMMAND) input = {}
     const mutationSelection = selectionHost && !command.host && command.id !== DOCUMENT_PAGE_SETUP_COMMAND
       ? sanitizeDocumentInputSelection(current, sourceSelection) : sourceSelection
     const effective: DocumentEditorCommandRequest = { ...request, selection: mutationSelection, command }
@@ -1559,7 +1594,7 @@ export class OfficeStudio {
     if (fieldRefreshPlan) selection = fieldRefreshPlan.selection ?? sourceSelection
     const cachePublication = fieldRequest?.onOpen ? this.publishDocumentFieldCaches(request.unitId, fieldRequest, fieldRefreshPlan) : undefined
     const changed = cachePublication ? cachePublication.changed
-      : (!fieldRefresh || fieldRefreshPlan !== undefined) && this.commitDocument(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
+      : (!fieldRefresh || fieldRefreshPlan !== undefined) && this.commitDocumentTransaction(request.unitId, DOCUMENT_EDITOR_COMMAND_LABELS[request.command.id], model => {
       if (fieldRefreshPlan) {
         applyDocumentFieldRefreshPlan(model, fieldRefreshPlan)
         selection = fieldRefreshPlan.selection ?? sourceSelection
@@ -1573,7 +1608,7 @@ export class OfficeStudio {
         storyAdvance = prepareDocumentStoryInputAdvance(current, model, sourceSelection, request.command.sectionId,
           request.command.input, session, revision, context)
       }
-    })
+    }, false, amendment)
     let expectedGeneration = generation
     let fieldInputPreserved = true
     const modelRevision = revision + (changed ? 1 : 0)
@@ -1593,7 +1628,8 @@ export class OfficeStudio {
         // revives a stale location nor clears its retained typing preferences.
       } else if (changed && globalCommand && tracksSelection && session?.valid) {
         fieldInputPreserved = this.documentInput.completeUnchangedSelection(request.unitId, session, modelRevision,
-          sourceLocation.kind === 'body' ? documentInputLocation(selection, undefined, fieldRefreshPlan?.host ?? selectionHost) : sourceLocation, sourceLocation.kind === 'body')
+          preserveTocAuxiliaryInput ? sourceLocation : sourceLocation.kind === 'body'
+            ? documentInputLocation(selection, undefined, fieldRefreshPlan?.host ?? selectionHost) : sourceLocation, sourceLocation.kind === 'body')
         if (!fieldInputPreserved) this.documentInput.clearMarks(request.unitId)
         expectedGeneration = (generation ?? 0) + 1
         this.publishDocumentInputState(request.unitId)
@@ -1732,6 +1768,8 @@ export class OfficeStudio {
       return changed
     })
     registerSheetRangeEditorCommands(this)
+    registerSheetFilterPanelCommands(this)
+    this.stopModelSync.push(registerSheetFunctionCommands(this).dispose)
     this.stopModelSync.push(registerSheetCellInputCommands(this).dispose)
     this.stopModelSync.push(registerSheetCellInlineFormatCommands(this).dispose)
     this.stopModelSync.push(registerSheetDefaultStyleCommands(this).dispose)
@@ -1872,8 +1910,9 @@ export class OfficeStudio {
       this.commitWorkbook(unitId, 'Recalculate workbook', () => {}, true),
     )
     this.registerCommand<ConfigureSheetFilterInput, boolean>(CONFIGURE_SHEET_FILTER_COMMAND, (input) => {
-      if (input.expectedRevision !== undefined && this.getWorkbookRevision(input.unitId) !== input.expectedRevision) throw new Error('数据已更改，请重新读取数据区域后再应用筛选。')
-      return this.commitWorkbook(input.unitId, '配置工作表筛选', (model) => configureFilterFromPanel(model, input))
+      const context = sheetFilterCommandContext(this, input, input.range)
+      return this.commitWorkbook(input.unitId, '配置工作表筛选', (model) => configureFilterFromPanel(model, input),
+        context)
     })
     this.registerCommand<ConfigurePivotFromPanelInput & PivotChartCommandContext & { hostSheetId?: string }, boolean>(CONFIGURE_PIVOT_COMMAND, raw => {
       const input = cloneModel(raw), workbook = this.getWorkbookModel(input.unitId)
@@ -1901,34 +1940,48 @@ export class OfficeStudio {
       const validation = validateSheetDataValidationChanges(model, sheetId, positions, sheetValidationSourceReader(this.currentUserId), this.regionalSettings.region.value)
       if (validation.blocked) throw new Error(validation.issues[0]?.message ?? '输入值未通过数据验证，数据没有修改。')
     }))
-    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', ({ unitId, sheetId, range }) => this.commitWorkbook(unitId, 'Set auto-filter', (model) => {
-      setAutoFilter(requireSheet(model, sheetId), range)
-    }))
+    this.registerCommand<{ unitId: string; sheetId: string; range: CellRange | null }, boolean>('sheet.command.set-auto-filter', input => {
+      const context = sheetFilterCommandContext(this, input, input.range)
+      return this.commitWorkbook(input.unitId, 'Set auto-filter', model => {
+        setAutoFilter(requireSheet(model, input.sheetId), input.range, model)
+      }, context)
+    })
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; expectedRevision?: number }, boolean>('sheet.command.toggle-auto-filter', request => {
-      const { unitId, sheetId, range, expectedRevision } = request
-      const assertCurrent = workbookCommandGuard(request)
-      assertCurrent?.()
+      const { unitId, sheetId, range } = request
+      const removing = this.getWorkbookModel(unitId)?.sheets.find(sheet => sheet.id === sheetId)?.autoFilter !== undefined
+      const context = sheetFilterCommandContext(this, request, removing ? null : range)
       return this.commitWorkbook(unitId, 'Toggle auto-filter', model => {
         const sheet = requireSheet(model, sheetId)
-        setAutoFilter(sheet, sheet.autoFilter ? null : range)
-      }, { expectedRevision, assertCurrent })
+        setAutoFilter(sheet, sheet.autoFilter ? null : range, model)
+      }, context)
     })
-    this.registerCommand<{ unitId: string; sheetId: string; column: number; criteria: SheetFilterCriteria | null }, boolean>('sheet.command.set-filter-criteria', ({ unitId, sheetId, column, criteria }) => this.commitWorkbook(unitId, 'Filter worksheet rows', (model) => {
-      setFilterCriteria(requireSheet(model, sheetId), column, criteria)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string; column?: number }, boolean>('sheet.command.clear-filter', ({ unitId, sheetId, column }) => this.commitWorkbook(unitId, 'Clear worksheet filter', (model) => {
-      clearFilter(requireSheet(model, sheetId), column)
-    }))
-    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', ({ unitId, sheetId }) => this.applyWorkbookOperation(unitId, (model) => {
-      refreshAutoFilter(requireSheet(model, sheetId))
-    }))
+    this.registerCommand<{ unitId: string; sheetId: string; column: number; criteria: SheetFilterCriteria | null }, boolean>('sheet.command.set-filter-criteria', input => {
+      const context = sheetFilterCommandContext(this, input)
+      return this.commitWorkbook(input.unitId, 'Filter worksheet rows', model => {
+        setFilterCriteria(requireSheet(model, input.sheetId), input.column, input.criteria, model)
+      }, context)
+    })
+    this.registerCommand<{ unitId: string; sheetId: string; column?: number }, boolean>('sheet.command.clear-filter', input => {
+      const context = sheetFilterCommandContext(this, input)
+      return this.commitWorkbook(input.unitId, 'Clear worksheet filter', model => {
+        clearFilter(requireSheet(model, input.sheetId), input.column, model)
+      }, context)
+    })
+    this.registerCommand<{ unitId: string; sheetId: string }, boolean>('sheet.command.reapply-filter', input => {
+      const context = sheetFilterCommandContext(this, input)
+      return this.applyWorkbookOperation(input.unitId, model => {
+        context.assertCurrent()
+        refreshAutoFilter(requireSheet(model, input.sheetId), model)
+        context.assertCurrent()
+      })
+    })
     this.registerCommand<{ unitId: string; sheetId: string; range: CellRange; criteria: SheetSortCriterion[]; options: SortRangeOptions; order?: number[]; expectedRevision?: number }, boolean>('sheet.command.sort-range', request => {
       const { unitId, sheetId, range, criteria, options, order, expectedRevision } = request
       const assertCurrent = workbookCommandGuard(request)
       assertCurrent?.()
       if (expectedRevision !== undefined && this.getWorkbookRevision(unitId) !== expectedRevision) throw new Error('Sort result is stale because the workbook changed during calculation')
       this.assertCanEditRange(unitId, sheetId, range)
-      return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences),
+      return this.commitWorkbook(unitId, 'Sort worksheet range', (model) => sortRange(requireSheet(model, sheetId), range, criteria, order, options, translateFormulaReferences, model),
         { expectedRevision, assertCurrent })
     })
     this.registerCommand<{ unitId: string; sheetId: string; rule: SheetRangeProtectionRule }, boolean>('sheet.command.set-range-protection', ({ unitId, sheetId, rule }) => this.commitWorkbook(unitId, 'Set range protection', (model) => {
@@ -2310,10 +2363,16 @@ export class OfficeStudio {
       }).changed
     })
     for (const commandId of Object.keys(DOCUMENT_EDITOR_COMMAND_LABELS)) {
-      if (commandId === 'doc.command.insert-text' || commandId === 'doc.command.create-table' || commandId === DOCUMENT_PAGE_SETUP_COMMAND) continue
+      if (commandId === 'doc.command.insert-text' || commandId === 'doc.command.create-table'
+        || commandId === DOCUMENT_PAGE_SETUP_COMMAND || commandId === DOCUMENT_TOC_INSERT_COMMAND
+        || commandId === DOCUMENT_TOC_UPDATE_COMMAND || commandId === DOCUMENT_TOC_DELETE_COMMAND || commandId === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND) continue
       this.registerCommand<DocumentEditorCommandRequest, DocumentEditorCommandResult>(commandId, request => this.commitDocumentEditorCommand(commandId, request))
     }
     registerDocumentPageSetupCommand(this, request => this.commitDocumentEditorCommand(DOCUMENT_PAGE_SETUP_COMMAND, request))
+    registerDocumentTocInsertCommand(this, request => this.commitDocumentEditorCommand(DOCUMENT_TOC_INSERT_COMMAND, request))
+    registerDocumentTocActionCommands(this, (request, amendment) => this.commitDocumentEditorCommand(request.command.id, request, amendment))
+    registerDocumentTocDialogOperation(this)
+    registerDocumentHeadingCollapseCommand(this, request => this.commitDocumentEditorCommand(SET_DOCUMENT_HEADING_COLLAPSED_COMMAND, request))
     registerDocumentZoomCommands(this, params => this.publishDocumentZoomRatio(params))
     registerDocumentHeaderFooterCommands(this)
     this.registerCommand<{ unitId: string; startOffset: number; endOffset: number; text?: string; expectedRevision?: number }, boolean>('doc.command.replace-range', ({ unitId, startOffset, endOffset, text = '', expectedRevision }) => this.commitIndexedDocumentInput(unitId, startOffset, endOffset, text, expectedRevision))
@@ -2512,17 +2571,25 @@ export class OfficeStudio {
   private captureDocumentTransientCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
     const zoom = commandId === DOCUMENT_ZOOM_COMMANDS.SetRatio || commandId === DOCUMENT_ZOOM_COMMANDS.SetRatioCommand
     const headerFooter = isDocumentHeaderFooterCommand(commandId)
-    if (!zoom && !headerFooter && commandId !== DOCUMENT_PAGE_SETUP_COMMAND) return undefined
+    const tocCommand = commandId === DOCUMENT_TOC_INSERT_COMMAND || commandId === DOCUMENT_TOC_UPDATE_COMMAND
+      || commandId === DOCUMENT_TOC_DELETE_COMMAND || commandId === DOCUMENT_TOC_DIALOG_OPERATION || commandId === SET_DOCUMENT_HEADING_COLLAPSED_COMMAND
+    if (!zoom && !headerFooter && !tocCommand && commandId !== DOCUMENT_PAGE_SETUP_COMMAND) return undefined
     const headerFooterTarget = headerFooter ? captureDocumentHeaderFooterEditorTarget(this,
       resolveDocumentHeaderFooterRequest(commandId, params)) : undefined
     const resolveUnitId = () => zoom ? resolveDocumentZoomCommand(commandId, params, this._activeDocumentId).unitId
       : headerFooter ? resolveDocumentHeaderFooterRequest(commandId, params).unitId ?? this._activeDocumentId
       : commandUnitId(params) ?? this._activeDocumentId
-    const unitId = resolveUnitId(), source = this.getDocumentModel(unitId), history = this.editor.history.units[unitId]
+    const unitId = resolveUnitId(), source = this.getDocumentModel(unitId)
     const generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
+    const history = this.editor.history.units[unitId]
+    const revision = tocCommand && source ? this.getDocumentRevision(unitId) : undefined
+    const inputGeneration = tocCommand && source ? this.getDocumentInputState(unitId)?.generation : undefined
+    const userId = this.currentUserId, activeId = this._activeDocumentId, activeKind = this.editor.state.activeKind
     return { unitId, assertCurrent: () => {
       if (resolveUnitId() !== unitId || this.getDocumentModel(unitId) !== source || this.editor.history.units[unitId] !== history
         || source && this.editor.history.captureSavepoint(unitId).generation !== generation
+        || tocCommand && (this.currentUserId !== userId || this._activeDocumentId !== activeId || this.editor.state.activeKind !== activeKind
+          || source && (this.getDocumentRevision(unitId) !== revision || this.getDocumentInputState(unitId)?.generation !== inputGeneration))
         || headerFooterTarget && !documentHeaderFooterEditorTargetCurrent(this, headerFooterTarget)) {
         throw new Error('命令执行前文档或打开代数已更改，请重新执行。')
       }
@@ -2531,10 +2598,12 @@ export class OfficeStudio {
 
   private captureWorkbookCommandTarget(commandId: string, params: unknown): { unitId: string; assertCurrent(): void } | undefined {
     const guard = workbookCommandGuard(params)
-    if (!guard && commandId !== 'sheet.command.sort-range' && commandId !== 'sheet.command.toggle-auto-filter') return undefined
+    if (!guard && commandId !== 'sheet.command.sort-range' && commandId !== 'sheet.command.toggle-auto-filter'
+      && commandId !== CONFIGURE_SHEET_FILTER_COMMAND) return undefined
     const unitId = commandUnitId(params) ?? this._activeWorkbookId
     const source = this.getWorkbookModel(unitId), revision = this.getWorkbookRevision(unitId), userId = this.currentUserId
-    const history = this.editor.history.units[unitId], generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
+    const generation = source ? this.editor.history.captureSavepoint(unitId).generation : undefined
+    const history = this.editor.history.units[unitId]
     const assertCurrent = (): void => {
       guard?.()
       if ((commandUnitId(params) ?? this._activeWorkbookId) !== unitId || this.currentUserId !== userId

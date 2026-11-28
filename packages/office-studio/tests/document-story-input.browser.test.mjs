@@ -94,6 +94,7 @@ window.documentStoryFixture = {
   bodyText: () => runText(model.value.blocks[0].runs),
   history: () => { const unit = studio.editor.history.units[documentApi.value.id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, dirty: studio.editor.history.isDirty(documentApi.value.id) } },
   commands: () => copy(commands), notices: () => [...notices], historyRequests: () => copy(historyRequests),
+  headerFooterOperation: (id, params) => studio.executeCommandSync(id, params),
   inputState: () => {
     const state = documentApi.value.getInputState()
     return state && { ...copy(state),
@@ -297,6 +298,27 @@ async function staleStoryEvents() {
     element.dispatchEvent(new FocusEvent('blur', { bubbles: false }))
   })
 }
+
+test.each(['classic', 'grid'])('header/footer owner binds before the first input session and public ribbon operations retain the story in %s', async variant => {
+  await page.evaluate(layout => window.documentStoryFixture.appearance(false, layout), variant)
+  assert.equal(await inputState(), undefined)
+  const before = await snapshot(), previousHistory = await history()
+  assert.equal(await page.evaluate(() => window.documentStoryFixture.headerFooterOperation('doc.command.open-header-footer-panel')), true)
+  await expect(storyBridge()).toBeFocused()
+  await expect.poll(async () => (await inputState()).location.kind).toBe('story')
+  await expect(page.getByRole('tab', { name: '页眉和页脚', exact: true })).toBeVisible()
+  const session = await inputState()
+  assert.equal(await page.evaluate(() => window.documentStoryFixture.headerFooterOperation('sidebar.operation.doc-header-footer-panel', { value: 'close' })), true)
+  await expect(page.getByRole('tab', { name: '页眉和页脚', exact: true })).toHaveCount(0)
+  assert.deepEqual(await inputState(), session)
+  assert.equal(await page.evaluate(() => window.documentStoryFixture.headerFooterOperation('sidebar.operation.doc-header-footer-panel', { value: 'open' })), true)
+  await expect(page.getByRole('tab', { name: '页眉和页脚', exact: true })).toBeVisible()
+  assert.equal(await page.evaluate(() => window.documentStoryFixture.headerFooterOperation('doc.command.close-header-footer')), true)
+  await expect(bodyBridge()).toBeFocused()
+  await expect.poll(async () => (await inputState()).location.kind).toBe('body')
+  assert.deepEqual(await snapshot(), before)
+  assert.deepEqual(await history(), previousHistory)
+})
 
 for (const variant of ['classic', 'grid']) test('rich header and footer navigation switches the real block host without editing content and restores the body range in ' + variant, async () => {
   await page.evaluate(layout => {

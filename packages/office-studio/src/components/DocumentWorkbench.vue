@@ -9,6 +9,9 @@ import { OfficeFontListKey } from '../platform/ribbon/ribbon-fonts'
 import { selectionFontPatch } from '../features/document/model/document-font'
 import type { DocumentBlock, DocumentContentControl, DocumentContentControlType, DocumentModel, DocumentPageSetup, DocumentParagraphStyle, DocumentPermissionRule } from '../domain/model'
 import type { FDocument } from '../api/facade'
+import type { DocumentTocLayoutHandle, DocumentTocLayoutSnapshot } from '../api/document-toc-layout'
+import type { DocumentTocDialogEditorHandle } from '../api/document-toc-dialog-editors'
+import type { DocumentTocLayoutPublication } from '../features/document/toc/document-toc-pagination'
 import type { ApiEventMap } from '../api/events'
 import { applyDocumentEditorCommand } from '../api/document-editor-commands'
 import { documentHyperlinkTargetSelection, resolveDocumentHyperlinkOperation } from '../api/document-public-body'
@@ -73,7 +76,7 @@ import { editStoryBuffer, replaceStoryRange, storyBuffer, storyDateField, type S
 import { canRefreshDocumentStoryFields, canRefreshSelectedDocumentBodyFields, documentBodySelectionHasField, documentStoryRangeHasField } from '../features/document/services/document-story-fields'
 import { releaseDocumentFieldOpenRefresh, reserveDocumentFieldOpenRefresh, type DocumentFieldCacheAdapter } from '../features/document/services/document-field-open-refresh'
 import { headerFooterActionDisabled, headerFooterRequestScopeMatches, parseHeaderFooterAction } from './document/document-header-footer-capabilities'
-import { documentSectionSetup } from '../features/document/services/document-settings.ts'
+import { documentPageOrientation, documentSectionSetup } from '../features/document/services/document-settings.ts'
 import { documentEffectiveZoomRatio } from '../features/document/services/document-zoom'
 import { useDocumentCharacterPreferencesStore } from '../features/document/stores/document-character-preferences-store'
 import { selectedDocumentContentControlForSelection } from '../features/document/services/content-controls'
@@ -109,8 +112,8 @@ import { createDocumentThreadComment, documentCommentAnchorsForSelection, docume
 import { canManageDocumentPermissions, permissionTargetsForSelection, resolveDocumentPermission } from '../features/document/permissions/document-permissions.ts'
 import { documentPermissionTargetOptions } from '../features/document/permissions/permission-rules.ts'
 import { findDocumentMatches, pointForMatch, replaceDocumentMatches } from '../features/document/services/document-search.ts'
-import { buildDocumentTocBlocks, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocIdAtBlock, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
-import { documentTocActionState, type DocumentTocActionState } from '../features/document/toc/document-toc-command'
+import { collectDocumentTocHeadings, DEFAULT_DOCUMENT_TOC_OPTIONS, documentTocIdForSelection, documentTocOptionsAtBlock, documentTocPageNumbers, supportsDocumentTableOfContents, type DocumentTocOptions, type DocumentTocUpdateMode } from '../features/document/toc/document-toc.ts'
+import { documentTocActionState, documentTocInsertionState, type DocumentTocActionState } from '../features/document/toc/document-toc-command'
 import { createRibbonTranslator, provideWorkbenchRegionalSettings } from '../i18n/office-i18n'
 import { captureDocumentFormat, documentPainterTarget, type DocumentPainterFormat } from '../features/document/services/document-format-painter'
 import { documentClearFormattingState, prepareDocumentStoryClearFormatting } from '../features/document/services/document-clear-formatting'
@@ -155,6 +158,12 @@ const model = shallowRef<DocumentModel>(normalizeDocument(createBlankDocument())
 const firstTarget = textTargets(model.value)[0]!
 const selection = shallowRef<DocumentSelection>(collapsedSelection({ ...firstTarget, offset: 0 }))
 const layout = shallowRef<DocumentLayout>(emptyLayout())
+const tocLayoutPublication = shallowRef<DocumentTocLayoutPublication>()
+const tocLayoutSnapshot = shallowRef<DocumentTocLayoutSnapshot>()
+const tocLayoutListeners = new Set<() => void>()
+let tocLayoutHandle: DocumentTocLayoutHandle | undefined
+let tocDialogEditorHandle: DocumentTocDialogEditorHandle | undefined
+let tocLayoutApi: FDocument | undefined
 const layoutSource = shallowRef<DocumentModel>()
 const editingHost = shallowRef<DocumentAuxiliaryBlockHost>()
 const returnBodySelection = shallowRef<DocumentSelection>()
@@ -501,12 +510,18 @@ const textFormattingState = computed(() => documentInputComposing.value ? { avai
   : documentTextFormattingState(editingModel.value, selection.value, permissionContext.value))
 const clearFormattingState = computed(() => documentInputComposing.value ? { available: false, reason: '请先完成当前输入法输入。' }
   : documentClearFormattingState(currentStoryRange.value ? model.value : editingModel.value, selection.value, permissionContext.value, currentStoryRange.value))
-const currentTocPageNumbers = computed(() => layoutSource.value === model.value ? documentTocPageNumbers(layout.value.headings, layout.value.pages) : {})
+const currentTocPageNumbers = computed(() => tocLayoutPublication.value?.complete && tocLayoutPublication.value.source === model.value
+  ? documentTocPageNumbers(tocLayoutPublication.value.layout!.headings, tocLayoutPublication.value.layout!.pages) : {})
 const selectedTocActionStates = computed<Record<DocumentTocUpdateMode | 'delete', DocumentTocActionState>>(() => {
   const tocId = selectedTocId.value
   if (!tocId || documentInputComposing.value) {
     const unavailable = { available: false, reason: tocId ? '请先完成当前输入法输入。' : '请先选择目录。' }
     return { pageNumbersOnly: unavailable, all: unavailable, delete: unavailable }
+  }
+  if (!tocLayoutPublication.value?.complete || tocLayoutPublication.value.source !== model.value) {
+    const pending = { available: false, reason: '目录更新正在等待当前文档的完整排版。' }
+    return { pageNumbersOnly: pending, all: pending,
+      delete: documentTocActionState(model.value, selection.value, tocId, 'delete', {}, permissionContext.value) }
   }
   return {
     pageNumbersOnly: documentTocActionState(model.value, selection.value, tocId, 'pageNumbersOnly', currentTocPageNumbers.value, permissionContext.value),
@@ -520,11 +535,9 @@ const tocContextActionStates = computed<DocumentTocContextActionStates>(() => ({
   delete: selectedTocActionStates.value.delete,
 }))
 const canEditSelectedToc = computed(() => tocContextActionStates.value.update.available)
-const canInsertToc = computed(() => !editingHost.value && !legacyStoryActive.value && supportsDocumentTableOfContents(model.value)
-  && selection.value.focus.row == null
-  && selectionCollapsed(selection.value)
-  && !documentTocIdAtBlock(blockAtPoint(model.value, selection.value.focus))
-  && canEditContextSelection.value)
+const canInsertToc = computed(() => inputStateActive && !documentInputComposing.value && !editingHost.value && !legacyStoryActive.value
+  && tocLayoutPublication.value?.complete === true && tocLayoutPublication.value.source === model.value
+  && documentTocInsertionState(model.value, selection.value, permissionContext.value).available)
 watch(selectedTocId, (tocId) => {
   if (tocId) {
     if (activeTab.value !== 'table-of-contents') previousTabBeforeToc.value = activeTab.value
@@ -541,6 +554,16 @@ const tocDialog = ref<{ open: boolean; mode: 'insert' | 'update'; insertMode: 'a
   updateMode: 'pageNumbersOnly',
 })
 const tocDialogOptions = ref<DocumentTocOptions>({ ...DEFAULT_DOCUMENT_TOC_OPTIONS })
+const tocDialogTarget = shallowRef<StructureDialogTarget>()
+const tocDialogError = ref('')
+let tocDialogClosingTarget: StructureDialogTarget | undefined
+const tocDialogDisabled = computed(() => !tocDialogTarget.value || !structureTargetCurrent(tocDialogTarget.value)
+  || (tocDialog.value.mode === 'insert' ? !canInsertToc.value : !canEditSelectedToc.value))
+watch([() => props.documentApi, () => model.value.id, fieldOpenHistoryGeneration], () => {
+  const target = tocDialogTarget.value
+  if (tocDialog.value.open && target && (target.api !== props.documentApi || target.unitId !== (model.value.id ?? '')
+    || target.api && target.historyGeneration !== target.api.getHistoryGeneration())) setTocDialogOpen(false, false)
+}, { flush: 'sync' })
 const contextMenuActions = computed(() => {
   const translate = createRibbonTranslator(officeLocale.value, 'doc')
   const story = currentStoryRange.value
@@ -834,14 +857,17 @@ onActivated(() => {
   }
   syncFullscreen()
   inputStateActive = true
+  bindTocLayout()
   storyActionVersion.value++
   const api = props.documentApi
   if (api) applyInputState(api, { unitId: api.id, state: api.getInputState() })
   refreshDocumentFieldsOnOpen()
 })
-onUnmounted(() => { inputStateActive = false; inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++; if (!inheritedCharacterPinia) { standaloneCharacterPreferences.releaseStorage(); standaloneCharacterPreferences.$dispose() } })
+onUnmounted(() => { inputStateActive = false; tocLayoutHandle?.dispose(); tocDialogEditorHandle?.dispose(); tocLayoutListeners.clear(); inputStateEpoch++; closeLatexPopup(true); storyActionVersion.value++; noteNavigationMemory.clear(); fullscreenDocument.value?.removeEventListener('fullscreenchange', syncFullscreen); resizeObserver?.disconnect(); clearInputMarks(); abortPictureImageRead(); clipboardRequest++; if (!inheritedCharacterPinia) { standaloneCharacterPreferences.releaseStorage(); standaloneCharacterPreferences.$dispose() } })
 onDeactivated(() => {
   inputStateActive = false
+  tocLayoutHandle?.dispose()
+  tocDialogEditorHandle?.dispose()
   inputStateEpoch++
   storyActionVersion.value++
   painter.value = undefined
@@ -864,6 +890,7 @@ onDeactivated(() => {
   structureDialog.value = undefined
   notesPanelOpen.value = false
   noteSettings.value = undefined
+  setTocDialogOpen(false, false)
   showFind.value = false
   const workbench = workbenchRef.value
   if (!workbench) return
@@ -889,7 +916,9 @@ watch(() => props.documentApi, (api, _previous, onCleanup) => {
   onCleanup(() => { if (latexPopupOwner.value === handle) latexPopupOwner.value = undefined; handle.dispose() })
 }, { immediate: true, flush: 'sync' })
 watch([() => props.documentApi, () => props.documentApi?.getHistoryGeneration()], ([api], _previous, onCleanup) => {
-  if (!api?.getInputState()?.valid) return
+  // Opening a story can create the first input session after document load.
+  // The owner belongs to the mounted workbench, not to a pre-existing caret.
+  if (!api) return
   const handle = api.bindHeaderFooterEditor({ execute: target => acceptHeaderFooterEditorTarget(api, target), release: releaseHeaderFooterEditorView })
   headerFooterEditorOwner.value = handle
   onCleanup(() => { handle.dispose(); if (headerFooterEditorOwner.value === handle) headerFooterEditorOwner.value = undefined })
@@ -930,6 +959,8 @@ watch(() => props.documentApi, (next, previous, onCleanup) => {
     if (inputStateActive && next === props.documentApi) applyInputState(next, { unitId: next.id, state: next.getInputState() })
   })
 }, { immediate: true, flush: 'sync' })
+watch([() => props.documentApi, () => model.value.id, () => props.documentApi?.getHistoryGeneration()], bindTocLayout, { immediate: true, flush: 'sync' })
+watch(documentInputComposing, () => { for (const listener of tocLayoutListeners) listener() }, { flush: 'sync' })
 watch(() => props.modelValue, (value) => {
   if (value == null) return
   // A parent history undo/redo can legitimately return to a previously
@@ -937,7 +968,7 @@ watch(() => props.modelValue, (value) => {
   // snapshot; comparing against lastEmitted alone would leave the canvas on
   // the undo state and make redo appear to do nothing.
   if (typeof value !== 'string' && JSON.stringify(value) === JSON.stringify(model.value)) return
-  const next = typeof value === 'string' ? { ...createBlankDocument(), blocks: blocksFromHtml(value) } : value
+  const next = normalizeDocument(typeof value === 'string' ? { ...createBlankDocument(), blocks: blocksFromHtml(value) } : value)
   inputStateEpoch++
   if (modelReceived && !props.documentApi) clearInputMarks()
   modelReceived = true
@@ -945,7 +976,7 @@ watch(() => props.modelValue, (value) => {
   const sameDocument = next.id === model.value.id
   if (!sameDocument) setPageSettingsOpen(false, false)
   if (!sameDocument) { canvasRef.value?.cancelInput(false); blockHostInspection.value = undefined; inspectionLayoutSource.value = undefined; editingHost.value = undefined; storyLocation.value = undefined; returnBodySelection.value = undefined; notesPanelOpen.value = false; noteSettings.value = undefined; notesError.value = '' }
-  model.value = normalizeDocument(next)
+  model.value = next
   zoom.value = Math.round(documentEffectiveZoomRatio(model.value) * 100)
   documentTitle.value = next.name
   if (editingHost.value) {
@@ -956,8 +987,7 @@ watch(() => props.modelValue, (value) => {
   if (returnBodySelection.value) returnBodySelection.value = sanitizeDocumentInputSelection(model.value, returnBodySelection.value)
   if (!sameDocument) { commentDraftSelection.value = undefined; commentDraftHost.value = undefined; commentDraftReference.value = ''; searchScopeSelection.value = undefined; searchInSelection.value = false }
   paperSize.value = documentPaperSize(next.page)
-  orientation.value = next.metadata.documentPageOrientation === 'landscape' ? 'landscape'
-    : next.metadata.documentPageOrientation === 'portrait' ? 'portrait' : next.page.width > next.page.height ? 'landscape' : 'portrait'
+  orientation.value = documentPageOrientation(next)
 }, { immediate: true })
 watch([() => props.documentApi, () => props.fieldCacheAdapter, () => model.value,
   () => fieldCacheState.value?.modelRevision, fieldOpenHistoryGeneration, canRefreshFields], () => refreshDocumentFieldsOnOpen(), { immediate: true, flush: 'post' })
@@ -1003,8 +1033,7 @@ function applyInputState(api: FDocument, event: ApiEventMap['DocumentInputStateC
       model.value = next
       documentTitle.value = next.name
       paperSize.value = documentPaperSize(next.page)
-      orientation.value = next.metadata.documentPageOrientation === 'landscape' ? 'landscape'
-        : next.metadata.documentPageOrientation === 'portrait' ? 'portrait' : next.page.width > next.page.height ? 'landscape' : 'portrait'
+      orientation.value = documentPageOrientation(next)
     }
     if (state.location.kind === 'body') {
       const range = state.location.selection, host = state.location.host
@@ -2032,6 +2061,40 @@ function onDocumentLayout(value: DocumentLayout, source: DocumentModel) {
   layout.value = value
   layoutSource.value = source
 }
+function bindTocLayout() {
+  const api = props.documentApi
+  if (!inputStateActive || !api || api.id !== model.value.id) { tocLayoutHandle?.dispose(); tocDialogEditorHandle?.dispose(); return }
+  if (tocLayoutApi === api && tocLayoutHandle?.isCurrent() && tocDialogEditorHandle?.isCurrent()) return
+  tocLayoutHandle?.dispose()
+  tocDialogEditorHandle?.dispose()
+  tocLayoutApi = api
+  tocLayoutHandle = api.bindTocLayout({
+    read: () => {
+      const snapshot = tocLayoutSnapshot.value, publication = tocLayoutPublication.value
+      if (!inputStateActive || documentInputComposing.value || api !== props.documentApi || !snapshot
+        || snapshot.unitId !== api.id || publication?.source !== model.value || api.getModel() !== snapshot.source
+        || api.getModelRevision() !== snapshot.modelRevision || api.getHistoryGeneration() !== snapshot.historyGeneration) return undefined
+      return snapshot
+    },
+    subscribe: listener => { tocLayoutListeners.add(listener); return () => tocLayoutListeners.delete(listener) },
+  })
+  tocDialogEditorHandle = api.bindTocDialogEditor({ openUpdate: () => {
+    if (!inputStateActive || api !== props.documentApi || api.id !== model.value.id || !selectedTocId.value) return false
+    return openTocUpdateDialog(selectedTocId.value)
+  } })
+}
+function onDocumentLayoutState(publication: DocumentTocLayoutPublication) {
+  tocLayoutPublication.value = publication
+  tocLayoutSnapshot.value = undefined
+  const api = props.documentApi
+  if (inputStateActive && api && api.id === model.value.id && publication.source === model.value) {
+    const source = api.getModel()
+    if (source === publication.source || JSON.stringify(source) === JSON.stringify(publication.source)) {
+      tocLayoutSnapshot.value = { ...publication, source, unitId: api.id, modelRevision: api.getModelRevision(), historyGeneration: api.getHistoryGeneration() }
+    }
+  }
+  for (const listener of tocLayoutListeners) listener()
+}
 function onViewportChange(location: DocumentViewportLocation) {
   if (blockHostInspection.value) return
   const target = outlineNavigationTarget.value
@@ -2156,59 +2219,67 @@ function insertTableFromDialog(size: { rows: number; columns: number; options?: 
 }
 function openTocInsertDialog(mode: 'automatic' | 'custom') {
   if (!canInsertToc.value) return
-  if (!buildDocumentTocBlocks(model.value, DEFAULT_DOCUMENT_TOC_OPTIONS).length) {
+  if (mode === 'automatic' && !collectDocumentTocHeadings(model.value, DEFAULT_DOCUMENT_TOC_OPTIONS.levels).length) {
     notify(createRibbonTranslator(officeLocale.value, 'doc')('document.toc.no-headings', 'There are no headings to include in a table of contents.'))
     return
   }
   if (mode === 'automatic') {
     const translate = createRibbonTranslator(officeLocale.value, 'doc')
-    const blocks = buildDocumentTocBlocks(
-      model.value,
-      DEFAULT_DOCUMENT_TOC_OPTIONS,
-      currentTocPageNumbers.value,
-      undefined,
-      [],
-      translate('document.toc.contents-title', 'Contents'),
-    )
-    execute({ id: 'doc.command.paste-blocks', blocks })
+    execute({ id: 'doc.command.insert-table-of-contents', ...DEFAULT_DOCUMENT_TOC_OPTIONS,
+      pageNumbers: currentTocPageNumbers.value, title: translate('document.toc.contents-title', 'Contents') })
     return
   }
+  const target = captureTocDialogTarget()
+  if (!target) return
+  tocDialogTarget.value = target; tocDialogError.value = ''; tocDialogClosingTarget = undefined
   tocDialogOptions.value = { ...DEFAULT_DOCUMENT_TOC_OPTIONS }
   tocDialog.value = { open: true, mode: 'insert', insertMode: 'custom', updateMode: 'pageNumbersOnly' }
 }
 function openTocUpdateDialog(tocId: string) {
-  if (!canEditSelectedToc.value || selectedTocId.value !== tocId) return
+  if (!canEditSelectedToc.value || selectedTocId.value !== tocId) return false
+  const target = captureTocDialogTarget()
+  if (!target) return false
+  tocDialogTarget.value = target; tocDialogError.value = ''; tocDialogClosingTarget = undefined
   tocDialogOptions.value = selectedTocOptions.value
   tocDialog.value = { open: true, mode: 'update', insertMode: 'custom', tocId, updateMode: selectedTocActionStates.value.pageNumbersOnly.available ? 'pageNumbersOnly' : 'all' }
+  return true
+}
+function captureTocDialogTarget(): StructureDialogTarget | undefined {
+  const api = props.documentApi
+  if (api && !api.getInputState()) {
+    if (api.id !== model.value.id || !api.setInputSelection(selection.value)) return undefined
+  }
+  return captureStructureTarget()
+}
+function setTocDialogOpen(open: boolean, restoreFocus = true) {
+  if (open) return
+  const target = tocDialogTarget.value
+  tocDialogClosingTarget = restoreFocus && target && structureTargetCurrent(target) ? target : undefined
+  tocDialog.value = { ...tocDialog.value, open: false }
+  tocDialogTarget.value = undefined
+}
+function onTocDialogClosed() {
+  const target = tocDialogClosingTarget
+  tocDialogClosingTarget = undefined
+  closeStructureDialog(target)
 }
 function applyTocDialog(payload: { options: DocumentTocOptions; updateMode?: DocumentTocUpdateMode }) {
-  if (tocDialog.value.mode === 'insert') {
-    if (!canInsertToc.value) return
-    const translate = createRibbonTranslator(officeLocale.value, 'doc')
-    const blocks = buildDocumentTocBlocks(
-      model.value,
-      payload.options,
-      currentTocPageNumbers.value,
-      undefined,
-      [],
-      translate('document.toc.contents-title', 'Contents'),
-    )
-    if (!blocks.length) {
-      notify(translate('document.toc.no-headings', 'There are no headings to include in a table of contents.'))
-      return
-    }
-    execute({ id: 'doc.command.paste-blocks', blocks })
-    return
-  }
-  const tocId = tocDialog.value.tocId
+  if (!tocDialog.value.open || tocDialogDisabled.value) return
+  const dialog = tocDialog.value, target = tocDialogTarget.value
+  if (!target || !structureTargetCurrent(target)) return
   const updateMode = payload.updateMode ?? 'pageNumbersOnly'
-  if (!tocId || selectedTocId.value !== tocId || !selectedTocActionStates.value[updateMode].available) return
-  execute({
-    id: 'doc.command.update-table-of-contents',
-    tocId,
-    mode: updateMode,
-    pageNumbers: currentTocPageNumbers.value,
-  })
+  if (dialog.mode === 'update' && (!dialog.tocId || selectedTocId.value !== dialog.tocId || !selectedTocActionStates.value[updateMode].available)) return
+  tocDialogError.value = ''
+  const feedback: { selectionCurrent: boolean; modelRevision?: number; error?: string } = { selectionCurrent: true }
+  const command: DocumentCommand = dialog.mode === 'insert'
+    ? { id: 'doc.command.insert-table-of-contents', ...payload.options, pageNumbers: currentTocPageNumbers.value }
+    : { id: 'doc.command.update-table-of-contents', tocId: dialog.tocId!, mode: updateMode, pageNumbers: currentTocPageNumbers.value }
+  const accepted = execute(command, false, feedback)
+  if (tocDialog.value !== dialog) return
+  if (!accepted) { tocDialogError.value = feedback.error ?? '目录未应用，请检查文档、输入位置和编辑权限。'; return }
+  tocDialogClosingTarget = feedback.selectionCurrent ? captureStructureTarget() : undefined
+  tocDialog.value = { ...dialog, open: false }
+  tocDialogTarget.value = undefined
 }
 function dismissTableContextMenu(event?: Event) {
   if (event?.target instanceof HTMLElement && event.target.closest('.document-context-menu')) return
@@ -3177,7 +3248,13 @@ function onRibbonExecute(id: string, params?: unknown) {
       if (params && typeof params === 'object' && 'mode' in params && (params.mode === 'automatic' || params.mode === 'custom')) openTocInsertDialog(params.mode)
       break
     case 'doc.operation.update-table-of-contents':
-      if (params && typeof params === 'object' && 'tocId' in params && typeof params.tocId === 'string') openTocUpdateDialog(params.tocId)
+    case 'doc.operation.open-table-of-contents-dialog':
+      if (params && typeof params === 'object' && 'tocId' in params && params.tocId !== selectedTocId.value) break
+      if (props.documentApi) {
+        try { props.documentApi.openTableOfContentsDialog() }
+        catch (error) { notify(error instanceof Error ? error.message : String(error)) }
+      }
+      else if (selectedTocId.value) openTocUpdateDialog(selectedTocId.value)
       break
     case 'docs.operation.toggle-comment-panel': toggleCommentsPanel(); break
     case 'docs.operation.start-add-comment': startAddComment(); break
@@ -3453,7 +3530,7 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
             @clipboard-copy="(transfer, cut) => copySelection(cut, transfer)" @clipboard-paste="pasteFromCanvas"
             @selection-committed="applyPainter(painter?.format)"
             :stories-enabled="pageMode === 'traditional'" :story="storyLocation" :story-value="storyValue" :story-selection="currentStorySelection" :story-readonly="!canEditStory || storyLinkedToPrevious" :typing-marks="pendingMarks" :capture-input-session="props.documentApi ? captureInputSession : undefined"
-            @open-story="openStory" @close-story="closeActiveStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="onDocumentLayout" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
+            @open-story="openStory" @close-story="closeActiveStory()" @edit-story="editStory" @update:story-selection="onStorySelection" @story-composing="storyComposing = $event" @command="execute" @refresh-fields="refreshSelectedFields" @code-block-exit="leaveCodeBlock" @toggle-format="toggleFormat" @update:selection="onSelection" @navigate-to-heading="jumpToHeading" @context-menu="openDocumentContextMenu" @layout="onDocumentLayout" @layout-state="onDocumentLayoutState" @active-page="activePageIndex = $event" @viewport-change="onViewportChange" @undo="undo" @redo="redo" @save="saveDocument" @notify="notify" />
         </SplitterPanel>
         <SplitterPanel :size="documentDockOpen ? documentDockWidth : 0" :min="documentDockOpen ? 280 : 0" :max="800" :resizable="documentDockOpen" :destroy-on-hidden="false">
           <aside v-if="paragraphSettingsPanelOpen" class="document-settings-dock" :aria-label="createRibbonTranslator(officeLocale, 'doc')('doc.paragraph-settings.title', 'Paragraph settings')">
@@ -3532,11 +3609,13 @@ defineExpose({ save: saveDocument, focus: () => canvasRef.value?.focus() })
       @update:open="setNoteSettingsOpen" @submit="applyNoteSettings" @inspect="openBlockHostInspection" @closed="onNoteSettingsClosed" />
     <DocumentPermissionPanel :open="permissionPanelOpen" :rules="model.permissionRules ?? []" :targets="permissionTargets" :read-only="!canManagePermissionRules" @update:open="permissionPanelOpen = $event" @save="savePermissionRules" />
     <DocumentTableOfContentsDialog
-      v-model:open="tocDialog.open"
+      :open="tocDialog.open"
       :mode="tocDialog.mode"
       :options="tocDialogOptions"
       :update-mode="tocDialog.updateMode"
       :update-states="selectedTocActionStates"
+      :disabled="tocDialogDisabled" :error="tocDialogError"
+      @update:open="setTocDialogOpen" @closed="onTocDialogClosed"
       @apply="applyTocDialog"
     />
   </section>

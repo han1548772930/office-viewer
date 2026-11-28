@@ -17,6 +17,10 @@ import { sceneOffset } from '/packages/office-studio/src/features/document/rende
 const initial = createBlankDocument()
 initial.id = 'toolbar-doc'; initial.name = '工具栏交互文档'
 initial.blocks = [createParagraph('甲乙丙丁')]
+if (new URL(location.href).searchParams.get('initialDocument') === 'without-metadata') {
+  delete initial.metadata
+  initial.page = { ...initial.page, width: 1124, height: 794 }
+}
 const model = ref(initial)
 const workbench = ref()
 const dark = ref(false)
@@ -27,6 +31,17 @@ const copy = (value) => JSON.parse(JSON.stringify(value))
 const update = (value) => { history.value.push(copy(model.value)); redo.value = []; model.value = value }
 window.documentToolbarFixture = {
   snapshot: () => copy(model.value),
+  pageState: () => {
+    const state = workbench.value.$.setupState
+    return { paper: state.paperSize, orientation: state.orientation, title: state.documentTitle, page: copy(state.model.page) }
+  },
+  replaceGeometryDocument: orientation => {
+    const next = copy(model.value)
+    delete next.metadata
+    next.page = { ...next.page, width: 794, height: 1124 }
+    if (orientation !== undefined) next.metadata = { documentPageOrientation: orientation }
+    model.value = next
+  },
   historyDepth: () => history.value.length,
   setDark: value => { dark.value = value },
   showFullscreenTrigger: () => { fullscreenTrigger.value = true },
@@ -214,6 +229,48 @@ beforeEach(async () => {
   }
 }, { timeout: 60_000 })
 afterEach(async () => { await page?.close() })
+
+test('a document without optional metadata mounts, follows geometry on same-document updates and preserves explicit orientation', async () => {
+  await page.goto(baseURL + '?initialDocument=without-metadata')
+  await expect(page.getByRole('textbox', { name: '文档画布编辑区', exact: true })).toBeVisible()
+  await expect(page.locator('.document-statusbar')).toBeVisible()
+  const initial = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+  assert.equal(Object.hasOwn(initial, 'metadata'), false)
+  assert.deepEqual(await page.evaluate(() => window.documentToolbarFixture.pageState()), {
+    paper: 'A4', orientation: 'landscape', title: initial.name, page: initial.page,
+  })
+  await page.evaluate(() => window.documentToolbarFixture.replaceGeometryDocument())
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.pageState().orientation)).toBe('portrait')
+  assert.equal(Object.hasOwn(await page.evaluate(() => window.documentToolbarFixture.snapshot()), 'metadata'), false)
+  await page.evaluate(() => window.documentToolbarFixture.replaceGeometryDocument('landscape'))
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.pageState().orientation)).toBe('landscape')
+  assert.equal(await page.evaluate(() => window.documentToolbarFixture.historyDepth()), 0)
+  assert.deepEqual(errors, [])
+})
+
+test('page setup from a document without metadata preserves editing, undo and redo after initialization', async () => {
+  await page.goto(baseURL + '?initialDocument=without-metadata')
+  await expect(page.getByRole('textbox', { name: '文档画布编辑区', exact: true })).toBeVisible()
+  const before = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+  await page.getByRole('tab', { name: '视图', exact: true }).click()
+  await page.getByRole('button', { name: '页面设置', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '页面设置', exact: true })
+  await dialog.getByRole('spinbutton', { name: '纸张宽度', exact: true }).fill('1200')
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot().page.width)).toBe(1200)
+  const after = await page.evaluate(() => window.documentToolbarFixture.snapshot())
+  assert.equal(after.metadata.documentPageOrientation, 'landscape')
+  assert.deepEqual(after.blocks, before.blocks)
+  assert.equal(await page.evaluate(() => window.documentToolbarFixture.historyDepth()), 1)
+  await page.getByRole('tab', { name: '开始', exact: true }).click()
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot())).toEqual(before)
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.pageState().orientation)).toBe('landscape')
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.documentToolbarFixture.snapshot())).toEqual(after)
+  assert.deepEqual(errors, [])
+})
 
 test('Docs composes a classic Ribbon and a single footer without duplicating the application header', async () => {
   assert.equal(await page.locator('.document-header').count(), 0)

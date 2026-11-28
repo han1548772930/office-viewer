@@ -33,6 +33,15 @@ async function menu(page: Page, name: string, item: string) {
   await click(page, name)
   await page.getByRole('menu', { name, exact: true }).getByRole('button', { name: item, exact: true }).click()
 }
+async function functionParameters(page: Page, name: string): Promise<Locator> {
+  await click(page, '常用与统计')
+  await page.getByRole('menu', { name: '常用与统计', exact: true }).getByRole('menuitem', { name: '插入函数', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
+  await dialog.getByRole('combobox', { name: '函数名称', exact: true }).click()
+  await dialog.getByRole('combobox', { name: '函数名称', exact: true }).fill(name)
+  await page.locator('.ant-select-dropdown:visible .ant-select-item-option').filter({ hasText: `${name} · ` }).click()
+  return dialog
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
@@ -173,13 +182,13 @@ test('narrow Ribbon keeps new format controls executable through overflow and Pr
   await expect(page.getByRole('dialog', { name: '切片器与时间线', exact: true })).toBeVisible()
 })
 
-test('function menu opens its parameter form and saves the confirmed formula through history', async ({ page }) => {
+test('the explicit function picker preserves parameter validation and saves the confirmed formula through history', async ({ page }) => {
   await address(page, 'C1')
   await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
   await click(page, '常用与统计')
   const commonMenu = page.getByRole('menu', { name: '常用与统计', exact: true })
   await expect(commonMenu.getByRole('menuitem')).toHaveText(['SUMIF', 'SUM', 'AVERAGE', 'IF', 'COUNT', 'SIN', 'MAX', '插入函数'])
-  await commonMenu.getByRole('menuitem', { name: 'SUM', exact: true }).click()
+  await commonMenu.getByRole('menuitem', { name: '插入函数', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
   await expect(dialog.getByText('SUM · 求和', { exact: true })).toBeVisible()
   await expect(dialog.locator('p').first()).toContainText('数学')
@@ -209,22 +218,61 @@ test('function menu opens its parameter form and saves the confirmed formula thr
   await expect.poll(async () => (await cell(page, '0:2'))?.value).toBe(1234.75)
 })
 
-test('function categories retain the selected name and zero-argument functions enter editing directly', async ({ page }) => {
+test('function categories insert batch totals in one reversible history action and retain the selected source cells', async ({ page }) => {
+  await address(page, 'A1:B4')
+  const before = await state(page)
+  const depth = await page.evaluate(async () => {
+    const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio } = await import(path) as RuntimeModule
+    return studio.editor.history.units[studio.activeWorkbookId]!.undo.length
+  })
+  await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
+  await click(page, '常用与统计')
+  await page.getByRole('menu', { name: '常用与统计', exact: true }).getByRole('menuitem', { name: 'SUM', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '插入函数', exact: true })).toBeHidden()
+  await expect.poll(async () => (await cell(page, '4:0'))?.formula).toBe('=SUM(A1:A4)')
+  await expect.poll(async () => (await cell(page, '4:1'))?.formula).toBe('=SUM(B1:B4)')
+  await expect.poll(async () => (await cell(page, '4:1'))?.value).toBe(100)
+  expect((await state(page)).sheets[0]!.cells['3:0']?.value).toBe(before.sheets[0]!.cells['3:0']?.value)
+  expect(await page.evaluate(async () => {
+    const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { studio } = await import(path) as RuntimeModule
+    return studio.editor.history.units[studio.activeWorkbookId]!.undo.length
+  })).toBe(depth + 1)
+  await ribbon(page).getByRole('tab', { name: '开始', exact: true }).click()
+  await click(page, '撤销')
+  await expect.poll(async () => (await cell(page, '4:0'))?.formula).toBeUndefined()
+  await click(page, '重做')
+  await expect.poll(async () => (await cell(page, '4:1'))?.value).toBe(100)
+})
+
+test('Alt equals opens an uncommitted automatic sum in the formula input and commits through its existing input session', async ({ page }) => {
+  await address(page, 'B5')
+  const grid = page.getByRole('grid', { name: '工作表画布', exact: true })
+  await grid.focus(); await grid.press('Alt+=')
+  const formula = page.getByRole('textbox', { name: '公式编辑', exact: true })
+  await expect(formula).toHaveValue('=SUM(B1:B4')
+  expect((await cell(page, '4:1'))?.formula).toBeUndefined()
+  await formula.fill('=SUM(B1:B4)')
+  await page.getByRole('button', { name: '确认编辑', exact: true }).click()
+  await expect.poll(async () => (await cell(page, '4:1'))?.value).toBe(100)
+  await click(page, '撤销')
+  await expect.poll(async () => (await cell(page, '4:1'))?.formula).toBeUndefined()
+})
+
+test('function categories start automatic range editing while the explicit picker retains scalar and zero-argument parameters', async ({ page }) => {
   await address(page, 'C1')
   await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
   await click(page, '数学')
   await page.getByRole('menu', { name: '数学', exact: true }).getByRole('menuitem', { name: 'ABS', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
-  await expect(dialog).toBeVisible()
-  await expect(dialog.getByText('ABS · 绝对值', { exact: true })).toBeVisible()
-  await expect(dialog.locator('p').first()).toContainText('数学')
-  await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(dialog).toBeHidden()
+  await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue('=ABS(A1:B1')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
   await expect(page.getByRole('button', { name: '确认编辑', exact: true })).toBeDisabled()
   expect((await cell(page, '0:2'))?.formula).toBeUndefined()
 
-  await click(page, '逻辑')
-  await page.getByRole('menu', { name: '逻辑', exact: true }).getByRole('menuitem', { name: 'IF', exact: true }).click()
+  await functionParameters(page, 'IF')
   await expect(dialog.getByText('IF · 条件判断', { exact: true })).toBeVisible()
   await expect(dialog.locator('p').first()).toContainText('逻辑')
   await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill('A1>0,"yes","no"')
@@ -332,9 +380,9 @@ test('function categories retain the selected name and zero-argument functions e
     ['信息', 'ISEMAIL', '检查邮件地址', '"developer@univer.ai"', true],
     ['信息', 'ISURL', '检查网址', '"univer.ai"', true],
   ] as const) {
-    await click(page, category)
-    await page.getByRole('menu', { name: category, exact: true }).getByRole('menuitem', { name, exact: true }).click()
+    await functionParameters(page, name)
     await expect(dialog.getByText(`${name} · ${label}`, { exact: true })).toBeVisible()
+    await expect(dialog.locator('p').first()).toContainText(category)
     await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill(argumentsText)
     await dialog.getByRole('button', { name: '插入到公式栏', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue(`=${name}(${argumentsText})`)
@@ -349,9 +397,8 @@ test('function categories retain the selected name and zero-argument functions e
   }
 
   for (const name of ['TRUE', 'FALSE', 'NOW', 'TODAY', 'NA', 'PI', 'RAND', 'SHEETS']) {
-    const category = name === 'NA' || name === 'SHEETS' ? '信息' : name === 'PI' || name === 'RAND' ? '数学' : name === 'TRUE' || name === 'FALSE' ? '逻辑' : '日期与时间'
-    await click(page, category)
-    await page.getByRole('menu', { name: category, exact: true }).getByRole('menuitem', { name, exact: true }).click()
+    await functionParameters(page, name)
+    await dialog.getByRole('button', { name: '插入到公式栏', exact: true }).click()
     await expect(dialog).toBeHidden()
     await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue(`=${name}()`)
     if (name === 'PI' || name === 'SHEETS') {
@@ -384,9 +431,12 @@ test('information menu evaluates its selected predicate through editing, history
   await click(page, '信息')
   const functions = page.getByRole('menu', { name: '信息', exact: true })
   await expect(functions.getByRole('menuitem')).toHaveText([
-    'ERROR.TYPE', 'ISBETWEEN', 'ISBLANK', 'ISEMAIL', 'ISERR', 'ISERROR', 'ISEVEN', 'ISFORMULA', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISODD', 'ISREF', 'ISTEXT', 'ISURL', 'N', 'NA', 'SHEET', 'SHEETS', 'TYPE',
+    'ERROR.TYPE', 'ISBETWEEN', 'ISBLANK', 'ISDATE', 'ISEMAIL', 'ISERR', 'ISERROR', 'ISEVEN', 'ISFORMULA', 'ISLOGICAL', 'ISNA', 'ISNONTEXT', 'ISNUMBER', 'ISODD', 'ISREF', 'ISTEXT', 'ISURL', 'N', 'NA', 'SHEET', 'SHEETS', 'TYPE',
   ])
   await functions.getByRole('menuitem', { name: 'ISERROR', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '公式编辑', exact: true })).toHaveValue('=ISERROR(A1:B1')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await functionParameters(page, 'ISERROR')
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
   await expect(dialog.getByText('ISERROR · 检查错误', { exact: true })).toBeVisible()
   await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill('1/0')
@@ -425,8 +475,7 @@ test('formula menus and the open parameter form follow the whole selection permi
   })
   await address(page, 'C1')
   await ribbon(page).getByRole('tab', { name: '公式', exact: true }).click()
-  await click(page, '数学')
-  await page.getByRole('menu', { name: '数学', exact: true }).getByRole('menuitem', { name: 'ABS', exact: true }).click()
+  await functionParameters(page, 'ABS')
   const dialog = page.getByRole('dialog', { name: '插入函数', exact: true })
   await dialog.getByRole('textbox', { name: '函数参数', exact: true }).fill('-5')
   await page.evaluate(async () => {

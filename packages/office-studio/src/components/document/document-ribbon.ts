@@ -370,7 +370,7 @@ export function createDocumentRibbon(context: DocumentRibbonContext, translate?:
         title: tocLabel('document.toc.manage', 'Manage'),
         order: 0,
         items: [
-          action('doc-update-table-of-contents', tocLabel('document.toc.update', 'Update Table of Contents'), ListTree, 'doc.operation.update-table-of-contents', { tocId }, {
+          action('doc-update-table-of-contents', tocLabel('document.toc.update', 'Update Table of Contents'), ListTree, 'doc.operation.open-table-of-contents-dialog', { tocId }, {
             showLabel: true,
             disabled: context.tableOfContents.updateDisabled ?? context.tableOfContents.editDisabled,
             disabledReason: context.tableOfContents.updateReason,
@@ -492,7 +492,7 @@ export function documentTocContextMenuItems(tocId: string, states: boolean | Doc
   const update: DocumentTocActionState = typeof states === 'boolean' ? { available: !states } : states.update
   const remove: DocumentTocActionState = typeof states === 'boolean' ? { available: !states } : states.delete
   return [
-    { id: 'doc-context-update-table-of-contents', type: 'button', title: label('document.toc.update', 'Update Table of Contents'), commandId: 'doc.operation.update-table-of-contents', params: { tocId }, disabled: !update.available, disabledReason: update.reason, order: -1 },
+    { id: 'doc-context-update-table-of-contents', type: 'button', title: label('document.toc.update', 'Update Table of Contents'), commandId: 'doc.operation.open-table-of-contents-dialog', params: { tocId }, disabled: !update.available, disabledReason: update.reason, order: -1 },
     { id: 'doc-context-delete-table-of-contents', type: 'button', title: label('document.toc.delete', 'Remove Table of Contents'), commandId: 'doc.command.delete-table-of-contents', params: { tocId }, disabled: !remove.available, disabledReason: remove.reason, order: -0.5 },
   ]
 }

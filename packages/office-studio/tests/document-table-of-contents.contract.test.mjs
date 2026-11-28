@@ -624,11 +624,11 @@ test('contextual TOC tab and Layout context entries dispatch update and delete w
   const contextual = tabs.find((tab) => tab.id === 'table-of-contents')
   assert.equal(contextual.contextual, true)
   assert.deepEqual(contextual.groups[0].items.map((item) => [item.commandId, item.params]), [
-    ['doc.operation.update-table-of-contents', { tocId: 'toc-active' }],
+    ['doc.operation.open-table-of-contents-dialog', { tocId: 'toc-active' }],
     ['doc.command.delete-table-of-contents', { tocId: 'toc-active' }],
   ])
   assert.deepEqual(documentTocContextMenuItems(tocId, false).map((item) => item.commandId), [
-    'doc.operation.update-table-of-contents',
+    'doc.operation.open-table-of-contents-dialog',
     'doc.command.delete-table-of-contents',
   ])
   assert.equal(documentTocIdForSelection(document, {

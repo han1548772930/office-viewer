@@ -20,6 +20,7 @@ import { documentLatexCanvasRequestCurrent, type DocumentLatexCanvasEditRequest 
 import { documentLatexDragAnchor, hitTestDocumentLatex, type DocumentLatexHit } from '../../features/document/layout/document-latex-hit'
 import DocumentStructuredOverlay from './DocumentStructuredOverlay.vue'
 import { documentTocHeadingTarget } from '../../features/document/toc/document-toc'
+import type { DocumentTocLayoutPublication } from '../../features/document/toc/document-toc-pagination'
 import { documentHyperlinkForSelection } from '../../features/document/services/document-hyperlinks'
 import { documentSegmentIdForHost } from '../../api/document-segments'
 import type { StoryLocation } from '../../features/document/services/story-editor'
@@ -87,6 +88,7 @@ const emit = defineEmits<{
   'note-navigation': [request: DocumentNoteCanvasNavigationRequest]
   'context-menu': [payload: { x: number; y: number; point: DocumentPoint; source?: DocumentModel; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost }]
   layout: [layout: DocumentLayout, source: DocumentModel]
+  'layout-state': [publication: DocumentTocLayoutPublication]
   'active-page': [page: number]
   'viewport-change': [location: DocumentViewportLocation]
   undo: []
@@ -233,7 +235,24 @@ let active = true
 let nextPasteMode: DocumentPasteMode = 'source'
 let viewportRestoreVersion = 0
 let pendingContentControlFocus: DocumentContentControlFocusToken | undefined
-const measurer = createTextMeasurer()
+let measurer = createTextMeasurer()
+let layoutGeneration = 0
+let fontVersion = 0
+let fontSet: FontFaceSet | undefined
+let fontsReady = false
+function publishLayoutState(complete = false) {
+  emit('layout-state', { source: displayModel.value, layoutGeneration, fontVersion,
+    complete: complete && active && !disposed && !preview.value && !composing.value && !storyComposing.value
+      && !inspectionActive.value && fontsReady && fontSet?.status !== 'loading',
+    layout: sourceLayout.value, engine: 'main-thread' })
+}
+function fontsLoading() { fontVersion++; fontsReady = false; publishLayoutState() }
+function fontsChanged() {
+  fontVersion++; fontsReady = fontSet?.status !== 'loading'
+  // Widths cached for fallback fonts cannot serve a new font generation.
+  measurer = createTextMeasurer(hostRef.value?.ownerDocument)
+  if (!disposed && active) relayout()
+}
 const { inputValue: storyInputValue, composing: storyComposing, bridgeVersion: storyBridgeVersion, storyRange, storyEventIsCurrent, syncStorySelection, focusStory, storyInputChanged,
   captureStoryInput, storyCompositionStart, storyCompositionEnd, storyFocused, cancelStoryInput } = useDocumentStoryInput(props, {
   element: storyElement, layout: () => layout.value, active: () => active && !disposed,
@@ -528,7 +547,10 @@ watch(() => props.captureInputSession?.(), () => {
   clearNoteHover()
   if (composing.value && !bodyCompositionCurrent()) cancelBodyComposition(false)
 }, { flush: 'sync' })
-watch([composing, storyComposing], ([body, story]) => { if (body || story) clearNoteHover() })
+watch([composing, storyComposing], ([body, story]) => {
+  if (body || story) { clearNoteHover(); publishLayoutState() }
+  else if (!disposed && active) publishLayoutState(true)
+}, { flush: 'sync' })
 watch(() => props.searchMatches, requestDraw, { deep: true })
 watch(codeScrollOffsets, requestDraw)
 watch(() => props.model.id, () => { codeScrollOffsets.value = {} })
@@ -555,9 +577,10 @@ watch(() => props.zoom, (zoom) => {
   })
 })
 
-onActivated(() => { active = true; contentControlActive.value = true; void nextTick(resize) })
+onActivated(() => { active = true; contentControlActive.value = true; void nextTick(() => { resize(); relayout() }) })
 onDeactivated(() => {
   active = false
+  publishLayoutState()
   nextPasteMode = 'source'
   cancelImageGesture(); imageContextPoint.value = undefined
   clearNoteHover()
@@ -585,6 +608,13 @@ onDeactivated(() => {
 
 onMounted(async () => {
   if (!hostRef.value || !scrollRef.value) return
+  fontSet = hostRef.value.ownerDocument.fonts
+  measurer = createTextMeasurer(hostRef.value.ownerDocument)
+  fontsReady = !fontSet
+  fontSet?.addEventListener('loading', fontsLoading)
+  fontSet?.addEventListener('loadingdone', fontsChanged)
+  fontSet?.addEventListener('loadingerror', fontsChanged)
+  void fontSet?.ready.then(() => { if (!disposed) fontsChanged() })
   resize()
   relayout()
   try {
@@ -597,13 +627,16 @@ onMounted(async () => {
     watchDevicePixelRatio()
     window.addEventListener('resize', onViewportResize)
     window.visualViewport?.addEventListener('resize', onViewportResize)
-    document.fonts?.ready.then(() => { if (!disposed) relayout() })
     blink = setInterval(() => { caretVisible.value = !caretVisible.value; requestDraw() }, 530)
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
 })
 
 onUnmounted(() => {
   disposed = true
+  publishLayoutState()
+  fontSet?.removeEventListener('loading', fontsLoading)
+  fontSet?.removeEventListener('loadingdone', fontsChanged)
+  fontSet?.removeEventListener('loadingerror', fontsChanged)
   cancelImageGesture()
   structuredOverlay.value?.cancelInteraction()
   clearNoteHover()
@@ -653,6 +686,8 @@ function onViewportResize() {
 
 function relayout() {
   if (disposed) return
+  layoutGeneration++
+  publishLayoutState()
   sourceLayout.value = inspectionActive.value ? layoutDocumentBlockHostInspection(displayModel.value, props.inspectionHost!, measurer)
     : layoutDocument(displayModel.value, measurer)
   codeScrollOffsets.value = clampDocumentCodeScrollOffsets(sourceLayout.value, codeScrollOffsets.value)
@@ -676,6 +711,7 @@ function relayout() {
     source.src = image.src
   }
   emit('layout', sourceLayout.value, displayModel.value)
+  publishLayoutState(true)
   publishViewport('layout')
   void nextTick(() => { if (!disposed) syncViewport('layout') })
   requestDraw()

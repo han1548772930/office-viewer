@@ -8,6 +8,7 @@ import { cloneDocumentInputLocation, cloneDocumentInputMarks, cloneDocumentInput
 import { rebaseDocumentTableViewSelection } from '../model/document-table-selection.ts'
 import { sameDocumentBlockHost } from '../model/document-block-host.ts'
 import { documentModelForBlockHost } from '../services/document-block-host.ts'
+import { normalizeDocumentHeadingSelection } from '../headings/heading-collapse'
 
 /** Typing preferences belong to a document session and never enter its content snapshot or undo stack. */
 export const useDocumentInputStore = defineStore('document-input', () => {
@@ -75,9 +76,11 @@ export const useDocumentInputStore = defineStore('document-input', () => {
       try { view = rebaseDocumentTableViewSelection(previousScope, currentScope, view, true) }
       catch (error) { if (error instanceof RangeError || error instanceof TypeError) view = undefined; else throw error }
     }
-    const location: DocumentInputLocation = { kind: 'body', ...(host ? { host: { ...host } } : {}), selection: sanitizeDocumentInputSelection(currentScope, {
+    const sanitized = sanitizeDocumentInputSelection(currentScope, {
       anchor: { ...selection.anchor }, focus: { ...selection.focus }, ...(view ? { tableSelection: view } : {}),
-    }) }
+    })
+    const location: DocumentInputLocation = { kind: 'body', ...(host ? { host: { ...host } } : {}),
+      selection: host ? sanitized : normalizeDocumentHeadingSelection(currentScope, sanitized) }
     if (sameDocumentInputLocation(previous.location, location)) return false
     const source = revalidatedSources.get(unitId)
     if (!source || source.generation !== previous.generation || source.modelRevision !== previous.modelRevision) revalidatedSources.set(unitId, {

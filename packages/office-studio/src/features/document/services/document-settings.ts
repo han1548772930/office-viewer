@@ -24,6 +24,14 @@ export interface DocumentPageSetupRequest {
 
 export const DOCUMENT_MODERN_PAGE_MARGIN = 50 / 0.75
 
+/** Imported documents may omit metadata; their page geometry remains authoritative. */
+export function documentPageOrientation(model: Pick<DocumentModel, 'page' | 'metadata'>): 'portrait' | 'landscape' {
+  const metadata = model.metadata ?? {}
+  const orientation = metadata.documentPageOrientation
+  if (orientation === 'portrait' || orientation === 'landscape') return orientation
+  return model.page.width > model.page.height ? 'landscape' : 'portrait'
+}
+
 /** Validate public and editor DTOs before creating a candidate or touching input state. */
 export function assertDocumentPageSetupRequest(value: unknown): asserts value is DocumentPageSetupRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('页面设置参数无效。')
@@ -51,7 +59,7 @@ export function prepareDocumentPageSetup(model: DocumentModel, request: Document
   const candidate = cloneModel(model)
   candidate.page = page
   if (request.documentFlavor !== undefined) candidate.metadata = { ...candidate.metadata, documentFlavor: request.documentFlavor, documentFlavorContract: 'univer' }
-  const modern = candidate.metadata.documentFlavor === 2
+  const modern = candidate.metadata?.documentFlavor === 2
   const orientation = request.pageOrient === 1 ? 'landscape' : 'portrait'
   candidate.metadata = { ...candidate.metadata, documentPageOrientation: orientation }
   if (!modern) {
@@ -61,7 +69,7 @@ export function prepareDocumentPageSetup(model: DocumentModel, request: Document
     }
   }
   for (const id of documentSectionIds(candidate)) documentEffectiveSectionSetup(candidate, id)
-  const oldContentWidth = model.page.width - (model.metadata.documentFlavor === 2 ? DOCUMENT_MODERN_PAGE_MARGIN * 2 : model.page.marginLeft + model.page.marginRight)
+  const oldContentWidth = model.page.width - (model.metadata?.documentFlavor === 2 ? DOCUMENT_MODERN_PAGE_MARGIN * 2 : model.page.marginLeft + model.page.marginRight)
   const newContentWidth = page.width - (modern ? DOCUMENT_MODERN_PAGE_MARGIN * 2 : page.marginLeft + page.marginRight)
   if (Math.abs(oldContentWidth - newContentWidth) <= 2) return candidate
   const resizeTables = (blocks: DocumentBlock[]) => {
@@ -239,7 +247,8 @@ export function documentEffectiveSectionSetup(model: DocumentModel, sectionId: s
     marginTop: source.marginTop ?? model.page.marginTop, marginBottom: source.marginBottom ?? model.page.marginBottom,
     marginLeft: source.marginLeft ?? model.page.marginLeft, marginRight: source.marginRight ?? model.page.marginRight,
   }
-  const modern = model.metadata.documentFlavor === 2
+  const metadata = model.metadata ?? {}
+  const modern = metadata.documentFlavor === 2
   const page = modern ? { ...model.page, marginTop: DOCUMENT_MODERN_PAGE_MARGIN, marginBottom: DOCUMENT_MODERN_PAGE_MARGIN,
     marginLeft: DOCUMENT_MODERN_PAGE_MARGIN, marginRight: DOCUMENT_MODERN_PAGE_MARGIN } : nominalPage
   const contentWidth = page.width - page.marginLeft - page.marginRight
@@ -252,7 +261,7 @@ export function documentEffectiveSectionSetup(model: DocumentModel, sectionId: s
   const explicit = sectionId === DEFAULT_DOCUMENT_SECTION_ID ? model.sectionSetup
     : model.blocks.find(block => block.id === sectionId)?.sectionBreak?.setup
   return {
-    sectionId, page, orientation: modern ? (model.metadata.documentPageOrientation === 'landscape' ? 'landscape' : 'portrait') : source.orientation ?? (page.width > page.height ? 'landscape' : 'portrait'),
+    sectionId, page, orientation: modern ? (metadata.documentPageOrientation === 'landscape' ? 'landscape' : 'portrait') : source.orientation ?? (page.width > page.height ? 'landscape' : 'portrait'),
     columnCount, columnGap, columnSeparator: source.columnSeparator ?? 'none',
     ...(explicit?.pageNumberStart === undefined ? {} : { pageNumberStart: explicit.pageNumberStart }),
     marginHeader: source.marginHeader ?? 48, marginFooter: source.marginFooter ?? 48,

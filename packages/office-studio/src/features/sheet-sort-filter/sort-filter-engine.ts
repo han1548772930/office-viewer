@@ -1,9 +1,12 @@
-import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator,
+import type { CellRange, CellScalar, SpreadsheetCell, SpreadsheetSheet, SheetAutoFilter, SheetFilterCriteria, SheetFilterConditionOperator, WorkbookModel,
   SheetSortCriterion } from '../../domain/model'
 import { sheetRowHeight, sheetAxisSpanAt } from '../../domain/sheet-axis.ts'
 import { compilePivotRecordSelection, normalizePivotRecordSelection } from '../pivot/services/pivot-filter-predicate.ts'
 import { sheetCellRecordValue } from '../sheet-workbench/sheet-record-value.ts'
 import { getSheetOutlineHiddenSpans } from '../sheet-outline/sheet-outline.ts'
+import { canonicalSheetFilterColor, createSheetFilterColorReader } from './sheet-filter-colors.ts'
+import { sheetFilterColumnEntries } from './sheet-filter-column.ts'
+export { canonicalSheetFilterColor } from './sheet-filter-colors.ts'
 export type { SheetSortDirection, SheetSortCriterion, SheetFilterConditionOperator, SheetValueFilter, SheetConditionFilter,
   SheetFilterCriteria, SheetAutoFilter } from '../../domain/model.ts'
 type FilteredSpreadsheetSheet = SpreadsheetSheet & { autoFilter?: SheetAutoFilter }
@@ -25,27 +28,37 @@ export function normalizeAutoFilterRange(range: CellRange, sheet: FilteredSpread
   return { ...range }
 }
 
-export function setAutoFilter(sheet: FilteredSpreadsheetSheet, range: CellRange | null): void {
+export function setAutoFilter(sheet: FilteredSpreadsheetSheet, range: CellRange | null, workbook?: WorkbookModel): void {
   if (range === null) { sheet.autoFilter = undefined; return }
   const normalized = normalizeAutoFilterRange(range, sheet)
   const previous = sheet.autoFilter
   const columns = previous && sameRange(previous.range, normalized) ? previous.columns : {}
   sheet.autoFilter = { range: normalized, columns: cloneCriteria(columns), filteredRows: [] }
-  refreshAutoFilter(sheet)
+  refreshAutoFilter(sheet, workbook)
 }
 
-export function setFilterCriteria(sheet: FilteredSpreadsheetSheet, column: number, criteria: SheetFilterCriteria | null): void {
+export function setFilterCriteria(sheet: FilteredSpreadsheetSheet, column: number, criteria: SheetFilterCriteria | null, workbook?: WorkbookModel): void {
   const filter = sheet.autoFilter
   if (!filter) throw new Error('Create an auto-filter before setting column criteria')
   if (!Number.isInteger(column) || column < filter.range.startCol || column > filter.range.endCol) throw new RangeError('Filter column must be inside the auto-filter range')
   if (criteria === null) delete filter.columns[column]
   else filter.columns[column] = normalizeCriteria(criteria)
-  refreshAutoFilter(sheet)
+  refreshAutoFilter(sheet, workbook)
 }
 
 /** Derive source UI state with the same native cell/error and condition semantics as row filtering. */
-export function compileSheetCellFilterCriteria(criteria: SheetFilterCriteria): (cell: SpreadsheetCell | undefined) => boolean {
+export function compileSheetCellFilterCriteria(criteria: SheetFilterCriteria, context?: { sheet: SpreadsheetSheet; workbook?: WorkbookModel }): (cell: SpreadsheetCell | undefined, row?: number, column?: number) => boolean {
   const normalized = normalizeCriteria(criteria)
+  if (normalized.kind === 'color') {
+    const fills = normalized.cellFillColors && new Set(normalized.cellFillColors.map(color => color === null ? null : canonicalSheetFilterColor(color)))
+    const text = normalized.cellTextColors && new Set(normalized.cellTextColors.map(canonicalSheetFilterColor))
+    const colors = context && createSheetFilterColorReader(context.sheet, context.workbook)
+    return (cell, row, column) => {
+      const resolved = colors?.(cell?.row ?? row ?? 0, cell?.col ?? column ?? 0, cell)
+      if (fills) return fills.has(resolved ? resolved.fill : cell?.style.fill == null ? null : canonicalSheetFilterColor(cell.style.fill))
+      return text?.has(resolved?.text ?? canonicalSheetFilterColor(cell?.style.font.color ?? '#000000')) ?? false
+    }
+  }
   if (normalized.kind === 'values' && normalized.recordSelection) {
     const matches = compilePivotRecordSelection(normalized.recordSelection)
     return cell => matches(cell?.value ?? null, sheetCellRecordValue(cell, normalized.recordDate1904))
@@ -53,7 +66,7 @@ export function compileSheetCellFilterCriteria(criteria: SheetFilterCriteria): (
   return cell => matchesCriteria(readCellValue(cell), normalized)
 }
 
-export function clearFilter(sheet: FilteredSpreadsheetSheet, column?: number): void {
+export function clearFilter(sheet: FilteredSpreadsheetSheet, column?: number, workbook?: WorkbookModel): void {
   const filter = sheet.autoFilter
   if (!filter) return
   if (column === undefined) filter.columns = {}
@@ -61,24 +74,32 @@ export function clearFilter(sheet: FilteredSpreadsheetSheet, column?: number): v
     if (!Number.isInteger(column) || column < filter.range.startCol || column > filter.range.endCol) throw new RangeError('Filter column must be inside the auto-filter range')
     delete filter.columns[column]
   }
-  refreshAutoFilter(sheet)
+  refreshAutoFilter(sheet, workbook)
 }
 
-export function refreshAutoFilter(sheet: FilteredSpreadsheetSheet): number[] {
+export function refreshAutoFilter(sheet: FilteredSpreadsheetSheet, workbook?: WorkbookModel): number[] {
   const filter = sheet.autoFilter
   if (!filter) return []
   normalizeAutoFilterRange(filter.range, sheet)
-  const hidden: number[] = []
-  const predicates = Object.entries(filter.columns).map(([column, criteria]) => ({ column: Number(column), matches: compileSheetCellFilterCriteria(criteria) }))
-  for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
-    const visible = predicates.every(({ column, matches }) => matches(sheet.cells[cellKey(row, column)]))
-    if (!visible) hidden.push(row)
+  const hidden = new Set<number>()
+  for (const [column, criteria] of Object.entries(filter.columns)) {
+    for (const row of sheetFilterColumnHiddenRows(sheet, filter.range, Number(column), criteria, workbook)) hidden.add(row)
   }
-  filter.filteredRows = hidden
-  return [...hidden]
+  filter.filteredRows = [...hidden].sort((left, right) => left - right)
+  return [...filter.filteredRows]
 }
 
-export function sortRange(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], order?: readonly number[], options: SortRangeOptions = {}, translateFormula?: FormulaReferenceTranslator): void {
+/** Compute one column independently; unioning columns preserves merged group failures and other hide reasons. */
+export function sheetFilterColumnHiddenRows(sheet: SpreadsheetSheet, range: CellRange, column: number, criteria: SheetFilterCriteria, workbook?: WorkbookModel): Set<number> {
+  const matches = compileSheetCellFilterCriteria(criteria, { sheet, workbook }), hidden = new Set<number>()
+  for (const entry of sheetFilterColumnEntries(sheet, range, column)) {
+    if (matches(entry.cell, entry.row, entry.column)) continue
+    for (let offset = 0; offset < entry.rowSpan; offset++) hidden.add(entry.row + offset)
+  }
+  return hidden
+}
+
+export function sortRange(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], order?: readonly number[], options: SortRangeOptions = {}, translateFormula?: FormulaReferenceTranslator, workbook?: WorkbookModel): void {
   validateRange(range)
   if (range.endRow >= getRowCount(sheet) || range.endCol >= getColumnCount(sheet)) throw new RangeError('Sort range exceeds worksheet bounds')
   if (!criteria.length) throw new TypeError('At least one sort criterion is required')
@@ -100,7 +121,7 @@ export function sortRange(sheet: FilteredSpreadsheetSheet, range: CellRange, cri
     }
     return cells
   })
-  const orderedIndices = order ? [...order] : getSortedRowOrder(sheet, range, criteria, options)
+  const orderedIndices = order ? [...order] : getSortedRowOrder(sheet, range, criteria, options, workbook)
   // Resolve every moved formula before mutating the sheet. A failed reference
   // translation must not leave an emptied or partially reordered range.
   const sortedCells: Array<[string, SpreadsheetCell]> = []
@@ -119,13 +140,13 @@ export function sortRange(sheet: FilteredSpreadsheetSheet, range: CellRange, cri
     for (let column = range.startCol; column <= range.endCol; column += 1) delete sheet.cells[cellKey(row, column)]
   }
   for (const [key, cell] of sortedCells) sheet.cells[key] = cell
-  if (sheet.autoFilter && rangesIntersect(sheet.autoFilter.range, range)) refreshAutoFilter(sheet)
+  if (sheet.autoFilter && rangesIntersect(sheet.autoFilter.range, range)) refreshAutoFilter(sheet, workbook)
 }
 
 /** Returns stable data-row offsets suitable for a Worker-produced order. */
-export function getSortedRowOrder(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], options: SortRangeOptions = {}): number[] {
+export function getSortedRowOrder(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], options: SortRangeOptions = {}, workbook?: WorkbookModel): number[] {
   validateRange(range)
-  if (sheet.autoFilter) refreshAutoFilter(sheet)
+  if (sheet.autoFilter) refreshAutoFilter(sheet, workbook)
   if (!criteria.length) throw new TypeError('At least one sort criterion is required')
   for (const criterion of criteria) {
     if (!Number.isInteger(criterion.column) || criterion.column < range.startCol || criterion.column > range.endCol) throw new RangeError('Sort key must be inside the sorted range')
@@ -133,7 +154,7 @@ export function getSortedRowOrder(sheet: FilteredSpreadsheetSheet, range: CellRa
   }
   const firstDataRow = range.startRow + (options.hasHeader ? 1 : 0)
   const count = Math.max(0, range.endRow - firstDataRow + 1)
-  const destinationOffsets = getSortableRowOffsets(sheet, range, options)
+  const destinationOffsets = getSortableRowOffsets(sheet, range, options, workbook)
   const visibleOrder = [...destinationOffsets]
   const collator = new Intl.Collator(options.locale ?? 'zh-CN', { numeric: true, sensitivity: 'base' })
   visibleOrder.sort((left, right) => {
@@ -155,9 +176,9 @@ export function getSortedRowOrder(sheet: FilteredSpreadsheetSheet, range: CellRa
   return order
 }
 
-export function getNumericSortColumns(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], options: SortRangeOptions = {}): NumericSortColumnData | null {
+export function getNumericSortColumns(sheet: FilteredSpreadsheetSheet, range: CellRange, criteria: readonly SheetSortCriterion[], options: SortRangeOptions = {}, workbook?: WorkbookModel): NumericSortColumnData | null {
   if (!criteria.length || criteria.some((criterion) => criterion.column < range.startCol || criterion.column > range.endCol)) return null
-  const destinationOffsets = getSortableRowOffsets(sheet, range, options)
+  const destinationOffsets = getSortableRowOffsets(sheet, range, options, workbook)
   const rowCount = destinationOffsets.length
   const first = range.startRow + (options.hasHeader ? 1 : 0)
   const columns = criteria.map((criterion) => destinationOffsets.map((offset) => {
@@ -179,9 +200,9 @@ export function expandVisibleSortOrder(rowCount: number, destinationOffsets: rea
   return order
 }
 
-export function getSortableRowOffsets(sheet: FilteredSpreadsheetSheet, range: CellRange, options: SortRangeOptions = {}): number[] {
+export function getSortableRowOffsets(sheet: FilteredSpreadsheetSheet, range: CellRange, options: SortRangeOptions = {}, workbook?: WorkbookModel): number[] {
   const first = range.startRow + (options.hasHeader ? 1 : 0)
-  const filtered = new Set(sheet.autoFilter ? refreshAutoFilter(sheet) : [])
+  const filtered = new Set(sheet.autoFilter ? refreshAutoFilter(sheet, workbook) : [])
   const manuallyHidden = new Set(sheet.hiddenRows ?? [])
   const outlineHidden = sheet.outline ? getSheetOutlineHiddenSpans(sheet.outline, 'row', sheet.rowCount ?? 1_048_576) : []
   const result: number[] = []
@@ -193,8 +214,8 @@ export function getSortableRowOffsets(sheet: FilteredSpreadsheetSheet, range: Ce
   return result
 }
 
-export function getFilteredRows(sheet: FilteredSpreadsheetSheet): number[] {
-  return sheet.autoFilter ? refreshAutoFilter(sheet) : []
+export function getFilteredRows(sheet: FilteredSpreadsheetSheet, workbook?: WorkbookModel): number[] {
+  return sheet.autoFilter ? refreshAutoFilter(sheet, workbook) : []
 }
 
 export function cellKey(row: number, column: number): string { return `${row}:${column}` }
@@ -212,6 +233,7 @@ export function readCellValue(cell: SpreadsheetCell | undefined): CellScalar | {
 
 function matchesCriteria(value: CellScalar | { error: string } | null, criteria: SheetFilterCriteria): boolean {
   if (criteria.kind === 'values') return criteria.selectedItems.some((item) => sameFilterValue(value, item)) !== (criteria.selectionMode === 'exclude')
+  if (criteria.kind === 'color') throw new TypeError('Color filtering requires a cell style context')
   return matchesCondition(value, criteria)
 }
 
@@ -241,7 +263,17 @@ function matchesCondition(value: CellScalar | { error: string } | null, criteria
 }
 
 function normalizeCriteria(criteria: SheetFilterCriteria): SheetFilterCriteria {
-  if (!criteria || (criteria.kind !== 'values' && criteria.kind !== 'condition')) throw new TypeError('Invalid filter criteria')
+  if (!criteria || (criteria.kind !== 'values' && criteria.kind !== 'condition' && criteria.kind !== 'color')) throw new TypeError('Invalid filter criteria')
+  if (criteria.kind === 'color') {
+    if (criteria.cellFillColors === undefined && criteria.cellTextColors === undefined) throw new TypeError('Color filter needs fill or text colors')
+    for (const key of ['cellFillColors', 'cellTextColors'] as const) {
+      const values = criteria[key]
+      if (values !== undefined && (!Array.isArray(values) || values.length > 4096 || values.some(color => key === 'cellFillColors' && color === null ? false
+        : typeof color !== 'string' || !color.trim() || color.length > 256))) throw new TypeError('Invalid filter colors')
+    }
+    return { kind: 'color', ...(criteria.cellFillColors === undefined ? {} : { cellFillColors: [...criteria.cellFillColors] }),
+      ...(criteria.cellTextColors === undefined ? {} : { cellTextColors: [...criteria.cellTextColors] }) }
+  }
   if (criteria.kind === 'values') {
     if (!Array.isArray(criteria.selectedItems)) throw new TypeError('Value filter needs a selectedItems array')
     if (criteria.selectionMode !== undefined && criteria.selectionMode !== 'include' && criteria.selectionMode !== 'exclude') throw new TypeError('Invalid value filter selection mode')

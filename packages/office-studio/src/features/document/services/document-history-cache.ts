@@ -17,6 +17,22 @@ export function createDocumentSnapshotHistory(before: DocumentModel, after: Docu
   return { undo, redo }
 }
 
+/** Stage a new redo for an exact-top history amendment. The original undo and
+ * pair identity survive, so later field-cache rebasing still sees one pair.
+ * Preparing, refusing an amendment, or a throwing publication changes no pair. */
+export function prepareDocumentSnapshotHistoryAmend(entry: Pick<HistoryEntry, 'undo' | 'redo'>, after: DocumentModel,
+  publish: (model: DocumentModel) => void): Pick<HistoryEntry, 'redo'> {
+  const snapshots = documentSnapshots.get(entry.undo)
+  if (!snapshots || snapshots !== documentSnapshots.get(entry.redo)) throw new Error('文档历史未提供可合并的快照。')
+  let initial = true
+  const redo = () => {
+    if (initial) { publish(after); snapshots.after = after; initial = false }
+    else publish(snapshots.after)
+  }
+  documentSnapshots.set(redo, snapshots)
+  return { redo }
+}
+
 export function applyDocumentFieldRefreshPlan(model: DocumentModel, plan: DocumentStoryFieldRefreshPlan): void {
   if (plan.sectionHeaderFooters !== undefined) model.sectionHeaderFooters = cloneModel(plan.sectionHeaderFooters)
   if (plan.blocks !== undefined) {

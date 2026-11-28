@@ -29,6 +29,15 @@ impl OfficeFilterNode {
     pub fn is_standard(&self, name: &str) -> bool {
         self.name == name && matches!(self.namespace.as_str(), MAIN_NS | STRICT_NS)
     }
+
+    pub fn from_element(node: &crate::conditional_format_xml::Element) -> Self {
+        Self { name: node.name.clone(), namespace: node.namespace.clone(), text: node.text.clone(),
+            attributes: node.attrs.iter().filter(|(name, _)| *name != "xmlns" && !name.starts_with("xmlns:")).map(|(name, value)| {
+                let namespace = node.attribute_namespaces.get(name).map(String::as_str).unwrap_or("");
+                let key = if namespace.is_empty() { name.clone() } else { format!("{{{namespace}}}{}", name.rsplit(':').next().unwrap_or(name)) };
+                (key, value.clone())
+            }).collect(), children: node.children.iter().map(Self::from_element).collect() }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -101,19 +110,35 @@ impl WorksheetFilterProjection {
     pub fn take_root(&mut self) -> Option<OfficeFilterNode> { self.root.take() }
     pub fn fingerprint(&self) -> Result<String, String> {
         if !self.stack.is_empty() { return Err("incomplete AutoFilter XML".into()); }
-        let mut canonical = self.root.clone();
-        if let Some(node) = &mut canonical { canonicalize_node(node); }
-        let bytes = serde_json::to_vec(&canonical).map_err(|error| error.to_string())?;
-        let mut hash = 0xcbf29ce484222325u64;
-        for byte in bytes { hash ^= u64::from(byte); hash = hash.wrapping_mul(0x100000001b3); }
-        Ok(format!("{hash:016x}"))
+        office_filter_fingerprint(self.root.as_ref(), |_| Ok(None))
     }
+}
+
+/// Include resolved style dependencies so an external dxf/theme/palette edit
+/// invalidates a saved typed predicate even when its dxfId is unchanged.
+pub fn office_filter_fingerprint(
+    root: Option<&OfficeFilterNode>,
+    mut color_binding: impl FnMut(&OfficeFilterNode) -> Result<Option<String>, String>,
+) -> Result<String, String> {
+    fn bind(node: &mut OfficeFilterNode, resolve: &mut impl FnMut(&OfficeFilterNode) -> Result<Option<String>, String>) -> Result<(), String> {
+        if node.is_standard("colorFilter") {
+            if let Some(binding) = resolve(node)? { node.attributes.insert("{urn:office-studio:filter-signature:1}color".into(), binding); }
+        }
+        for child in &mut node.children { bind(child, resolve)?; }
+        Ok(())
+    }
+    let mut canonical = root.cloned();
+    if let Some(node) = &mut canonical { canonicalize_node(node); bind(node, &mut color_binding)?; }
+    let bytes = serde_json::to_vec(&canonical).map_err(|error| error.to_string())?;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes { hash ^= u64::from(byte); hash = hash.wrapping_mul(0x100000001b3); }
+    Ok(format!("{hash:016x}"))
 }
 
 fn canonicalize_node(node: &mut OfficeFilterNode) {
     if matches!(node.namespace.as_str(), MAIN_NS | STRICT_NS) {
         node.namespace = MAIN_NS.into();
-        for (key, default) in [("blank", false), ("and", false), ("hiddenButton", false), ("showButton", true)] {
+        for (key, default) in [("blank", false), ("and", false), ("hiddenButton", false), ("showButton", true), ("cellColor", true)] {
             let Some(value) = node.attributes.get(key) else { continue; };
             // An unsupported flag is retained verbatim. The typed importer can
             // reject it without discarding the complete standard source tree.
@@ -131,6 +156,12 @@ fn canonicalize_node(node: &mut OfficeFilterNode) {
 
 /// Accepts the worksheet prefix produced before its extLst and closing tag.
 pub fn worksheet_filter_fingerprint(xml: &str) -> Result<String, String> {
+    worksheet_filter_fingerprint_with_colors(xml, |_| Ok(None))
+}
+
+pub fn worksheet_filter_fingerprint_with_colors(xml: &str,
+    color_binding: impl FnMut(&OfficeFilterNode) -> Result<Option<String>, String>,
+) -> Result<String, String> {
     let mut reader = NsReader::from_str(xml);
     let mut projection = WorksheetFilterProjection::default();
     let mut path: Vec<Vec<u8>> = Vec::new();
@@ -160,7 +191,8 @@ pub fn worksheet_filter_fingerprint(xml: &str) -> Result<String, String> {
             _ => {}
         }
     }
-    projection.fingerprint()
+    if !projection.stack.is_empty() { return Err("incomplete AutoFilter XML".into()); }
+    office_filter_fingerprint(projection.root(), color_binding)
 }
 
 #[cfg(test)]

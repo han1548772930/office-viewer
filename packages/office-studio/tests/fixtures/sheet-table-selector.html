@@ -17,6 +17,7 @@ sheet.cells['1:0'] = createCell(1, 0, '研发'); sheet.cells['1:1'] = createCell
 sheet.cells['2:0'] = createCell(2, 0, '财务'); sheet.cells['2:1'] = createCell(2, 1, false)
 const other = createBlankSheet('Other'); other.id = 'other'; other.rowCount = 80; other.columnCount = 16; model.sheets.push(other)
 const studio = new OfficeStudio({ workbook: model }), api = FOffice.newAPI(studio), dark = ref(false), variant = ref('classic')
+const attached = ref(new URLSearchParams(location.search).get('standalone') !== '1')
 const view = ref(toExcelWorkbookView(studio.editor.workbook.model)), notices = [], requests = [], commands = [], canceled = new Set()
 const active = () => api.getActiveWorkbook()
 watch(() => studio.editor.workbook.model, value => { view.value = toExcelWorkbookView(value) }, { flush: 'sync' })
@@ -28,6 +29,7 @@ window.tableFixture = {
   history: (id = studio.activeWorkbookId) => { const unit = studio.editor.history.units[id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0 } },
   requests: () => copy(requests), commands: () => copy(commands), notifications: () => copy(notices),
   appearance: (value, layout = 'classic') => { dark.value = value; variant.value = layout },
+  attachStudio: value => { attached.value = value },
   selections: ranges => studio.setSelections(studio.activeWorkbookId, studio.editor.workbook.model.activeSheetId, ranges),
   command: (id, input) => studio.executeCommandSync(id, input),
   cancelCommand: (id, value) => { if (value) canceled.add(id); else canceled.delete(id) },
@@ -43,7 +45,7 @@ window.tableFixture = {
   ]; view.value = toExcelWorkbookView(current) },
 }
 createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
-  default: () => h(ExcelWorkbench, { modelValue: view.value, studio, ribbonVariant: variant.value,
+  default: () => h(ExcelWorkbench, { modelValue: view.value, studio: attached.value ? studio : undefined, ribbonVariant: variant.value,
     canUndo: studio.editor.canUndo, canRedo: studio.editor.canRedo,
     'onUpdate:modelValue': value => studio.editor.replaceWorkbookFromView(value, 'zh-CN'),
     onUndo: () => active().undo(), onRedo: () => active().redo(), onNotify: value => notices.push(copy(value)),

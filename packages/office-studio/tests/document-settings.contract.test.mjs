@@ -5,7 +5,7 @@ import { createServer } from 'vite'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { createParagraph, createTable, cloneDocument } from '../src/features/document/model/document-model.ts'
 import { documentPageSetupCommandState, executeDocumentCommand } from '../src/features/document/commands/document-commands.ts'
-import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, documentEffectiveSectionSetup, documentSectionSetup, prepareDocumentPageSetup, DOCUMENT_MODERN_PAGE_MARGIN, validateDocumentParagraphStylePatch, validateDocumentSectionSetupPatch } from '../src/features/document/services/document-settings.ts'
+import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, documentEffectiveSectionSetup, documentPageOrientation, documentSectionSetup, prepareDocumentPageSetup, DOCUMENT_MODERN_PAGE_MARGIN, validateDocumentParagraphStylePatch, validateDocumentSectionSetupPatch } from '../src/features/document/services/document-settings.ts'
 import { saveDocumentSnapshot } from '../src/features/document/services/document-facade.ts'
 import { DOCUMENT_MODERN_WIDTHS, DOCUMENT_PAPER_SIZES, documentModernWidth, documentPaperSize } from '../src/components/document/document-page-settings.ts'
 import { layoutDocument } from '../src/features/document/layout/document-layout.ts'
@@ -26,6 +26,38 @@ function tableBlock(id, widths, width) {
   if (width !== undefined) table.style = { width }
   return { ...createParagraph(), id, type: 'table', runs: [], metadata: { table } }
 }
+
+test.each([
+  [794, 1124, undefined, 'portrait'], [1124, 794, undefined, 'landscape'], [900, 900, undefined, 'portrait'],
+  [1124, 794, 'portrait', 'portrait'], [794, 1124, 'landscape', 'landscape'],
+  [1124, 794, 'unrecognized', 'landscape'], [794, 1124, 1, 'portrait'],
+])('page orientation resolves optional metadata against %s by %s geometry and explicit %s', (width, height, explicit, expected) => {
+  const model = createBlankDocument()
+  model.page = { ...model.page, width, height }
+  if (explicit === undefined) delete model.metadata
+  else model.metadata = { documentPageOrientation: explicit, vendorData: { keep: true } }
+  const before = cloneDocument(model)
+  assert.equal(documentPageOrientation(model), expected)
+  assert.deepEqual(model, before)
+})
+
+test('optional document metadata supports effective page geometry and page setup without adding defaults to the source', () => {
+  const model = createBlankDocument()
+  delete model.metadata
+  model.page = { ...model.page, width: 1124, height: 794 }
+  const before = cloneDocument(model), effective = documentEffectiveSectionSetup(model, 'first')
+  assert.deepEqual(effective.page, model.page)
+  assert.equal(effective.orientation, 'landscape')
+  const request = pageRequest({ ...model.page, width: 1200 })
+  delete request.documentFlavor
+  const candidate = prepareDocumentPageSetup(model, request)
+  assert.equal(candidate.page.width, 1200)
+  assert.equal(candidate.metadata.documentPageOrientation, 'landscape')
+  assert.equal(Object.hasOwn(candidate.metadata, 'documentFlavor'), false)
+  assert.equal(documentEffectiveSectionSetup(candidate, 'first').orientation, 'landscape')
+  assert.deepEqual(model, before)
+  assert.equal(Object.hasOwn(model, 'metadata'), false)
+})
 
 test('canonical page setup updates every top-level section on a detached candidate and keeps other section properties', () => {
   const model = createBlankDocument(), first = model.blocks[0]

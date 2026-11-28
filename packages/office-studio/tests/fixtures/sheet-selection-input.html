@@ -77,7 +77,7 @@ window.selectionInputFixture = {
     sheet.setActiveRangeList(addresses.map(address => sheet.getRange(address)), options)
   },
   switchSheet: id => { api.getActiveWorkbook().getSheetBySheetId(id).activate() },
-  seed: ({ entries = [], merges = [], hiddenRows = [], hiddenColumns = [], rowHiddenSpans, columnHiddenSpans, freeze } = {}) => {
+  seed: ({ entries = [], merges = [], hiddenRows = [], hiddenColumns = [], rowHiddenSpans, columnHiddenSpans, freeze, omitDimensions = false } = {}) => {
     const next = copy(current()), sheet = next.sheets.find(item => item.id === next.activeSheetId)
     sheet.cells = {}
     for (const { row = 0, column = 0, value, richText, formula, style, pattern = 'General' } of entries) {
@@ -89,6 +89,7 @@ window.selectionInputFixture = {
       sheet.cells[row + ':' + column] = cell
     }
     sheet.mergedRanges = merges; sheet.hiddenRows = hiddenRows; sheet.hiddenColumns = hiddenColumns
+    if (omitDimensions) { delete sheet.rowCount; delete sheet.columnCount }
     sheet.rowHiddenSpans = rowHiddenSpans; sheet.columnHiddenSpans = columnHiddenSpans
     sheet.frozenRows = freeze?.rows ?? 0; sheet.frozenCols = freeze?.columns ?? 0
     sheet.dataValidations = undefined

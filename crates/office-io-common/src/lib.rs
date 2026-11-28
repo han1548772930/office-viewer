@@ -4,7 +4,8 @@ use quick_xml::{Reader, XmlVersion};
 use quick_xml::events::{BytesStart, Event};
 
 mod filter_projection;
-pub use filter_projection::{OfficeFilterNode, WorksheetFilterProjection, worksheet_filter_fingerprint};
+pub use filter_projection::{OfficeFilterNode, WorksheetFilterProjection, office_filter_fingerprint, worksheet_filter_fingerprint, worksheet_filter_fingerprint_with_colors};
+pub mod filter_color;
 
 pub mod conditional_format_xml;
 pub mod conditional_format_source;

@@ -25,6 +25,21 @@ function sequence(values, indexes) {
   return indexes.map(index => sheetFillSeriesValueAt(pattern, index))
 }
 
+test('fills in either axis preserve every cell outside the destination and never shrink worksheet dimensions', () => {
+  const model = workbook([[5]]), sheet = model.sheets[0]
+  for (const [row, col, value] of [[0, 8, 'right'], [20, 0, 'below'], [25, 10, 'far']]) {
+    sheet.cells[`${row}:${col}`] = { ...createCell(row, col, value), metadata: { retained: value } }
+  }
+  const before = copy(model)
+  for (const destination of [range(0, 0, 5), range(0, 0, 0, 5)]) {
+    const plan = createSheetAutoFillPlan(model, 'data', range(0, 0), destination, { applyType: 'COPY' })
+    assert.equal(plan.result.accepted, true)
+    assert.equal(plan.sheet.rowCount, 30); assert.equal(plan.sheet.columnCount, 12)
+    for (const [key, cell] of Object.entries(sheet.cells)) assert.deepEqual(plan.sheet.cells[key], cell)
+    assert.deepEqual(model, before)
+  }
+})
+
 test('single numeric defaults to copy while explicit series and multiple column lanes continue independently', () => {
   const model = workbook([[2, 10], [5, 20]]), before = copy(model)
   const single = createSheetAutoFillPlan(model, 'data', range(0, 0), range(0, 0, 3))

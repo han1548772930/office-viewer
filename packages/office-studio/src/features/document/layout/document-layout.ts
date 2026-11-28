@@ -3,6 +3,8 @@ import type { DocumentPoint } from '../model/document-model'
 import { createRun, sameTarget, targetKey } from '../model/document-model'
 import { sameDocumentBlockHost } from '../model/document-block-host'
 import { layoutDocumentWithNotes } from './document-note-layout'
+import { documentHeadingVisibility } from '../headings/heading-collapse'
+import { paragraphListMarkers } from '../model/document-lists'
 import { intersectTableRect } from './document-table-measurement'
 import type { DocumentLayout, LayoutLine, LayoutMeasurer, LayoutRect, LayoutStoryLine } from './document-layout-types'
 
@@ -11,7 +13,9 @@ export { PAGE_GAP, PAGE_INSET, STORY_LINE_HEIGHT } from './document-layout-types
 export { createTextMeasurer, runFont } from './document-text-layout'
 
 export function layoutDocument(model: DocumentModel, measurer: LayoutMeasurer): DocumentLayout {
-  return layoutDocumentWithNotes(model, measurer)
+  const visibility = documentHeadingVisibility(model)
+  return visibility.blocks === model.blocks ? layoutDocumentWithNotes(model, measurer)
+    : layoutDocumentWithNotes({ ...model, blocks: visibility.blocks }, measurer, paragraphListMarkers(model.blocks))
 }
 
 export function lineForPoint(layout: DocumentLayout, point: DocumentPoint): LayoutLine | undefined {

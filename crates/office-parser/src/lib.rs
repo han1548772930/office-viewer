@@ -4,6 +4,9 @@ mod sheet_dimensions;
 mod sheet_dimension_sidecar;
 mod sheet_outline_sidecar;
 mod sheet_filter_import;
+mod sheet_filter_color;
+#[path = "sparkline_parts.rs"]
+mod xlsx_color_resources;
 mod xlsx_parts;
 mod formula_calendar_sidecar;
 #[cfg(test)]

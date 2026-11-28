@@ -13,7 +13,7 @@ export function chartSourceVisibility(workbook: WorkbookModel, sheet: Spreadshee
     // refreshAutoFilter updates only this temporary filter. Reading a chart must
     // not refresh or otherwise mutate the workbook's authored table/filter state.
     const filter: SheetAutoFilter = { ...table.autoFilter, range: { ...table.autoFilter.range }, filteredRows: [] }
-    for (const row of refreshAutoFilter({ ...sheet, autoFilter: filter })) filteredRows.add(row)
+    for (const row of refreshAutoFilter({ ...sheet, autoFilter: filter }, workbook)) filteredRows.add(row)
   }
   const visibility = {
     ...sheet,

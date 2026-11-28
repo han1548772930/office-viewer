@@ -24,6 +24,20 @@ function scalar(value: unknown): CellScalar {
 
 function criterion(value: unknown): SheetFilterCriteria {
   const raw = object(value, '筛选条件')
+  if (raw.kind === 'color') {
+    if (raw.cellFillColors === undefined && raw.cellTextColors === undefined) throw new TypeError('颜色筛选缺少填充或文字颜色。')
+    const colors = (value: unknown, allowNull: boolean): Array<string | null> => {
+      if (!Array.isArray(value) || value.length > 4096) throw new TypeError('颜色筛选成员必须是有界颜色数组。')
+      return [...new Set(value.map(color => {
+        if (allowNull && color === null) return null
+        if (typeof color !== 'string' || !color.trim() || color.length > 256) throw new TypeError('颜色筛选成员必须是颜色文本。')
+        return color
+      }))]
+    }
+    return { kind: 'color',
+      ...(raw.cellFillColors !== undefined ? { cellFillColors: colors(raw.cellFillColors, true) } : {}),
+      ...(raw.cellTextColors !== undefined ? { cellTextColors: colors(raw.cellTextColors, false).filter((color): color is string => color !== null) } : {}) }
+  }
   if (raw.kind === 'values') {
     if (!Array.isArray(raw.selectedItems)) throw new TypeError('值筛选缺少成员数组。')
     if (raw.selectionMode !== undefined && raw.selectionMode !== 'include' && raw.selectionMode !== 'exclude') throw new TypeError('值筛选选择模式无效。')
@@ -66,7 +80,9 @@ export function normalizeWorkbookAutoFilter(value: unknown): SheetAutoFilter | u
   const rows = new Set<number>()
   for (const value of raw.filteredRows) {
     const row = index(value, 1_048_575, '筛选隐藏行')
-    if (row <= range.startRow || row > range.endRow || rows.has(row)) throw new RangeError('筛选隐藏行重复或不在数据范围内。')
+    // Univer FilterColumn.calc filters the complete rowSpan of a merged cell,
+    // including data rows beyond the saved AutoFilter reference's last row.
+    if (row <= range.startRow || rows.has(row)) throw new RangeError('筛选隐藏行重复或不在有效数据行内。')
     rows.add(row)
   }
   return { range, columns, filteredRows: [...rows].sort((left, right) => left - right) }

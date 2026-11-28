@@ -24,7 +24,9 @@ export function sheetFillGestureSelectionMatches(origin: SheetFillGestureContext
       const next = current.selectedRanges[index]!
       return range.startRow === next.startRow && range.endRow === next.endRow
         && range.startColumn === next.startColumn && range.endColumn === next.endColumn
-        && range.rangeType === next.rangeType
+        // Ordinary cell selections may acquire the explicit NORMAL=0 tag
+        // when the edit commit round-trips through the shared selection API.
+        && (range.rangeType ?? 0) === (next.rangeType ?? 0)
     })
 }
 

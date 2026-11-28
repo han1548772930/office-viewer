@@ -8,6 +8,7 @@ import { arrangeDocumentPages } from './document-page-arrangement'
 import { layoutDocumentPageStories } from './document-page-stories'
 import { createDocumentFlowResult, documentLayoutReferencePages, DocumentNoteDecorationLayout, documentNoteReferenceDisplay } from './document-note-layout-common'
 import type { DocumentLayout, DocumentTextLayoutDisplay, LayoutMeasurer } from './document-layout-types'
+import type { ParagraphListMarker } from '../model/document-lists'
 
 const MAX_NOTE_LAYOUT_PASSES = 64
 const EPSILON = 1e-6
@@ -46,7 +47,7 @@ function refreshStories(model: DocumentModel, result: DocumentLayout, flow: Docu
  * Every pass is a derived view of one source model. No cached reference text,
  * note body, source offset or printed page number is mutated by pagination.
  */
-export function layoutDocumentWithNotes(model: DocumentModel, measurer: LayoutMeasurer): DocumentLayout {
+export function layoutDocumentWithNotes(model: DocumentModel, measurer: LayoutMeasurer, bodyMarkers?: Map<string, ParagraphListMarker>): DocumentLayout {
   const decorations = new DocumentNoteDecorationLayout(model, measurer)
   let referencePages = new Map<string, number>(), reservations = new Map<number, number>()
   let footnoteNoticePages = new Set<number>(), endnoteNoticePages = new Set<number>()
@@ -58,7 +59,7 @@ export function layoutDocumentWithNotes(model: DocumentModel, measurer: LayoutMe
     const flow = new DocumentSectionFlow(model, { reservedPageBottom: reservations, referencePageFloors: referenceFloors })
     const result = createDocumentFlowResult(flow)
     const endnotes = new DocumentEndnoteLayout(model, measurer, labels, display, decorations, endnoteNoticePages, referencePages)
-    appendDocumentBlocks(model.blocks, flow, result, measurer, { textDisplay: display,
+    appendDocumentBlocks(model.blocks, flow, result, measurer, { textDisplay: display, markers: bodyMarkers,
       beforeSectionBreak: () => endnotes.finishSection(flow, result, flow.location.sectionId, false) })
     endnotes.finishSection(flow, result, flow.location.sectionId, true)
     refreshStories(model, result, flow, measurer, display)

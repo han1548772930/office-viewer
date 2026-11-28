@@ -3,6 +3,8 @@
 Reference revision: `dream-num/univer@eaf4cfa04fabdbcfc922c692f3450459f8a29546`
 Fixed workspace: `E:\rust_test\univer`, Univer v1.6.0. Review batch: 2026-11-23～2026-11-24 / Asia/Shanghai.
 
+2026-11-28 续接：[目录插入命令与对话框目标](DOC-04-toc-insertion-command-dialog-2026-11-28.md) 补固定 insert 命令、公开 flat 参数和对话框陈旧目标守卫；该批仅静态检查，仍未验收。以下早期批次执行说明保留为历史记录。
+
 状态：**未验收，开发中／待验证**。本批仅静态读取、编辑、rg 和文档查询；测试、类型检查、构建、Rust/WASM、浏览器、格式／语法／diff 检查、HTTP 链接检查和性能基准均未执行。此前批次的通过数量不能证明当前实现，也不能据此认定目录或全部 Docs/Pro 完成。
 
 ## Upstream source comparison
@@ -25,7 +27,7 @@ The setting and update views are [InsertTableOfContentsDialog.tsx][insert-dialog
 
 | Surface | Upstream | Local reviewed state |
 | --- | --- | --- |
-| Insert entry | Insert tab > `ribbon.insert.cell`, submenu `doc.menu.insert-table-of-contents`; operation `doc.operation.insert-table-of-contents` → `doc.command.insert-table-of-contents` | Local `document-ribbon.ts`/`DocumentWorkbench.vue` register automatic/custom insertion under CELL order 7, gated by traditional body, collapsed selection outside TOC and edit permission. Both build real TOC/PAGEREF ranges through `doc.command.paste-blocks`; the upstream standalone insert command alias is still absent. |
+| Insert entry | Insert tab > `ribbon.insert.cell`, submenu `doc.menu.insert-table-of-contents`; operation `doc.operation.insert-table-of-contents` → `doc.command.insert-table-of-contents` | Local `document-ribbon.ts`/`DocumentWorkbench.vue` keep automatic/custom under CELL order 7 and shared domain guards. As of 2026-11-28 both invoke the canonical insert command; the public flat adapter shares the existing content transaction. Automatic supplies the localized title; custom omits it. Complete post-insertion iterative repagination remains incomplete; see the continuation evidence. |
 | Update entry | Contextual `ribbon.table-of-contents` > Manage; `doc.operation.open-table-of-contents-dialog` → `doc.command.update-table-of-contents` | Ribbon and Layout use shared full/page-only capability and reason. Dialog dispatches the existing content command using current layout pages' logical pageNumber; parity blanks/unready/invalid labels are not replaced with guessed physical labels. Source selection, model, epoch and composition guard stale requests. |
 | Delete entry | Contextual ribbon and Layout; `doc.command.delete-table-of-contents` | Delete availability is separate from update, so an unsupported reconstruction can retain safe deletion. The command prepares a detached structural candidate, validates selection, all affected paragraphs/entities and final ACL, and protects native field/SDT locks. |
 | Selection and flavor | Selection observables and traditional-document guards in `docs-toc-ui/src/menu/menu.ts` | `documentTocIdForSelection()` determines whether the selection stays inside a single TOC. `supportsDocumentTableOfContents()` defaults unspecified local flavor to traditional and hides/disables TOC for explicit modern flavor. |
@@ -63,7 +65,7 @@ Local paragraph IDs/serializable field ranges differ from upstream segment/custo
 ## Unverified and incomplete behavior
 
 - Supported TOC right-tab/leader and context-highlight paths are implemented candidates, **unaccepted**. Real fonts, multi-column/page movement, zoom, theme, pixels, hit testing and input focus still need execution. General/unsupported native stop behavior, older snapshot indent migration and complex table/native TOCs remain incomplete.
-- Native partial/complex ranges, more TOC entry sources/switches, full Roman/other page-label formats and upstream-style iterative repagination remain to implement or verify. Logical numeric labels are now connected; a stale/unready layout must retain unavailable state.
+- Native partial/complex ranges, more TOC entry sources/switches and full Roman/other page-label formats remain to implement or verify. [Insertion/manual repagination and shared history](DOC-04-toc-layout-history-2026-11-28.md) now await versioned complete Canvas/font layouts and cap updates at three; public flat update/delete reuse real range IDs and typed transactions, and the fixed dialog operation uses an actual lifetime-bound Ant modal host. Runtime acceptance remains pending. Logical numeric labels are connected; a stale/unready layout must retain unavailable state.
 - All lock/ACL/reentrant observer combinations, dialog/theme/focus and native Windows IME need browser verification. Synthetic composition events are not native IME evidence.
 - Internal JSON save/reopen preserves modeled fields/metadata, but DOCX→parse→edit→DOCX→independent Office reopen is unverified. Native parser/writer/Worker/Rust changes are shared in-flight work; this record does not mark their checks passed.
 - TOC/layout work remains mainly main-thread TypeScript. Real long-document measurements, frame times, long tasks, transfers, memory and Worker/Rust/WASM comparison are absent; no performance improvement is claimed.

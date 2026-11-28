@@ -11,6 +11,9 @@ fn export(sheet: Value) -> Vec<u8> {
 }
 fn parsed(bytes: &[u8]) -> Value { serde_json::to_value(parse_office_bytes(bytes, "filter-roundtrip.xlsx").unwrap()).unwrap() }
 fn rewrite(bytes: &[u8], edit: impl Fn(String) -> String) -> Vec<u8> {
+    rewrite_part(bytes, "xl/worksheets/sheet1.xml", edit)
+}
+fn rewrite_part(bytes: &[u8], part: &str, edit: impl Fn(String) -> String) -> Vec<u8> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -19,11 +22,93 @@ fn rewrite(bytes: &[u8], edit: impl Fn(String) -> String) -> Vec<u8> {
         let name = entry.name().unwrap().into_owned();
         let mut content = Vec::new();
         entry.read_to_end(&mut content).unwrap();
-        if name == "xl/worksheets/sheet1.xml" { content = edit(String::from_utf8(content).unwrap()).into_bytes(); }
+        if name == part { content = edit(String::from_utf8(content).unwrap()).into_bytes(); }
         writer.start_file(name, options).unwrap();
         writer.write_all(&content).unwrap();
     }
     writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn fill_font_no_fill_and_multicolor_typed_filters_reopen_with_exact_selection_and_hide_reasons() {
+    for criterion in [
+        json!({ "kind": "color", "cellFillColors": ["#FF0000"] }),
+        json!({ "kind": "color", "cellFillColors": [null] }),
+        json!({ "kind": "color", "cellTextColors": ["#0000FF"] }),
+        json!({ "kind": "color", "cellFillColors": ["#FF0000", null], "cellTextColors": ["#0000FF"] }),
+        json!({ "kind": "color", "cellFillColors": [] }),
+    ] {
+        let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = criterion.clone();
+        let bytes = export(sheet); let reopened = parsed(&bytes);
+        let sheet = &reopened["payload"]["data"]["sheets"][0];
+        assert_eq!(sheet["autoFilter"]["columns"]["1"], criterion);
+        assert_eq!(sheet["hiddenRows"], json!([3]));
+        assert_eq!(sheet["autoFilter"]["filteredRows"], json!([2, 3, 5]));
+        assert_eq!(sheet["sourceAxisDimensions"]["projectAutoFilterExtension"]["restored"], true);
+    }
+}
+
+#[test]
+fn external_dxf_edit_invalidates_typed_color_snapshot_without_reusing_stale_multiple_colors() {
+    let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = json!({ "kind": "color", "cellFillColors": ["#FF0000", null] });
+    let bytes = export(sheet);
+    let edited = rewrite_part(&bytes, "xl/styles.xml", |xml| xml.replace("FFFF0000", "FF00FF00"));
+    let reopened = parsed(&edited); let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["autoFilter"]["columns"]["1"], json!({ "kind": "color", "cellFillColors": ["#00FF00"] }));
+    assert_eq!(sheet["sourceAxisDimensions"]["projectAutoFilterExtension"]["restored"], false);
+    assert_eq!(sheet["sourceAutoFilter"]["children"][0]["children"][0]["name"], "colorFilter");
+}
+
+#[test]
+fn missing_referenced_filter_color_style_retains_complete_native_criteria_and_visibility() {
+    let mut sheet = source(); sheet["autoFilter"]["columns"]["1"] = json!({ "kind": "color", "cellTextColors": ["#0000FF"] });
+    let bytes = export(sheet);
+    let edited = rewrite(&bytes, |xml| xml.replace("<colorFilter dxfId=\"0\"", "<colorFilter dxfId=\"900000\""));
+    let reopened = parsed(&edited); let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert!(sheet.get("autoFilter").is_none());
+    assert_eq!(sheet["sourceAutoFilter"]["children"][0]["children"][0]["attributes"]["dxfId"], "900000");
+    assert_eq!(sheet["hiddenRows"], json!([2, 3, 5]));
+}
+
+#[test]
+fn table_filter_snapshot_keeps_multiple_colors_while_native_xml_uses_real_dxf_and_current_visibility() {
+    let mut sheet = source(); let filter = json!({
+        "range": { "startRow": 0, "startCol": 1, "endRow": 9, "endCol": 1 },
+        "columns": { "1": { "kind": "color", "cellFillColors": ["#FF0000", null] } }, "filteredRows": [2, 5]
+    });
+    sheet.as_object_mut().unwrap().remove("autoFilter");
+    let workbook = json!({ "kind": "workbook", "sheets": [sheet], "tables": [{
+        "id": "table", "name": "ColorTable", "sheetId": "filter", "range": filter["range"], "showHeaderRow": true,
+        "columns": [{ "id": "field", "name": "Header" }], "autoFilter": filter
+    }] });
+    let (bytes, warnings) = office_writer::export_xlsx_bytes(&workbook.to_string()).unwrap();
+    assert!(warnings.iter().any(|warning| warning.code == "AUTOFILTER_MULTIPLE_COLORS"));
+    let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut native = String::new(); archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut native).unwrap();
+    assert!(native.contains("colorFilter")); assert!(native.contains("dxfId=\"0\"")); assert!(native.contains("filterState"));
+    let reopened = parsed(&bytes); let table = &reopened["payload"]["data"]["tables"][0];
+    assert_eq!(table["autoFilter"]["columns"]["1"]["cellFillColors"], json!(["#FF0000", null]));
+    assert_eq!(table["autoFilter"]["filteredRows"], json!([2, 5]));
+    assert_eq!(reopened["payload"]["data"]["sheets"][0]["hiddenRows"], json!([3]));
+    let edited = rewrite_part(&bytes, "xl/styles.xml", |xml| xml.replace("FFFF0000", "FF00FF00"));
+    let edited = parsed(&edited);
+    assert_eq!(edited["payload"]["data"]["tables"][0]["autoFilter"]["columns"]["1"]["cellFillColors"], json!(["#00FF00"]));
+    let unavailable = rewrite_part(&bytes, "xl/tables/table1.xml", |xml| xml.replace("dxfId=\"0\"", "dxfId=\"900000\""));
+    let unavailable = parsed(&unavailable);
+    assert!(unavailable["payload"]["data"]["tables"][0].get("autoFilter").is_none());
+    assert_eq!(unavailable["payload"]["data"]["sheets"][0]["hiddenRows"], json!([2, 3, 5]));
+}
+
+#[test]
+fn merged_filter_groups_beyond_the_native_reference_remain_in_the_exact_hidden_cache() {
+    let mut sheet = source();
+    sheet["mergedRanges"] = json!([{ "startRow": 1, "startCol": 1, "endRow": 12, "endCol": 1 }]);
+    sheet["autoFilter"]["filteredRows"] = json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    let bytes = export(sheet); let reopened = parsed(&bytes);
+    let sheet = &reopened["payload"]["data"]["sheets"][0];
+    assert_eq!(sheet["autoFilter"]["range"]["endRow"], 9);
+    assert_eq!(sheet["autoFilter"]["filteredRows"], json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+    assert_eq!(sheet["hiddenRows"], json!([3]));
 }
 fn source() -> Value {
     json!({ "id": "filter", "name": "Filter & Axes", "axisUnit": "cssPixel", "rowCount": 20, "columnCount": 4,

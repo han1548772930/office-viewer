@@ -1,6 +1,6 @@
 use super::{SheetInput, MAX_COLUMN_INDEX, MAX_ROW_INDEX, esc, format_number, parse_index};
 use crate::ExportError;
-use office_io_common::{pixels_to_points, pixels_to_stored_character_width, worksheet_axis_fingerprint, worksheet_filter_fingerprint, SHEET_AXIS_EXTENSION_URI, SHEET_AXIS_NAMESPACE};
+use office_io_common::{pixels_to_points, pixels_to_stored_character_width, worksheet_axis_fingerprint, worksheet_filter_fingerprint_with_colors, SHEET_AXIS_EXTENSION_URI, SHEET_AXIS_NAMESPACE};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -181,9 +181,9 @@ impl WorksheetAxisPlan {
         }
         output.push_str("</cols>"); output
     }
-    pub fn extension_xml(&self, sheet: &SheetInput, worksheet: &str) -> Result<String, ExportError> {
+    pub fn extension_xml(&self, sheet: &SheetInput, worksheet: &str, registry: &super::StyleRegistry) -> Result<String, ExportError> {
         let fingerprint = worksheet_axis_fingerprint(worksheet).map_err(ExportError::invalid)?;
-        let filter_fingerprint = worksheet_filter_fingerprint(worksheet).map_err(ExportError::invalid)?;
+        let filter_fingerprint = worksheet_filter_fingerprint_with_colors(worksheet, |node| super::auto_filter::color_signature(node, registry)).map_err(ExportError::invalid)?;
         let numeric = |spans: &[AxisSpanInput<f64>]| spans.iter().map(|span| json!({ "start": span.start, "end": span.end, "value": span.value })).collect::<Vec<_>>();
         let points = |values: &BTreeMap<String, f64>| values.iter().map(|(key, size)| json!({ "index": parse_index(key).unwrap(), "size": size })).collect::<Vec<_>>();
         let state = json!({

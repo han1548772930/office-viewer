@@ -695,6 +695,7 @@ fn parse_workbook(
         .enumerate()
         .map(|(index, sheet)| sheet_payload(sheet, index, &mut validation_sidecar, &mut sparkline_sidecar, &mut conditional_format_sidecar))
         .collect::<Vec<_>>();
+    let native_filter_hidden_rows = sheets.iter().map(|sheet| (sheet.name.clone(), sheet.hidden_rows.clone())).collect::<std::collections::BTreeMap<_, _>>();
     for sheet in &mut sheets {
         validation_sidecar.restore(sheet);
         dimension_sidecar.restore(sheet);
@@ -735,7 +736,7 @@ fn parse_workbook(
         }
     }
     validation_sidecar.warn_unmatched_rules();
-    table_sidecar.restore_filters(&sheets);
+    table_sidecar.restore_filters(&mut sheets, &native_filter_hidden_rows);
     let mut payload = WorkbookPayload {
         formula_calendar_source: None,
         sheets,

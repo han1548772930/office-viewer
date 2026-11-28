@@ -6,6 +6,7 @@ import { canEditProtectedRanges, canEditWorksheetProtection } from '../../featur
 import { assertSheetRangesEditable, sheetRangeContainsCell, sheetRangesEqual } from '../../features/sheet-workbench/sheet-range-command.ts'
 import { expandSheetDataRange, prepareSmartSheetFilterRange } from '../../features/sheet-sort-filter/sheet-data-range.ts'
 import { dataPanelAddress, type PanelSortRangeSelection } from '../../features/sheet-sort-filter/sheet-data-panel-state.ts'
+import { sheetFilterPermissionRanges } from '../../features/sheet-sort-filter/sheet-filter-column.ts'
 
 export interface SheetSortFilterHostState {
   studio?: OfficeStudio
@@ -52,26 +53,28 @@ export function useSheetSortFilterWorkbench(options: SheetSortFilterWorkbenchOpt
   }
   function current(owner: SheetSortFilterOwner, checkRevision = false, checkSelection = true): boolean {
     const state = options.state(), model = owner.studio.getWorkbookModel(owner.unitId)
-    return owner.lifetime === lifetime && state.studio === owner.studio && state.unitId === owner.unitId
+    const sheet = model?.sheets.find(sheet => sheet.id === owner.sheetId)
+    return !owner.studio.isDisposed && owner.lifetime === lifetime && state.studio === owner.studio && state.unitId === owner.unitId
       && state.sheetId === owner.sheetId && state.userId === owner.userId && state.active && !state.blocked
       && owner.studio.activeWorkbookId === owner.unitId && owner.studio.editor.state.activeKind === 'workbook'
-      && model?.activeSheetId === owner.sheetId && model.sheets.some(sheet => sheet.id === owner.sheetId)
-      && (!checkRevision || owner.studio.getWorkbookRevision(owner.unitId) === owner.revision
-        && owner.studio.editor.history.captureSavepoint(owner.unitId).generation === owner.historyGeneration)
+      && model?.activeSheetId === owner.sheetId && !!sheet
+      && canEditWorksheetProtection(sheet, state.userId) && canEditProtectedRanges(sheet, sheetFilterPermissionRanges(sheet, owner.sourceRange), state.userId)
+      && owner.studio.editor.history.captureSavepoint(owner.unitId).generation === owner.historyGeneration
+      && (!checkRevision || owner.studio.getWorkbookRevision(owner.unitId) === owner.revision)
       && (!checkSelection || signature(owner.studio, owner.unitId, owner.sheetId) === owner.signature)
   }
-  function capture(): SheetSortFilterOwner {
-    const state = options.state(), range = state.ranges.length === 1 ? state.ranges[0] : undefined
-    if (!state.studio || !state.unitId || !range || !state.primary || !sheetRangeContainsCell(range, state.primary.row, state.primary.column)) {
+  function capture(target?: { range: CellRange; primary: { row: number; column: number } }): SheetSortFilterOwner {
+    const state = options.state(), range = target?.range ?? (state.ranges.length === 1 ? state.ranges[0] : undefined), primary = target?.primary ?? state.primary
+    if (!state.studio || !state.unitId || !range || !primary || !sheetRangeContainsCell(range, primary.row, primary.column)) {
       throw new Error('请选择一个数据区域及其活动单元格。')
     }
     const owner: SheetSortFilterOwner = { studio: state.studio, unitId: state.unitId, sheetId: state.sheetId,
       userId: state.userId, lifetime, revision: state.studio.getWorkbookRevision(state.unitId),
       historyGeneration: state.studio.editor.history.captureSavepoint(state.unitId).generation,
-      signature: signature(state.studio, state.unitId, state.sheetId), sourceRange: { ...range }, primary: { ...state.primary } }
+      signature: signature(state.studio, state.unitId, state.sheetId), sourceRange: { ...range }, primary: { ...primary } }
     if (!current(owner, true)) throw new Error('当前编辑器无法执行排序或筛选。')
     const sheet = owner.studio.getWorkbookModel(owner.unitId)!.sheets.find(sheet => sheet.id === owner.sheetId)!
-    assertSheetRangesEditable(sheet, [range], state.userId)
+    assertSheetRangesEditable(sheet, sheetFilterPermissionRanges(sheet, range), state.userId)
     return owner
   }
   const canUseDataRange = computed(() => {
@@ -80,7 +83,7 @@ export function useSheetSortFilterWorkbench(options: SheetSortFilterWorkbenchOpt
     return !!(state.studio && state.unitId && sheet && source && state.primary && state.active && !state.blocked
       && !options.open.value && !options.busy.value && sheetRangeContainsCell(source, state.primary.row, state.primary.column)
       && state.studio.activeWorkbookId === state.unitId && state.studio.editor.state.activeKind === 'workbook'
-      && canEditWorksheetProtection(sheet, state.userId) && canEditProtectedRanges(sheet, [source], state.userId))
+      && canEditWorksheetProtection(sheet, state.userId) && canEditProtectedRanges(sheet, sheetFilterPermissionRanges(sheet, source), state.userId))
   })
   const canSort = computed(() => canUseDataRange.value && options.state().ranges[0]!.endRow > options.state().ranges[0]!.startRow)
   const panelEditable = computed(() => !!pending.value && options.open.value && current(pending.value))
@@ -120,13 +123,18 @@ export function useSheetSortFilterWorkbench(options: SheetSortFilterWorkbenchOpt
     }
     owner.signature = signature(owner.studio, owner.unitId, owner.sheetId)
   }
-  function openDataPanel(mode: 'sort' | 'filter'): void {
-    if (!canUseDataRange.value) return
+  function openDataPanel(mode: 'sort' | 'filter', column?: number): boolean {
+    if (column === undefined && !canUseDataRange.value) return false
     try {
-      const owner = capture()
+      const state = options.state(), filter = state.studio && state.unitId
+        ? state.studio.getWorkbookModel(state.unitId)?.sheets.find(sheet => sheet.id === state.sheetId)?.autoFilter : undefined
+      if (column !== undefined && (mode !== 'filter' || !filter || !Number.isSafeInteger(column)
+        || column < filter.range.startCol || column > filter.range.endCol || options.open.value || options.busy.value)) return false
+      const owner = capture(column === undefined ? undefined : { range: filter!.range, primary: { row: filter!.range.startRow, column } })
       options.mode.value = mode; options.sourceRange.value = dataPanelAddress(owner.sourceRange)
       options.sourcePrimary.value = { ...owner.primary }; pending.value = owner; options.open.value = true
-    } catch (failure) { options.notify('error', failure instanceof Error ? failure.message : String(failure)) }
+      return true
+    } catch (failure) { options.notify('error', failure instanceof Error ? failure.message : String(failure)); return false }
   }
   function selectDataPanelSortRange(input: PanelSortRangeSelection): boolean {
     const owner = pending.value
@@ -177,7 +185,7 @@ export function useSheetSortFilterWorkbench(options: SheetSortFilterWorkbenchOpt
       const owner = capture(), sheet = owner.studio.getWorkbookModel(owner.unitId)!.sheets.find(sheet => sheet.id === owner.sheetId)!
       const range = sheet.autoFilter?.range ?? (commandId === 'sheet.command.toggle-auto-filter' ? prepareSmartSheetFilterRange(sheet, owner.sourceRange) : undefined)
       if (!range) return
-      assertSheetRangesEditable(sheet, [owner.sourceRange, range], owner.userId)
+      assertSheetRangesEditable(sheet, [owner.sourceRange, ...sheetFilterPermissionRanges(sheet, range)], owner.userId)
       if (!current(owner, true)) return
       owner.studio.executeCommandSync(commandId, { unitId: owner.unitId, sheetId: owner.sheetId,
         expectedRevision: owner.revision, ...(commandId === 'sheet.command.toggle-auto-filter' ? { range } : {}) })

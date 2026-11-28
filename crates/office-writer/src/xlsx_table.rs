@@ -3,7 +3,10 @@ use serde::{Deserialize, Deserializer};
 use office_io_common::{conditional_format_xml::{self as native_xml, Element}, sheet_table_source::{self as source, OfficeTableSource}};
 
 use crate::{ExportError, ExportWarning, xml};
-use super::{RangeInput, SheetInput, range_ref};
+use super::{RangeInput, SheetInput, StyleRegistry, range_ref};
+
+#[path = "xlsx_table_sort.rs"]
+mod sort;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -166,20 +169,23 @@ pub(crate) fn validate(tables: &[TableInput], table: &TableInput) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn write(table: &TableInput, id: u32, sheet: &SheetInput, warnings: &mut Vec<ExportWarning>) -> Result<String, ExportError> {
+pub(crate) fn write(table: &TableInput, id: u32, sheet: &SheetInput, registry: &mut StyleRegistry, warnings: &mut Vec<ExportWarning>) -> Result<String, ExportError> {
     let reference = range_ref(&table.range).ok_or_else(|| ExportError::invalid("table range is invalid"))?;
     let mut root = table.office_source.as_ref().map(source::read).transpose().map_err(ExportError::invalid)?
         .unwrap_or_else(|| Element::new(native_xml::MAIN_NAMESPACE, "table"));
     normalize_namespaces(&mut root);
+    let original_geometry = sort::SourceGeometry::read(&root)?;
     let original_order = source::columns(&root).unwrap_or_default().into_iter()
         .map(|column| source::positive_id(column, "id")).collect::<Result<Vec<_>, _>>().map_err(ExportError::invalid)?;
     let original_columns = source::columns(&root).unwrap_or_default().into_iter()
         .map(|column| source::positive_id(column, "id").map(|id| (id, column.clone()))).collect::<Result<BTreeMap<_, _>, _>>().map_err(ExportError::invalid)?;
     for (name, value) in [("id", id.to_string()), ("name", table.name.clone()), ("displayName", table.name.clone()),
         ("ref", reference), ("headerRowCount", u8::from(table.show_header_row).to_string()),
-        ("totalsRowCount", u8::from(table.show_totals_row).to_string()), ("totalsRowShown", u8::from(table.show_totals_row).to_string())] {
+        ("totalsRowCount", u8::from(table.show_totals_row).to_string())] {
         root.set_attr(name, value);
     }
+    let totals_ever_shown = source::flag(&root, "totalsRowShown").map_err(ExportError::invalid)?.unwrap_or(false);
+    root.set_attr("totalsRowShown", u8::from(totals_ever_shown || table.show_totals_row).to_string());
     let mut columns = root.child("tableColumns").cloned().unwrap_or_else(|| Element::new(native_xml::MAIN_NAMESPACE, "tableColumns"));
     columns.set_attr("count", table.columns.len().to_string());
     let mut replacement = Vec::with_capacity(table.columns.len());
@@ -203,10 +209,33 @@ pub(crate) fn write(table: &TableInput, id: u32, sheet: &SheetInput, warnings: &
         if flag.is_some() || !style.attrs.contains_key(name) { style.set_attr(name, u8::from(flag.unwrap_or(default)).to_string()); }
     }
     root.replace_children(|child| source::spreadsheet(child, "tableStyleInfo"), vec![style]);
-    patch_filter(&mut root, table, &original_order, sheet, warnings)?;
+    patch_filter(&mut root, table, &original_order, sheet, registry, warnings)?;
+    patch_filter_snapshot(&mut root, table, registry)?;
+    sort::patch(&mut root, original_geometry.as_ref(), table, &original_order)?;
     root.order_children(&["autoFilter", "sortState", "tableColumns", "tableStyleInfo", "extLst"]);
     root.validate_fragment().map_err(|error| ExportError::invalid(format!("TABLE_SOURCE_LIMIT: {error}")))?;
     Ok(format!("{}{}", xml::DECL, root.render()))
+}
+
+fn patch_filter_snapshot(root: &mut Element, table: &TableInput, registry: &StyleRegistry) -> Result<(), ExportError> {
+    use office_io_common::filter_color::{TABLE_FILTER_NAMESPACE, TABLE_FILTER_EXTENSION_URI};
+    let mut extensions = root.child("extLst").cloned().unwrap_or_else(|| Element::new(native_xml::MAIN_NAMESPACE, "extLst"));
+    extensions.replace_children(|node| node.is_main("ext") && node.attribute_ns("", "uri") == Some(TABLE_FILTER_EXTENSION_URI), vec![]);
+    if let (Some(Some(filter)), Some(native)) = (&table.auto_filter, root.child("autoFilter")) {
+        let fingerprint = office_io_common::office_filter_fingerprint(Some(&office_io_common::OfficeFilterNode::from_element(native)),
+            |node| super::auto_filter::color_signature(node, registry)).map_err(ExportError::invalid)?;
+        let mut filter = filter.clone();
+        let (r1, c1, r2, c2) = bounds(&table.range).ok_or_else(|| ExportError::invalid("invalid table snapshot range"))?;
+        filter.range = RangeInput { start_row: Some(r1), start_col: Some(c1), end_row: Some(r2 - u32::from(table.show_totals_row)), end_col: Some(c2), ..RangeInput::default() };
+        let state = super::auto_filter::filter_snapshot_value(&filter)?.to_string();
+        if state.len() > 16 * 1024 * 1024 { return Err(ExportError::invalid("TABLE_FILTER_LIMIT: snapshot exceeds 16 MiB")); }
+        let mut extension = Element::new(native_xml::MAIN_NAMESPACE, "ext"); extension.set_attr("uri", TABLE_FILTER_EXTENSION_URI);
+        let mut snapshot = Element::new(TABLE_FILTER_NAMESPACE, "filterState");
+        snapshot.set_attr("version", "1"); snapshot.set_attr("fingerprint", fingerprint); snapshot.set_text(&state);
+        extension.push(snapshot); extensions.push(extension);
+    }
+    root.replace_children(|node| node.is_main("extLst"), if extensions.children.is_empty() { vec![] } else { vec![extensions] });
+    Ok(())
 }
 
 fn patch_attribute(node: &mut Element, name: &str, value: &Option<Option<String>>) {
@@ -224,41 +253,67 @@ fn patch_formula(node: &mut Element, name: &str, value: &Option<Option<String>>,
     if !formula.text.is_empty() { node.replace_children(|child| source::spreadsheet(child, name), vec![formula]); }
 }
 
-fn patch_filter(root: &mut Element, table: &TableInput, original_order: &[u32], sheet: &SheetInput, warnings: &mut Vec<ExportWarning>) -> Result<(), ExportError> {
+fn patch_filter(root: &mut Element, table: &TableInput, original_order: &[u32], sheet: &SheetInput, registry: &mut StyleRegistry, warnings: &mut Vec<ExportWarning>) -> Result<(), ExportError> {
     let (r1, c1, r2, c2) = bounds(&table.range).ok_or_else(|| ExportError::invalid("invalid table filter range"))?;
     if !table.show_header_row || matches!(table.auto_filter, Some(None)) {
         root.replace_children(|child| source::spreadsheet(child, "autoFilter"), vec![]); return Ok(());
     }
     let range = RangeInput { start_row: Some(r1), start_col: Some(c1), end_row: Some(r2 - u32::from(table.show_totals_row)), end_col: Some(c2), ..RangeInput::default() };
-    let mut filter = if let Some(Some(filter)) = &table.auto_filter {
-        let mut filter = filter.clone(); filter.range = range.clone();
-        let xml = super::auto_filter::write_filter_xml(sheet, &filter, warnings)?;
-        native_xml::parse(&xml.replacen("<autoFilter", &format!("<autoFilter xmlns=\"{}\"", native_xml::MAIN_NAMESPACE), 1)).map_err(ExportError::invalid)?
-    } else { root.child("autoFilter").cloned().unwrap_or_else(|| Element::new(native_xml::MAIN_NAMESPACE, "autoFilter")) };
+    let mut filter = root.child("autoFilter").cloned().unwrap_or_else(|| Element::new(native_xml::MAIN_NAMESPACE, "autoFilter"));
     filter.set_attr("ref", range_ref(&range).ok_or_else(|| ExportError::invalid("invalid table data range"))?);
     // Native colId is the column's position, not its stable OOXML column ID.
-    // Only retained native criteria need this remap; typed criteria use current positions.
-    if table.auto_filter.is_none() && !original_order.is_empty() {
-        let order = root.child("tableColumns").map(|columns| columns.children.iter().filter_map(|column| source::positive_id(column, "id").ok()).collect::<Vec<_>>()).unwrap_or_default();
+    // Keep native extensions/button state attached to the stable column even
+    // when editable criteria replace the predicates in that column.
+    if !original_order.is_empty() {
+        let order = table.columns.iter().enumerate().filter_map(|(index, column)| column.office_column_id.map(|id| (id, index))).collect::<BTreeMap<_, _>>();
         let mut children = Vec::new();
         for child in &filter.children {
             if !source::spreadsheet(child, "filterColumn") { children.push(child.clone()); continue; }
             let old_index = child.attrs.get("colId").and_then(|value| value.parse::<usize>().ok());
             let native_id = old_index.and_then(|index| original_order.get(index));
-            if let Some(index) = native_id.and_then(|id| order.iter().position(|current| current == id)) {
+            if let Some(index) = native_id.and_then(|id| order.get(id)) {
                 let mut child = child.clone(); child.set_attr("colId", index.to_string()); children.push(child);
             }
         }
         filter.replace_children(|_| true, children);
     }
+    if let Some(Some(criteria)) = &table.auto_filter {
+        let mut criteria = criteria.clone(); criteria.range = range;
+        let xml = super::auto_filter::write_filter_xml(sheet, &criteria, registry, warnings)?;
+        let generated = native_xml::parse(&xml.replacen("<autoFilter", &format!("<autoFilter xmlns=\"{}\"", native_xml::MAIN_NAMESPACE), 1)).map_err(ExportError::invalid)?;
+        let mut generated = generated.children.into_iter().filter(|child| source::spreadsheet(child, "filterColumn"))
+            .map(|child| (child.attrs.get("colId").cloned().unwrap_or_default(), child)).collect::<BTreeMap<_, _>>();
+        let mut columns = Vec::new();
+        for native in filter.children.iter().filter(|child| source::spreadsheet(child, "filterColumn")) {
+            let mut column = native.clone();
+            let typed = native.attrs.get("colId").and_then(|id| generated.remove(id));
+            column.replace_children(filter_predicate, typed.map(|node| node.children).unwrap_or_default());
+            columns.push(column);
+        }
+        columns.extend(generated.into_values());
+        filter.replace_children(|child| source::spreadsheet(child, "filterColumn"), columns);
+    }
+    let filter_positions = filter.children.iter().enumerate().filter_map(|(position, child)| {
+        if !source::spreadsheet(child, "filterColumn") { return None; }
+        let index = child.attrs.get("colId")?.parse::<usize>().ok()?;
+        Some((index, position))
+    }).collect::<BTreeMap<_, _>>();
     for (index, column) in table.columns.iter().enumerate() {
         let Some(show) = column.show_filter_button else { continue; };
-        let position = filter.children.iter().position(|child| source::spreadsheet(child, "filterColumn") && child.attrs.get("colId") == Some(&index.to_string()));
-        if let Some(position) = position { filter.children[position].set_attr("hiddenButton", u8::from(!show).to_string()); }
+        if let Some(position) = filter_positions.get(&index) {
+            filter.children[*position].set_attr("hiddenButton", u8::from(!show).to_string());
+            filter.children[*position].set_attr("showButton", u8::from(show).to_string());
+        }
         else if !show { let mut column = Element::new(native_xml::MAIN_NAMESPACE, "filterColumn"); column.set_attr("colId", index.to_string()); column.set_attr("hiddenButton", "1"); filter.push(column); }
     }
+    filter.order_children(&["filterColumn", "sortState", "extLst"]);
     root.replace_children(|child| source::spreadsheet(child, "autoFilter"), vec![filter]);
     Ok(())
+}
+
+fn filter_predicate(node: &Element) -> bool {
+    matches!(node.namespace.as_str(), native_xml::MAIN_NAMESPACE | native_xml::STRICT_MAIN_NAMESPACE)
+        && matches!(node.name.as_str(), "filters" | "top10" | "customFilters" | "dynamicFilter" | "colorFilter" | "iconFilter")
 }
 
 fn normalize_namespaces(node: &mut Element) {
@@ -289,3 +344,7 @@ fn default_style() -> String { "TableStyleMedium2".to_owned() }
 fn bounds(range: &RangeInput) -> Option<(u32, u32, u32, u32)> {
     Some((range.start_row.or(range.first_row)?, range.start_col.or(range.first_col)?, range.end_row.or(range.last_row)?, range.end_col.or(range.last_col)?))
 }
+
+#[cfg(test)]
+#[path = "xlsx_table_tests.rs"]
+mod tests;

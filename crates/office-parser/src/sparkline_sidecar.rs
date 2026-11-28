@@ -7,8 +7,7 @@ use office_io_common::conditional_format_xml::{self as xml, Element, XmlSelectio
 use office_io_common::sparkline_io::{self as io, SparklineModelBudget, SparklineModelRecord};
 use crate::model::SparklinePayload;
 
-#[path = "sparkline_parts.rs"]
-mod parts;
+use crate::xlsx_color_resources as parts;
 
 #[derive(Debug, Default)]
 pub(crate) struct SparklineSidecar {

@@ -65,6 +65,33 @@ fn binary_reopen_admits_authored_formula_exact_serial_and_native_table_identity(
 }
 
 #[test]
+fn calculation_table_ids_and_columns_are_independent_from_imported_author_formulas() {
+    let mut snapshot = fixture();
+    snapshot["tables"][0]["officeTableId"] = json!(47);
+    snapshot["tables"][0]["columns"][0]["officeColumnId"] = json!(9);
+    snapshot["tables"][0]["officeSource"] = json!({ "partName": "xl/tables/original.xml", "xml":
+        "<table xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" id=\"47\" name=\"DataTable\" ref=\"A5:A6\"><tableColumns count=\"1\"><tableColumn id=\"9\" name=\"Amount\" totalsRowFunction=\"sum\"><calculatedColumnFormula>1+2</calculatedColumnFormula><totalsRowFormula>SUM([Amount])</totalsRowFormula></tableColumn></tableColumns></table>" });
+    let bytes = export(&snapshot); let saved = manifest(&bytes); let reopened = parsed(&bytes);
+    let author = saved.tables.iter().find(|table| table.table_id == "stable-table").unwrap();
+    assert_eq!(author.office_table_id, 47); assert_eq!(author.columns[0].column_id, "amount"); assert_eq!(author.columns[0].office_column_id, 9);
+    let ids = saved.tables.iter().map(|table| table.office_table_id).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), saved.tables.len());
+    for (index, table) in saved.tables.iter().enumerate() {
+        let root = office_io_common::sheet_table_source::parse_xml(&part(&bytes, &format!("xl/tables/table{}.xml", index + 1))).unwrap();
+        assert_eq!(office_io_common::sheet_table_source::positive_id(&root, "id").unwrap(), table.office_table_id);
+        let columns = office_io_common::sheet_table_source::columns(&root).unwrap();
+        assert_eq!(office_io_common::sheet_table_source::positive_id(columns[0], "id").unwrap(), table.columns[0].office_column_id);
+        if table.table_id != author.table_id {
+            assert_ne!(table.office_table_id, 47); assert!(columns[0].child("calculatedColumnFormula").is_none());
+            assert!(columns[0].child("totalsRowFormula").is_none()); assert!(!columns[0].attrs.contains_key("totalsRowFunction"));
+        }
+    }
+    let restored = &reopened["payload"]["data"]["formulaCalendarSource"]["tables"];
+    assert!(restored.as_array().unwrap().iter().any(|table| table["tableId"] == "stable-table"
+        && table["officeTableId"] == 47 && table["columns"][0]["columnId"] == "amount" && table["columns"][0]["officeColumnId"] == 9));
+}
+
+#[test]
 fn native_renaming_preserves_alias_keys_and_rewrites_targets_by_sheet_and_table_id() {
     let bytes = export(&fixture());
     let bytes = rewrite(&bytes, |name, data| {

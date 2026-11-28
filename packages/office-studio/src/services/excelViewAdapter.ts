@@ -1,4 +1,5 @@
 import type { CellScalar, CellStyle, ChartModel, PivotCacheModel, PivotTableModel, SheetTableModel, WorkbookModel, SpreadsheetCell, SheetDataValidationRule, SheetRangeProtectionRule, SheetWorksheetProtectionRule, SheetOutlineState, SheetAutoFilter, SparklineSpec, SheetConditionalFormatRule, SlicerCacheModel, SlicerModel } from '../domain/model.ts'
+import { DEFAULT_SHEET_ROW_COUNT, DEFAULT_SHEET_COLUMN_COUNT } from '../domain/model.ts'
 import { classifySheetNumberFormat, formatSheetValue, isSheetTextNumberFormat, SHEET_NUMBER_FORMATS, type SheetNumberFormat } from '../features/sheet-workbench/sheet-number-format.ts'
 import { refreshAutoFilter } from '../features/sheet-sort-filter/sort-filter-engine.ts'
 import { getSheetOutlineHiddenSpans } from '../features/sheet-outline/sheet-outline.ts'
@@ -164,8 +165,8 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
     tables: workbook.tables?.map(cloneSheetTable),
     sheets: workbook.sheets.map((sheet) => {
       const cells: Record<string, ExcelCellView> = {}
-      let rowCount = Math.max(1, sheet.rowCount ?? 100)
-      let columnCount = Math.max(1, sheet.columnCount ?? 26)
+      let rowCount = Math.max(1, sheet.rowCount ?? DEFAULT_SHEET_ROW_COUNT)
+      let columnCount = Math.max(1, sheet.columnCount ?? DEFAULT_SHEET_COLUMN_COUNT)
       for (const cell of Object.values(sheet.cells)) {
         cells[cellKey(cell.row, cell.col)] = toExcelCellView({ ...cell, style: resolveSheetCellStyle(sheet, cell.row, cell.col, cell, workbook) })
         rowCount = Math.max(rowCount, cell.row+1)
@@ -200,7 +201,7 @@ export function toExcelWorkbookView(workbook: WorkbookModel): ExcelWorkbookView 
         outlineHiddenColumnSpans: sheet.outline ? getSheetOutlineHiddenSpans(sheet.outline, 'column', columnCount) : [],
         filteredRows: [...new Set([...(sheet.autoFilter?.filteredRows ?? []), ...(workbook.tables ?? []).filter(table => table.sheetId === sheet.id).flatMap(table => {
           if (!table.autoFilter) return []
-          return refreshAutoFilter({ ...sheet, autoFilter: structuredClone(table.autoFilter) })
+          return refreshAutoFilter({ ...sheet, autoFilter: structuredClone(table.autoFilter) }, workbook)
         })])],
         autoFilter: sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined,
         showGridlines: sheet.showGridlines, visible: sheet.visible,
@@ -366,12 +367,12 @@ export function applyExcelWorkbookView(workbook: WorkbookModel, view: ExcelWorkb
       }
       if (next.autoFilter) {
         next.autoFilter = { ...next.autoFilter, columns: { ...next.autoFilter.columns }, filteredRows: [...next.autoFilter.filteredRows] }
-        refreshAutoFilter(next)
       }
       return next
     }),
   }
   refreshWorkbookCellStyles(result, workbook, true, numberFormatLocale)
+  for (const sheet of result.sheets) if (sheet.autoFilter) refreshAutoFilter(sheet, result)
   return result
 }
 

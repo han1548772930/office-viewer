@@ -42,6 +42,25 @@ async function open() {
 }
 async function appearance(variant, dark = false) { await page.evaluate(({ variant, dark }) => window.tableFixture.appearance(dark, variant), { variant, dark }) }
 
+test('initial setup and studio attachment synchronously initialize table, painter and validation hosts without content/history changes', async () => {
+  const original = await snapshot(), oldHistory = await history()
+  await expect(grid()).toBeVisible(); await expect(dialog()).toBeHidden()
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await expect(page.getByRole('button', { name: '创建表格', exact: true })).toBeEnabled()
+  assert.deepEqual(await snapshot(), original); assert.deepEqual(await history(), oldHistory)
+
+  await page.goto(`${baseURL}?standalone=1`); await expect(grid()).toBeVisible()
+  await page.getByRole('tab', { name: '数据', exact: true }).click()
+  await expect(page.getByRole('button', { name: '创建表格', exact: true })).toBeDisabled()
+  const standalone = await snapshot(), standaloneHistory = await history()
+  await page.evaluate(() => window.tableFixture.attachStudio(true))
+  await expect(page.getByRole('button', { name: '创建表格', exact: true })).toBeEnabled()
+  await open(); await expect(rangeInput()).toHaveValue('A1:B3')
+  await dialog().getByRole('button', { name: '取消', exact: true }).click(); await expect(dialog()).toBeHidden()
+  assert.deepEqual(await snapshot(), standalone); assert.deepEqual(await history(), standaloneHistory)
+  assert.deepEqual(errors, [])
+})
+
 for (const variant of ['classic', 'grid']) {
   test(`${variant}: creation expands the last single-cell range, commits once, and survives undo/redo plus internal reopen`, async () => {
     await appearance(variant); await select('B2'); const before = await snapshot(); await open()

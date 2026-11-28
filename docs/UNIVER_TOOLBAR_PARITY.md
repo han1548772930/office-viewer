@@ -507,11 +507,13 @@ AST 展开了 range-editor 的行内循环及格式刷的两个 flatMap，全部
 
 <a id="formula-insertion-plan"></a>
 
-### 插入函数：自动引用和批量写入方案（待确认）
+### 插入函数：自动引用和批量写入（已落盘，待统一验证）
 
-固定 [InsertFunctionOperation](../../univer/packages/sheets-formula-ui/src/commands/operations/insert-function.operation.ts) 将单格或无数值矩形送入未闭合公式编辑，引用优先扫描上方再左方的最近连续数值块；其他选区按内容推断相对填充或行/列结果空格。固定 [InsertFunctionCommand](../../univer/packages/sheets-formula/src/commands/commands/insert-function.command.ts) 接收 `{ list, listOfRangeHasNumber }`，构造稀疏修改后一次派发 SetRangeValuesCommand。本地目前仍是参数表单与单格编辑，尚未实现这套批量行为。
+2026-11-28 已按用户全量修改的持续授权实施下列方案，详见[真实命令、自动引用与批量事务](feature-evidence/SHEET-09-function-insertion-2026-11-28.md)。分类菜单与快速求和共用固定 operation，参数 Form 保留为选择器；原文以下“拟修改/未实施/待确认”只描述当时的历史状态，不能再作为阻止实施的确认要求。全部运行验证仍后置，完成数量不因此提升。
 
-拟修改四份生产文件，约 320–460 行：
+固定 [InsertFunctionOperation](../../univer/packages/sheets-formula-ui/src/commands/operations/insert-function.operation.ts) 将单格或无数值矩形送入未闭合公式编辑，引用优先扫描上方再左方的最近连续数值块；其他选区按内容推断相对填充或行/列结果空格。固定 [InsertFunctionCommand](../../univer/packages/sheets-formula/src/commands/commands/insert-function.command.ts) 接收 `{ list, listOfRangeHasNumber }`，构造稀疏修改后一次派发 SetRangeValuesCommand。本地已经接入这套计划和一次批量事务，原参数表单继续作为完整选择器入口，真实交互仍待统一验证。
+
+已实施的四份主要生产文件职责如下，共享生命周期和导出同时接入原 API / index：
 
 | 文件 | 具体职责 |
 | --- | --- |
@@ -520,7 +522,7 @@ AST 展开了 range-editor 的行内循环及格式刷的两个 flatMap，全部
 | `api/office-studio.ts` | 注册公式插入命令并通过现有 commitWorkbook 一次发布历史与模型 |
 | `components/ExcelWorkbench.vue` | 将分类入口接到插入计划，复用现有编辑会话、输入法和提交/取消路径 |
 
-以上路径均相对 `packages/office-studio/src/`。后置草稿约 120–220 行：新增 `sheet-function-insertion.contract.test.mjs`，补现有 `sheet-workbench-formulas.contract.test.mjs` 与 `tests/browser/sheet-toolbar.spec.ts`，覆盖自动引用、批量目标、相对引用、权限/验证拒绝、一次撤销重做和保存重开。纯计划保持同步，当前 TS 引擎仍为唯一公式权威；Worker/WASM 迁移与性能结论不属于此方案。方案已提出但未收到较大改动确认，尚未新增上述生产文件或实施接线，根数与完成数量均不增加。
+以上路径均相对 `packages/office-studio/src/`。实施时草稿拆为 `sheet-function-insertion-model.contract.test.mjs` 和 `sheet-function-insertion-api.contract.test.mjs`，并补 `tests/browser/sheet-toolbar.spec.ts`，覆盖自动引用、批量目标、相对引用、权限拒绝、一次撤销重做和保存重开。纯计划保持同步，当前 TS 引擎仍为唯一公式权威；Worker/WASM 迁移与性能保持后续完整目标。该方案已落盘，所有草稿未运行，根数与验收完成数量均不增加。
 
 2026-11-27 前批静态收尾：修改与新增文件无冲突标记，`git -c core.autocrlf=false -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check` 通过；新增文件另查尾部空白。本地文档链接/锚点和固定上游路径可解析。34 个 TS/JS 脚本、17 个 Vue 文件及其 script、18 个 CSS 文件/样式块、7 个可静态提取的浏览器夹具 script 通过语法读取；没有执行业务模块、类型检查或测试。函数 catalog 沿用上一批静态复核的 117 项、8 类，未执行求值器。表中命名样式、分节、页眉页脚和目录的过时“未接入口”描述已按现有专项证据修正，不提升验收状态。
 

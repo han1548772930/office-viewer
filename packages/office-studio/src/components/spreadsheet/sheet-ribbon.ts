@@ -14,6 +14,7 @@ import {
 import type { RibbonItem, RibbonTab } from '../../platform/ribbon/ribbon-schema.ts'
 import { fontSizeOptions, ribbonFontOptions, type OfficeFontList } from '../../platform/ribbon/ribbon-fonts.ts'
 import { SHEET_COMMON_FUNCTION_CATALOG, SHEET_FUNCTION_CATALOG } from '../../features/sheet-workbench/sheet-function-catalog.ts'
+import { SHEET_INSERT_FUNCTION_OPERATION } from '../../api/sheet-function-commands.ts'
 import { SHEET_TABLE_COMMANDS } from '../../features/sheet-tables/sheet-table-create.ts'
 import { quickDropdownPresets } from '../../features/sheet-validation/quick-validation.ts'
 import QuickDropdownPicker from './QuickDropdownPicker.vue'
@@ -88,6 +89,7 @@ export interface SheetRibbonState {
   validationPanelOpen?: boolean
   hyperlinkAvailable?: boolean
   canSort: boolean
+  dataRangeEditable?: boolean
   filterEnabled?: boolean
   filterHasCriteria?: boolean
   filterCanToggle?: boolean
@@ -408,17 +410,17 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
     {
       id: 'data', title: '数据', order: 30, groups: [
         { id: 'organization', title: '数据整理', order: 10, items: [
-          { id: 'sheet.menu.sort', type: 'menu', title: '排序', icon: ArrowDownWideNarrow, disabled: !state.hasSheet, gridLayout: { row: 1, column: 1 }, children: [
+          { id: 'sheet.menu.sort', type: 'menu', title: '排序', icon: ArrowDownWideNarrow, disabled: !state.hasSheet || state.dataRangeEditable === false, gridLayout: { row: 1, column: 1 }, children: [
             button('sheet.command.sort-ascending', '升序', { icon: ArrowUpAZ, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
-            button('sheet.command.sort-ascending-extended', '扩展选定区域升序', { commandId: 'sheet.command.sort-ascending', params: { extendSelection: true }, icon: ArrowUpAZ, disabled: !state.hasSheet }),
+            button('sheet.command.sort-ascending-extended', '扩展选定区域升序', { commandId: 'sheet.command.sort-ascending', params: { extendSelection: true }, icon: ArrowUpAZ, disabled: !state.hasSheet || state.dataRangeEditable === false }),
             button('sheet.command.sort-descending', '降序', { icon: ArrowDownAZ, disabled: !state.canSort, disabledReason: '请选择至少两行的数据范围' }),
-            button('sheet.command.sort-descending-extended', '扩展选定区域降序', { commandId: 'sheet.command.sort-descending', params: { extendSelection: true }, icon: ArrowDownAZ, disabled: !state.hasSheet }),
-            button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownWideNarrow, disabled: !state.hasSheet }),
+            button('sheet.command.sort-descending-extended', '扩展选定区域降序', { commandId: 'sheet.command.sort-descending', params: { extendSelection: true }, icon: ArrowDownAZ, disabled: !state.hasSheet || state.dataRangeEditable === false }),
+            button('sheet.operation.open-data-panel', '自定义排序', { params: 'sort', icon: ArrowDownWideNarrow, disabled: !state.hasSheet || state.dataRangeEditable === false }),
           ] },
           { ...button('sheet.data.filter', '筛选', { commandId: 'sheet.command.toggle-auto-filter', icon: Filter, showLabel: true, activated: state.filterEnabled, disabled: !state.filterCanToggle, disabledReason: translate?.('sheet.filter.select-range', '请选择包含标题行和数据行的区域后再启用筛选'), gridLayout: { row: 2, column: 1 } }), type: 'split', children: [
-            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', icon: FilterX, disabled: !state.filterHasCriteria }),
-            button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterHasCriteria }),
-            button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled }),
+            button('sheet.menu.filter.clear', '清除筛选', { commandId: 'sheet.command.clear-filter', icon: FilterX, disabled: !state.filterHasCriteria || state.dataRangeEditable === false }),
+            button('sheet.menu.filter.reapply', '重新应用', { commandId: 'sheet.command.reapply-filter', disabled: !state.filterHasCriteria || state.dataRangeEditable === false }),
+            button('sheet.menu.filter.panel', '筛选条件', { commandId: 'sheet.operation.open-data-panel', params: 'filter', disabled: !state.filterEnabled || state.dataRangeEditable === false }),
           ] },
           button(SHEET_TABLE_COMMANDS.openSelector, '创建表格', { icon: TableProperties, order: 2,
             disabled: !state.hasSheet || state.tableAvailable === false || state.tableEditable === false || state.drawingFocused === true,
@@ -468,7 +470,8 @@ export function createSheetRibbon(state: SheetRibbonState, translate?: OfficeTra
             children: [...(category === '常用与统计' ? SHEET_COMMON_FUNCTION_CATALOG : SHEET_FUNCTION_CATALOG.filter(entry => entry.category === category)).map(entry => button(
               `sheet.function.${entry.name}`,
               entry.name,
-              { commandId: 'sheet.operation.insert-function', params: entry.name, disabled: formulaDisabled },
+              { commandId: SHEET_INSERT_FUNCTION_OPERATION, params: { value: entry.name }, disabled: formulaDisabled,
+                ...(entry.name === 'SUM' ? { shortcut: typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform) ? 'Cmd+Alt+=' : 'Alt+=' } : {}) },
             )), ...(index === 0 ? [button('sheet.operation.open-function', '插入函数', { icon: FunctionSquare, disabled: formulaDisabled })] : [])],
           })),
         ] },

@@ -16,7 +16,8 @@ import { createDocumentTableViewSelection, documentTableDescendantIds, documentT
 import { applySectionHeaderFooter, insertSectionPageField, type SectionHeaderFooterPatch } from '../services/section-header-footer'
 import { applyDocumentParagraphStylePatch, applyDocumentSectionSetupPatch, prepareDocumentPageSetup, type DocumentPageSetupRequest, type DocumentSectionSetupPatch } from '../services/document-settings'
 import { applyDocumentTocMutation, applyDocumentTocPageNumberUpdate, type DocumentTocPageNumbers, type DocumentTocUpdateMode } from '../toc/document-toc'
-import { prepareDocumentTocAction } from '../toc/document-toc-command'
+import { prepareDocumentTocAction, prepareDocumentTocInsertion, type DocumentTocInsertionRequest } from '../toc/document-toc-command'
+import { setDocumentHeadingCollapsed } from '../headings/heading-collapse'
 import { assertDocumentPermission, canManageDocumentPermissions, permissionTargetsForChangedBlocks, permissionTargetsForChangedStories, permissionTargetsForSelection, resolveDocumentPermission, validateDocumentPermissionRules, type DocumentPermissionContext } from '../permissions/document-permissions'
 import { cloneModel } from '../../../domain/serialization'
 import type { DocumentAuxiliaryBlockHost } from '../model/document-block-host'
@@ -94,8 +95,10 @@ export type DocumentBodyCommand =
   | ({ id: 'doc.command.update-selected-fields' } & DocumentStoryFieldRefreshRequest)
   | ({ id: 'doc.command.insert-page-field'; sectionId: string } & DocumentPageField)
   | { id: 'doc.command.set-document-permission-rules'; rules: DocumentPermissionRule[] }
-  | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers; timestamp?: number }
-  | { id: 'doc.command.delete-table-of-contents'; tocId: string; timestamp?: number }
+  | ({ id: 'doc.command.insert-table-of-contents' } & DocumentTocInsertionRequest)
+  | { id: 'doc.command.update-table-of-contents'; tocId: string; mode: DocumentTocUpdateMode; pageNumbers?: DocumentTocPageNumbers; timestamp?: number; preserveInputSelection?: boolean }
+  | { id: 'doc.command.delete-table-of-contents'; tocId: string; timestamp?: number; preserveInputSelection?: boolean }
+  | { id: 'doc.command.set-heading-collapsed'; paragraphId: string; collapsed: boolean }
 
 /** Menus, Canvas, keyboard and API carry the same explicit auxiliary-content address. */
 export type DocumentCommand = DocumentBodyCommand & {
@@ -107,7 +110,8 @@ export type DocumentCommand = DocumentBodyCommand & {
 export function documentCommandSupportsBlockHost(command: Pick<DocumentCommand, 'id'>): boolean {
   return !['doc.command.set-document-permission-rules', 'doc.command.set-section-header-footer', 'doc.command.set-section-setup', 'docs.command.page-setup',
     'doc.command.insert-section-break', 'doc.command.insert-column-break', 'doc.command.insert-page-break',
-    'doc.command.refresh-header-footer-fields', 'doc.command.update-table-of-contents', 'doc.command.delete-table-of-contents'].includes(command.id)
+    'doc.command.refresh-header-footer-fields', 'doc.command.insert-table-of-contents', 'doc.command.update-table-of-contents', 'doc.command.delete-table-of-contents',
+    'doc.command.set-heading-collapsed'].includes(command.id)
 }
 
 export function documentPageSetupCommandState(model: DocumentModel, context: DocumentPermissionContext) {
@@ -398,7 +402,7 @@ export function executeDocumentCommand(
   reconcileDocumentQuotePagination(candidate)
   assertDocumentParagraphPaginationChangesEditable(model, candidate)
   if (blockControls) reconcileDocumentContentControlBlockEdits(model, candidate, { selection, activeControlId: command.activeContentControlId,
-    absorbAdjacentInsertions: ['doc.command.insert-text', 'doc.command.paste-blocks', 'doc.command.insert-image',
+    absorbAdjacentInsertions: ['doc.command.insert-text', 'doc.command.paste-blocks', 'doc.command.insert-table-of-contents', 'doc.command.insert-image',
       'doc.command.insert-latex-formula',
       'doc.command.insert-table', 'doc.command.create-table', 'doc.command.insert-divider', 'doc.command.horizontal-line', 'doc.command.insert-horizontal-line-bellow', 'doc.command.insert-page-break', 'doc.command.insert-column-break',
       'doc.command.insert-section-break'].includes(command.id) })
@@ -492,6 +496,7 @@ function executeDocumentCommandMutation(
     return plan.selection
   }
   switch (command.id) {
+    case 'doc.command.set-heading-collapsed': return setDocumentHeadingCollapsed(model, selection, command.paragraphId, command.collapsed, context)
     case 'doc.command.insert-text': return replaceSelectionText(model, selection, command.text, command.marks, { activeControlId: command.activeContentControlId })
     case 'doc.command.delete': return deleteContent(model, selection, command.direction, { activeControlId: command.activeContentControlId })
     case 'doc.command.format-text': {
@@ -820,11 +825,21 @@ function executeDocumentCommandMutation(
       model.comments = candidate.comments
       return selection
     }
+    case 'doc.command.insert-table-of-contents': {
+      const blocks = prepareDocumentTocInsertion(model, selection, command, context)
+      const candidate = cloneModel(model)
+      const next = insertBlocks(candidate, selection, blocks, { activeControlId: command.activeContentControlId })
+      validateDocumentContentControlRanges(candidate)
+      assertDocumentPermission(model.permissionRules ?? [], context, 'edit', permissionTargetsForChangedBlocks(model, candidate))
+      Object.assign(model, candidate)
+      return next
+    }
     case 'doc.command.update-table-of-contents':
     case 'doc.command.delete-table-of-contents': {
       const action = command.id === 'doc.command.delete-table-of-contents' ? 'delete' : command.mode
       const plan = prepareDocumentTocAction(model, selection, command.tocId, action,
-        command.id === 'doc.command.update-table-of-contents' ? command.pageNumbers ?? {} : {}, context, command.timestamp)
+        command.id === 'doc.command.update-table-of-contents' ? command.pageNumbers ?? {} : {}, context, command.timestamp,
+        command.preserveInputSelection === true)
       if (!plan.changed) return selection
       if (command.id === 'doc.command.update-table-of-contents' && command.mode === 'pageNumbersOnly') {
         applyDocumentTocPageNumberUpdate(model, plan)

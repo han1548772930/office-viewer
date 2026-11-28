@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Checkbox, Form, FormItem, Modal, Select, theme } from 'antdv-next'
+import { Alert, Checkbox, Form, FormItem, Modal, Select, theme } from 'antdv-next'
 import { computed, inject, ref, watch } from 'vue'
 import { OfficeTranslatorKey } from '../../i18n/office-i18n.ts'
 import type { DocumentTocOptions, DocumentTocUpdateMode } from '../../features/document/toc/document-toc.ts'
@@ -11,16 +11,20 @@ const props = defineProps<{
   options: DocumentTocOptions
   updateMode?: DocumentTocUpdateMode
   updateStates?: Partial<Record<DocumentTocUpdateMode, DocumentTocActionState>>
+  disabled?: boolean
+  error?: string
 }>()
 
 const emit = defineEmits<{
   'update:open': [open: boolean]
   apply: [payload: { options: DocumentTocOptions; updateMode?: DocumentTocUpdateMode }]
+  closed: []
 }>()
 
 const t = inject(OfficeTranslatorKey, (_key: string, fallback: string) => fallback)
 const draft = ref<DocumentTocOptions>({ ...props.options })
 const draftUpdateMode = ref<DocumentTocUpdateMode>(props.updateMode ?? 'pageNumbersOnly')
+const composing = ref(false)
 const currentUpdateState = computed(() => props.mode === 'update' ? props.updateStates?.[draftUpdateMode.value] : undefined)
 const { token } = theme.useToken()
 const previewStyle = computed(() => ({ background: token.value.colorFillQuaternary, color: token.value.colorText,
@@ -45,18 +49,18 @@ const updateOptions = computed(() => ([
   title: props.updateStates?.[value]?.reason })))
 
 watch(() => props.open, (open) => {
+  composing.value = false
   if (!open) return
   draft.value = { ...props.options }
   draftUpdateMode.value = props.updateMode ?? 'pageNumbersOnly'
 })
 
 function apply() {
-  if (currentUpdateState.value?.available === false) return
+  if (!props.open || props.disabled || composing.value || currentUpdateState.value?.available === false) return
   emit('apply', {
     options: { ...draft.value },
     ...(props.mode === 'update' ? { updateMode: draftUpdateMode.value } : {}),
   })
-  emit('update:open', false)
 }
 </script>
 
@@ -67,12 +71,14 @@ function apply() {
     :ok-text="t('common.apply', 'Apply')"
     :cancel-text="t('common.cancel', 'Cancel')"
     :width="500"
-    :ok-button-props="{ disabled: currentUpdateState?.available === false }"
+    :ok-button-props="{ disabled: disabled || composing || currentUpdateState?.available === false }"
+    :focus-trigger-after-close="false" :after-close="() => emit('closed')"
+    :keyboard="!composing" :closable="!composing" :mask-closable="!composing" :cancel-button-props="{ disabled: composing }"
     destroy-on-hidden
     @ok="apply"
     @cancel="emit('update:open', false)"
   >
-    <Form class="toc-dialog" layout="vertical">
+    <Form class="toc-dialog" layout="vertical" :disabled="disabled" @submit.prevent @compositionstart="composing = true" @compositionend="composing = false">
       <div v-if="mode === 'insert'" class="toc-grid">
         <FormItem :label="t('document.toc.levels', 'Show levels')">
           <Select v-model:value="draft.levels" :options="levelOptions" />
@@ -105,6 +111,7 @@ function apply() {
           <span v-if="draft.showPageNumbers">{{ level }}</span>
         </div>
       </section>
+      <Alert v-if="error" :title="error" type="error" show-icon />
     </Form>
   </Modal>
 </template>

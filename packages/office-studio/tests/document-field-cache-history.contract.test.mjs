@@ -5,7 +5,7 @@ import { FDocument } from '../src/api/facade.ts'
 import { createBlankDocument } from '../src/domain/model.ts'
 import { createParagraph } from '../src/features/document/model/document-model.ts'
 import { documentTextFields, setDocumentTextFields } from '../src/features/document/model/document-text-fields.ts'
-import { createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase } from '../src/features/document/services/document-history-cache.ts'
+import { createDocumentSnapshotHistory, prepareDocumentHistoryCacheRebase, prepareDocumentSnapshotHistoryAmend } from '../src/features/document/services/document-history-cache.ts'
 
 // Drafts for the implementation batch; no validation has been run.
 const timestamp = new Date(2030, 5, 15, 13, 24, 0).getTime()
@@ -95,4 +95,30 @@ test('derived cache publication retains redo and prevents nested content-history
     assert.deepEqual(studio.editor.history.captureSavepoint(id), savepoint)
     assert.equal(document.getName(), 'First')
   } finally { studio.dispose() }
+})
+
+test('a TOC history amendment retains the original undo pair and rebases the final redo cache', () => {
+  const before = { ...createBlankDocument(), name: 'Before' }, inserted = { ...before, name: 'Inserted' }, settled = { ...before, name: 'Settled' }
+  let published
+  const entry = createDocumentSnapshotHistory(before, inserted, value => { published = value })
+  const amendment = prepareDocumentSnapshotHistoryAmend(entry, settled, value => { published = value })
+  entry.redo(); assert.equal(published.name, 'Inserted')
+  amendment.redo(); assert.equal(published.name, 'Settled')
+  const merged = { ...entry, redo: amendment.redo }
+  prepareDocumentHistoryCacheRebase([merged], value => ({ ...value, name: value.name + ':cached' }))()
+  merged.undo(); assert.equal(published.name, 'Before:cached')
+  merged.redo(); assert.equal(published.name, 'Settled:cached')
+})
+
+test('an amendment rejected before publication or throwing during publication cannot alter retained snapshot caches', () => {
+  const before = { ...createBlankDocument(), name: 'Before' }, after = { ...before, name: 'Inserted' }
+  let published
+  const entry = createDocumentSnapshotHistory(before, after, value => { published = value })
+  prepareDocumentSnapshotHistoryAmend(entry, { ...after, name: 'Never published' }, value => { published = value })
+  entry.redo(); assert.equal(published.name, 'Inserted')
+  const throwing = prepareDocumentSnapshotHistoryAmend(entry, { ...after, name: 'Failed' }, () => { throw new Error('publish refused') })
+  assert.throws(() => throwing.redo(), /publish refused/)
+  prepareDocumentHistoryCacheRebase([entry], value => ({ ...value, name: value.name + ':cached' }))()
+  entry.undo(); assert.equal(published.name, 'Before:cached')
+  entry.redo(); assert.equal(published.name, 'Inserted:cached')
 })

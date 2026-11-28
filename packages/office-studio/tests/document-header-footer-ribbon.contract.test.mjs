@@ -69,7 +69,7 @@ test('header/footer contextual ribbon follows Univer groups and carries live sec
     assert.equal(item.popupCommandId, 'doc.operation.header-footer-control')
     assert.equal(item.popupProps.state, headerFooterState)
   }
-  assert.equal(items[4].commandId, 'doc.operation.close-header-footer')
+  assert.equal(items[4].commandId, 'doc.command.close-header-footer')
 })
 
 test('header/footer contextual ribbon is absent outside an active header/footer edit area', () => {

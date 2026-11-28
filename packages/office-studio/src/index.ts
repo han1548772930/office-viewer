@@ -6,6 +6,14 @@ export { OfficeStudio, type OfficeStudioOptions, type OfficeCommandHandler, type
 export { DOCUMENT_ZOOM_COMMANDS, type DocumentZoomOperationParams, type DocumentZoomCommandParams } from './api/document-zoom-commands'
 export { DOCUMENT_ZOOM_SHORTCUTS, DOCUMENT_DEFAULT_ZOOM_RATIO } from './features/document/services/document-zoom'
 export { DOCUMENT_PAGE_SETUP_COMMAND, type DocumentPageSetupCommandParams } from './api/document-page-setup-commands'
+export { DOCUMENT_TOC_INSERT_COMMAND, type DocumentTocInsertCommandParams } from './api/document-toc-commands'
+export { DOCUMENT_TOC_UPDATE_COMMAND, DOCUMENT_TOC_DELETE_COMMAND, type DocumentTocUpdateCommandParams, type DocumentTocDeleteCommandParams } from './api/document-toc-action-commands'
+export { DOCUMENT_TOC_DIALOG_OPERATION, type DocumentTocDialogEditor, type DocumentTocDialogEditorHandle } from './api/document-toc-dialog-editors'
+export { SET_DOCUMENT_HEADING_COLLAPSED_COMMAND, type DocumentHeadingCollapsedCommandParams } from './api/document-heading-commands'
+export type { DocumentTocInsertionRequest } from './features/document/toc/document-toc-command'
+export { bindDocumentTocLayout, type DocumentTocLayoutProvider, type DocumentTocLayoutSnapshot, type DocumentTocLayoutHandle } from './api/document-toc-layout'
+export { waitForDocumentTocPagination, type DocumentTocPaginationResult } from './api/document-toc-pagination'
+export type { DocumentTocLayoutPublication } from './features/document/toc/document-toc-pagination'
 export { SHEET_TABLE_COMMANDS, type OpenSheetTableSelectorInput, type AddSheetTableCommandInput,
   type SheetTableSelectorRequest } from './features/sheet-tables/sheet-table-create.ts'
 export { CHART_OBJECT_COMMANDS, CHART_OBJECT_MENU, PASTE_COPIED_CHART_COMMAND,
@@ -567,3 +575,11 @@ export { SHEET_OUTLINE_CORE_COMMAND_IDS, SHEET_OUTLINE_UI_COMMAND_IDS, SHEET_OUT
 export type { SheetOutlineCommandInput, SheetOutlineCommandContext, SheetOutlinePromptChoice,
   SheetOutlineCommandResolution } from './features/sheet-outline/sheet-outline-command.ts'
 
+export { SHEET_FILTER_PANEL_COMMANDS, registerSheetFilterPanelEditor, disposeSheetFilterPanelEditors,
+  type SheetFilterPanelRequest, type SheetFilterPanelTarget, type SheetFilterPanelEditor } from './api/sheet-filter-panel-commands.ts'
+export { SHEET_INSERT_FUNCTION_OPERATION, INSERT_SHEET_FUNCTION_COMMAND, registerSheetFunctionEditor, disposeSheetFunctionEditors,
+  type SheetFunctionTargetInput, type SheetFunctionOperationInput, type SheetFunctionInsertCommandInput, type SheetFunctionCommandInsertion,
+  type SheetFunctionEditTarget, type SheetFunctionEditor } from './api/sheet-function-commands.ts'
+export { planSheetFunctionInsertion, expandSheetFunctionInsertions, sheetFunctionNumberCell, sheetFunctionRangeReference,
+  MAX_FUNCTION_INSERTION_CELLS, type SheetFunctionSelection, type SheetFunctionInsertion, type SheetFunctionWrite,
+  type SheetFunctionInsertionPlan } from './features/formula/sheet-function-insertion.ts'

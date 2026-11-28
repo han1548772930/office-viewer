@@ -59,6 +59,7 @@ struct WorksheetSidecar {
 #[derive(Debug, Default)]
 pub(crate) struct SheetDimensionSidecar {
     by_sheet: BTreeMap<String, WorksheetSidecar>,
+    colors: crate::sheet_filter_color::FilterColors,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -77,7 +78,7 @@ impl SheetDimensionSidecar {
         let filter = if filter_matched {
             supplement.state.as_mut().and_then(|state| state.auto_filter.take())
         } else if let Some(source) = &supplement.filter_projection {
-            match sheet_filter_import::standard_filter(source, &sheet.cells, &standard_hidden_rows) {
+            match sheet_filter_import::standard_filter_with_colors(source, &sheet.cells, &standard_hidden_rows, &self.colors) {
                 Ok(filter) => Some(filter),
                 Err(warning) => { self.warnings.push(format!("{}: {warning}; complete source XML and current visibility are retained", sheet.name)); None }
             }
@@ -150,6 +151,20 @@ fn read_sidecar(bytes: &[u8]) -> Result<SheetDimensionSidecar, String> {
                 if state.state.is_some() || state.filter_projection.is_some() { result.by_sheet.insert(part.name, state); }
             }
             Err(warning) => result.warnings.push(format!("{}: skipped XLSX pixel-dimension extension: {warning}", part.name)),
+        }
+    }
+    match crate::sheet_filter_color::referenced_ids(result.by_sheet.values().filter_map(|state| state.filter_projection.as_ref()))
+        .and_then(|ids| crate::sheet_filter_color::FilterColors::read(&mut archive, &ids)) {
+        Ok(colors) => result.colors = colors,
+        Err(error) => { result.warnings.push(error.clone()); result.colors.error = Some(error); }
+    }
+    for (name, state) in &mut result.by_sheet {
+        match office_io_common::office_filter_fingerprint(state.filter_projection.as_ref(), |node| result.colors.signature(node)) {
+            Ok(fingerprint) => state.filter_fingerprint = fingerprint,
+            Err(error) => { state.filter_fingerprint.clear(); result.warnings.push(format!("{name}: {error}; current filter source and visibility retained")); }
+        }
+        if state.state.as_ref().and_then(|state| state.filter_fingerprint.as_deref()).is_some_and(|expected| expected != state.filter_fingerprint) {
+            result.warnings.push(format!("{name}: Office AutoFilter criteria changed outside this snapshot; using current filter colors and retaining source XML"));
         }
     }
     Ok(result)
@@ -262,9 +277,6 @@ fn read_worksheet_state<R: BufRead>(input: R) -> Result<WorksheetSidecar, String
     let axis_matched = candidate.as_ref().is_some_and(|(expected, _)| *expected == fingerprint.finish());
     let filter_fingerprint = filter_projection.fingerprint()?;
     if candidate.is_some() && !axis_matched { warnings.push("Office row/column dimensions changed outside this snapshot; using the current Office dimensions".into()); }
-    if candidate.as_ref().and_then(|(_, state)| state.filter_fingerprint.as_ref()).is_some_and(|expected| *expected != filter_fingerprint) {
-        warnings.push("Office AutoFilter criteria changed outside this snapshot; using the current standard filter and retaining its source XML".into());
-    }
     Ok(WorksheetSidecar { state: candidate.map(|(_, state)| state), axis_matched, filter_fingerprint, filter_projection: filter_projection.take_root(), warnings })
 }
 

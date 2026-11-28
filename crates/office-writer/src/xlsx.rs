@@ -130,6 +130,8 @@ struct SheetInput {
     outline: Option<outline::OutlineInput>,
     #[serde(default)]
     auto_filter: Option<auto_filter::AutoFilterInput>,
+    #[serde(skip)]
+    table_filtered_rows: BTreeSet<u32>,
     #[serde(default)]
     data_validations: Vec<data_validation::DataValidationInput>,
     #[serde(default)]
@@ -1075,7 +1077,7 @@ fn worksheet_xml(
         out.push_str("</row>");
     }
     out.push_str("</sheetData>");
-    out.push_str(&auto_filter::write_xml(sheet, warnings)?);
+    out.push_str(&auto_filter::write_xml(sheet, registry, warnings)?);
     let mut merges = sheet
         .merged_ranges
         .iter()
@@ -1116,7 +1118,7 @@ fn worksheet_xml(
     if let Some(rel_id) = drawing_rel_id {
         out.push_str(&format!("<drawing r:id=\"{}\"/>", esc(rel_id)));
     }
-    let axis_extension = axis.extension_xml(sheet, &out)?;
+    let axis_extension = axis.extension_xml(sheet, &out, registry)?;
     let outline_extension = outline.extension_xml(sheet, &out)?;
     let validation_extension = data_validation::extension_xml(sheet, &validation)?;
     let mut extensions = sparkline::write_xml(&sheet.name, &sheet.cells, warnings)?;
@@ -1948,13 +1950,20 @@ pub(crate) fn write(data: &str, package: &mut Package) -> Result<Vec<ExportWarni
         pivot_exports.push((pivot_table.id.clone(), table_name, source_index, target_index, parts));
     }
     let mut table_exports = Vec::<(usize, usize, table::TableInput, String)>::new();
+    for table in &workbook.tables {
+        if let Some(Some(filter)) = &table.auto_filter {
+            if let Some(sheet) = workbook.sheets.iter_mut().find(|sheet| sheet.id == table.sheet_id) {
+                sheet.table_filtered_rows.extend(filter.filtered_rows.iter().copied());
+            }
+        }
+    }
     for (table_index, table) in workbook.tables.iter().enumerate() {
         let sheet_index = workbook.sheets.iter().position(|sheet| sheet.id == table.sheet_id)
             .ok_or_else(|| ExportError::invalid(format!("table {} references an unknown worksheet", table.id)))?;
         table::validate(&workbook.tables, table)?;
         let path = format!("xl/tables/table{}.xml", table_index + 1);
         let native_id = table.office_table_id.ok_or_else(|| ExportError::invalid("TABLE_SOURCE_INVALID: table has no prepared native ID"))?;
-        package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, native_id, &workbook.sheets[sheet_index], &mut warnings)?)?;
+        package.add_xml(&path, "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml", table::write(table, native_id, &workbook.sheets[sheet_index], &mut registry, &mut warnings)?)?;
         table_exports.push((sheet_index, table_index, table.clone(), path));
     }
     let mut conditional_source_bytes = 0usize;
@@ -2438,9 +2447,14 @@ mod tests {
         let table = read_part(&mut archive, "xl/tables/table1.xml");
         let rels = read_part(&mut archive, "xl/worksheets/_rels/sheet1.xml.rels");
         assert!(worksheet.contains("<tableParts count=\"1\"><tablePart r:id=\"rIdTable1\"/></tableParts>"));
-        assert!(table.contains("displayName=\"Orders\" ref=\"A1:B5\" headerRowCount=\"1\" totalsRowShown=\"1\""));
-        assert!(table.contains("<tableColumn id=\"1\" name=\"Product\"/>"));
-        assert!(table.contains("<tableStyleInfo name=\"TableStyleMedium4\""));
+        let table = office_io_common::sheet_table_source::parse_xml(&table).unwrap();
+        for (name, value) in [("displayName", "Orders"), ("ref", "A1:B5"), ("headerRowCount", "1"), ("totalsRowCount", "1"), ("totalsRowShown", "1")] {
+            assert_eq!(table.attrs.get(name).map(String::as_str), Some(value));
+        }
+        let columns = office_io_common::sheet_table_source::columns(&table).unwrap();
+        assert_eq!(columns[0].attrs.get("id").map(String::as_str), Some("1"));
+        assert_eq!(columns[0].attrs.get("name").map(String::as_str), Some("Product"));
+        assert_eq!(table.child("tableStyleInfo").unwrap().attrs.get("name").map(String::as_str), Some("TableStyleMedium4"));
         assert!(rels.contains("relationships/table"));
         assert!(rels.contains("../tables/table1.xml"));
     }

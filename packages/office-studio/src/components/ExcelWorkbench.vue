@@ -140,6 +140,9 @@ import { slicerControlItemStates } from '../features/slicer/slicer-control-selec
 import { useSlicerCanvasData } from '../features/slicer/use-slicer-canvas-data.ts'
 import type { SlicerCommandContext } from '../api/slicer-command-context.ts'
 import type { SheetFillCommitContext } from '../features/sheet-workbench/sheet-fill-gesture.ts'
+import { registerSheetFilterPanelEditor, SHEET_FILTER_PANEL_COMMANDS } from '../api/sheet-filter-panel-commands.ts'
+import { registerSheetFunctionEditor, SHEET_INSERT_FUNCTION_OPERATION } from '../api/sheet-function-commands.ts'
+import { isSheetQuickSumShortcut } from './spreadsheet/sheet-function-shortcuts.ts'
 import { canSetSheetHyperlink, normalizeExternalSheetHyperlink, parseSheetHyperlinkTarget, SET_SHEET_HYPERLINK_COMMAND, REMOVE_SHEET_HYPERLINK_COMMAND } from '../features/sheet-workbench/sheet-hyperlink.ts'
 
 defineOptions({ inheritAttrs: false })
@@ -334,6 +337,7 @@ const dataPanelOpen = ref(false)
 const dataPanelMode = ref<'filter' | 'sort'>('filter')
 const dataPanelRange = ref('A1')
 const dataPanelPrimary = ref<{ row: number; column: number }>()
+const dataPanelColumn = ref<number>()
 const functionPanelOpen = ref(false)
 const functionCategory = ref<string | null>(null)
 const functionName = ref('SUM')
@@ -798,32 +802,7 @@ const canStartRangeTheme = computed(() => canQuickFormatSelection.value && !rang
 const canQuickFormatWorksheet = computed(() => workbenchActive.value && !!activeSheet.value
   && canEditWorksheetProtection(activeSheet.value, userId.value)
   && !editingKey.value && !editComposing.value && !selectedDrawingRefs.value.length)
-const tableHostBlocked = computed(() => editComposing.value || !!selectedDrawingRefs.value.length
-  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value
-  || !!cellShiftPending.value || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value
-  || functionPanelOpen.value || hyperlinkDialogOpen.value || !!renameSheetId.value
-  || customNumberFormatOpen.value || validationPanelOpen.value || conditionalFormattingOpen.value || validationCellOpen.value
-  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value
-  || pivotPanelOpen.value || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value)
-const { open: tableSelectorOpen, request: tableSelectorRequest, error: tableSelectorError,
-  canSubmit: canSubmitTable, openSelector: openTableSelector, confirm: confirmTableSelector,
-  cancel: cancelTableSelector, afterClose: afterTableSelectorClose } = useSheetTableWorkbench({
-  state: () => ({ studio: props.studio, unitId: workbook.value.id, sheetId: activeSheetId.value,
-    active: workbenchActive.value, blocked: tableHostBlocked.value || !!editingKey.value, userId: userId.value, ranges: selectedModelRanges() }),
-  refresh: (studio, unitId) => {
-    const model = studio.getWorkbookModel(unitId)
-    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
-  },
-  canRestoreFocus: () => !tableHostBlocked.value && !editingKey.value,
-  focus: () => spreadsheetCanvas.value?.focus(),
-})
-const canCreateTable = computed(() => !!props.studio && !!workbook.value.id && workbenchActive.value
-  && canFormatSelection.value && !tableHostBlocked.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value)
-const quickConditionalSelection = computed(() => {
-  const sheet = activeSheet.value
-  return sheet && quickConditionalFormatSelection(sheet.conditionalFormats ?? [], selectedModelRanges(), parseCellKey(selectedKey.value),
-    ranges => canEditProtectedRanges(sheet, ranges, userId.value))
-})
+// Table host watchers read blocked state synchronously during setup; initialize its painter dependency first.
 const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, painterError,
   runFormatPainterCommand, cancelFormatPainter, clearPainterSession, finishFormatPainterSelection,
   confirmPainter, cancelPainterConfirmation, afterPainterClose } = useSheetFormatPainter({
@@ -852,6 +831,32 @@ const { painterActive, painterUnavailable, formatPainterCanvas, painterRequest, 
   changed: recalculate => { if (recalculate) recalculateFormulas(); commitHistory() },
   focus: () => { if (!editingKey.value && !mergeRequest.value && !axisSizePending.value && !rangeThemePending.value && !cellShiftPending.value && !imageUiOpen.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value) spreadsheetCanvas.value?.focus() },
   notify: message => emit('notify', { type: 'error', message }),
+})
+const tableHostBlocked = computed(() => editComposing.value || !!selectedDrawingRefs.value.length
+  || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value
+  || !!cellShiftPending.value || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value
+  || functionPanelOpen.value || hyperlinkDialogOpen.value || !!renameSheetId.value
+  || customNumberFormatOpen.value || validationPanelOpen.value || conditionalFormattingOpen.value || validationCellOpen.value
+  || protectionPanelOpen.value || !!worksheetProtectionSheetId.value || sparklinePanelOpen.value
+  || pivotPanelOpen.value || pivotChartPanelOpen.value || slicerPanelOpen.value || dataPanelOpen.value || outlineUiOpen.value)
+const { open: tableSelectorOpen, request: tableSelectorRequest, error: tableSelectorError,
+  canSubmit: canSubmitTable, openSelector: openTableSelector, confirm: confirmTableSelector,
+  cancel: cancelTableSelector, afterClose: afterTableSelectorClose } = useSheetTableWorkbench({
+  state: () => ({ studio: props.studio, unitId: workbook.value.id, sheetId: activeSheetId.value,
+    active: workbenchActive.value, blocked: tableHostBlocked.value || !!editingKey.value, userId: userId.value, ranges: selectedModelRanges() }),
+  refresh: (studio, unitId) => {
+    const model = studio.getWorkbookModel(unitId)
+    if (model && props.studio === studio && workbook.value.id === unitId) applyExternalWorkbook(toExcelWorkbookView(model))
+  },
+  canRestoreFocus: () => !tableHostBlocked.value && !editingKey.value,
+  focus: () => spreadsheetCanvas.value?.focus(),
+})
+const canCreateTable = computed(() => !!props.studio && !!workbook.value.id && workbenchActive.value
+  && canFormatSelection.value && !tableHostBlocked.value && !tableSelectorOpen.value && !conditionalFormattingOpen.value && !validationCellOpen.value)
+const quickConditionalSelection = computed(() => {
+  const sheet = activeSheet.value
+  return sheet && quickConditionalFormatSelection(sheet.conditionalFormats ?? [], selectedModelRanges(), parseCellKey(selectedKey.value),
+    ranges => canEditProtectedRanges(sheet, ranges, userId.value))
 })
 const conditionalFormattingHostBlocked = computed(() => !!editingKey.value || editComposing.value || !!selectedDrawingRefs.value.length
   || !!mergeRequest.value || !!painterRequest.value || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
@@ -988,12 +993,14 @@ const { apply: submitQuickDataValidation, busy: quickDataValidationBusy, progres
   refresh: refreshValidationView, openRule: ruleId => openDataValidationPanel(undefined, ruleId),
   notify: message => emit('notify', { type: 'error', message }),
 })
-const dataPanelHostBlocked = computed(() => !canQuickFormatSelection.value || !!mergeRequest.value || !!painterRequest.value
+const sortFilterHostBlocked = computed(() => !workbenchActive.value || !activeSheet.value || editComposing.value
+  || selectedDrawingRefs.value.length > 0 || !!mergeRequest.value || !!painterRequest.value
   || !!axisSizePending.value || !!rangeThemePending.value || !!cellShiftPending.value
   || imageUiOpen.value || chartModalOpen.value || chartEditorOpen.value || tableSelectorOpen.value || functionPanelOpen.value
   || hyperlinkDialogOpen.value || !!renameSheetId.value || customNumberFormatOpen.value || validationPanelOpen.value
   || conditionalFormattingOpen.value || validationCellOpen.value || protectionPanelOpen.value || !!worksheetProtectionSheetId.value
   || sparklinePanelOpen.value || pivotPanelOpen.value || pivotChartPanelOpen.value || slicerPanelOpen.value || outlineUiOpen.value)
+const dataPanelHostBlocked = computed(() => sortFilterHostBlocked.value || !!editingKey.value)
 const { canUseDataRange, canSort: canSortDataRange, panelEditable: dataPanelEditable, openDataPanel,
   selectDataPanelSortRange, assertDataPanelCurrent, receiveDataPanelChange, sortSelection, runAutoFilterCommand, cancelSort } = useSheetSortFilterWorkbench({
   state: () => {
@@ -1011,6 +1018,75 @@ const { canUseDataRange, canSort: canSortDataRange, panelEditable: dataPanelEdit
   },
   focus: () => spreadsheetCanvas.value?.focus(), notify: (type, message) => emit('notify', { type, message }),
 })
+let filterPanelEditor: ReturnType<typeof registerSheetFilterPanelEditor> | undefined
+watch([() => props.studio, () => workbook.value.id], ([studio, unitId], _previous, onCleanup) => {
+  filterPanelEditor = undefined
+  if (!studio || !unitId || !studio.getWorkbookModel(unitId)) return
+  const editor = registerSheetFilterPanelEditor(studio, unitId, {
+    open: target => {
+      if (target.unitId !== workbook.value.id || target.sheetId !== activeSheetId.value || sortFilterHostBlocked.value || !finishEdit()) return false
+      if (props.studio !== studio || target.unitId !== workbook.value.id || target.sheetId !== activeSheetId.value || dataPanelHostBlocked.value
+        || studio.currentUserId !== target.userId || studio.editor.history.captureSavepoint(unitId).generation !== target.historyGeneration) return false
+      dataPanelColumn.value = target.column
+      return openDataPanel('filter', target.column)
+    },
+    close: () => { if (!dataPanelOpen.value || dataPanelMode.value !== 'filter') return false; dataPanelOpen.value = false; return true },
+    release: () => { dataPanelOpen.value = false; dataPanelColumn.value = undefined },
+  })
+  filterPanelEditor = editor
+  onCleanup(() => { editor.dispose(); if (filterPanelEditor === editor) filterPanelEditor = undefined })
+}, { immediate: true, flush: 'sync' })
+function openColumnFilter(column: number): void {
+  try {
+    if (!finishEdit() || !filterPanelEditor) return
+    filterPanelEditor.execute(SHEET_FILTER_PANEL_COMMANDS.open, { sheetId: activeSheetId.value, col: column })
+  } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法打开筛选面板。' }) }
+}
+let functionEditor: ReturnType<typeof registerSheetFunctionEditor> | undefined
+watch([() => props.studio, () => workbook.value.id], ([studio, unitId], _previous, onCleanup) => {
+  functionEditor = undefined
+  if (!studio || !unitId || !studio.getWorkbookModel(unitId)) return
+  let insertedSessionId: string | undefined
+  const editor = registerSheetFunctionEditor(studio, unitId, {
+    canInsert: () => !dataPanelHostBlocked.value && !dataPanelOpen.value && !sortBusy.value && canInsertFormula.value,
+    open: target => {
+      if (functionEditor !== editor || target.unitId !== workbook.value.id || target.sheetId !== activeSheetId.value
+        || dataPanelHostBlocked.value || dataPanelOpen.value || sortBusy.value || !canInsertFormula.value) return false
+      const revision = studio.getWorkbookRevision(unitId), generation = studio.editor.history.captureSavepoint(unitId).generation,
+        userId = studio.currentUserId, model = studio.getWorkbookModel(unitId)
+      studio.setSelections(unitId, target.sheetId, [{ startRow: target.range.startRow, endRow: target.range.endRow,
+        startColumn: target.range.startCol, endColumn: target.range.endCol }], { primary: target.primary, activeRangeIndex: 0 })
+      const selection = studio.getSelectionState(unitId, target.sheetId), selected = selection?.ranges[0]
+      if (functionEditor !== editor || props.studio !== studio || studio.getWorkbookModel(unitId) !== model
+        || studio.getWorkbookRevision(unitId) !== revision || studio.editor.history.captureSavepoint(unitId).generation !== generation
+        || studio.currentUserId !== userId || !workbenchActive.value || activeSheetId.value !== target.sheetId
+        || selection?.ranges.length !== 1 || !selected || selected.startRow !== target.range.startRow || selected.endRow !== target.range.endRow
+        || selected.startColumn !== target.range.startCol || selected.endColumn !== target.range.endCol
+        || selection.primary?.row !== target.primary.row || selection.primary?.column !== target.primary.column) return false
+      const primaryKey = `${columnName(target.primary.column)}${target.primary.row + 1}`
+      const key = activeSheet.value ? sheetCellContentKey(activeSheet.value, primaryKey) : primaryKey
+      beginEdit(key, target.formula, 'formula')
+      if (editingKey.value !== key || editValue.value !== target.formula || editSession.value?.documentId !== unitId
+        || editSession.value.sheetId !== target.sheetId) return false
+      insertedSessionId = editSession.value.sessionId
+      return true
+    },
+    release: () => { if (insertedSessionId && editSession.value?.sessionId === insertedSessionId) cancelEdit() },
+  })
+  functionEditor = editor
+  onCleanup(() => { editor.dispose(); if (functionEditor === editor) functionEditor = undefined })
+}, { immediate: true, flush: 'sync' })
+function runInsertedFunction(name: string): boolean {
+  if (!functionEditor || !finishEdit()) return false
+  const inserted = functionEditor.execute(name)
+  if (inserted && props.studio && workbook.value.id) {
+    const model = props.studio.getWorkbookModel(workbook.value.id)
+    if (model) applyExternalWorkbook(toExcelWorkbookView(model))
+    commitHistory({ prepared: true, syncSelection: false })
+    if (!editingKey.value) spreadsheetCanvas.value?.focus()
+  }
+  return inserted
+}
 const slicerRibbonControl = computed<SlicerRibbonControlState | undefined>(() => {
   const refs = selectedDrawingRefs.value, studio = props.studio, unitId = workbook.value.id, sheetId = activeSheetId.value
   const ref = refs.length === 1 ? refs[0] : undefined
@@ -1035,6 +1111,7 @@ const ribbonShortcuts = computed(() => [
   { title: translate.value('sheet.context-menu.paste-values', '仅粘贴值'), shortcut: 'Ctrl+Shift+V' },
   { title: translate.value('shortcut-panel.fill-down', '向下填充'), shortcut: 'Ctrl+D' },
   { title: translate.value('shortcut-panel.fill-right', '向右填充'), shortcut: 'Ctrl+R' },
+  { title: translate.value('shortcut-panel.quick-sum', '快速求和'), shortcut: typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform) ? 'Cmd+Alt+=' : 'Alt+=' },
   { title: translate.value('shortcut-panel.group-selection', '组合选区'), shortcut: 'Alt+Shift+→' },
   { title: translate.value('shortcut-panel.ungroup-selection', '取消选区组合'), shortcut: 'Alt+Shift+←' },
   ...((typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform)) ? [
@@ -1928,6 +2005,11 @@ function handleGridKeydown(event: KeyboardEvent) {
   }
   if (handleClipboardKeydown(event)) return
   if (handleFillKeydown(event)) return
+  if (isSheetQuickSumShortcut(event, typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform))) {
+    event.preventDefault()
+    try { runInsertedFunction('SUM') } catch (error) { emit('notify', { type: 'error', message: error instanceof Error ? error.message : '无法插入求和公式。' }) }
+    return
+  }
   const outlineShortcut = sheetOutlineCommandForShortcut(event, typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform))
   if (outlineShortcut) { event.preventDefault(); void executeRibbon(outlineShortcut); return }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -2852,7 +2934,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
   if (commandId === SHEET_TABLE_COMMANDS.openSelector && !canCreateTable.value) return
   if ((commandId === OPEN_SHEET_RANGE_THEME_OPERATION || commandId === SHEET_RANGE_THEME_COMMANDS.set
     || commandId === SHEET_RANGE_THEME_COMMANDS.remove) && !canStartRangeTheme.value) return
-  if (['sheet.operation.open-function', 'sheet.operation.insert-function', 'sheet.operation.start-formula'].includes(commandId)
+  if (['sheet.operation.open-function', 'sheet.operation.insert-function', SHEET_INSERT_FUNCTION_OPERATION, 'sheet.operation.start-formula'].includes(commandId)
     && !canInsertFormula.value) return
   if (SHEET_IMAGE_COMMAND_IDS.includes(commandId)) { await runImageCommand(commandId, params); return }
   if (resolveSheetClipboardCommand(commandId)) { await runClipboardCommand(commandId, params); return }
@@ -2912,7 +2994,7 @@ async function executeRibbon(commandId: string, params?: unknown) {
         || patch.style !== undefined && typeof patch.style !== 'string' || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) return
       await updateSlicerPresentation(id, { style: patch.style }, revision)
     },
-    'sheet.operation.open-data-panel': () => openDataPanel(params === 'sort' ? 'sort' : 'filter'),
+    'sheet.operation.open-data-panel': () => { dataPanelColumn.value = undefined; return openDataPanel(params === 'sort' ? 'sort' : 'filter') },
     [SHEET_TABLE_COMMANDS.openSelector]: () => { openTableSelector() },
     'sheet.operation.open-data-validation': openDataValidationPanel,
     'sheet.operation.add-data-validation': () => applyQuickDataValidation('add-default'),
@@ -2979,12 +3061,11 @@ async function executeRibbon(commandId: string, params?: unknown) {
       if (typeof params !== 'string') return
       const entry = SHEET_FUNCTION_CATALOG.find(entry => entry.name === params)
       if (!entry) return
-      if (entry.example) {
-        functionName.value = entry.name
-        openFunctionPanel(entry.category)
-        return
-      }
-      beginEdit(selectedKey.value, buildSheetFunctionFormula(entry.name, ''), 'formula')
+      runInsertedFunction(entry.name)
+    },
+    [SHEET_INSERT_FUNCTION_OPERATION]: () => {
+      if (!params || typeof params !== 'object' || !('value' in params) || typeof params.value !== 'string') return
+      runInsertedFunction(params.value)
     },
     'sheet.command.sort-ascending': () => sortSelection(true, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
     'sheet.command.sort-descending': () => sortSelection(false, typeof params === 'object' && params !== null && 'extendSelection' in params && params.extendSelection === true),
@@ -3198,7 +3279,7 @@ onActivated(() => { workbenchActive.value = true })
     <Splitter class="sheet-canvas-layout" :class="{ 'has-sidebar': sheetSidebarOpen }" :styles="sheetSplitterStyles" orientation="horizontal" @resize="resizeSheetSidebar">
       <SplitterPanel class="sheet-canvas-stack" :min="0" :resizable="sheetSidebarOpen" :destroy-on-hidden="false">
     <SpreadsheetCanvas v-if="activeRenderSheet" ref="spreadsheetCanvas" :edit-value="editValue" :edit-session-id="editSession?.sessionId" :input-context="cellInputContext" :keep-edit-focus="keepCellEditFocus" :prepare-fill="prepareCanvasFillGesture"
-      :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection"
+      :rich-text-editor-cell="richTextEditorCell" :edit-selection="editTextSelection" :filter-header-blocked="sortFilterHostBlocked" @open-filter-column="openColumnFilter"
       :sheet="activeRenderSheet" :sparkline-sheets="availableSheets" :sparkline-metadata="workbook.metadata" :selected-key="selectedKey" :selected-range="emptyCellSelection" :selected-ranges="selectedRanges" :active-range-index="activeSelectionIndex"
       :editing-key="editingKey" :zoom="zoom" :current-user-id="studio?.currentUserId ?? 'local-user'" :workbook-id="workbook.id"
       :crosshair-highlight="{ enabled: crosshairEnabled, color: crosshairColor }"
@@ -3292,7 +3373,7 @@ onActivated(() => { workbenchActive.value = true })
       :chart-id="pivotChartContext.chartId" :pivot-table-id="pivotChartContext.pivotTableId" :source-kind="pivotChartContext.sourceKind" :source-sheet-id="pivotChartContext.sourceSheetId" :source-range="pivotChartContext.sourceRange" :initial-field-id="pivotChartContext.initialFieldId"
       @update:open="pivotChartContext.setOpen" @busy-change="pivotChartContext.setBusy" @owner-change="pivotChartContext.ownerChanged" @applied="pivotChartContext.applied" @closed="pivotChartContext.closed" />
     <SlicerPanel v-if="slicerPanelOpen && activeSheet && studio && workbook.id" v-model:open="slicerPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="slicerSourceRange" :initial-kind="slicerKind" :initial-section="slicerPanelSection" :selected-slicer-id="selectedSlicerId" @changed="handleSlicerPanelChanged" @closed="handleSlicerPanelClosed" />
-    <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :source-primary="dataPanelPrimary" :initial-mode="dataPanelMode" :editable="dataPanelEditable" :request-sort-range="selectDataPanelSortRange" :assert-current="assertDataPanelCurrent" @changed="receiveDataPanelChange" />
+    <SheetDataPanel v-if="dataPanelOpen && activeSheet && studio && workbook.id" v-model:open="dataPanelOpen" :studio="studio" :workbook-id="workbook.id" :sheet-id="activeSheet.id" :source-range="dataPanelRange" :source-primary="dataPanelPrimary" :initial-column="dataPanelColumn" :initial-mode="dataPanelMode" :editable="dataPanelEditable" :request-sort-range="selectDataPanelSortRange" :assert-current="assertDataPanelCurrent" @changed="receiveDataPanelChange" />
     <ConditionalFormattingPanel v-if="conditionalFormattingContext && activeSheet" :key="conditionalFormattingContext.key" :open="conditionalFormattingOpen"
       :rules="conditionalFormattingContext.rules" :default-range="conditionalFormattingContext.defaultRange" :selection-range="selectedModelRanges().at(-1)"
       :initial-type="conditionalFormattingContext.initialType" :submit="conditionalFormattingContext.submit" :disabled="conditionalFormattingDisabled"

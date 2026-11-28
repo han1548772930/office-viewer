@@ -25,7 +25,7 @@ import { createTextMeasurer, layoutDocument } from '/packages/office-studio/src/
 import { sceneOffset } from '/packages/office-studio/src/features/document/rendering/document-scene'
 import { WorkbenchDisplayKey } from '/packages/office-studio/src/platform/workbench-display'
 import { createOfficeMessages, OfficeDirectionKey, OfficeLocaleKey, OfficeTranslatorKey } from '/packages/office-studio/src/i18n/office-i18n'
-const copy = value => JSON.parse(JSON.stringify(value))
+const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 const initial = createBlankDocument(); initial.id = 'section-layout-browser'; initial.name = '节布局编辑'
 initial.page = { width: 440, height: 360, marginLeft: 40, marginRight: 40, marginTop: 40, marginBottom: 40 }
 initial.sectionSetup = { columnCount: 2, columnGap: 24, columnSeparator: 'line' }
@@ -42,11 +42,15 @@ const fieldCacheAdapter = shallowRef(studio.getDocumentFieldCacheAdapter(initial
 const dark = ref(false), variant = ref('classic'), locale = ref('zh-CN'), notices = [], commands = [], cacheEvents = [], contentEvents = []
 const primary = ref('#3064c7'), mountedWorkbench = ref(null), display = ref({ chrome: 'full', zoom: 100 })
 let reentrantReplacements = 0
+let cancelTocCommands = false
 let stopWatching
 function observe() {
   stopWatching?.()
   stopWatching = watch(() => studio.editor.document.model, value => { model.value = value }, { flush: 'sync' })
   studio.events.addEvent('CommandExecuted', event => commands.push(copy(event)))
+  studio.events.addEvent('BeforeCommandExecute', event => {
+    if (cancelTocCommands && ['doc.command.insert-table-of-contents', 'doc.command.update-table-of-contents'].includes(event.id)) event.cancel = true
+  })
 }
 observe()
 const bodySelection = () => ({ anchor: { blockId: 'body', offset: 0 }, focus: { blockId: 'body', offset: 0 } })
@@ -177,6 +181,14 @@ window.documentSectionFixture = {
     hydrateDocumentTocsFromNativeFields(source)
     return resetDocumentHost(source)
   },
+  seedTocInsertion: (level = 1) => {
+    const source = createBlankDocument(); source.id = 'toc-insertion-browser'; source.name = '目录插入'
+    source.blocks = [{ ...createParagraph('BeforeAfter'), id: 'body' },
+      { ...createParagraph('Alpha'), id: 'heading-alpha', type: 'heading', level },
+      { ...createParagraph('Beta'), id: 'heading-beta', type: 'heading', level: level + 1 }]
+    return resetDocumentHost(source, false, api => api.setInputSelection({ anchor: { blockId: 'body', offset: 6 }, focus: { blockId: 'body', offset: 6 } }))
+  },
+  cancelTocCommands: value => { cancelTocCommands = value },
   history: () => { const unit = studio.editor.history.units[documentApi.value.id]; return { undo: unit?.undo.length ?? 0, redo: unit?.redo.length ?? 0, dirty: studio.editor.history.isDirty(documentApi.value.id) } },
   geometry: () => layout().pages.map(page => ({ x: page.x, y: page.y, width: page.width, height: page.height, number: page.pageNumber, blank: page.isParityBlank, sectionId: page.sectionId })),
   storyGlyphs: (pageIndex, area = 'header') => layout().pageHeaderFooters[pageIndex][area + 'LayoutLines'].flatMap(line => line.glyphs)
@@ -271,6 +283,110 @@ function assertNativeTocStops(geometry) {
     assert.ok(Math.abs(row.pageRight - row.columnX - 320) < 0.001)
   }
 }
+
+async function tocInsertMenu(mode) {
+  await page.getByRole('tab', { name: '插入', exact: true }).click()
+  const selector = '[data-ribbon-item="doc-insert-table-of-contents"]'
+  let entry = page.locator('.ribbon-visible-groups ' + selector + ', .ribbon-grid-group:not(.is-hidden) ' + selector)
+  if (!await entry.count()) {
+    await page.locator('.ribbon-more-button:visible, .ribbon-grid-more-button:visible').click()
+    entry = page.locator('.ribbon-overflow-panel:visible ' + selector)
+  }
+  await entry.getByRole('button').click()
+  await page.getByRole('menuitem', { name: mode === 'custom' ? '自定义目录…' : '自动目录', exact: true }).click()
+}
+
+test.each(['classic', 'grid'])('custom TOC insertion retains a canceled draft and publishes its canonical command, history and snapshot in %s', async variant => {
+  await page.evaluate(layout => { window.documentSectionFixture.seedTocInsertion(); window.documentSectionFixture.appearance(false, layout) }, variant)
+  const before = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  await tocInsertMenu('custom')
+  const dialog = page.getByRole('dialog', { name: '插入目录', exact: true })
+  await expect(dialog).toBeVisible()
+  const pages = dialog.getByRole('checkbox', { name: '显示页码', exact: true })
+  await pages.uncheck()
+  await page.evaluate(() => window.documentSectionFixture.cancelTocCommands(true))
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  await expect(pages).not.toBeChecked()
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.snapshot()), before)
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.history())).undo, 0)
+  await page.evaluate(() => window.documentSectionFixture.cancelTocCommands(false))
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha', 'Beta'])
+  const inserted = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  assert.equal(inserted.blocks.filter(block => block.metadata.documentToc?.role === 'title').length, 0)
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.history())).undo, 1)
+  const events = await page.evaluate(() => window.documentSectionFixture.commands())
+  assert.equal(events.filter(event => event.id === 'doc.command.insert-table-of-contents').length, 1)
+  assert.equal(events.filter(event => event.id === 'doc.command.paste-blocks').length, 0)
+  const bridge = page.getByLabel('文档文字输入', { exact: true })
+  await expect(bridge).toBeFocused(); await bridge.press('Control+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.snapshot())).toEqual(before)
+  await bridge.press('Control+Shift+z')
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.snapshot())).toEqual(inserted)
+  await page.evaluate(() => window.documentSectionFixture.saveReopen())
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha', 'Beta'])
+})
+
+test('a TOC dialog cannot apply its draft to a different caret and does not restore the old input on cancellation', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedTocInsertion())
+  await tocInsertMenu('custom')
+  const dialog = page.getByRole('dialog', { name: '插入目录', exact: true }), before = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  await page.evaluate(() => window.documentSectionFixture.selectBody('body', 1))
+  await expect(dialog.getByRole('button', { name: /应\s*用/ })).toBeDisabled()
+  await dialog.getByRole('button', { name: /取\s*消/ }).click()
+  await expect(dialog).toBeHidden()
+  assert.equal((await inputState()).location.selection.focus.offset, 1)
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.snapshot()), before)
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.history())).undo, 0)
+})
+
+test('custom TOC settings open for level-four-only headings and retain a rejected level-three draft for correction', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedTocInsertion(4))
+  await tocInsertMenu('custom')
+  const dialog = page.getByRole('dialog', { name: '插入目录', exact: true })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('checkbox', { name: '显示页码', exact: true }).uncheck()
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('alert')).toContainText('标题')
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.history())).undo, 0)
+  await dialog.getByRole('combobox').first().click()
+  await page.locator('.ant-select-dropdown:visible').getByText('4', { exact: true }).click()
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha'])
+})
+
+test('a same-ID Studio replacement closes the old TOC draft without changing the replacement document', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedTocInsertion())
+  await tocInsertMenu('custom')
+  const dialog = page.getByRole('dialog', { name: '插入目录', exact: true })
+  await expect(dialog).toBeVisible()
+  await page.evaluate(() => window.documentSectionFixture.seedTocInsertion())
+  await expect(dialog).toBeHidden()
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.tocText()), [])
+  assert.equal((await page.evaluate(() => window.documentSectionFixture.history())).undo, 0)
+})
+
+test('an update command rejected by BeforeCommand keeps the real TOC dialog available for retry', async () => {
+  await page.evaluate(() => window.documentSectionFixture.seedNativeToc(false))
+  await renderedNativeToc()
+  await page.evaluate(() => window.documentSectionFixture.selectBody('toc-one', 6))
+  await page.getByTestId('workbench-ribbon').getByRole('button', { name: '更新目录', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '更新目录', exact: true }), before = await page.evaluate(() => window.documentSectionFixture.snapshot())
+  await page.evaluate(() => window.documentSectionFixture.cancelTocCommands(true))
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  assert.deepEqual(await page.evaluate(() => window.documentSectionFixture.snapshot()), before)
+  await page.evaluate(() => window.documentSectionFixture.cancelTocCommands(false))
+  await dialog.getByRole('button', { name: /应\s*用/ }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.documentSectionFixture.tocText())).toEqual(['Alpha\t1', 'Beta\t2'])
+})
 
 test('Canvas input in the second column retains logical positions through edit, keyboard history and internal reopen', async () => {
   const before = await page.evaluate(() => window.documentSectionFixture.text())

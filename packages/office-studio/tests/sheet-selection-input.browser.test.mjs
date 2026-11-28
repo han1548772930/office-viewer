@@ -236,6 +236,37 @@ async function moveFillTo(row, column) {
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2, { steps: 4 })
 }
 
+for (const kind of ['plain', 'multiline', 'rich']) {
+  test('the actual input-corner handle owns mouse hit testing and continues the same pointer after committing: ' + kind, async () => {
+    await page.evaluate(kind => window.selectionInputFixture.seed({ entries: [
+      { value: kind === 'multiline' ? 'first\nline' : 'old',
+        ...(kind === 'rich' ? { richText: [{ text: 'old', font: { bold: true } }] } : {}) },
+      { row: 5, column: 7, value: 'retained outside fill' },
+    ] }), kind)
+    const input = await edit('A1'), draft = kind === 'multiline' ? 'next\nline' : 'next'
+    await input.fill(draft); await input.hover()
+    const handle = page.locator('.canvas-cell-fill-handle')
+    await expect(handle).toBeVisible(); await expect(handle).toHaveCSS('pointer-events', 'auto'); await expect(handle).toHaveCSS('cursor', 'crosshair')
+    const bounds = await handle.boundingBox(); assert.ok(bounds)
+    const start = { x: bounds.x + 1, y: bounds.y + 1 }
+    assert.equal(await page.evaluate(point => Boolean(document.elementFromPoint(point.x, point.y)?.closest('.canvas-cell-fill-handle')), start), true)
+    await grid().evaluate(element => element.addEventListener('pointerdown', event => {
+      element.dataset.testFillPointerId = String(event.pointerId)
+    }, { capture: true, once: true }))
+    await page.mouse.move(start.x, start.y); await page.mouse.down()
+    await expect(editor()).toHaveCount(0); await expect(grid()).toBeFocused()
+    assert.equal(await grid().evaluate(element => element.hasPointerCapture(Number(element.dataset.testFillPointerId))), true)
+    await grid().evaluate(element => {
+      const child = element.querySelector('.canvas-scroll')
+      child.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId: Number(element.dataset.testFillPointerId) }))
+    })
+    await moveFillTo(3, 0); await page.mouse.up()
+    await expect.poll(async () => (await snapshot()).sheets[0].cells['3:0']?.value).toBe(draft)
+    assert.equal((await snapshot()).sheets[0].cells['5:7'].value, 'retained outside fill')
+    assert.equal((await history()).undo, 2)
+  })
+}
+
 test('editing handle commits the draft and fills on the same pointer, with separate undo entries and snapshot reopen', async () => {
   const original = await snapshot(), input = await edit('A1')
   await input.fill('10'); await pressEditingFillHandle()
@@ -258,6 +289,40 @@ test('editing handle commits the draft and fills on the same pointer, with separ
   const reopened = await snapshot()
   assert.deepEqual([0, 1, 2, 3].map(row => saved.sheets[0].cells[row + ':0'].value),
     [0, 1, 2, 3].map(row => reopened.sheets[0].cells[row + ':0'].value))
+})
+
+test('editing fill to C17 keeps omitted sheet dimensions, the full canvas and empty cells to the right and below', async () => {
+  await page.evaluate(() => window.selectionInputFixture.seed({ omitDimensions: true, entries: [
+    { value: 'left sentinel' }, { row: 4, column: 2, value: 5 },
+  ] }))
+  await expect(grid()).toHaveAttribute('aria-rowcount', '1000'); await expect(grid()).toHaveAttribute('aria-colcount', '20')
+  const size = () => page.evaluate(() => {
+    const canvas = document.querySelector('.spreadsheet-canvas canvas[data-render-surface]'), scroll = document.querySelector('.canvas-scroll')
+    const rect = canvas?.getBoundingClientRect()
+    return { width: rect?.width, height: rect?.height, backingWidth: canvas?.width, backingHeight: canvas?.height,
+      viewportWidth: scroll?.clientWidth, viewportHeight: scroll?.clientHeight }
+  })
+  await expect.poll(async () => { const current = await size(); return current.width === current.viewportWidth
+    && current.height === current.viewportHeight && current.backingWidth > 100 && current.backingHeight > 100 }).toBe(true)
+  const before = await size(), input = await edit('C5'); await input.fill('10'); await pressEditingFillHandle()
+  await expect(editor()).toHaveCount(0); await moveFillTo(16, 2); await page.mouse.up()
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['16:2']?.value).toBe(10)
+  const filled = await snapshot(), after = await size()
+  assert.equal(filled.sheets[0].rowCount, 1000); assert.equal(filled.sheets[0].columnCount, 20)
+  assert.equal(filled.sheets[0].cells['0:0'].value, 'left sentinel')
+  await expect(grid()).toHaveAttribute('aria-rowcount', '1000'); await expect(grid()).toHaveAttribute('aria-colcount', '20')
+  assert.deepEqual(after, before); assert.equal(after.width, after.viewportWidth); assert.equal(after.height, after.viewportHeight)
+  assert.equal((await history()).undo, 2)
+  await grid().press('Control+z'); assert.equal((await snapshot()).sheets[0].cells['16:2']?.value, undefined)
+  assert.equal((await snapshot()).sheets[0].cells['4:2'].value, 10)
+  await expect(grid()).toHaveAttribute('aria-rowcount', '1000'); await expect(grid()).toHaveAttribute('aria-colcount', '20')
+  await grid().press('Control+z'); assert.equal((await snapshot()).sheets[0].cells['4:2'].value, 5)
+  await grid().press('Control+y'); await grid().press('Control+y')
+  await expect.poll(async () => (await snapshot()).sheets[0].cells['16:2']?.value).toBe(10)
+  await select('F21'); await expect(nameBox()).toHaveValue('F21')
+  await page.evaluate(value => window.selectionInputFixture.reopen(value), filled)
+  await expect(grid()).toHaveAttribute('aria-rowcount', '1000'); await expect(grid()).toHaveAttribute('aria-colcount', '20')
+  await select('F21'); await expect(nameBox()).toHaveValue('F21')
 })
 
 test('clicking either half of the editing handle confirms input without filling adjacent cells', async () => {

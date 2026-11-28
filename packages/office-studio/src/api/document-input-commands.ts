@@ -14,6 +14,7 @@ import { documentSectionIds, resolveSectionHeaderFooter } from '../features/docu
 import { storyBuffer } from '../features/document/services/story-editor.ts'
 import type { DocumentAuxiliaryBlockHost } from '../features/document/model/document-block-host.ts'
 import { documentModelForBlockHost, validateDocumentBlockHost } from '../features/document/services/document-block-host.ts'
+import { normalizeDocumentHeadingSelection } from '../features/document/headings/heading-collapse'
 
 export interface DocumentInputSelectionRequest { unitId: string; selection: DocumentSelection; story?: DocumentStoryRange; host?: DocumentAuxiliaryBlockHost }
 
@@ -29,7 +30,8 @@ export function resolveDocumentInputLocation(model: DocumentModel, selection: Do
   context: DocumentPermissionContext, action?: DocumentPermissionAction, host?: DocumentAuxiliaryBlockHost): { selection: DocumentSelection; location: DocumentInputLocation } {
   if (host && story) throw new RangeError('输入选区不能同时指定块内容区和旧页眉页脚范围。')
   const scoped = host ? documentModelForBlockHost(model, host, action === 'edit') : model
-  const bodySelection = story ? sanitizeDocumentInputSelection(model, { anchor: selection.anchor, focus: selection.focus }) : resolveDocumentEditorSelection(scoped, selection)
+  const resolved = story ? sanitizeDocumentInputSelection(model, { anchor: selection.anchor, focus: selection.focus }) : resolveDocumentEditorSelection(scoped, selection)
+  const bodySelection = !story && !host ? normalizeDocumentHeadingSelection(scoped, resolved) : resolved
   if (story) {
     if (!DOCUMENT_STORY_KEYS.includes(story.story) || !documentSectionIds(model).includes(story.sectionId)) throw new RangeError('页眉页脚片段不存在。')
     const section = resolveSectionHeaderFooter(model, story.sectionId), buffer = storyBuffer(section, story.story)

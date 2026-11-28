@@ -53,7 +53,7 @@ async function seed(page: Page): Promise<void> {
   const name = page.getByRole('textbox', { name: '名称框', exact: true })
   await name.fill('A1:C5'); await name.press('Enter')
 }
-async function open(page: Page, name: '筛选' | '自定义排序'): Promise<Locator> {
+async function open(page: Page, name: '筛选' | '自定义排序', choice: 'keep' | 'extend' = 'keep'): Promise<Locator> {
   const ribbon = page.getByTestId('workbench-ribbon')
   await ribbon.getByRole('tab', { name: '数据', exact: true }).click()
   if (name === '筛选') {
@@ -65,6 +65,10 @@ async function open(page: Page, name: '筛选' | '自定义排序'): Promise<Loc
   if (name === '自定义排序') {
     await ribbon.locator('[data-ribbon-item="sheet.menu.sort"]').getByRole('button', { name: '排序', exact: true }).click()
     await page.getByRole('menuitem', { name, exact: true }).click()
+    const reminder = page.getByRole('dialog', { name: '排序区域', exact: true })
+    await expect(reminder).toBeVisible()
+    await reminder.getByRole('radio', { name: choice === 'extend' ? '扩展选定区域' : '保持当前选区', exact: true }).check()
+    await reminder.getByRole('button', { name: '确认区域', exact: true }).click()
   }
   const panel = page.getByRole('dialog', { name: '排序与筛选', exact: true })
   await expect(panel).toBeVisible()
@@ -114,6 +118,45 @@ test('toolbar value filtering, clearing, undo and snapshot reopening use the liv
     officeAPI.disposeUnit(original.getId()); officeAPI.createWorkbook(data)
   })
   await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.filteredRows).toEqual([1, 2, 3, 4])
+  expect(errors).toEqual([])
+})
+
+test('filter heading controls open the clicked column and apply multiple colors through one history transaction', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+  await seed(page)
+  await page.evaluate(async () => {
+    const path = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/src/runtime.ts').at(-1)?.name ?? '/src/runtime.ts'
+    const { officeAPI } = await import(path) as Runtime
+    const sheet = officeAPI.getActiveWorkbook()!.getActiveSheet()!
+    sheet.getRange('B2').setBackground('#ff0000'); sheet.getRange('B4').setBackground('#00ff00')
+    sheet.setAutoFilter('A1:C5')
+  })
+  const name = page.getByRole('textbox', { name: '名称框', exact: true })
+  await name.fill('C8'); await name.press('Enter')
+  const columnButton = page.getByRole('button', { name: '筛选第 2 列', exact: true })
+  await expect(columnButton).toBeVisible(); await columnButton.click()
+  const panel = page.getByRole('dialog', { name: '排序与筛选', exact: true })
+  await expect(panel.getByRole('combobox', { name: '筛选字段', exact: true })).toBeVisible()
+  await option(page, panel.getByRole('combobox', { name: '筛选方式', exact: true }), '按颜色筛选')
+  const before = await snapshot(page), history = await historyState(page)
+  await panel.getByRole('checkbox', { name: '填充颜色 #ff0000', exact: true }).check()
+  await panel.getByRole('checkbox', { name: '填充颜色 #00ff00', exact: true }).check()
+  expect(await snapshot(page)).toEqual(before); expect(await historyState(page)).toEqual(history)
+  await panel.getByRole('button', { name: '应用筛选', exact: true }).click()
+  await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.filteredRows).toEqual([2, 4])
+  expect((await snapshot(page)).sheets[0]!.autoFilter?.columns[1]?.kind).toBe('color')
+  expect((await historyState(page)).undo).toBe(history.undo + 1)
+  await panel.locator('.ant-modal-close').click()
+  await expect(columnButton).toHaveAttribute('aria-pressed', 'true')
+  await expect(name).toHaveValue('C8')
+  await columnButton.click()
+  await expect(panel.getByRole('checkbox', { name: '填充颜色 #ff0000', exact: true })).toBeChecked()
+  await panel.getByRole('checkbox', { name: '文字颜色 #000000', exact: true }).check()
+  await expect(panel.getByRole('checkbox', { name: '填充颜色 #ff0000', exact: true })).not.toBeChecked()
+  await expect(panel.getByRole('checkbox', { name: '填充颜色 #00ff00', exact: true })).not.toBeChecked()
+  await panel.getByRole('checkbox', { name: '文字颜色 #000000', exact: true }).uncheck()
+  await panel.getByRole('button', { name: '应用筛选', exact: true }).click()
+  await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.columns).toEqual({})
   expect(errors).toEqual([])
 })
 
@@ -207,4 +250,40 @@ test('custom multi-key sorting keeps headers and complete rows and is one revers
   await ribbon.getByRole('button', { name: '重做', exact: true }).click()
   await expect.poll(async () => (await snapshot(page)).sheets[0]!.cells['1:2']?.value).toBe('c')
   expect((await snapshot(page)).sheets[0]!.cells).toEqual(sorted.sheets[0]!.cells)
+})
+
+test('custom range cancellation leaves content/history/selection unchanged and extended sorting keeps the original active column', async ({ page }) => {
+  await seed(page)
+  const name = page.getByRole('textbox', { name: '名称框', exact: true })
+  await name.fill('B2'); await name.press('Enter')
+  const before = await snapshot(page), depth = await historyState(page), ribbon = page.getByTestId('workbench-ribbon')
+  await ribbon.getByRole('tab', { name: '数据', exact: true }).click()
+  await ribbon.locator('[data-ribbon-item="sheet.menu.sort"]').getByRole('button', { name: '排序', exact: true }).click()
+  await page.getByRole('menuitem', { name: '自定义排序', exact: true }).click()
+  const reminder = page.getByRole('dialog', { name: '排序区域', exact: true })
+  await expect(reminder).toBeVisible(); await reminder.getByRole('radio', { name: '扩展选定区域', exact: true }).check()
+  expect(await snapshot(page)).toEqual(before); expect(await historyState(page)).toEqual(depth)
+  await reminder.getByRole('button', { name: '取消', exact: true }).click(); await expect(reminder).toBeHidden()
+  await expect(name).toHaveValue('B2'); expect(await snapshot(page)).toEqual(before); expect(await historyState(page)).toEqual(depth)
+  const panel = await open(page, '自定义排序', 'extend')
+  await expect(panel.getByRole('textbox', { name: '排序筛选数据区域', exact: true })).toHaveValue('A1:C5')
+  await expect(panel.locator('.data-sort-key').first()).toContainText('B · 销售')
+  await option(page, panel.getByRole('combobox', { name: '排序方向 1', exact: true }), '降序')
+  await panel.getByRole('button', { name: '应用排序', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('已完成排序')
+  const sorted = await snapshot(page)
+  expect([1, 2, 3, 4].map(row => sorted.sheets[0]!.cells[`${row}:2`]?.value)).toEqual(['d', 'c', 'b', 'a'])
+  expect(sorted.sheets[0]!.cells['0:1']?.value).toBe('销售'); expect((await historyState(page)).undo).toBe(depth.undo + 1)
+})
+
+test('a single-row smart filter extends downward without absorbing adjacent columns', async ({ page }) => {
+  await seed(page)
+  const name = page.getByRole('textbox', { name: '名称框', exact: true }), before = await snapshot(page), depth = await historyState(page)
+  await name.fill('A1:B1'); await name.press('Enter')
+  const ribbon = page.getByTestId('workbench-ribbon')
+  await ribbon.getByRole('tab', { name: '数据', exact: true }).click()
+  await ribbon.locator('[data-ribbon-item="sheet.data.filter"]').getByRole('button', { name: '筛选', exact: true }).click()
+  await expect.poll(async () => (await snapshot(page)).sheets[0]!.autoFilter?.range).toEqual({ startRow: 0, endRow: 4, startCol: 0, endCol: 1 })
+  expect((await snapshot(page)).sheets[0]!.cells).toEqual(before.sheets[0]!.cells)
+  expect((await historyState(page)).undo).toBe(depth.undo + 1)
 })

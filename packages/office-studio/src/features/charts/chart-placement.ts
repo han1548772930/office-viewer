@@ -17,7 +17,7 @@ export function chartPlacementGeometry(workbook?: WorkbookModel, sheetId?: strin
   for (const table of workbook?.tables ?? []) {
     if (!sheet || table.sheetId !== sheet.id || !table.autoFilter) continue
     const filter = { ...table.autoFilter, range: { ...table.autoFilter.range }, filteredRows: [] }
-    for (const row of refreshAutoFilter({ ...sheet, autoFilter: filter })) filteredRows.add(row)
+    for (const row of refreshAutoFilter({ ...sheet, autoFilter: filter }, workbook)) filteredRows.add(row)
   }
   return new SpreadsheetGeometry({
     id: sheet?.id ?? 'chart-placement', name: sheet?.name ?? '', cells: {},

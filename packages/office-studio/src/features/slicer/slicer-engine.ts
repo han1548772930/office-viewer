@@ -524,8 +524,8 @@ function tableNativeCellPredicate(workbook: WorkbookModel, slicer: SlicerModel, 
   if (!table || !sheet) throw new SlicerConnectionError('source-missing', '切片器表格来源不存在。')
   const columnIndex = table.columns.findIndex(candidate => candidate.id === source.columnId)
   if (columnIndex < 0) throw new SlicerConnectionError('field-missing', '切片器表格源字段不存在。')
-  const matches = compileSheetCellFilterCriteria(filter), startRow = table.range.startRow + (table.showHeaderRow ? 1 : 0), column = table.range.startCol + columnIndex
-  return (_value, index) => matches(sheet.cells[`${startRow + index}:${column}`])
+  const matches = compileSheetCellFilterCriteria(filter, { sheet, workbook }), startRow = table.range.startRow + (table.showHeaderRow ? 1 : 0), column = table.range.startCol + columnIndex
+  return (_value, index) => matches(sheet.cells[`${startRow + index}:${column}`], startRow + index, column)
 }
 
 function updateSharedSelection(workbook: WorkbookModel, source: SlicerModel, items: string[] | null, range: SlicerTimelineRange | undefined,
@@ -576,7 +576,7 @@ function setTableSlicerRecordFilter(workbook: WorkbookModel, slicer: SlicerModel
   if (range.endRow <= range.startRow) throw new Error('Table slicer source requires a header and data row')
   if (selection === null && table.autoFilter?.columns[table.range.startCol + columnIndex] === undefined) return
   const sourceView = { ...sheet, autoFilter: table.autoFilter ? structuredClone(table.autoFilter) : undefined }
-  if (!sourceView.autoFilter) setAutoFilter(sourceView, range)
+  if (!sourceView.autoFilter) setAutoFilter(sourceView, range, workbook)
   const typed = selection && selection.mode !== 'all' && selection.values.some(value => value !== null && typeof value === 'object')
   const next = selection && selection.mode !== 'all' ? { kind: 'values' as const, selectedItems: selection.values.map(value =>
     value !== null && typeof value === 'object' ? value.type === 'blank' ? null : value.value : value),
@@ -585,7 +585,7 @@ function setTableSlicerRecordFilter(workbook: WorkbookModel, slicer: SlicerModel
   const column = table.range.startCol + columnIndex, current = sourceView.autoFilter!.columns[column]
   const criteria = selection !== null && current?.kind === 'values' && sameSlicerRecordSelection(slicerRecordSelectionFromNativeValues(current), selection)
     ? current : next
-  setFilterCriteria(sourceView, column, criteria)
+  setFilterCriteria(sourceView, column, criteria, workbook)
   if (!equivalentModelData(table.autoFilter, sourceView.autoFilter)) table.autoFilter = sourceView.autoFilter
 }
 

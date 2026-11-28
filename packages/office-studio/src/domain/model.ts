@@ -16,6 +16,11 @@ export type { SparklineBrokenSourceRange, SparklineSourceReference } from './spa
 
 export type OfficeKind = 'workbook' | 'document'
 
+/** Univer v1.6.0 core/sheets/sheet-snapshot-utils.ts. Grid extents are
+ * worksheet state, independent of the last populated cell or fill target. */
+export const DEFAULT_SHEET_ROW_COUNT = 1000
+export const DEFAULT_SHEET_COLUMN_COUNT = 20
+
 export type CellScalar = string | number | boolean | null
 
 export interface FontStyle {
@@ -181,7 +186,14 @@ export interface SheetConditionFilter {
   secondValue?: CellScalar
   caseSensitive?: boolean
 }
-export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter
+export interface SheetColorFilter {
+  kind: 'color'
+  /** null matches the default/no authored fill. Empty arrays match no rows. */
+  cellFillColors?: Array<string | null>
+  /** The default text color is black. As upstream, fill takes precedence when both arrays exist. */
+  cellTextColors?: string[]
+}
+export type SheetFilterCriteria = SheetValueFilter | SheetConditionFilter | SheetColorFilter
 export interface SheetAutoFilter {
   range: CellRange
   columns: Record<number, SheetFilterCriteria>
@@ -1557,6 +1569,8 @@ export const createBlankSheet = (name = 'Sheet1'): SpreadsheetSheet => ({
   name,
   visible: true,
   cells: {},
+  rowCount: DEFAULT_SHEET_ROW_COUNT,
+  columnCount: DEFAULT_SHEET_COLUMN_COUNT,
   mergedRanges: [],
   columnWidths: {},
   rowHeights: {},

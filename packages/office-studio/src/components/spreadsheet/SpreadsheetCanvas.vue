@@ -36,7 +36,9 @@ import { sheetCellWrapStrategy } from '../../features/sheet-workbench/sheet-cell
 import { layoutSheetCellText, sheetCellTextFont } from '../../features/sheet-workbench/sheet-cell-text-layout.ts'
 import { layoutSheetCellRichText } from '../../features/sheet-workbench/sheet-cell-rich-text-layout.ts'
 import { measureSpreadsheetText } from '../../rendering/spreadsheet/text-metrics.ts'
-import { ChevronDown, ClipboardPaste, Minus, Plus } from 'lucide-vue-next'
+import { ChevronDown, ClipboardPaste, Filter, ListFilter, Minus, Plus } from 'lucide-vue-next'
+import { sheetFilterHeaderControls } from '../../features/sheet-sort-filter/sheet-filter-header.ts'
+import { sheetFilterPermissionRanges } from '../../features/sheet-sort-filter/sheet-filter-column.ts'
 import { hitTestSlicerObjects, slicerObjectContentPoint, slicerObjectDrawCommands, slicerObjectLayouts, slicerObjectLocalPoint,
   timelineSerialAtOffset, type SlicerCanvasControl, type SlicerCanvasHit, type SlicerObjectLayout } from '../../features/slicer/slicer-renderer'
 import { captureSlicerCanvasGesture, canResumeSlicerCanvasGesture, slicerCanvasGestureDelta, slicerCanvasGestureGeometry,
@@ -79,7 +81,7 @@ import type { SheetValidationTagOptionsReader } from '../../features/sheet-valid
 const MAX_SHEET_ROWS = 1_048_576
 const MAX_SHEET_COLUMNS = 16_384
 
-const props = defineProps<{ activeRangeIndex?: number; workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; conditionalFormatPreview?: readonly CellRange[]; validationOptions?: readonly string[]; validationCellEntry?: SheetValidationCellEntry; validationCellPopup?: SheetValidationCellPopup; validationDropdownUi?: SheetValidationDropdownUiOptions; validationCurrentYear?: number; validationCheckboxAt?: (row: number, column: number) => SheetCheckboxCellEntry | undefined; validationCheckboxError?: string; validationFeedback?: SheetValidationFeedbackReader; validationTagOptions?: SheetValidationTagOptionsReader; validationInputOwner?: string; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
+const props = defineProps<{ filterHeaderBlocked?: boolean; activeRangeIndex?: number; workbookId?: string; workbookHistoryGeneration?: number; sheet: SpreadsheetRenderSheet; sparklineSheets?: readonly ExcelSheetView[]; sparklineMetadata?: Record<string, unknown>; drawingScene?: SheetDrawingScene; selectedDrawingRefs?: readonly SheetDrawingRef[]; selectedImageId?: string; selectedImageIds?: readonly string[]; imageInteractionBlocked?: boolean; selectedKey: string; selectedRange: string[]; selectedRanges?: GridRange[]; editingKey: string | null; editValue: string; editSessionId?: string; richTextEditorCell?: ExcelCellView; editSelection?: { start: number; end: number; host?: 'cell' | 'formula' }; inputContext?: () => SheetCellInputBridgeContext; keepEditFocus?: (target: Element | null) => boolean; prepareFill?: () => SheetFillCommitContext | undefined; zoom: number; currentUserId?: string; workbookRevision?: number; canFormat?: boolean; searchText?: string; numberFormatPreview?: SheetNumberFormatPreview; conditionalFormatPreview?: readonly CellRange[]; validationOptions?: readonly string[]; validationCellEntry?: SheetValidationCellEntry; validationCellPopup?: SheetValidationCellPopup; validationDropdownUi?: SheetValidationDropdownUiOptions; validationCurrentYear?: number; validationCheckboxAt?: (row: number, column: number) => SheetCheckboxCellEntry | undefined; validationCheckboxError?: string; validationFeedback?: SheetValidationFeedbackReader; validationTagOptions?: SheetValidationTagOptionsReader; validationInputOwner?: string; overlayCommands?: readonly DrawCommand[]; slicers?: readonly SlicerCanvasControl[]; selectedSlicerId?: string; crosshairHighlight?: { enabled: boolean; color: string }; formatPainter?: SheetFormatPainterCanvasState | null; copyRange?: CellRange; pasteOptions?: SheetClipboardPasteOptionsView; fillOptions?: SheetFillOptionsView; clipboardCapabilities?: SheetClipboardCapabilities; pasteOptionsCapabilities?: SheetClipboardCapabilities }>()
 const emit = defineEmits<{
   (event: 'select-cell', key: string, pointer: PointerEvent): void
   (event: 'extend-selection', key: string): void
@@ -122,6 +124,7 @@ const emit = defineEmits<{
   (event: 'drawing-command', commandId: string, input: SheetDrawingCommandInput): void
   (event: 'chart-event', eventValue: MouseEvent | KeyboardEvent, chartId: string, view: { scrollLeft: number; scrollTop: number; headerWidth?: number; headerHeight?: number }): void
   (event: 'clear-checkbox-error'): void
+  (event: 'open-filter-column', column: number): void
 }>()
 const root = ref<HTMLElement | null>(null), canvasHost = ref<HTMLElement | null>(null), scroller = ref<HTMLElement | null>(null), input = ref<{ focus: () => void } | null>(null)
 // The synchronous callback also owns "no session" while Vue is still flushing the previous props.
@@ -134,6 +137,16 @@ const viewport = ref<GridViewport>({ width: 1, height: 1, scrollLeft: 0, scrollT
   headerWidth: geometry.value.headerWidth, headerHeight: geometry.value.headerHeight })
 const fillPreview = ref<GridRange>()
 const fillHandleHovered = ref(false)
+const filterHeaderPermissionRanges = computed(() => sheetFilterPermissionRanges({ mergedRanges: geometry.value.merges.map(range => ({
+  startRow: range.startRow, endRow: range.endRow, startCol: range.startColumn, endCol: range.endColumn,
+})) }, props.sheet.autoFilter?.range))
+const filterHeaderControls = computed(() => sheetFilterHeaderControls(geometry.value, viewport.value, props.sheet.autoFilter,
+  () => !props.filterHeaderBlocked && !composing.value && canEditWorksheetProtection(props.sheet, props.currentUserId ?? '')
+    && !!props.sheet.autoFilter && canEditProtectedRanges(props.sheet, filterHeaderPermissionRanges.value, props.currentUserId ?? '')))
+function openFilterHeader(column: number): void {
+  const control = filterHeaderControls.value.find(control => control.column === column && !control.disabled)
+  if (control) emit('open-filter-column', column)
+}
 const headerDrag = ref<(SheetAxisHeaderMoveSource & { pointerStart: number; moved: boolean; copy: boolean; destination?: number; allowed: boolean; revision?: number })>()
 const region = useOfficeRegion()
 const slicerScrollPreviews = ref(new Map<string, number>())
@@ -1093,6 +1106,7 @@ function updateRichTextPointer(position: { x: number; y: number }): void {
   else if (!outside) stopRichTextDragScroll()
 }
 function onEditorPointerDownCapture(event: PointerEvent): void {
+  if (event.target instanceof Element && event.target.closest('.sheet-filter-header')) return
   onEditorFillPointerDown(event)
   if (event.defaultPrevented || event.button !== 0 || !active || disposed || composing.value || gesturePointerId !== undefined) return
   const scene = richTextEditorScene.value, element = editorElement(), key = props.editingKey
@@ -1154,10 +1168,30 @@ function updateFillDragTarget(position: { x: number; y: number }): void {
   if (root.value) root.value.style.cursor = 'crosshair'
   queueRender()
 }
+function captureFillPointer(pointerId: number): boolean {
+  const element = root.value
+  if (!element?.isConnected) { clearPointerGesture(); return false }
+  try {
+    if (!element.hasPointerCapture(pointerId)) element.setPointerCapture(pointerId)
+    return true
+  } catch (error) {
+    clearPointerGesture()
+    const OwnerDOMException = element.ownerDocument.defaultView?.DOMException
+    if (OwnerDOMException && error instanceof OwnerDOMException && (error.name === 'NotFoundError' || error.name === 'InvalidStateError')) return false
+    throw error
+  }
+}
 function onEditorFillPointerDown(event: PointerEvent): void {
   if (event.button !== 0 || !props.editingKey || props.formatPainter || !active || disposed) return
   const position = point(event)
-  const source = hitCellEditorFillHandle(geometry.value, props.editingKey, viewport.value, position.x, position.y)
+  const handle = event.target instanceof Element ? event.target.closest('.canvas-cell-fill-handle') : null
+  const edited = parseAddress(props.editingKey)
+  // The visible handle owns its pointer hit, including its inner half over Ant Input.
+  // Geometric hit testing also covers hosts forwarding the native input event.
+  const source = handle && root.value?.contains(handle) && edited
+    ? geometry.value.mergeAt(edited.row, edited.column)
+      ?? { startRow: edited.row, endRow: edited.row, startColumn: edited.column, endColumn: edited.column }
+    : hitCellEditorFillHandle(geometry.value, props.editingKey, viewport.value, position.x, position.y)
   if (!source) return
   // Capture before antdv-next's input handlers and before native blur can schedule another commit.
   event.preventDefault(); event.stopPropagation()
@@ -1165,7 +1199,7 @@ function onEditorFillPointerDown(event: PointerEvent): void {
   const press = { pointerId: event.pointerId, source: { ...source }, origin: snapshotSheetFillGesture(fillGestureContext()), startPosition: position, position }
   pendingFillPress = press
   gesturePointerId = event.pointerId
-  root.value?.setPointerCapture(event.pointerId)
+  if (!captureFillPointer(event.pointerId)) return
   let committed: SheetFillCommitContext | undefined
   try { committed = props.prepareFill() }
   catch (error) { clearPointerGesture(); throw error }
@@ -1174,10 +1208,13 @@ function onEditorFillPointerDown(event: PointerEvent): void {
   void nextTick(() => {
     if (pendingFillPress !== press || gesturePointerId !== press.pointerId) return
     pendingFillPress = undefined
-    if (!active || disposed || composing.value || props.formatPainter || !root.value?.hasPointerCapture(press.pointerId)
+    if (!active || disposed || composing.value || props.formatPainter || !root.value
       || !canResumeSheetFillGesture(press.origin, accepted, fillGestureContext())) {
       clearPointerGesture(); return
     }
+    // The input/handle can be removed by the accepted commit before the browser
+    // applies pending capture. Keep ownership on the stable Canvas host.
+    if (!captureFillPointer(press.pointerId)) return
     fillDrag = { source: press.source, context: snapshotSheetFillGesture(fillGestureContext()), startPosition: press.startPosition, moved: false }
     lastPointer = press.position
     root.value.focus({ preventScroll: true })
@@ -1314,6 +1351,9 @@ function onPointerMove(event: PointerEvent) {
   }
 }
 function onPointerUp(event: PointerEvent) {
+  // Child editors and Ant controls may release their own capture while the root
+  // still owns the active fill. A bubbled child loss cannot end that gesture.
+  if (event.type === 'lostpointercapture' && event.target !== root.value) return
   if (onSlicerAntScrollUp(event)) return
   if (drawingCanvas.end(point(event), event)) { clearPointerGesture(); return }
   if (imageCanvas.end(point(event), event)) { clearPointerGesture(); return }
@@ -2006,6 +2046,14 @@ onUnmounted(() => { disposed = true; clearValidationHover(); pasteOptionsOpen.va
         <component :is="control.collapsed ? Plus : Minus" :size="10" aria-hidden="true" />
       </Button>
     </Tooltip>
+    <Tooltip v-for="control in filterHeaderControls" :key="`filter-${control.key}`" :title="control.active ? '筛选条件已应用' : '筛选'">
+      <Button class="sheet-filter-header" type="default" size="small" :data-filter-column="control.column"
+        :style="{ left: `${control.rect.x}px`, top: `${control.rect.y}px`, width: `${control.rect.width}px`, height: `${control.rect.height}px`, clipPath: control.clipPath }"
+        :aria-label="`筛选第 ${control.column + 1} 列`" :aria-pressed="control.active" :disabled="control.disabled"
+        @pointerdown.stop.prevent @keydown.stop @dblclick.stop @contextmenu.prevent.stop @click.stop="openFilterHeader(control.column)">
+        <component :is="control.active ? Filter : ListFilter" :size="Math.max(8, 12 * viewport.zoom)" aria-hidden="true" />
+      </Button>
+    </Tooltip>
     <Tooltip v-for="control in outlineLevelButtons" :key="`outline-${control.axis}-level-${control.level}`" :title="control.label">
       <Button class="outline-control outline-level" :style="{ left: `${control.x}px`, top: `${control.y}px` }"
         :type="control.active ? 'primary' : 'default'" size="small" :aria-label="control.label" :aria-pressed="control.active" :disabled="control.disabled"
@@ -2026,7 +2074,7 @@ onUnmounted(() => { disposed = true; clearValidationHover(); pasteOptionsOpen.va
     <AutoComplete v-if="editingKey" :key="editSessionId ?? editingKey" ref="input" class="canvas-cell-input" :style="editStyle" :styles="editInputStyles" variant="borderless" :value="editValue" :options="(validationOptions ?? []).map(value => ({ value, label: value }))" aria-label="单元格编辑" @change="onEditValueChange" @select="onAutoCompleteSelect" @blur="onEditorBlur" @keydown.stop="onInputKeydown">
       <Input.TextArea v-if="useMultilineEditor" :rows="1" :auto-size="false" :change-on-composing="true" :styles="editTextAreaStyles" :wrap="sheetCellWrapStrategy(editedCell) === 'wrap' ? 'soft' : 'off'" variant="borderless" spellcheck="false" aria-label="单元格编辑" @change="onTextAreaChange" />
     </AutoComplete>
-    <span v-if="editingKey && editLayout && !formatPainter" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" />
+    <span v-if="editingKey && editLayout && !formatPainter" class="canvas-cell-fill-handle" :style="fillHandleStyle" aria-hidden="true" @pointerdown="onEditorFillPointerDown" />
     <div class="a11y-cell" role="row"><span role="gridcell" aria-selected="true" :aria-invalid="selectedValidationFeedback?.issues.length ? 'true' : undefined">{{ selectedKey }} {{ selectedCellText }}</span></div>
     <Alert v-if="surfaceError" class="canvas-surface-error" type="error" :title="`画布初始化失败：${surfaceError}`" show-icon />
     <SheetContextMenu
@@ -2050,6 +2098,10 @@ onUnmounted(() => { disposed = true; clearValidationHover(); pasteOptionsOpen.va
 .sheet-paste-options { position: absolute; z-index: 4; display: inline-flex; align-items: center; justify-content: center; gap: 2px; width: 44px; height: 24px; padding: 0 4px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); border-color: var(--sheet-canvas-border); }
 .sheet-paste-options:focus-visible { outline: 2px solid var(--sheet-canvas-primary); outline-offset: 1px; }
 .outline-control { position: absolute; z-index: 3; box-sizing: border-box; width: 14px; height: 14px; min-width: 14px; min-height: 14px; margin: 0; padding: 0; border: 1px solid var(--sheet-canvas-border); border-radius: 1px; color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); box-shadow: none; line-height: 10px; }
+.sheet-filter-header { position: absolute; z-index: 4; min-width: 0; min-height: 0; padding: 0; border-radius: 1px; box-shadow: none; }
+.sheet-filter-header:not(:disabled) { color: var(--sheet-canvas-text); background: var(--sheet-canvas-background); border-color: var(--sheet-canvas-border); }
+.sheet-filter-header[aria-pressed="true"]:not(:disabled) { color: var(--sheet-canvas-primary); }
+.sheet-filter-header :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
 .outline-control :deep(.ant-btn-icon) { display: inline-flex; align-items: center; justify-content: center; }
 .outline-level { font-size: 9px; }
 .outline-level.ant-btn-primary { color: var(--sheet-canvas-background); background: var(--sheet-canvas-primary); border-color: var(--sheet-canvas-primary); }
@@ -2060,7 +2112,7 @@ onUnmounted(() => { disposed = true; clearValidationHover(); pasteOptionsOpen.va
 .rich-text-editor-active :deep(.canvas-cell-input .ant-select-selector) { background: transparent; }
 .rich-text-editor-active :deep(.canvas-cell-input input), .rich-text-editor-active :deep(.canvas-cell-input textarea) { -webkit-text-fill-color: transparent; }
 .rich-text-editor-active :deep(.canvas-cell-input input::selection), .rich-text-editor-active :deep(.canvas-cell-input textarea::selection) { color: transparent; background: transparent; }
-.canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: none; }
+.canvas-cell-fill-handle { position: absolute; z-index: 4; box-sizing: border-box; border: 1px solid var(--sheet-canvas-background); background: var(--sheet-canvas-primary); pointer-events: auto; cursor: crosshair; touch-action: none; }
 .sheet-validation-checkbox-error { position: absolute; z-index: 6; left: 12px; right: 12px; bottom: 12px; }
 .fill-handle-hovered :deep(.canvas-cell-input input), .fill-handle-hovered :deep(.canvas-cell-input textarea) { cursor: crosshair; }
 .a11y-cell { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }

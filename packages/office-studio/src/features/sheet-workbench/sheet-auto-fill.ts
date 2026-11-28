@@ -1,4 +1,5 @@
 import type { CellRange, SpreadsheetCell, SpreadsheetSheet, WorkbookModel } from '../../domain/model.ts'
+import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT } from '../../domain/model.ts'
 import { cloneModel } from '../../domain/serialization.ts'
 import { validateSheetDataValidationChanges, type SheetValidationIssue } from '../sheet-validation/validation-engine.ts'
 import { sheetValidationSourceReader } from '../sheet-validation/validation-value-read.ts'
@@ -173,8 +174,8 @@ export function createSheetAutoFillPlan(workbook: WorkbookModel, sheetId: string
     }
     return { sheet, target, result: { ...result, accepted: true, changed: JSON.stringify(sheet) !== JSON.stringify(original), selection: target.selection, ranges } }
   }
-  sheet.rowCount = Math.max(sheet.rowCount ?? 1, target.selection.endRow + 1)
-  sheet.columnCount = Math.max(sheet.columnCount ?? 1, target.selection.endCol + 1)
+  sheet.rowCount = Math.max(sheet.rowCount ?? DEFAULT_SHEET_ROW_COUNT, target.selection.endRow + 1)
+  sheet.columnCount = Math.max(sheet.columnCount ?? DEFAULT_SHEET_COLUMN_COUNT, target.selection.endCol + 1)
   const sourceColumns = Array.from({ length: source.endCol - source.startCol + 1 }, (_, col) => source.startCol + col)
   const vertical = target.direction === 'up' || target.direction === 'down'
   const snapshot = sourceSnapshot(workbook, original, source, sourceRows, sourceColumns)

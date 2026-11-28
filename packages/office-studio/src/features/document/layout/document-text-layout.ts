@@ -17,8 +17,8 @@ export function runFont(run: DocumentRun, scale = 1, family = run.fontFamily): s
   return `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${Math.max(1, run.fontSize) * 4 / 3 * verticalScale * scale}px ${family || 'Aptos'}, "Microsoft YaHei", sans-serif`
 }
 
-export function createTextMeasurer(): LayoutMeasurer {
-  const canvas = document.createElement('canvas')
+export function createTextMeasurer(hostDocument: Document = document): LayoutMeasurer {
+  const canvas = hostDocument.createElement('canvas')
   const context = canvas.getContext('2d')
   const cache = new Map<string, number>()
   return { measure(text, font) {

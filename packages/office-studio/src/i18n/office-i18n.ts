@@ -11,6 +11,7 @@ import { reviewedCoreTranslations } from './core/locales/reviewed.ts'
 import { featureSearchMessages } from './core/locales/feature-search.ts'
 import { docsEnUS } from './docs/locales/en-US.ts'
 import { documentTocLocales } from '../features/document/toc/locales.ts'
+import { documentHeadingCollapseMessages } from '../features/document/headings/locales'
 import { docsZhCN } from './docs/locales/zh-CN.ts'
 import { docsTranslations } from './docs/locales/generated.ts'
 import { reviewedDocsTranslations } from './docs/locales/reviewed.ts'
@@ -214,6 +215,7 @@ export function createOfficeMessages(): Record<OfficeLocale, Record<string, stri
       ...sheetToolbarBorderApiStyleLocales[locale],
       ...docsTranslations[locale],
       ...documentTocLocales[locale as keyof typeof documentTocLocales],
+      ...documentHeadingCollapseMessages(locale),
       'items.doc-insert-table-of-contents': documentTocLocales[locale]['document.toc.insert'],
       'items.doc-insert-table-of-contents-automatic': documentTocLocales[locale]['document.toc.automatic'],
       'items.doc-insert-table-of-contents-custom': documentTocLocales[locale]['document.toc.custom'],

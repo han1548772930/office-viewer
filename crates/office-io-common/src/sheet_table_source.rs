@@ -31,6 +31,27 @@ pub fn flag(node: &Element, name: &str) -> Result<Option<bool>, String> {
     }
 }
 
+/// Native table, filter and sort references share the same bounded A1 geometry.
+/// These are worksheet-local references, never sheet-qualified or multi-area.
+pub fn range(reference: &str) -> Option<[u32; 4]> {
+    fn cell(input: &str) -> Option<(u32, u32)> {
+        let input = input.strip_prefix('$').unwrap_or(input);
+        let split = input.bytes().take_while(u8::is_ascii_alphabetic).count();
+        if !(1..=3).contains(&split) { return None; }
+        let (letters, digits) = input.split_at(split);
+        let digits = digits.strip_prefix('$').unwrap_or(digits);
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+        let mut column = 0u32;
+        for byte in letters.bytes() { column = column.checked_mul(26)?.checked_add(u32::from(byte.to_ascii_uppercase() - b'A') + 1)?; }
+        let row = digits.parse::<u32>().ok()?.checked_sub(1)?;
+        let column = column.checked_sub(1)?;
+        (row <= 1_048_575 && column <= 16_383).then_some((row, column))
+    }
+    let (first, last) = reference.split_once(':').unwrap_or((reference, reference));
+    let (r1, c1) = cell(first)?; let (r2, c2) = cell(last)?;
+    (r1 <= r2 && c1 <= c2).then_some([r1, c1, r2, c2])
+}
+
 pub fn columns(root: &Element) -> Result<Vec<&Element>, String> {
     let roots = root.children.iter().filter(|child| spreadsheet(child, "tableColumns")).collect::<Vec<_>>();
     if roots.len() != 1 { return Err("TABLE_SOURCE_INVALID: missing or duplicate table columns".into()); }
@@ -108,5 +129,14 @@ mod tests {
         let mut budget = TableSourceBudget::default();
         let source = OfficeTableSource { part_name: "xl/tables/table1.xml".into(), xml: " ".repeat(xml::XML_FRAGMENT_BYTE_LIMIT + 1) };
         assert!(budget.admit(Some(&source)).unwrap_err().starts_with("TABLE_SOURCE_LIMIT:"));
+    }
+
+    #[test]
+    fn local_references_are_bounded_and_preserve_absolute_a1_geometry() {
+        assert_eq!(range("$a$1:$XFD$1048576"), Some([0, 0, 1_048_575, 16_383]));
+        assert_eq!(range("B2"), Some([1, 1, 1, 1]));
+        for value in ["A0", "B2:A1", "A1:XFE2", "A1:A1048577", "A1:B2:C3", "Sheet!A1", "A1 B2", "A$$1"] {
+            assert_eq!(range(value), None, "{value}");
+        }
     }
 }

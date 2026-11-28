@@ -211,6 +211,9 @@ import type { UniverDocumentBody, UniverDocumentBodyData } from './document-body
 import type { UniverDocumentData } from './document-snapshot-types'
 import { documentToPublicSnapshot } from './document-output'
 import { assertDocumentSnapshotViewPermission } from './document-snapshot-permissions'
+import { bindDocumentTocLayout, type DocumentTocLayoutProvider, type DocumentTocLayoutHandle } from './document-toc-layout'
+import { bindDocumentTocDialogEditor, DOCUMENT_TOC_DIALOG_OPERATION, type DocumentTocDialogEditor, type DocumentTocDialogEditorHandle } from './document-toc-dialog-editors'
+import { SET_DOCUMENT_HEADING_COLLAPSED_COMMAND } from './document-heading-commands'
 import { commonPublicDocumentExplicitTextStyle, isLocalDocumentTextStyle, publicDocumentExplicitTextStyleRuns,
   setPublicDocumentTextStyle, validatePublicDocumentTextStyle, type UniverDocumentTextStyle, type UniverDocumentTextStyleRun,
   type UniverDocumentTextRangeDescription } from './document-text-style'
@@ -1007,7 +1010,7 @@ export class FWorksheet {
   }
   getAutoFilter(): { range: CellRange; columns: Record<number, SheetFilterCriteria>; filteredRows: number[] } | null {
     const filter = this.sheet().autoFilter
-    return filter ? cloneModel({ ...filter, filteredRows: getFilteredRows(this.sheet()) }) : null
+    return filter ? cloneModel({ ...filter, filteredRows: getFilteredRows(this.sheet(), this.workbook()) }) : null
   }
   setFilterCriteria(column: number, criteria: SheetFilterCriteria | null): this {
     this.api.executeCommandSync('sheet.command.set-filter-criteria', { unitId: this.unitId, sheetId: this.id, column, criteria })
@@ -1017,7 +1020,7 @@ export class FWorksheet {
     this.api.executeCommandSync('sheet.command.clear-filter', { unitId: this.unitId, sheetId: this.id, column })
     return this
   }
-  getFilteredRows(): number[] { return getFilteredRows(this.sheet()) }
+  getFilteredRows(): number[] { return getFilteredRows(this.sheet(), this.workbook()) }
   async sortRange(range: FRange | FRangeCoordinates | string, criteria: readonly SheetSortCriterion[], options: SortRangeApiOptions = {}): Promise<this> {
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
@@ -1035,7 +1038,7 @@ export class FWorksheet {
       }
     }
     assertCurrent()
-    const numeric = getNumericSortColumns(sheet, normalized, criteria, options)
+    const numeric = getNumericSortColumns(sheet, normalized, criteria, options, this.workbook())
     let order: number[] | undefined
     if (numeric && numeric.rowCount > 0) {
       const result = await this.api.numericIndexService.sortRows(numeric, {
@@ -1052,7 +1055,7 @@ export class FWorksheet {
       }
     }
     assertCurrent()
-    order ??= getSortedRowOrder(sheet, normalized, criteria, options)
+    order ??= getSortedRowOrder(sheet, normalized, criteria, options, this.workbook())
     assertCurrent()
     this.api.executeCommandSync('sheet.command.sort-range', bindWorkbookCommandGuard({ unitId: this.unitId, sheetId: this.id, range: normalized,
       criteria: [...criteria], options: { hasHeader: options.hasHeader, locale: options.locale }, order, expectedRevision }, assertCurrent))
@@ -2476,7 +2479,7 @@ export class FRange {
       return { column: this.range.startColumn + relative.column, direction: relative.direction }
     })
     const range: CellRange = { startRow: this.range.startRow, startCol: this.range.startColumn, endRow: this.range.endRow, endCol: this.range.endColumn }
-    const order = getSortedRowOrder(this.sheet(), range, criteria, options)
+    const order = getSortedRowOrder(this.sheet(), range, criteria, options, this.api.getWorkbookModel(this.unitId))
     this.api.executeCommandSync('sheet.command.sort-range', { unitId: this.unitId, sheetId: this.sheetId, range, criteria, options, order })
     return this
   }
@@ -3336,6 +3339,13 @@ export class FDocument {
     return this.getParagraphs(segmentId).at(-1)!
   }
   getModel(): DocumentModel { return this.model() }
+  /** Bind the actual renderer; public TOC commands await this layout instead of estimating pages. */
+  bindTocLayout(provider: DocumentTocLayoutProvider): DocumentTocLayoutHandle { return bindDocumentTocLayout(this.api, this.id, provider) }
+  bindTocDialogEditor(editor: DocumentTocDialogEditor): DocumentTocDialogEditorHandle { return bindDocumentTocDialogEditor(this.api, this.id, editor) }
+  openTableOfContentsDialog(): boolean { return this.api.executeCommandSync(DOCUMENT_TOC_DIALOG_OPERATION, { unitId: this.id }) }
+  setHeadingCollapsed(paragraphId: string, collapsed: boolean): boolean {
+    return this.api.executeCommandSync(SET_DOCUMENT_HEADING_COLLAPSED_COMMAND, { unitId: this.id, paragraphId, collapsed })
+  }
   getLatexFormulas(segmentId = ''): FDocumentLatex[] { return documentLatexFormulaTargets(this, segmentId).map(item => new FDocumentLatex(this, item.rangeId, segmentId)) }
   getLatexFormula(rangeId: string, segmentId = ''): FDocumentLatex | null { return this.findLatexFormulas({ rangeId }, segmentId)[0] ?? null }
   getLatexFormulaAt(offset: number, segmentId = ''): FDocumentLatex | null {

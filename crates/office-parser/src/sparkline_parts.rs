@@ -11,7 +11,7 @@ const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relatio
 const STRICT_REL: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships/";
 const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct ColorResources {
     pub(super) theme_xml: Option<String>,
     pub(super) theme: Option<Element>,

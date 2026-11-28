@@ -1,6 +1,6 @@
 import { applyExcelCellView, toExcelCellView, type ExcelCellView, type ExcelSheetView } from '../../services/excelViewAdapter.ts'
 import type { GridRange } from '../../rendering/spreadsheet/layout.ts'
-import { createBlankWorkbook, createCell } from '../../domain/model.ts'
+import { createBlankWorkbook, createCell, DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT } from '../../domain/model.ts'
 import { createSheetAutoFillPlan, SHEET_FILL_SYNC_CELL_BUDGET } from './sheet-auto-fill.ts'
 import { resolveSheetFillTarget, sheetFillPointerTarget } from './sheet-fill-target.ts'
 
@@ -74,8 +74,8 @@ export function createSheetFillPlan(
   const work = (selection.endRow - selection.startRow + 1) * (selection.endCol - selection.startCol + 1)
   if (work > SHEET_FILL_SYNC_CELL_BUDGET) throw new RangeError('填充范围超出当前同步预算，需要分块 Worker 填充。')
   const workbook = createBlankWorkbook(), sheet = workbook.sheets[0]!
-  sheet.rowCount = Math.max(sheet.rowCount ?? 1, source.endRow + 1, selection.endRow + 1)
-  sheet.columnCount = Math.max(sheet.columnCount ?? 1, source.endColumn + 1, selection.endCol + 1)
+  sheet.rowCount = Math.max(sheet.rowCount ?? DEFAULT_SHEET_ROW_COUNT, source.endRow + 1, selection.endRow + 1)
+  sheet.columnCount = Math.max(sheet.columnCount ?? DEFAULT_SHEET_COLUMN_COUNT, source.endColumn + 1, selection.endCol + 1)
   for (let r = 0; r < (options.targetCells?.length ?? 0); r++) {
     const row = options.targetCells![r]!
     for (let c = 0; c < row.length; c++) if (row[c]) {

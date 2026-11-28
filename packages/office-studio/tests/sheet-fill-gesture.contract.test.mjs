@@ -29,6 +29,22 @@ test('an unchanged-value commit and a standalone host can acknowledge their unch
     { sheetId: 'first-sheet' }, { ...ready(), workbookRevision: undefined }), true)
 })
 
+test('normal selection tagging during the input commit does not cancel the same pointer drag', () => {
+  const origin = editing(), current = { ...ready(), selectedRanges: [{ ...range, rangeType: 0 }] }
+  assert.equal(sheetFillGestureSelectionMatches(origin, current), true)
+  assert.equal(sheetFillGestureSelectionMatches(current, origin), true)
+  assert.equal(canResumeSheetFillGesture(origin, committed, current), true)
+  assert.equal(sheetFillGestureStillCurrent(snapshotSheetFillGesture(current), { ...ready() }), true)
+  assert.equal(sheetFillGestureStillCurrent(snapshotSheetFillGesture(ready()), current), true)
+})
+
+test.each([1, 2, 3])('a change to selection kind %s remains a real gesture invalidation', rangeType => {
+  const current = { ...ready(), selectedRanges: [{ ...range, rangeType }] }
+  assert.equal(sheetFillGestureSelectionMatches(editing(), current), false)
+  assert.equal(canResumeSheetFillGesture(editing(), committed, current), false)
+  assert.equal(sheetFillGestureStillCurrent(ready(), current), false)
+})
+
 test('composition or failed confirmation leaving any input session active cannot resume a fill', () => {
   assert.equal(canResumeSheetFillGesture(editing(), committed, { ...ready(), editingKey: 'A1' }), false)
   assert.equal(canResumeSheetFillGesture(editing(), committed, { ...ready(), editSessionId: 'edit-one' }), false)

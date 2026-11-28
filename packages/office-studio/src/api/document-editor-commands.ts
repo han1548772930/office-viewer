@@ -89,6 +89,8 @@ export const DOCUMENT_EDITOR_COMMAND_LABELS: Record<Exclude<DocumentCommand['id'
   'doc.command.refresh-header-footer-fields': '更新页眉页脚字段',
   'doc.command.update-selected-fields': '更新选中字段',
   'doc.command.insert-page-field': '插入页面域',
+  'doc.command.insert-table-of-contents': '插入目录',
+  'doc.command.set-heading-collapsed': '设置标题折叠',
   'doc.command.update-table-of-contents': '更新目录',
   'doc.command.delete-table-of-contents': '删除目录',
   'doc.command.table-insert-row': '插入表格行',

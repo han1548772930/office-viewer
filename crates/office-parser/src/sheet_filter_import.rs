@@ -34,6 +34,12 @@ pub struct AutoFilterState {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum FilterCriterion {
     Values { #[serde(rename = "selectedItems")] selected_items: Vec<Value> },
+    Color {
+        #[serde(default, rename = "cellFillColors", skip_serializing_if = "Option::is_none")]
+        cell_fill_colors: Option<Vec<Option<String>>>,
+        #[serde(default, rename = "cellTextColors", skip_serializing_if = "Option::is_none")]
+        cell_text_colors: Option<Vec<String>>,
+    },
     Condition {
         operator: String,
         #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present_value")]
@@ -56,12 +62,20 @@ pub(crate) fn validate(state: &AutoFilterState) -> Result<(), String> {
         return Err("invalid typed AutoFilter range".into());
     }
     let mut rows = BTreeSet::new();
-    if state.filtered_rows.iter().any(|row| *row <= range.start_row || *row > range.end_row || !rows.insert(*row)) {
+    if state.filtered_rows.iter().any(|row| *row <= range.start_row || *row > MAX_ROW_INDEX || !rows.insert(*row)) {
         return Err("invalid or duplicate typed AutoFilter hidden row".into());
     }
     for (column, criterion) in &state.columns {
         if *column < range.start_col || *column > range.end_col { return Err("typed AutoFilter column is outside its range".into()); }
         match criterion {
+            FilterCriterion::Color { cell_fill_colors, cell_text_colors } => {
+                let invalid = |color: &String| color.trim().is_empty() || color.len() > 256;
+                if cell_fill_colors.is_none() && cell_text_colors.is_none()
+                    || cell_fill_colors.as_ref().is_some_and(|colors| colors.len() > 4096 || colors.iter().flatten().any(invalid))
+                    || cell_text_colors.as_ref().is_some_and(|colors| colors.len() > 4096 || colors.iter().any(invalid)) {
+                    return Err("invalid typed AutoFilter color predicate".into());
+                }
+            }
             FilterCriterion::Values { selected_items } if selected_items.iter().all(scalar) => {}
             FilterCriterion::Condition { operator, value, second_value, .. } => {
                 let no_operand = matches!(operator.as_str(), "isBlank" | "isNotBlank" | "isError");
@@ -203,6 +217,10 @@ fn custom(node: &OfficeFilterNode, cells: &[CellPayload], range: &AutoFilterRang
 }
 
 pub(crate) fn standard_filter(node: &OfficeFilterNode, cells: &[CellPayload], hidden_rows: &[u32]) -> Result<AutoFilterState, String> {
+    standard_filter_with_colors(node, cells, hidden_rows, &crate::sheet_filter_color::FilterColors::default())
+}
+
+pub(crate) fn standard_filter_with_colors(node: &OfficeFilterNode, cells: &[CellPayload], hidden_rows: &[u32], colors: &crate::sheet_filter_color::FilterColors) -> Result<AutoFilterState, String> {
     if !node.is_standard("autoFilter") { return Err("invalid standard AutoFilter namespace".into()); }
     let range = range(node.attributes.get("ref").ok_or_else(|| "AutoFilter is missing ref".to_owned())?).ok_or_else(|| "invalid standard AutoFilter range".to_owned())?;
     let mut columns = BTreeMap::new();
@@ -216,6 +234,12 @@ pub(crate) fn standard_filter(node: &OfficeFilterNode, cells: &[CellPayload], hi
         let criterion = &column.children[0];
         let criterion = if criterion.is_standard("filters") { members(criterion, cells, &range, index)? }
             else if criterion.is_standard("customFilters") { custom(criterion, cells, &range, index)? }
+            else if criterion.is_standard("colorFilter") {
+                match colors.decode(criterion)? {
+                    office_io_common::filter_color::FilterColor::Fill(color) => FilterCriterion::Color { cell_fill_colors: Some(vec![color]), cell_text_colors: None },
+                    office_io_common::filter_color::FilterColor::Text(color) => FilterCriterion::Color { cell_fill_colors: None, cell_text_colors: Some(vec![color]) },
+                }
+            }
             else { return Err(format!("AutoFilter {} criteria are retained in sourceAutoFilter and need their Office predicate adapter", criterion.name)); };
         columns.insert(index, criterion);
     }
